@@ -403,8 +403,20 @@ def _snippets(args: list[str]) -> list[str]:
     return out
 
 
-def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str], str]:
-    """One simple command -> (write targets, unanalysable reasons, program)."""
+def _scan_segment(tokens: list[str],
+                  embedded: bool = False) -> tuple[list[str], list[str], str]:
+    """One simple command -> (write targets, unanalysable reasons, program).
+
+    ``embedded`` means this command arrived INSIDE an ``eval`` or a shell's
+    ``-c`` string. There the program position must be readable, because the
+    whole payload is one opaque token to the outer command line: ``eval
+    "$CMD"`` used to come back clean - the inner pass saw a program named
+    ``$CMD``, matched it against no table, and reported nothing, which made a
+    two-line variable assignment a bypass of the entire gate. A top-level
+    ``$CMD`` is left alone (it is not a detected write, and the fail-open rule
+    holds); an embedded one fails closed because eval exists to run text as
+    commands and text we cannot read is exactly the unclear channel's job.
+    """
     writes: list[str] = []
     unclear: list[str] = []
     args: list[str] = []
@@ -437,6 +449,11 @@ def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str], str]:
 
     program, rest = _program(args)
     if not program:
+        return writes, unclear, program
+    if embedded and (program.startswith("$") or "`" in program):
+        unclear.append(
+            f"an eval/-c payload whose command is an unexpanded expansion "
+            f"({program}) - what it runs cannot be read here")
         return writes, unclear, program
 
     positional = _positional(rest)
@@ -476,14 +493,14 @@ def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str], str]:
         # token — re-analysed with the same rules. The module used to claim
         # eval'd snippets fail closed while eval was in no table at all: a
         # one-token bypass of the whole gate.
-        inner = analyse_bash(" ".join(rest))
+        inner = analyse_bash(" ".join(rest), _embedded=True)
         writes.extend(inner["writes"])
         unclear.extend(inner["unclear"])
     elif program in _SHELLS:
         # `bash -c "echo x > game/foo.gd"` is just another shell command - read
         # it with the same rules rather than guessing at it with a regex.
         for snippet in _snippets(rest):
-            inner = analyse_bash(snippet)
+            inner = analyse_bash(snippet, _embedded=True)
             writes.extend(inner["writes"])
             unclear.extend(inner["unclear"])
     # NOT an elif: perl sits in _INPLACE **and** _INTERPRETERS, and an elif
@@ -532,7 +549,7 @@ def _logical_lines(command: str) -> list[tuple[str, str]]:
     return [(line, "\n".join(body)) for line, body in out]
 
 
-def analyse_bash(command: str) -> dict:
+def analyse_bash(command: str, *, _embedded: bool = False) -> dict:
     """What a Bash command would write, as far as static reading can tell.
 
     Returns ``{"writes": [raw path strings], "unclear": [reasons]}``. ``unclear``
@@ -564,7 +581,7 @@ def analyse_bash(command: str) -> dict:
                                "quotes?) and it writes")
             continue
         for segment in _split_segments(_collapse_fd_dups(tokens)):
-            seg_writes, seg_unclear, program = _scan_segment(segment)
+            seg_writes, seg_unclear, program = _scan_segment(segment, _embedded)
             if program == "cd":
                 target = next((t for t in segment[1:]
                                if not t.startswith("-")), "")
@@ -585,6 +602,16 @@ def analyse_bash(command: str) -> dict:
                     "cannot tell which ones")
             for w in seg_writes:
                 if not w.strip() or w.strip().lower() in _NOT_A_FILE:
+                    continue
+                if "$" in w or "`" in w or w.startswith("~"):
+                    # An unexpanded target is not a path, it is a placeholder
+                    # for one. `sh -c 'echo x > $F'` used to record a write to
+                    # a literal in-project file named $F and pass containment
+                    # while the real target could be any tree at all - same
+                    # rule as an unresolvable cd: unclear, never guessed.
+                    seg_unclear.append(
+                        f"a write target ({w}) containing an expansion this "
+                        "hook cannot resolve")
                     continue
                 if os.path.isabs(w) or w[1:2] == ":":
                     writes.append(w)

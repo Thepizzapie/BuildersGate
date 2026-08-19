@@ -939,6 +939,52 @@ def _spend_gate(root: str, projected_usd: float, what: str,
     return None
 
 
+def _provider_gate(root: str, capability: str, what: str) -> Optional[dict]:
+    """Refuse a paid run BEFORE it starts when nothing can serve it.
+
+    The gateway's failure-time redirect (see _fail) reaches an agent after a
+    402 has already been spent and read; this is the same answer one step
+    earlier, so the common case - every account for this capability drained
+    or unkeyed - costs a refusal instead of a paid error. A provider that IS
+    routable returns None and the tool routes as it always did: this gate
+    answers "can anything serve this job", never "which one should".
+
+    Fail-open on its own faults, like every explanatory gate here: the
+    machinery for explaining money must never be the thing that blocks work.
+    """
+    try:
+        from bgate_core import gateway as _gateway
+        routed = _gateway.pick(root, capability)
+    except Exception:
+        return None
+    if routed.get("provider"):
+        return None
+    return {"ok": False, "stage": "provider_gate", "capability": capability,
+            "providers": routed.get("why", ""),
+            "error": (f"{what} has no routable provider - "
+                      f"{routed.get('why', 'nothing keyed')}. This is an "
+                      "account problem, not a request problem: do NOT "
+                      "hand-roll a substitute asset. provider_status("
+                      "fresh=true) re-probes after a top-up; if nothing is "
+                      "funded, file the top-up as the blocker - a human "
+                      "decides which account gets money.")}
+
+
+def _paid_gate(root: str, capability: str, projected_usd: float, what: str,
+               max_cost_usd: float = 0.0) -> Optional[dict]:
+    """Every paid tool's front door: provider first, then budget.
+
+    Provider first because it is the cheaper answer and the more common
+    failure - a drained account refuses everything regardless of price,
+    while the budget verdict depends on the estimate. ``projected_usd`` of 0
+    is honest for tools with no price table: spend.check still refuses an
+    exhausted budget, and the ledger records the real cost afterwards.
+    """
+    return _provider_gate(root, capability, what) \
+        or _spend_gate(root, projected_usd, what,
+                       _run_ceiling(root, max_cost_usd))
+
+
 def _gate_images(root: str, count: int, quality: str, what: str,
                  max_cost_usd: float = 0.0) -> Optional[dict]:
     """The spend gate for a tool that buys N images. Refusal dict, or None.
@@ -955,6 +1001,9 @@ def _gate_images(root: str, count: int, quality: str, what: str,
     quality prices as medium there rather than raising: an estimate must never
     be the thing that blocks work.
     """
+    refused = _provider_gate(root, "image", what)
+    if refused:
+        return refused
     try:
         from bgate_adapters import imagegen as _imagegen
         unit = _imagegen.price_per_image(quality or "medium")
@@ -991,11 +1040,8 @@ def project_init(name: str, pitch: str = "", engine: str = "godot",
     root is where the project is CREATED; it wins over project_dir here, since
     on this one tool the directory is the thing being made, not looked up.
     """
-    try:
-        target = root or _root_hint() or os.getcwd()
-        return _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
-    except Exception as exc:
-        return _fail(exc)
+    target = root or _root_hint() or os.getcwd()
+    return _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
 
 
 @_tool
@@ -1013,29 +1059,26 @@ def project_select(project: str = "") -> dict:
     Empty arg: report the root this session resolves to plus every known project.
     Returns {active, known} or {active, project, use_project_dir, deprecated}.
     """
-    try:
-        known = _project.known_projects()
-        if not project:
-            active = None
-            try:
-                active = _root()
-            except Exception:
-                pass
-            return {"active": active, "known": known}
-        root = known.get(project, project)  # name wins, else treat as a path
-        if not (_Path(root) / _db.DB_DIRNAME / _db.DB_FILENAME).exists():
-            raise LookupError(
-                f"{project!r} is not a known project name or a project root. "
-                f"Known: {known}")
-        resolved = str(_Path(root).resolve())
-        _project.register(resolved)
-        return {"active": resolved, "project": _project.get(resolved),
-                "use_project_dir": resolved,
-                "deprecated": "project_select no longer switches the server's "
-                              "active project - pass project_dir=<active> on "
-                              "each tool call instead"}
-    except Exception as exc:
-        return _fail(exc)
+    known = _project.known_projects()
+    if not project:
+        active = None
+        try:
+            active = _root()
+        except Exception:
+            pass
+        return {"active": active, "known": known}
+    root = known.get(project, project)  # name wins, else treat as a path
+    if not (_Path(root) / _db.DB_DIRNAME / _db.DB_FILENAME).exists():
+        raise LookupError(
+            f"{project!r} is not a known project name or a project root. "
+            f"Known: {known}")
+    resolved = str(_Path(root).resolve())
+    _project.register(resolved)
+    return {"active": resolved, "project": _project.get(resolved),
+            "use_project_dir": resolved,
+            "deprecated": "project_select no longer switches the server's "
+                          "active project - pass project_dir=<active> on "
+                          "each tool call instead"}
 
 
 @_tool
@@ -1060,42 +1103,36 @@ def bgate_doctor(refresh: bool = False) -> dict:
     filled in when available is False (missing, too old, or the probe hung) and
     says what to install or which BGATE_* env var points at it. Never raises.
     """
-    try:
-        from bgate_core import doctor as _doctor
+    from bgate_core import doctor as _doctor
 
-        root = None
-        try:
-            root = _root()  # only to pick up the project's .env for the API key
-        except Exception:
-            pass
-        return _doctor.check(root, refresh=bool(refresh))
-    except Exception as exc:
-        return _fail(exc)
+    root = None
+    try:
+        root = _root()  # only to pick up the project's .env for the API key
+    except Exception:
+        pass
+    return _doctor.check(root, refresh=bool(refresh))
 
 
 @_tool
 def project_status() -> dict:
     """The project's identity plus a count of what's in the bible and lore."""
-    try:
-        root = _root()
-        conn = _db.connect(root)
-        counts = {
-            "bible_sections": conn.execute(
-                "SELECT count(*) FROM bible_section").fetchone()[0],
-            "entities": conn.execute("SELECT count(*) FROM lore_entity").fetchone()[0],
-            "canon_entities": conn.execute(
-                "SELECT count(*) FROM lore_entity WHERE status = 'canon'").fetchone()[0],
-            "facts": conn.execute("SELECT count(*) FROM canon_fact").fetchone()[0],
-            "links": conn.execute("SELECT count(*) FROM lore_link").fetchone()[0],
-        }
-        return {"project": _project.get(root), "root": root, "counts": counts,
-                # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
-                # sprite sheet go" has an answer nothing on any surface states,
-                # and the honest one - a directory under ~/.bgate that was
-                # created for you - is not a place anyone would think to look.
-                "scratch": _project.is_scratch(root)}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    conn = _db.connect(root)
+    counts = {
+        "bible_sections": conn.execute(
+            "SELECT count(*) FROM bible_section").fetchone()[0],
+        "entities": conn.execute("SELECT count(*) FROM lore_entity").fetchone()[0],
+        "canon_entities": conn.execute(
+            "SELECT count(*) FROM lore_entity WHERE status = 'canon'").fetchone()[0],
+        "facts": conn.execute("SELECT count(*) FROM canon_fact").fetchone()[0],
+        "links": conn.execute("SELECT count(*) FROM lore_link").fetchone()[0],
+    }
+    return {"project": _project.get(root), "root": root, "counts": counts,
+            # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
+            # sprite sheet go" has an answer nothing on any surface states,
+            # and the honest one - a directory under ~/.bgate that was
+            # created for you - is not a place anyone would think to look.
+            "scratch": _project.is_scratch(root)}
 
 
 @_tool
@@ -1113,14 +1150,11 @@ def project_set_dimension(dimension: str) -> dict:
     ``2d+3d`` for the real mixed case (a 3D game with a 2D HUD, a prototype
     mid-port) rather than picking whichever is closer.
     """
-    try:
-        was = _project.get(_root()).get("dimension") or ""
-        after = _project.set_dimension(_root(), dimension)
-        _log("project", f"dimension {was or '(unset)'} -> {dimension}")
-        return {"project": after, "was": was, "now": after.get("dimension"),
-                "changed": was != after.get("dimension")}
-    except Exception as exc:
-        return _fail(exc)
+    was = _project.get(_root()).get("dimension") or ""
+    after = _project.set_dimension(_root(), dimension)
+    _log("project", f"dimension {was or '(unset)'} -> {dimension}")
+    return {"project": after, "was": was, "now": after.get("dimension"),
+            "changed": was != after.get("dimension")}
 
 
 # ---------------------------------------------------------------------------
@@ -1134,32 +1168,23 @@ def bible_add(kind: str, title: str, body: str = "", rank: int = 0) -> dict:
     rank orders sections within a kind - it is the reading order of the
     document, lowest first.
     """
-    try:
-        return _bible.add(_root(), kind, title, body=body, rank=rank)
-    except Exception as exc:
-        return _fail(exc)
+    return _bible.add(_root(), kind, title, body=body, rank=rank)
 
 
 @_tool
 def bible_update(section_id: int, title: Optional[str] = None,
                  body: Optional[str] = None, rank: Optional[int] = None) -> dict:
     """Update a bible section in place. Omitted fields keep their current value."""
-    try:
-        return _bible.update(_root(), section_id, title=title, body=body, rank=rank)
-    except Exception as exc:
-        return _fail(exc)
+    return _bible.update(_root(), section_id, title=title, body=body, rank=rank)
 
 
 @_tool
 def bible_read(kind: Optional[str] = None) -> dict:
     """Read the bible. No kind: every section, grouped by kind."""
-    try:
-        root = _root()
-        if kind:
-            return {"kind": kind, "sections": _bible.list_sections(root, kind)}
-        return _bible.overview(root)
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    if kind:
+        return {"kind": kind, "sections": _bible.list_sections(root, kind)}
+    return _bible.overview(root)
 
 
 @_tool
@@ -1180,14 +1205,11 @@ def bible_ref_attach(section_id: int, ref: str, kind: str = "style",
     points at it instead of stranding them on the old revision.
     kind: character | style | ui | concept.
     """
-    try:
-        out = _bible_refs.add(_root(), section_id, ref, kind=kind, note=note,
-                              rank=rank)
-        _log("bible", f"anchored ref {ref!r} to bible section {section_id}",
-             ref=f"bible:{section_id}")
-        return out
-    except Exception as exc:
-        return _fail(exc)
+    out = _bible_refs.add(_root(), section_id, ref, kind=kind, note=note,
+                          rank=rank)
+    _log("bible", f"anchored ref {ref!r} to bible section {section_id}",
+         ref=f"bible:{section_id}")
+    return out
 
 
 @_tool
@@ -1210,35 +1232,29 @@ def bible_ref_list(section_id: Optional[int] = None, suggest: bool = False) -> d
     there was nowhere structured to put it). It is a proposal only - attach the
     ones that are right with bible_ref_attach, and leave the titles alone.
     """
-    try:
-        root = _root()
-        if section_id is None:
-            grouped = _bible_refs.list_all(root)
-            titles = {int(s["id"]): s["title"] for s in _bible.list_sections(root)}
-            out = {"by_section": [
-                {"section_id": sid, "title": titles.get(sid, ""), "refs": anchored}
-                for sid, anchored in sorted(grouped.items())]}
-            if suggest:
-                out["suggestions"] = _bible_refs.suggest_from_titles(root)
-            return out
-        return {"section_id": section_id,
-                "anchored": _bible_refs.list_for_section(root, section_id),
-                "resolved": _bible_refs.resolve_for_section(root, section_id)}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    if section_id is None:
+        grouped = _bible_refs.list_all(root)
+        titles = {int(s["id"]): s["title"] for s in _bible.list_sections(root)}
+        out = {"by_section": [
+            {"section_id": sid, "title": titles.get(sid, ""), "refs": anchored}
+            for sid, anchored in sorted(grouped.items())]}
+        if suggest:
+            out["suggestions"] = _bible_refs.suggest_from_titles(root)
+        return out
+    return {"section_id": section_id,
+            "anchored": _bible_refs.list_for_section(root, section_id),
+            "resolved": _bible_refs.resolve_for_section(root, section_id)}
 
 
 @_tool
 def bible_ref_detach(section_id: int, ref: str) -> dict:
     """Remove one anchor from a bible section. The pin itself survives - only
     the claim that this section is about that image goes away."""
-    try:
-        out = _bible_refs.remove(_root(), section_id, ref)
-        _log("bible", f"detached ref {ref!r} from bible section {section_id}",
-             ref=f"bible:{section_id}")
-        return out
-    except Exception as exc:
-        return _fail(exc)
+    out = _bible_refs.remove(_root(), section_id, ref)
+    _log("bible", f"detached ref {ref!r} from bible section {section_id}",
+         ref=f"bible:{section_id}")
+    return out
 
 
 # `scope_check(rank)` was here, and every seat's rules told agents to call it
@@ -1259,48 +1275,33 @@ def lore_add(kind: str, name: str, summary: str = "", body: str = "",
     kind: faction | character | place | event | item | concept | species.
     status: draft | canon | retired. Names are unique - update, don't duplicate.
     """
-    try:
-        return _lore.add_entity(_root(), kind, name, summary=summary, body=body,
-                                status=status)
-    except Exception as exc:
-        return _fail(exc)
+    return _lore.add_entity(_root(), kind, name, summary=summary, body=body,
+                            status=status)
 
 
 @_tool
 def lore_update(ref: str, summary: Optional[str] = None, body: Optional[str] = None,
                 status: Optional[str] = None) -> dict:
     """Update an entity by slug or name. Promote draft to canon with status='canon'."""
-    try:
-        return _lore.update_entity(_root(), ref, summary=summary, body=body, status=status)
-    except Exception as exc:
-        return _fail(exc)
+    return _lore.update_entity(_root(), ref, summary=summary, body=body, status=status)
 
 
 @_tool
 def lore_brief(ref: str) -> dict:
     """Everything about one entity - record, facts, and edges. Read before writing it."""
-    try:
-        return _lore.brief(_root(), ref)
-    except Exception as exc:
-        return _fail(exc)
+    return _lore.brief(_root(), ref)
 
 
 @_tool
 def lore_list(kind: Optional[str] = None, status: Optional[str] = None) -> dict:
     """List entities, optionally filtered by kind and/or status."""
-    try:
-        return {"entities": _lore.list_entities(_root(), kind=kind, status=status)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"entities": _lore.list_entities(_root(), kind=kind, status=status)}
 
 
 @_tool
 def lore_link(src: str, rel: str, dst: str, note: str = "") -> dict:
     """Connect two entities. rel is free-form: 'rules', 'allied_with', 'born_in'."""
-    try:
-        return _lore.link(_root(), src, rel, dst, note=note)
-    except Exception as exc:
-        return _fail(exc)
+    return _lore.link(_root(), src, rel, dst, note=note)
 
 
 @_tool
@@ -1310,10 +1311,7 @@ def lore_fact(ref: str, statement: str, source: str = "", locked: bool = False) 
     Keep it to a single checkable claim ("The siege lasted seven years"), not a
     paragraph. locked=True marks it immovable: conflicts against it are hard.
     """
-    try:
-        return _lore.add_fact(_root(), ref, statement, source=source, locked=locked)
-    except Exception as exc:
-        return _fail(exc)
+    return _lore.add_fact(_root(), ref, statement, source=source, locked=locked)
 
 
 # ---------------------------------------------------------------------------
@@ -1328,20 +1326,14 @@ def canon_check(text: str, entities: Optional[list[str]] = None) -> dict:
     entities, invented proper nouns, polarity flips, and number disagreements.
     It does not judge tone or theme - 'ok' means nothing mechanical is wrong.
     """
-    try:
-        return _canon.check(_root(), text, entities=entities)
-    except Exception as exc:
-        return _fail(exc)
+    return _canon.check(_root(), text, entities=entities)
 
 
 @_tool
 def recall(query: str, limit: int = 10, kind: Optional[str] = None) -> dict:
     """Search the bible and lore. Call this BEFORE inventing anything."""
-    try:
-        conn = _db.connect(_root())
-        return {"query": query, "results": _search.find(conn, query, limit=limit, kind=kind)}
-    except Exception as exc:
-        return _fail(exc)
+    conn = _db.connect(_root())
+    return {"query": query, "results": _search.find(conn, query, limit=limit, kind=kind)}
 
 
 # ---------------------------------------------------------------------------
@@ -1355,13 +1347,10 @@ def blender_status() -> dict:
     Folded in here rather than given its own tool - one question ("what can I
     build with?") should cost one call.
     """
-    try:
-        probe = _blender.available()
-        out = {**probe, **(_blender.version() if probe["available"] else {})}
-        out["generate"] = _imageto3d_summary()
-        return out
-    except Exception as exc:
-        return _fail(exc)
+    probe = _blender.available()
+    out = {**probe, **(_blender.version() if probe["available"] else {})}
+    out["generate"] = _imageto3d_summary()
+    return out
 
 
 def _imageto3d_summary() -> dict:
@@ -1545,6 +1534,7 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
     BLENDER_WORKBENCH (fast preview) | BLENDER_EEVEE_NEXT | CYCLES.
     """
     try:
+        _contained_path(blend_file, "blend_file")
         # Per-call render directory. The adapter always writes <out_dir>/render.png,
         # so a shared out_dir means the second seat rendering at the same moment
         # overwrites the first seat's frame at the very path the first call just
@@ -1600,10 +1590,8 @@ def blender_warmup(engine: str = "BLENDER_EEVEE_NEXT") -> dict:
 @_tool
 def blender_scene_stats(blend_file: str) -> dict:
     """Report an existing .blend without modifying it - objects, tris, materials."""
-    try:
-        return _blender.scene_stats(blend_file)
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(blend_file, "blend_file")
+    return _blender.scene_stats(blend_file)
 
 
 @_tool
@@ -1616,13 +1604,10 @@ def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
     engine. Also returns game-readiness issues (no UVs, n-gons, unapplied scale)
     worth fixing before the asset reaches a level. Pair with godot_import_asset.
     """
-    try:
-        _contained_path(out_path, "out_path")
-        _contained_path(blend_file, "blend_file")
-        return _blender.export_gltf(out_path, blend_file=blend_file,
-                                    script=script, timeout=timeout)
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(out_path, "out_path")
+    _contained_path(blend_file, "blend_file")
+    return _blender.export_gltf(out_path, blend_file=blend_file,
+                                script=script, timeout=timeout)
 
 
 def _register_assembly(result: dict, out_path: str, *, root_name: str,
@@ -1678,22 +1663,19 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
     Write out_path inside the project - an artifact cannot be recorded for a
     file outside it, and an unregistered asset is one no reviewer ever sees.
     """
-    try:
-        _contained_path(out_path, "out_path")
-        result = _blender.combine(parts, out_path, rig=rig,
-                                  root_name=root_name, timeout=timeout)
-        if result.get("ok"):
-            layers = result.get("parts") or []
-            artifact = _register_assembly(result, out_path, root_name=root_name,
-                                          rig=rig, producer="blender_combine")
-            if artifact:
-                result["artifact"] = artifact
-                result["artifact_id"] = artifact["id"]
-            _log("blender", f"assembled {root_name!r} from {len(layers)} layers",
-                 ref=str(out_path))
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(out_path, "out_path")
+    result = _blender.combine(parts, out_path, rig=rig,
+                              root_name=root_name, timeout=timeout)
+    if result.get("ok"):
+        layers = result.get("parts") or []
+        artifact = _register_assembly(result, out_path, root_name=root_name,
+                                      rig=rig, producer="blender_combine")
+        if artifact:
+            result["artifact"] = artifact
+            result["artifact_id"] = artifact["id"]
+        _log("blender", f"assembled {root_name!r} from {len(layers)} layers",
+             ref=str(out_path))
+    return result
 
 
 @_tool
@@ -1743,6 +1725,9 @@ def character_generate(prompt: str, out_dir: str, name: str = "character",
         _contained_path(out_dir, "out_dir")
         _contained_path(godot_project, "godot_project")
         root = _root()
+        refused = _paid_gate(root, "image", 0.0, "a character build")
+        if refused:
+            return refused
     except Exception:
         root = None
     try:
@@ -1784,10 +1769,7 @@ def blender_humanoid_template() -> dict:
       4. blender_rig(mesh, out)                adopt, fit, bind, PROVE it
       5. godot_deliver_asset(project, rigged)  .tscn, verified in-engine
     """
-    try:
-        return _blender.humanoid_template()
-    except Exception as exc:
-        return _fail(exc)
+    return _blender.humanoid_template()
 
 
 @_tool
@@ -1851,24 +1833,22 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
     here is not a substitute for retarget_check against the real engine - it just means a naming problem shows up now instead of after the Godot
     round-trip.
     """
-    try:
-        result = _blender.rig(model, out_path, kind=kind, height=height,
-                              budget=budget, orient=orient,
-                              armature_name=armature_name,
-                              symmetrize=symmetrize, timeout=timeout)
-        if result.get("ok"):
-            coverage = result.get("coverage") or {}
-            note = ""
-            if coverage:
-                note = (" [coverage OK]" if coverage.get("passed")
-                        else f" [coverage MISSING {coverage.get('missing')}]")
-            _log("blender",
-                 f"rigged {model} -> {result.get('bound_with')} "
-                 f"({result.get('unweighted_pct')}% unweighted){note}",
-                 ref=str(out_path))
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(out_path, "out_path")
+    result = _blender.rig(model, out_path, kind=kind, height=height,
+                          budget=budget, orient=orient,
+                          armature_name=armature_name,
+                          symmetrize=symmetrize, timeout=timeout)
+    if result.get("ok"):
+        coverage = result.get("coverage") or {}
+        note = ""
+        if coverage:
+            note = (" [coverage OK]" if coverage.get("passed")
+                    else f" [coverage MISSING {coverage.get('missing')}]")
+        _log("blender",
+             f"rigged {model} -> {result.get('bound_with')} "
+             f"({result.get('unweighted_pct')}% unweighted){note}",
+             ref=str(out_path))
+    return result
 
 
 @_tool
@@ -1905,23 +1885,21 @@ def blender_flex(model: str, out_dir: str = "", stem: str = "flex",
     fragmented mesh heat could not cross, and re-run the rig with
     symmetrize='force' when only one side failed.
     """
-    try:
-        result = _blender.flex(model, out_dir, stem=stem, render=render,
-                               engine=engine,
-                               volume_tolerance=volume_tolerance,
-                               pinch_tolerance=pinch_tolerance,
-                               timeout=timeout)
-        verdict = result.get("verdict") or {}
-        if result.get("ok"):
-            _log("blender",
-                 f"flexed {model} -> "
-                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
-                 f"({len(verdict.get('issues') or [])} issues over "
-                 f"{verdict.get('checked', 0)} poses)",
-                 ref=str(model))
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(out_dir, "out_dir")
+    result = _blender.flex(model, out_dir, stem=stem, render=render,
+                           engine=engine,
+                           volume_tolerance=volume_tolerance,
+                           pinch_tolerance=pinch_tolerance,
+                           timeout=timeout)
+    verdict = result.get("verdict") or {}
+    if result.get("ok"):
+        _log("blender",
+             f"flexed {model} -> "
+             f"{'passed' if verdict.get('passed') else 'FAILED'} "
+             f"({len(verdict.get('issues') or [])} issues over "
+             f"{verdict.get('checked', 0)} poses)",
+             ref=str(model))
+    return result
 
 
 @_tool
@@ -1954,21 +1932,18 @@ def blender_weights(model: str, threshold: float = 0.02,
     bind with no weights above `threshold` reports `checked: 0` and refuses,
     rather than passing an empty result as a clean one.
     """
-    try:
-        report = _blender.weight_islands(model, threshold=threshold, timeout=timeout)
-        if report.get("ok"):
-            verdict = _blender.weight_islands_verdict(
-                report, min_bleed_vertices=min_bleed_vertices)
-            report["verdict"] = verdict
-            _log("blender",
-                 f"weight-islands {model} -> "
-                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
-                 f"({len(verdict.get('issues') or [])} bleeding bones over "
-                 f"{verdict.get('checked', 0)} checked)",
-                 ref=str(model))
-        return report
-    except Exception as exc:
-        return _fail(exc)
+    report = _blender.weight_islands(model, threshold=threshold, timeout=timeout)
+    if report.get("ok"):
+        verdict = _blender.weight_islands_verdict(
+            report, min_bleed_vertices=min_bleed_vertices)
+        report["verdict"] = verdict
+        _log("blender",
+             f"weight-islands {model} -> "
+             f"{'passed' if verdict.get('passed') else 'FAILED'} "
+             f"({len(verdict.get('issues') or [])} bleeding bones over "
+             f"{verdict.get('checked', 0)} checked)",
+             ref=str(model))
+    return report
 
 
 @_tool
@@ -2006,22 +1981,19 @@ def blender_template_deviation(model: str, reference: str = "",
     whose bones are named on another scheme entirely reports `checked: 0` and
     refuses, rather than passing an empty intersection as agreement.
     """
-    try:
-        report = _blender.template_deviation(
-            model, reference=(reference or None), timeout=timeout)
-        if report.get("ok"):
-            verdict = _blender.template_deviation_verdict(
-                report, max_deviation=max_deviation)
-            report["verdict"] = verdict
-            _log("blender",
-                 f"template-deviation {model} -> "
-                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
-                 f"({len(verdict.get('issues') or [])} displaced bones over "
-                 f"{verdict.get('checked', 0)} checked)",
-                 ref=str(model))
-        return report
-    except Exception as exc:
-        return _fail(exc)
+    report = _blender.template_deviation(
+        model, reference=(reference or None), timeout=timeout)
+    if report.get("ok"):
+        verdict = _blender.template_deviation_verdict(
+            report, max_deviation=max_deviation)
+        report["verdict"] = verdict
+        _log("blender",
+             f"template-deviation {model} -> "
+             f"{'passed' if verdict.get('passed') else 'FAILED'} "
+             f"({len(verdict.get('issues') or [])} displaced bones over "
+             f"{verdict.get('checked', 0)} checked)",
+             ref=str(model))
+    return report
 
 
 @_tool
@@ -2055,21 +2027,18 @@ def blender_silhouette(model: str, min_ratio: float = 0.15,
     exactly that, and bounds that only fire far from 1.0 would otherwise call
     a ratio of exactly 1.0 across the whole sweep a perfect result.
     """
-    try:
-        report = _blender.silhouette(model, timeout=timeout)
-        if report.get("ok"):
-            verdict = _blender.silhouette_verdict(
-                report, min_ratio=min_ratio, max_ratio=max_ratio)
-            report["verdict"] = verdict
-            _log("blender",
-                 f"silhouette {model} -> "
-                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
-                 f"({len(verdict.get('issues') or [])} issues over "
-                 f"{verdict.get('checked', 0)} poses)",
-                 ref=str(model))
-        return report
-    except Exception as exc:
-        return _fail(exc)
+    report = _blender.silhouette(model, timeout=timeout)
+    if report.get("ok"):
+        verdict = _blender.silhouette_verdict(
+            report, min_ratio=min_ratio, max_ratio=max_ratio)
+        report["verdict"] = verdict
+        _log("blender",
+             f"silhouette {model} -> "
+             f"{'passed' if verdict.get('passed') else 'FAILED'} "
+             f"({len(verdict.get('issues') or [])} issues over "
+             f"{verdict.get('checked', 0)} poses)",
+             ref=str(model))
+    return report
 
 
 @_tool
@@ -2120,79 +2089,76 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
     does. A clean pass here means "no obvious curve-math defect", not
     "looks good"; it is a floor, not a ceiling.
     """
-    try:
-        data = _animcurves.extract_animations(model)
-        if not data.get("ok"):
-            return data
-        feet = set(foot_bones or [])
-        clips = []
-        for anim in data["animations"]:
-            channels = []
-            for ch in anim["channels"]:
-                times, values = ch["times"], ch["values"]
-                entry = {"node": ch["node"], "path": ch["path"],
-                         "interpolation": ch["interpolation"], "samples": len(times)}
-                if len(times) >= 2:
-                    profile = _animcurves.velocity_profile(times, values)
-                    entry["velocity"] = {
-                        "peak_speed": profile["peak_speed"],
-                        "cruising_fraction": profile["cruising_fraction"],
-                        "verdict": _animcurves.velocity_profile_verdict(
-                            profile, max_cruising_fraction=max_cruising_fraction)}
-                    sp = _animcurves.sparc(times, values)
-                    entry["sparc"] = {**sp, "verdict": _animcurves.sparc_verdict(
-                        sp, min_sparc=min_sparc)}
-                    if check_anticipation:
-                        axis_values = (list(zip(*values)) if values
-                                      and isinstance(values[0], (tuple, list))
-                                      else [values])
-                        issues = []
-                        events = 0
-                        for axis in axis_values:
-                            av = _animcurves.anticipation_verdict(
-                                times, list(axis),
-                                min_width_samples=min_anticipation_width)
-                            issues.extend(av["issues"])
-                            events += av["events"]
-                        entry["anticipation"] = {
-                            "verdict": {"passed": not issues, "issues": issues},
-                            "events": events}
-                    if ch["path"] == "translation":
-                        entry["arc"] = _animcurves.arc_deviation(times, values)
-                        if ch["node"] in feet:
-                            skate = _animcurves.foot_skate(
-                                times, values, ground_axis=ground_axis)
-                            entry["foot_skate"] = {
-                                **skate, "verdict": _animcurves.foot_skate_verdict(
-                                    skate, max_skating_frames=max_skating_frames)}
-                channels.append(entry)
-            failed = [c["node"] for c in channels
-                     if not c.get("velocity", {}).get("verdict", {}).get("passed", True)
-                     or not c.get("sparc", {}).get("verdict", {}).get("passed", True)
-                     or not c.get("foot_skate", {}).get("verdict", {}).get("passed", True)
-                     or not c.get("anticipation", {}).get("verdict", {}).get("passed", True)]
-            measured = [c for c in channels if "velocity" in c]
-            clips.append({"name": anim["name"], "channels": channels,
-                         "measured_channels": len(measured),
-                         "passed": bool(measured) and not failed,
-                         "flagged_bones": failed})
-        # A FILE WITH NO CLIPS IS NOT A FILE WITH CLEAN CLIPS. `failed` never
-        # evaluates on an empty channel list, so every aggregate here reported
-        # a pass for a model carrying no animation at all - which is exactly
-        # what blender_rig hands back, and exactly the file an agent reaches
-        # for this tool with.
-        if not clips:
-            return {"ok": False, "clips": [],
-                    "error": f"{model} contains no animations - nothing was "
-                             "measured. A rigged-but-unanimated export (what "
-                             "blender_rig produces) has no curves to judge; "
-                             "animate or bake a clip into it first."}
-        _log("blender", f"animation-curves {model} -> "
-             f"{sum(1 for c in clips if c['passed'])}/{len(clips)} clips clean",
-             ref=str(model))
-        return {"ok": True, "clips": clips}
-    except Exception as exc:
-        return _fail(exc)
+    data = _animcurves.extract_animations(model)
+    if not data.get("ok"):
+        return data
+    feet = set(foot_bones or [])
+    clips = []
+    for anim in data["animations"]:
+        channels = []
+        for ch in anim["channels"]:
+            times, values = ch["times"], ch["values"]
+            entry = {"node": ch["node"], "path": ch["path"],
+                     "interpolation": ch["interpolation"], "samples": len(times)}
+            if len(times) >= 2:
+                profile = _animcurves.velocity_profile(times, values)
+                entry["velocity"] = {
+                    "peak_speed": profile["peak_speed"],
+                    "cruising_fraction": profile["cruising_fraction"],
+                    "verdict": _animcurves.velocity_profile_verdict(
+                        profile, max_cruising_fraction=max_cruising_fraction)}
+                sp = _animcurves.sparc(times, values)
+                entry["sparc"] = {**sp, "verdict": _animcurves.sparc_verdict(
+                    sp, min_sparc=min_sparc)}
+                if check_anticipation:
+                    axis_values = (list(zip(*values)) if values
+                                  and isinstance(values[0], (tuple, list))
+                                  else [values])
+                    issues = []
+                    events = 0
+                    for axis in axis_values:
+                        av = _animcurves.anticipation_verdict(
+                            times, list(axis),
+                            min_width_samples=min_anticipation_width)
+                        issues.extend(av["issues"])
+                        events += av["events"]
+                    entry["anticipation"] = {
+                        "verdict": {"passed": not issues, "issues": issues},
+                        "events": events}
+                if ch["path"] == "translation":
+                    entry["arc"] = _animcurves.arc_deviation(times, values)
+                    if ch["node"] in feet:
+                        skate = _animcurves.foot_skate(
+                            times, values, ground_axis=ground_axis)
+                        entry["foot_skate"] = {
+                            **skate, "verdict": _animcurves.foot_skate_verdict(
+                                skate, max_skating_frames=max_skating_frames)}
+            channels.append(entry)
+        failed = [c["node"] for c in channels
+                 if not c.get("velocity", {}).get("verdict", {}).get("passed", True)
+                 or not c.get("sparc", {}).get("verdict", {}).get("passed", True)
+                 or not c.get("foot_skate", {}).get("verdict", {}).get("passed", True)
+                 or not c.get("anticipation", {}).get("verdict", {}).get("passed", True)]
+        measured = [c for c in channels if "velocity" in c]
+        clips.append({"name": anim["name"], "channels": channels,
+                     "measured_channels": len(measured),
+                     "passed": bool(measured) and not failed,
+                     "flagged_bones": failed})
+    # A FILE WITH NO CLIPS IS NOT A FILE WITH CLEAN CLIPS. `failed` never
+    # evaluates on an empty channel list, so every aggregate here reported
+    # a pass for a model carrying no animation at all - which is exactly
+    # what blender_rig hands back, and exactly the file an agent reaches
+    # for this tool with.
+    if not clips:
+        return {"ok": False, "clips": [],
+                "error": f"{model} contains no animations - nothing was "
+                         "measured. A rigged-but-unanimated export (what "
+                         "blender_rig produces) has no curves to judge; "
+                         "animate or bake a clip into it first."}
+    _log("blender", f"animation-curves {model} -> "
+         f"{sum(1 for c in clips if c['passed'])}/{len(clips)} clips clean",
+         ref=str(model))
+    return {"ok": True, "clips": clips}
 
 
 @_tool
@@ -2247,40 +2213,38 @@ def blender_texture(model: str, image: str, out_path: str, material: str = "",
     be traced to the images that produced it. Write out_path inside the
     project; a file outside it cannot be recorded.
     """
-    try:
-        maps = {"roughness": roughness, "metallic": metallic,
-                "normal": normal, "emission": emission}
-        result = _blender.apply_texture(
-            model, image or None, out_path, material=material,
-            all_slots=all_slots,
-            **{kind: (path or None) for kind, path in maps.items()},
-            normal_strength=normal_strength, alpha=alpha,
-            alpha_cutoff=alpha_cutoff, backface_cull=backface_cull,
-            decal=decal, timeout=timeout)
-        if result.get("ok"):
-            given = {kind: str(path) for kind, path in
-                     {"base_color": image, **maps}.items() if path}
-            artifact = _register_artifact(
-                _Path(out_path).stem, out_path, producer="blender_texture",
-                refs=list(given.values()),
-                metadata={"model": str(model), "texture": str(image),
-                          "material": material, "all_slots": bool(all_slots),
-                          "maps": given, "decal": bool(decal),
-                          # The mode the adapter RESOLVED, not the one asked
-                          # for: `auto` is the common call and the answer it
-                          # reached is what decides alphaMode in the glTF.
-                          "alpha": result.get("alpha") or alpha,
-                          "alpha_cutoff": alpha_cutoff,
-                          "textured": result.get("textured") or [],
-                          "unwrapped": result.get("unwrapped") or []})
-            if artifact:
-                result["artifact"] = artifact
-                result["artifact_id"] = artifact["id"]
-            _log("blender", f"textured {_Path(out_path).name} with "
-                            f"{len(given)} map(s)", ref=str(out_path))
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(out_path, "out_path")
+    maps = {"roughness": roughness, "metallic": metallic,
+            "normal": normal, "emission": emission}
+    result = _blender.apply_texture(
+        model, image or None, out_path, material=material,
+        all_slots=all_slots,
+        **{kind: (path or None) for kind, path in maps.items()},
+        normal_strength=normal_strength, alpha=alpha,
+        alpha_cutoff=alpha_cutoff, backface_cull=backface_cull,
+        decal=decal, timeout=timeout)
+    if result.get("ok"):
+        given = {kind: str(path) for kind, path in
+                 {"base_color": image, **maps}.items() if path}
+        artifact = _register_artifact(
+            _Path(out_path).stem, out_path, producer="blender_texture",
+            refs=list(given.values()),
+            metadata={"model": str(model), "texture": str(image),
+                      "material": material, "all_slots": bool(all_slots),
+                      "maps": given, "decal": bool(decal),
+                      # The mode the adapter RESOLVED, not the one asked
+                      # for: `auto` is the common call and the answer it
+                      # reached is what decides alphaMode in the glTF.
+                      "alpha": result.get("alpha") or alpha,
+                      "alpha_cutoff": alpha_cutoff,
+                      "textured": result.get("textured") or [],
+                      "unwrapped": result.get("unwrapped") or []})
+        if artifact:
+            result["artifact"] = artifact
+            result["artifact_id"] = artifact["id"]
+        _log("blender", f"textured {_Path(out_path).name} with "
+                        f"{len(given)} map(s)", ref=str(out_path))
+    return result
 
 
 def _turnaround_frames(result: dict) -> list[str]:
@@ -2316,51 +2280,49 @@ def blender_turnaround(model: str, out_dir: str, stem: str = "turnaround",
     2D work. Point out_dir INSIDE the project - frames written outside it cannot
     be registered, and an unregistered render is one nobody reviews.
     """
-    try:
-        result = _blender.turnaround(model, out_dir, stem=stem,
-                                     size=(width, height), engine=engine,
-                                     exposure=exposure, timeout=timeout)
-        frames = [f for f in (result.get("renders") or []) if isinstance(f, dict)]
-        registered = []
-        for frame in frames:
-            path = frame.get("path")
-            if not path or not frame.get("exists"):
-                continue
-            label = str(frame.get("label") or "frame")
-            archived = _archive_preview(path, f"{stem}-{label}")
-            if archived:
-                frame["preview"] = archived
-            # One logical name PER ANGLE: a re-render after fixing the lights is
-            # revision 2 of "hero-front", not a second unrelated artifact, which
-            # is what lets a reviewer see that the white one was superseded.
-            artifact = _register_artifact(
-                f"{stem}-{label}", path, producer="blender_turnaround",
-                metadata={"model": str(model), "angle": label,
-                          "degrees": frame.get("degrees"),
-                          "engine": engine, "exposure": exposure,
-                          "blown": frame.get("blown"), "mean": frame.get("mean"),
-                          "readable": bool(frame.get("ok")),
-                          "verdict": frame.get("verdict") or "",
-                          "preview": archived or ""})
-            if artifact:
-                frame["artifact"] = artifact
-                frame["artifact_id"] = artifact["id"]
-                registered.append(artifact["id"])
-        if registered:
-            result["artifact_ids"] = registered
-        elif frames:
-            result["artifact_note"] = (
-                "no artifact was registered for these frames - out_dir is "
-                "outside the project root, so art QA and the dashboard cannot "
-                "see them; re-render into the project to put them on the ledger")
-        if frames:
-            unreadable = len(result.get("unreadable") or [])
-            _log("render", f"turnaround {stem!r}: {len(frames)} frames"
-                           + (f", {unreadable} unreadable" if unreadable else ""),
-                 ref=str(out_dir))
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(out_dir, "out_dir")
+    result = _blender.turnaround(model, out_dir, stem=stem,
+                                 size=(width, height), engine=engine,
+                                 exposure=exposure, timeout=timeout)
+    frames = [f for f in (result.get("renders") or []) if isinstance(f, dict)]
+    registered = []
+    for frame in frames:
+        path = frame.get("path")
+        if not path or not frame.get("exists"):
+            continue
+        label = str(frame.get("label") or "frame")
+        archived = _archive_preview(path, f"{stem}-{label}")
+        if archived:
+            frame["preview"] = archived
+        # One logical name PER ANGLE: a re-render after fixing the lights is
+        # revision 2 of "hero-front", not a second unrelated artifact, which
+        # is what lets a reviewer see that the white one was superseded.
+        artifact = _register_artifact(
+            f"{stem}-{label}", path, producer="blender_turnaround",
+            metadata={"model": str(model), "angle": label,
+                      "degrees": frame.get("degrees"),
+                      "engine": engine, "exposure": exposure,
+                      "blown": frame.get("blown"), "mean": frame.get("mean"),
+                      "readable": bool(frame.get("ok")),
+                      "verdict": frame.get("verdict") or "",
+                      "preview": archived or ""})
+        if artifact:
+            frame["artifact"] = artifact
+            frame["artifact_id"] = artifact["id"]
+            registered.append(artifact["id"])
+    if registered:
+        result["artifact_ids"] = registered
+    elif frames:
+        result["artifact_note"] = (
+            "no artifact was registered for these frames - out_dir is "
+            "outside the project root, so art QA and the dashboard cannot "
+            "see them; re-render into the project to put them on the ledger")
+    if frames:
+        unreadable = len(result.get("unreadable") or [])
+        _log("render", f"turnaround {stem!r}: {len(frames)} frames"
+                       + (f", {unreadable} unreadable" if unreadable else ""),
+             ref=str(out_dir))
+    return result
 
 
 @_tool
@@ -2412,6 +2374,7 @@ def blender_generate(image: str, out_path: str, backend: str = "",
     the feature working.
     """
     try:
+        _contained_path(out_path, "out_path")
         from bgate_adapters import imageto3d as _i3d
     except Exception as exc:
         return _fail(exc)
@@ -2512,11 +2475,9 @@ def blender_sweep(out_path: str, dry_run: bool = True,
     Defaults to dry_run=True. Look at the list, then call again with
     dry_run=False.
     """
-    try:
-        return _blender.sweep(out_path, dry_run=dry_run,
-                              keep_renders=keep_renders)
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(out_path, "out_path")
+    return _blender.sweep(out_path, dry_run=dry_run,
+                          keep_renders=keep_renders)
 
 
 def _manifest_layers(asset: str) -> dict:
@@ -2576,101 +2537,99 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
     combine result plus `changed` - the layer's tri and object counts before and
     after - so "did that fix it" is a number rather than an impression.
     """
-    try:
-        recipe = _blender.manifest_recipe(asset)
-        parts = [dict(part) for part in recipe.get("parts") or []]
-        names = [str(part.get("name", "")) for part in parts]
-        index = next((i for i, name in enumerate(names) if name == layer), -1)
-        if index < 0:
-            return {"ok": False, "error": (
-                f"{layer!r} is not a layer of {_Path(asset).name} - this asset's "
-                f"layers are: {', '.join(n for n in names if n) or 'none'}")}
-        target = parts[index]
-        before = _manifest_layers(asset).get(layer, {})
-        recorded = {entry.get("name", ""): entry
-                    for entry in recipe.get("missing") or []}
+    _contained_path(out_path, "out_path")
+    recipe = _blender.manifest_recipe(asset)
+    parts = [dict(part) for part in recipe.get("parts") or []]
+    names = [str(part.get("name", "")) for part in parts]
+    index = next((i for i, name in enumerate(names) if name == layer), -1)
+    if index < 0:
+        return {"ok": False, "error": (
+            f"{layer!r} is not a layer of {_Path(asset).name} - this asset's "
+            f"layers are: {', '.join(n for n in names if n) or 'none'}")}
+    target = parts[index]
+    before = _manifest_layers(asset).get(layer, {})
+    recorded = {entry.get("name", ""): entry
+                for entry in recipe.get("missing") or []}
 
-        # 1. Every OTHER layer has to be on disk, or the assembly quietly loses
-        #    it - combine assembles happily around the hole and hands back a
-        #    character with no arms, ok=True. Refuse FIRST, before a rebuild
-        #    spends minutes in Blender on an assembly that cannot happen, and
-        #    say which of the missing ones still carry a script.
-        gone = [part for i, part in enumerate(parts)
-                if i != index and not _Path(str(part.get("path") or "")).is_file()]
-        if gone:
-            return {"ok": False, "error": (
-                "cannot re-assemble: "
-                + "; ".join(
-                    f"layer {part.get('name')!r} has no file at "
-                    f"{part.get('path')} ("
-                    + ("its script is in the manifest - re-run it too"
-                       if recorded.get(part.get("name", ""), {}).get("script")
-                       else "and the manifest recorded no script for it")
-                    + ")" for part in gone))}
+    # 1. Every OTHER layer has to be on disk, or the assembly quietly loses
+    #    it - combine assembles happily around the hole and hands back a
+    #    character with no arms, ok=True. Refuse FIRST, before a rebuild
+    #    spends minutes in Blender on an assembly that cannot happen, and
+    #    say which of the missing ones still carry a script.
+    gone = [part for i, part in enumerate(parts)
+            if i != index and not _Path(str(part.get("path") or "")).is_file()]
+    if gone:
+        return {"ok": False, "error": (
+            "cannot re-assemble: "
+            + "; ".join(
+                f"layer {part.get('name')!r} has no file at "
+                f"{part.get('path')} ("
+                + ("its script is in the manifest - re-run it too"
+                   if recorded.get(part.get("name", ""), {}).get("script")
+                   else "and the manifest recorded no script for it")
+                + ")" for part in gone))}
 
-        # 2. Put the layer's file back, by whichever of the three routes applies.
-        built: dict = {}
-        if source:
-            replacement = _Path(source)
-            if not replacement.is_file():
-                return {"ok": False, "error": f"no such layer file: {source}"}
-            target["path"] = str(replacement.resolve())
-            rebuilt = "file"
+    # 2. Put the layer's file back, by whichever of the three routes applies.
+    built: dict = {}
+    if source:
+        replacement = _Path(source)
+        if not replacement.is_file():
+            return {"ok": False, "error": f"no such layer file: {source}"}
+        target["path"] = str(replacement.resolve())
+        rebuilt = "file"
+    else:
+        text = script or (recorded.get(layer, {}).get("script")
+                          or _blender.read_layer_record(
+                              target.get("path", "")).get("script", ""))
+        if text:
+            built = _blender.run_script(text, export_glb=target["path"],
+                                        kit=kit, timeout=timeout)
+            if not built.get("ok"):
+                return {**built, "ok": False, "layer": layer,
+                        "stage": "layer",
+                        "error": built.get("error")
+                                 or f"the script for layer {layer!r} failed"}
+            rebuilt = "script"
+        elif _Path(target.get("path", "")).is_file():
+            rebuilt = "reused"
         else:
-            text = script or (recorded.get(layer, {}).get("script")
-                              or _blender.read_layer_record(
-                                  target.get("path", "")).get("script", ""))
-            if text:
-                built = _blender.run_script(text, export_glb=target["path"],
-                                            kit=kit, timeout=timeout)
-                if not built.get("ok"):
-                    return {**built, "ok": False, "layer": layer,
-                            "stage": "layer",
-                            "error": built.get("error")
-                                     or f"the script for layer {layer!r} failed"}
-                rebuilt = "script"
-            elif _Path(target.get("path", "")).is_file():
-                rebuilt = "reused"
-            else:
-                return {"ok": False, "error": (
-                    f"layer {layer!r} has no file at {target.get('path')!r} and "
-                    "the manifest recorded no script for it - pass script= to "
-                    "rebuild it, or source= to point at a file you already have")}
+            return {"ok": False, "error": (
+                f"layer {layer!r} has no file at {target.get('path')!r} and "
+                "the manifest recorded no script for it - pass script= to "
+                "rebuild it, or source= to point at a file you already have")}
 
-        out = str(out_path or asset)
-        # The SAME name the first assembly used, so the re-run supersedes it
-        # rather than sitting beside it as an unrelated asset.
-        root_name = recipe.get("root_name", "") or _Path(asset).stem
-        result = _blender.combine(parts, out, rig=recipe.get("rig", ""),
-                                  root_name=root_name, timeout=timeout)
-        after = next((part for part in (result.get("parts") or [])
-                      if part.get("name") == layer), {})
-        result.update({
-            "layer": layer, "rebuilt": rebuilt, "source": target.get("path", ""),
-            "asset": out,
-            "layer_run": {k: built.get(k) for k in ("ok", "seconds", "print")
-                          if k in built},
-            "changed": {
-                "tris_before": before.get("tris"), "tris_after": after.get("tris"),
-                "objects_before": before.get("objects") or [],
-                "objects_after": after.get("objects") or [],
-                "bound_before": before.get("bound"),
-                "bound_after": after.get("bound"),
-            },
-            "reassembled": [name for name in names if name],
-        })
-        if result.get("ok"):
-            artifact = _register_assembly(
-                result, out, root_name=root_name, rig=recipe.get("rig", ""),
-                producer="blender_layer_rerun")
-            if artifact:
-                result["artifact"] = artifact
-                result["artifact_id"] = artifact["id"]
-            _log("blender", f"re-ran layer {layer!r} ({rebuilt}) and re-assembled "
-                            f"{_Path(out).name}", ref=out)
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    out = str(out_path or asset)
+    # The SAME name the first assembly used, so the re-run supersedes it
+    # rather than sitting beside it as an unrelated asset.
+    root_name = recipe.get("root_name", "") or _Path(asset).stem
+    result = _blender.combine(parts, out, rig=recipe.get("rig", ""),
+                              root_name=root_name, timeout=timeout)
+    after = next((part for part in (result.get("parts") or [])
+                  if part.get("name") == layer), {})
+    result.update({
+        "layer": layer, "rebuilt": rebuilt, "source": target.get("path", ""),
+        "asset": out,
+        "layer_run": {k: built.get(k) for k in ("ok", "seconds", "print")
+                      if k in built},
+        "changed": {
+            "tris_before": before.get("tris"), "tris_after": after.get("tris"),
+            "objects_before": before.get("objects") or [],
+            "objects_after": after.get("objects") or [],
+            "bound_before": before.get("bound"),
+            "bound_after": after.get("bound"),
+        },
+        "reassembled": [name for name in names if name],
+    })
+    if result.get("ok"):
+        artifact = _register_assembly(
+            result, out, root_name=root_name, rig=recipe.get("rig", ""),
+            producer="blender_layer_rerun")
+        if artifact:
+            result["artifact"] = artifact
+            result["artifact_id"] = artifact["id"]
+        _log("blender", f"re-ran layer {layer!r} ({rebuilt}) and re-assembled "
+                        f"{_Path(out).name}", ref=out)
+    return result
 
 
 @_tool
@@ -2692,6 +2651,7 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
     The sheet is archived to the preview gallery.
     """
     try:
+        _contained_path(out_dir, "out_dir")
         out = out_dir or str(_Path(_root()) / ".bgate_out" / "sprites")
     except Exception:
         out = out_dir or "sprites_out"
@@ -2753,22 +2713,19 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
     Keys never appear here, and there is no tool that writes one - a human
     sets keys (bgate key / the Generators panel), deliberately.
     """
+    from bgate_core import gateway as _gateway
     try:
-        from bgate_core import gateway as _gateway
-        try:
-            root = _root()
-        except LookupError:
-            root = None
-            _keys()
-        out = {"ok": True,
-               "providers": _gateway.status(root, fresh=bool(fresh)),
-               "capabilities": {k: list(v)
-                                for k, v in _gateway.CAPABILITIES.items()}}
-        if capability:
-            out["pick"] = _gateway.pick(root, str(capability))
-        return out
-    except Exception as exc:
-        return _fail(exc)
+        root = _root()
+    except LookupError:
+        root = None
+        _keys()
+    out = {"ok": True,
+           "providers": _gateway.status(root, fresh=bool(fresh)),
+           "capabilities": {k: list(v)
+                            for k, v in _gateway.CAPABILITIES.items()}}
+    if capability:
+        out["pick"] = _gateway.pick(root, str(capability))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2784,95 +2741,92 @@ def image_status() -> dict:
     was declared, and what that model's licence permits - which is the question
     that decides whether the output can ship in a game you sell.
     """
+    # NO PROJECT IS NOT AN ERROR FOR THIS QUESTION. "Can this machine make
+    # an image" is about credentials and installed packages, and both have
+    # an answer before any game exists - this used to raise LookupError
+    # outside a project, which made the one tool you would reach for to
+    # diagnose a key the one tool you could not run.
     try:
-        # NO PROJECT IS NOT AN ERROR FOR THIS QUESTION. "Can this machine make
-        # an image" is about credentials and installed packages, and both have
-        # an answer before any game exists - this used to raise LookupError
-        # outside a project, which made the one tool you would reach for to
-        # diagnose a key the one tool you could not run.
-        try:
-            root = _root()          # loads project .env, then the global one
-        except LookupError:
-            root = None
-            _keys()                 # the machine-wide layer, standalone
-        from bgate_adapters import imagegen
+        root = _root()          # loads project .env, then the global one
+    except LookupError:
+        root = None
+        _keys()                 # the machine-wide layer, standalone
+    from bgate_adapters import imagegen
 
-        legs = {}
-        legs["openai"] = dict(imagegen.available())
-        # KREA IS A FIRST-CLASS PROVIDER AND THIS TOOL DID NOT KNOW IT EXISTED.
-        # It probed OPENAI_API_KEY alone and answered for the whole painted-art
-        # leg, so a project holding a working Krea key - which image_generate
-        # will happily auto-select - was told the leg was unavailable. It cost a
-        # support cycle in a real run. blender_status has always reported
-        # per-backend; this is that shape.
-        try:
-            from bgate_adapters import krea
-            legs["krea"] = dict(krea.available(root))
-        except Exception as exc:
-            legs["krea"] = {"available": False,
-                            "reason": f"{type(exc).__name__}: {exc}"}
-        try:
-            from bgate_adapters import kie
-            legs["kie"] = dict(kie.available(root))
-        except Exception as exc:
-            legs["kie"] = {"available": False,
-                           "reason": f"{type(exc).__name__}: {exc}"}
-        # RETRO DIFFUSION IS AN ART PROVIDER TOO, and this tool did not know —
-        # the same staleness krea hit, one provider later. It does not PAINT
-        # (that is the kie/openai/krea leg); it animates a sheet that already
-        # exists, which is its own credential and its own answer to "can this
-        # machine make the asset". A leg missing here reads as a leg that is
-        # unavailable.
-        try:
-            from bgate_adapters import retrodiffusion as _rdp
-            legs["retrodiffusion"] = dict(_rdp.available(root))
-        except Exception as exc:
-            legs["retrodiffusion"] = {"available": False,
-                                      "reason": f"{type(exc).__name__}: {exc}"}
-        try:
-            from bgate_adapters import localgen
-            legs["local"] = dict(localgen.status(probe=True))
-        except Exception as exc:
-            legs["local"] = {"available": False,
-                             "reason": f"{type(exc).__name__}: {exc}"}
-
-        # PAINTING AND ANIMATING ARE DIFFERENT ANSWERS. Every leg is REPORTED,
-        # because "is my RD key working" is a real question and a missing leg
-        # reads as a broken one — but only the legs that can MINT an image
-        # count toward `available`/`auto_picks`, which is what a caller asks
-        # before generating art. Counting RD would tell a project holding only
-        # an animation key that it can paint, and the first thing to notice
-        # would be a generation failing.
-        PAINTERS = ("openai", "krea", "kie", "local")
-        usable = [name for name, leg in legs.items()
-                  if leg.get("available") and name in PAINTERS]
-        animators = [name for name, leg in legs.items()
-                     if leg.get("available") and name not in PAINTERS]
-        return {
-            # `available` answers about the LEG, not about one adapter: any
-            # usable provider means painted art is available. A caller that only
-            # reads this key gets the honest answer now.
-            "available": bool(usable),
-            "providers": usable,
-            "animation_providers": animators,
-            "auto_picks": (usable[0] if usable else ""),
-            "legs": legs,
-            "project": root or "",
-            # Setting a key is HUMAN-ONLY and there is deliberately no tool here
-            # that does it - an agent that can write credentials can hand itself
-            # a provider nobody paid for. So the fix names what the human runs,
-            # not something to call.
-            "reason": "" if usable else
-                      "no image provider is configured. A human can fix it with "
-                      "`bgate key set openai --global` (stores it in "
-                      "~/.bgate/.env, which every project on this machine "
-                      "inherits and which works with no project at all), or "
-                      "without --global to keep it to one game, or in the "
-                      "dashboard's provider panel - or configure a local "
-                      "ComfyUI (see the local leg's `how`)",
-        }
+    legs = {}
+    legs["openai"] = dict(imagegen.available())
+    # KREA IS A FIRST-CLASS PROVIDER AND THIS TOOL DID NOT KNOW IT EXISTED.
+    # It probed OPENAI_API_KEY alone and answered for the whole painted-art
+    # leg, so a project holding a working Krea key - which image_generate
+    # will happily auto-select - was told the leg was unavailable. It cost a
+    # support cycle in a real run. blender_status has always reported
+    # per-backend; this is that shape.
+    try:
+        from bgate_adapters import krea
+        legs["krea"] = dict(krea.available(root))
     except Exception as exc:
-        return _fail(exc)
+        legs["krea"] = {"available": False,
+                        "reason": f"{type(exc).__name__}: {exc}"}
+    try:
+        from bgate_adapters import kie
+        legs["kie"] = dict(kie.available(root))
+    except Exception as exc:
+        legs["kie"] = {"available": False,
+                       "reason": f"{type(exc).__name__}: {exc}"}
+    # RETRO DIFFUSION IS AN ART PROVIDER TOO, and this tool did not know —
+    # the same staleness krea hit, one provider later. It does not PAINT
+    # (that is the kie/openai/krea leg); it animates a sheet that already
+    # exists, which is its own credential and its own answer to "can this
+    # machine make the asset". A leg missing here reads as a leg that is
+    # unavailable.
+    try:
+        from bgate_adapters import retrodiffusion as _rdp
+        legs["retrodiffusion"] = dict(_rdp.available(root))
+    except Exception as exc:
+        legs["retrodiffusion"] = {"available": False,
+                                  "reason": f"{type(exc).__name__}: {exc}"}
+    try:
+        from bgate_adapters import localgen
+        legs["local"] = dict(localgen.status(probe=True))
+    except Exception as exc:
+        legs["local"] = {"available": False,
+                         "reason": f"{type(exc).__name__}: {exc}"}
+
+    # PAINTING AND ANIMATING ARE DIFFERENT ANSWERS. Every leg is REPORTED,
+    # because "is my RD key working" is a real question and a missing leg
+    # reads as a broken one — but only the legs that can MINT an image
+    # count toward `available`/`auto_picks`, which is what a caller asks
+    # before generating art. Counting RD would tell a project holding only
+    # an animation key that it can paint, and the first thing to notice
+    # would be a generation failing.
+    PAINTERS = ("openai", "krea", "kie", "local")
+    usable = [name for name, leg in legs.items()
+              if leg.get("available") and name in PAINTERS]
+    animators = [name for name, leg in legs.items()
+                 if leg.get("available") and name not in PAINTERS]
+    return {
+        # `available` answers about the LEG, not about one adapter: any
+        # usable provider means painted art is available. A caller that only
+        # reads this key gets the honest answer now.
+        "available": bool(usable),
+        "providers": usable,
+        "animation_providers": animators,
+        "auto_picks": (usable[0] if usable else ""),
+        "legs": legs,
+        "project": root or "",
+        # Setting a key is HUMAN-ONLY and there is deliberately no tool here
+        # that does it - an agent that can write credentials can hand itself
+        # a provider nobody paid for. So the fix names what the human runs,
+        # not something to call.
+        "reason": "" if usable else
+                  "no image provider is configured. A human can fix it with "
+                  "`bgate key set openai --global` (stores it in "
+                  "~/.bgate/.env, which every project on this machine "
+                  "inherits and which works with no project at all), or "
+                  "without --global to keep it to one game, or in the "
+                  "dashboard's provider panel - or configure a local "
+                  "ComfyUI (see the local leg's `how`)",
+    }
 
 
 @_tool
@@ -2898,25 +2852,22 @@ def local_status() -> dict:
     Nothing here starts anything either. Builders Gate talks to software the
     user runs; it does not run it.
     """
-    try:
-        from bgate_core import localruntimes
+    from bgate_core import localruntimes
 
-        root = _root()  # triggers .env load
-        rows = localruntimes.status(root, probe=True)
-        ready = [r["id"] for r in rows if r["available"]]
-        return {
-            "available": bool(ready),
-            "ready": ready,
-            "runtimes": rows,
-            "stages": localruntimes.STAGES,
-            "reason": "" if ready else
-                      "nothing local is running. Each row's `reason` says what "
-                      "it needs; a human sets that up in the dashboard under "
-                      "Settings → Local & agents. Hosted providers are "
-                      "unaffected - see image_status.",
-        }
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()  # triggers .env load
+    rows = localruntimes.status(root, probe=True)
+    ready = [r["id"] for r in rows if r["available"]]
+    return {
+        "available": bool(ready),
+        "ready": ready,
+        "runtimes": rows,
+        "stages": localruntimes.STAGES,
+        "reason": "" if ready else
+                  "nothing local is running. Each row's `reason` says what "
+                  "it needs; a human sets that up in the dashboard under "
+                  "Settings → Local & agents. Hosted providers are "
+                  "unaffected - see image_status.",
+    }
 
 
 # How many pinned anchors an automatic pull may put in front of the model.
@@ -3046,7 +2997,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                      godot_project: str = "", res_dir: str = "assets/tiles",
                      install: bool = False,
                      collide: bool = True,
-                     max_cost_usd: float = 1.0) -> dict:
+                     max_cost_usd: float = 0.0) -> dict:
     """GENERATE A GODOT TILESET — the bridge the level pipeline was missing.
 
     levelgen, autotile, tilemap and wire_tilemap have all been real for a
@@ -3083,6 +3034,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
     sheet goes through the Aseprite cleanup, tilesets included.
     """
     try:
+        _contained_path(godot_project, "godot_project")
         from PIL import Image as _Img
 
         from bgate_adapters import kie as _kie
@@ -3105,10 +3057,20 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         if bits not in (4, 8):
             return {"ok": False, "error": "bits is 4 (16 masks) or 8 (blob47)"}
         tile_px = int(tile_px)
-        if 2 * 0.02 > max_cost_usd:
+        # 0 means UNCAPPED, and it is the default: ceilings are the user's to
+        # set (max_cost_usd on the call, the item, or the enforced budget) -
+        # a tool that shipped its own dollar guess kept refusing runs nobody
+        # asked it to bound.
+        if max_cost_usd and 2 * 0.02 > max_cost_usd:
             return {"ok": False, "error": (
                 f"two texture drawings is about $0.04, over the "
-                f"${max_cost_usd:.2f} ceiling")}
+                f"${max_cost_usd:.2f} ceiling you set")}
+        # AFTER the free validations, deliberately: "your view is isometric"
+        # and "bits is 4 or 8" are answers about the REQUEST, and the more
+        # specific answer must win over "nothing is keyed".
+        refused = _paid_gate(_root(), "image", 0.0, "a tileset generation")
+        if refused:
+            return refused
 
         out_dir = root / ".bgate_out" / "tiles"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -3215,11 +3177,26 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         if pinned:
             _spritekit.lock_palette(str(atlas_png), pinned)
             sheet = _Img.open(atlas_png).convert("RGBA")
-        sidecar = {"interior": list(interior_at),
+        # THE MANIFEST - the knowledge this generator holds and used to throw
+        # away. Every atlas coordinate, the mask table, which source is
+        # which: all of it was in this function's locals and only in this
+        # function's locals, so the gameplay/tech seat re-typed it into
+        # level_generate as ten floor_*/wall_* parameters and a string DSL,
+        # hand-carried between seats in a pasted brief. The sidecar IS the
+        # handoff now: level_generate and sidescroll_generate read it off
+        # disk beside the .tres and the parameters collapse to nothing.
+        # `interior`/`variants` stay at top level for the older reader
+        # (_scatter_variants) - same file, superset schema.
+        sidecar = {"kind": "bgate-tileset", "version": 1,
+                   "tile_px": tile_px, "bits": bits,
+                   "floor": {"source": 0,
+                             "table": {str(m): list(c)
+                                       for m, c in sorted(table.items())},
+                             "solid": list(interior_at),
+                             "variants": [list(v) for v in variant_coords]},
+                   "interior": list(interior_at),
                    "variants": [list(v) for v in variant_coords]}
         sidecar_path = out_dir / f"{name}.tiles.json"
-        sidecar_path.write_text(_json.dumps(sidecar, indent=1),
-                                encoding="utf-8")
         seams = _tilemask.seam_report(sheet, table,
                                       tile_size=(tile_px, tile_px),
                                       colours=colours)
@@ -3287,8 +3264,21 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         tres_path = out_dir / f"{name}.tres"
         tres_path.write_text(tres_text, encoding="utf-8")
 
+        # Written AFTER the wall block so the manifest can say whether a wall
+        # source exists at all - a level generator that guesses one draws a
+        # wall out of source ids the .tres does not define.
+        if wall_source and wall_source.get("ok"):
+            sidecar["wall"] = {"source": 1, "layout": "solid",
+                               "atlas": [0, 0]}
+        sidecar_path.write_text(_json.dumps(sidecar, indent=1),
+                                encoding="utf-8")
+
         result = {"ok": True, "name": name,
                   "atlas": str(atlas_png), "tileset": str(tres_path),
+                  # The cross-seat handoff, on disk. Hand level_generate /
+                  # sidescroll_generate ONLY the tileset path - they read
+                  # this file beside it and no atlas coordinate needs typing.
+                  "manifest": str(sidecar_path),
                   "tile_px": tile_px, "bits": bits,
                   "colours": {"floor": [round(c) for c in colours[0]],
                               "void": [round(c) for c in colours[1]]},
@@ -3429,90 +3419,87 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
     The result is archived to the preview gallery - LOOK at it before importing
     into the game with godot_import_asset.
     """
-    try:
-        root = _Path(_scratch_root())
-        refused = _gate_images(str(root), 1, quality,
-                               f"generating {filename!r}")
-        if refused:
-            return refused
-        out = _art_out(root, filename)
-        from bgate_adapters import imagegen
-        named = [str(r) for r in (ref_images or []) if str(r).strip()]
-        resolved = [_refs.resolve(root, r) for r in named]
-        pinned_names, pinned_paths = _pinned_refs(root, use_pinned)
-        for name, path in zip(pinned_names, pinned_paths):
-            if path not in resolved:          # an explicit ref wins its slot
-                named.append(name)
-                resolved.append(path)
-        anchor_paths = [_refs.resolve(root, a)
-                        for a in (anchors or []) if str(a).strip()]
-        # keyed=None hands the decision to task_kind (chroma.needs_key). With no
-        # task_kind that answers False, which is exactly what this tool did
-        # before any of these parameters existed.
-        # PROVIDER IS A CHOICE NOW, not a constant. This was hardcoded to
-        # openai, so a user whose only key is KREA_API_KEY - a key the setup
-        # docs tell them to configure - could not reach this tool at all, and
-        # Krea images were only obtainable through image_sprites and
-        # image_talkhead, the two tools that happened to expose `provider`.
-        # chroma.generate has dispatched to either since it was written; the
-        # tool simply never passed the choice along.
-        result = _chroma.generate(prompt, str(out),
-                                  provider=_providers.provider_for(
-                                      task_kind, asked=provider, root=root),
-                                  model=model,
-                                  task_kind=task_kind,
-                                  keyed=True if transparent else None,
-                                  size=size, quality=quality, transparent=False,
-                                  ref_paths=resolved, ref_strength=ref_strength,
-                                  anchors=anchor_paths, tileable=tileable,
-                                  root=root,
-                                  logical_name=_Path(filename).stem,
-                                  work_item_id=_work_item_id())
-        result["refs_used"] = named
-        # WHAT HAPPENED, NOT WHAT WAS ASKED FOR. `tileable` above is the request;
-        # chroma puts the mirror pass's own {ok, method, note} at result["tileable"]
-        # and it can be a failure. Recording the boolean meant a map that never
-        # tiled was filed as a tileable map, and the seam turned up in a render
-        # days later with the metadata still claiming otherwise. A flag computed
-        # from the request is not evidence about the artifact.
-        tiled = result.get("tileable")
-        tiled_ok = bool(tiled.get("ok")) if isinstance(tiled, dict) else bool(tiled)
-        if tileable and not tiled_ok:
-            # Surfaced on the result, not buried in metadata: the caller is
-            # standing right here and can regenerate or heal the seam now.
-            result["warning"] = (
-                "tileable was requested and DID NOT happen: "
-                + (tiled.get("note") if isinstance(tiled, dict) else "no tile pass ran")
-                + " - this map will seam where it repeats")
-        if result.get("ok"):
-            archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
-            if archived:
-                result["preview"] = archived
-            artifact = _register_artifact(
-                _Path(filename).stem, result["path"], producer="image_generate",
-                model=result.get("model", ""), prompt=prompt, refs=named,
-                metadata={"size": size, "quality": quality,
-                          "transparent": transparent,
-                          "task_kind": task_kind,
-                          "tileable_requested": tileable,
-                          "tileable": tiled_ok,
-                          "tileable_detail": tiled if isinstance(tiled, dict) else None,
-                          "resolved_refs": resolved,
-                          "pinned_refs": pinned_names,
-                          "anchors": anchor_paths,
-                          "keyed": result.get("keyed"),
-                          "chroma": result.get("chroma"),
-                          "alpha": result.get("alpha"),
-                          "preview": archived or "",
-                          **imagegen.cost_meta(result)})
-            if artifact:
-                result["artifact"] = artifact
-            _log("art", f"generated painted art {filename} ({size}, {quality}"
-                        + (f", {task_kind}" if task_kind else "") + ")",
-                 ref=archived or result["path"])
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    root = _Path(_scratch_root())
+    refused = _gate_images(str(root), 1, quality,
+                           f"generating {filename!r}")
+    if refused:
+        return refused
+    out = _art_out(root, filename)
+    from bgate_adapters import imagegen
+    named = [str(r) for r in (ref_images or []) if str(r).strip()]
+    resolved = [_refs.resolve(root, r) for r in named]
+    pinned_names, pinned_paths = _pinned_refs(root, use_pinned)
+    for name, path in zip(pinned_names, pinned_paths):
+        if path not in resolved:          # an explicit ref wins its slot
+            named.append(name)
+            resolved.append(path)
+    anchor_paths = [_refs.resolve(root, a)
+                    for a in (anchors or []) if str(a).strip()]
+    # keyed=None hands the decision to task_kind (chroma.needs_key). With no
+    # task_kind that answers False, which is exactly what this tool did
+    # before any of these parameters existed.
+    # PROVIDER IS A CHOICE NOW, not a constant. This was hardcoded to
+    # openai, so a user whose only key is KREA_API_KEY - a key the setup
+    # docs tell them to configure - could not reach this tool at all, and
+    # Krea images were only obtainable through image_sprites and
+    # image_talkhead, the two tools that happened to expose `provider`.
+    # chroma.generate has dispatched to either since it was written; the
+    # tool simply never passed the choice along.
+    result = _chroma.generate(prompt, str(out),
+                              provider=_providers.provider_for(
+                                  task_kind, asked=provider, root=root),
+                              model=model,
+                              task_kind=task_kind,
+                              keyed=True if transparent else None,
+                              size=size, quality=quality, transparent=False,
+                              ref_paths=resolved, ref_strength=ref_strength,
+                              anchors=anchor_paths, tileable=tileable,
+                              root=root,
+                              logical_name=_Path(filename).stem,
+                              work_item_id=_work_item_id())
+    result["refs_used"] = named
+    # WHAT HAPPENED, NOT WHAT WAS ASKED FOR. `tileable` above is the request;
+    # chroma puts the mirror pass's own {ok, method, note} at result["tileable"]
+    # and it can be a failure. Recording the boolean meant a map that never
+    # tiled was filed as a tileable map, and the seam turned up in a render
+    # days later with the metadata still claiming otherwise. A flag computed
+    # from the request is not evidence about the artifact.
+    tiled = result.get("tileable")
+    tiled_ok = bool(tiled.get("ok")) if isinstance(tiled, dict) else bool(tiled)
+    if tileable and not tiled_ok:
+        # Surfaced on the result, not buried in metadata: the caller is
+        # standing right here and can regenerate or heal the seam now.
+        result["warning"] = (
+            "tileable was requested and DID NOT happen: "
+            + (tiled.get("note") if isinstance(tiled, dict) else "no tile pass ran")
+            + " - this map will seam where it repeats")
+    if result.get("ok"):
+        archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
+        if archived:
+            result["preview"] = archived
+        artifact = _register_artifact(
+            _Path(filename).stem, result["path"], producer="image_generate",
+            model=result.get("model", ""), prompt=prompt, refs=named,
+            metadata={"size": size, "quality": quality,
+                      "transparent": transparent,
+                      "task_kind": task_kind,
+                      "tileable_requested": tileable,
+                      "tileable": tiled_ok,
+                      "tileable_detail": tiled if isinstance(tiled, dict) else None,
+                      "resolved_refs": resolved,
+                      "pinned_refs": pinned_names,
+                      "anchors": anchor_paths,
+                      "keyed": result.get("keyed"),
+                      "chroma": result.get("chroma"),
+                      "alpha": result.get("alpha"),
+                      "preview": archived or "",
+                      **imagegen.cost_meta(result)})
+        if artifact:
+            result["artifact"] = artifact
+        _log("art", f"generated painted art {filename} ({size}, {quality}"
+                    + (f", {task_kind}" if task_kind else "") + ")",
+             ref=archived or result["path"])
+    return result
 
 
 @_tool
@@ -3530,42 +3517,39 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     keyable-background contract (flat chroma backdrop -> keyed -> audited), not
     the API's background=transparent, which does not reliably return alpha.
     """
-    try:
-        root = _Path(_scratch_root())
-        refused = _gate_images(str(root), 1, quality, f"editing into {filename!r}")
-        if refused:
-            return refused
-        out = _art_out(root, filename)
-        from bgate_adapters import imagegen
-        resolved = [_refs.resolve(root, r) for r in ref_images]
-        # WAS hardcoded "openai" with no parameter — the pin image_generate's
-        # comment calls the defect, fixed in one tool out of five. A Krea-only
-        # setup got "OPENAI_API_KEY not set" from every edit.
-        result = _chroma.generate(prompt, str(out),
-                                  provider=_providers.provider_for(root=root),
-                                  keyed=bool(transparent), ref_paths=resolved,
-                                  size=size, quality=quality, transparent=False,
-                                  root=root, logical_name=_Path(filename).stem,
-                                  work_item_id=_work_item_id())
-        if result.get("ok"):
-            archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
-            if archived:
-                result["preview"] = archived
-            artifact = _register_artifact(
-                _Path(filename).stem, result["path"], producer="image_edit",
-                model=result.get("model", ""), prompt=prompt, refs=ref_images,
-                metadata={"resolved_refs": resolved, "size": size,
-                          "quality": quality, "transparent": transparent,
-                          "chroma": result.get("chroma"),
-                          "alpha": result.get("alpha"),
-                          "preview": archived or "",
-                          **imagegen.cost_meta(result)})
-            if artifact:
-                result["artifact"] = artifact
-            _log("art", f"reference-edit {filename}", ref=archived or result["path"])
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    root = _Path(_scratch_root())
+    refused = _gate_images(str(root), 1, quality, f"editing into {filename!r}")
+    if refused:
+        return refused
+    out = _art_out(root, filename)
+    from bgate_adapters import imagegen
+    resolved = [_refs.resolve(root, r) for r in ref_images]
+    # WAS hardcoded "openai" with no parameter — the pin image_generate's
+    # comment calls the defect, fixed in one tool out of five. A Krea-only
+    # setup got "OPENAI_API_KEY not set" from every edit.
+    result = _chroma.generate(prompt, str(out),
+                              provider=_providers.provider_for(root=root),
+                              keyed=bool(transparent), ref_paths=resolved,
+                              size=size, quality=quality, transparent=False,
+                              root=root, logical_name=_Path(filename).stem,
+                              work_item_id=_work_item_id())
+    if result.get("ok"):
+        archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
+        if archived:
+            result["preview"] = archived
+        artifact = _register_artifact(
+            _Path(filename).stem, result["path"], producer="image_edit",
+            model=result.get("model", ""), prompt=prompt, refs=ref_images,
+            metadata={"resolved_refs": resolved, "size": size,
+                      "quality": quality, "transparent": transparent,
+                      "chroma": result.get("chroma"),
+                      "alpha": result.get("alpha"),
+                      "preview": archived or "",
+                      **imagegen.cost_meta(result)})
+        if artifact:
+            result["artifact"] = artifact
+        _log("art", f"reference-edit {filename}", ref=archived or result["path"])
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -3723,36 +3707,33 @@ def item_generate(item_class: str, name: str, descriptor: str,
     (manifest on disk) is skipped, not re-bought; force=true regenerates.
     Costs real money per image (~$0.02-0.19 at `quality`). For a batch, use
     item_variants. LOOK at the preview before importing into the game."""
-    try:
-        root = _Path(_root())
-        refused = _gate_images(str(root), 1, quality, f"generating item {name!r}")
-        if refused:
-            return refused
-        style_clause = _item_style_clause(root, character)
-        [spec] = _items.plan_variants(
-            item_class, name, descriptor,
-            materials=[material] if material else None,
-            elements=[element] if element else None,
-            tiers=[tier] if tier else None,
-            style_clause=style_clause)
-        if not force:
-            _, skipped = _items.split_existing(
-                [spec], lambda rel: (root / rel).is_file())
-            if skipped:
-                return {"ok": True, "name": spec["name"], "skipped": True,
-                        "manifest": _items.rel_manifest_path(spec["name"]),
-                        "estimated_cost_usd": 0.0,
-                        "note": "already minted - manifest exists; pass "
-                                "force=true to re-buy"}
-        res = _mint_item(root, spec, quality)
-        if res.get("ok"):
-            res["estimated_cost_usd"] = _items.estimate_cost(1, quality)
-            res["style_rail"] = bool(style_clause)
-            _log("art", f"minted {item_class} item {spec['name']}",
-                 ref=res["preview"])
-        return res
-    except Exception as exc:
-        return _fail(exc)
+    root = _Path(_root())
+    refused = _gate_images(str(root), 1, quality, f"generating item {name!r}")
+    if refused:
+        return refused
+    style_clause = _item_style_clause(root, character)
+    [spec] = _items.plan_variants(
+        item_class, name, descriptor,
+        materials=[material] if material else None,
+        elements=[element] if element else None,
+        tiers=[tier] if tier else None,
+        style_clause=style_clause)
+    if not force:
+        _, skipped = _items.split_existing(
+            [spec], lambda rel: (root / rel).is_file())
+        if skipped:
+            return {"ok": True, "name": spec["name"], "skipped": True,
+                    "manifest": _items.rel_manifest_path(spec["name"]),
+                    "estimated_cost_usd": 0.0,
+                    "note": "already minted - manifest exists; pass "
+                            "force=true to re-buy"}
+    res = _mint_item(root, spec, quality)
+    if res.get("ok"):
+        res["estimated_cost_usd"] = _items.estimate_cost(1, quality)
+        res["style_rail"] = bool(style_clause)
+        _log("art", f"minted {item_class} item {spec['name']}",
+             ref=res["preview"])
+    return res
 
 
 @_tool
@@ -3774,43 +3755,43 @@ def item_variants(item_class: str, base_name: str, descriptor: str,
     Every image costs money, so `limit` caps what a run may BUY (default 12) - the plan and its $ estimate are reported and refused if new images exceed
     the cap, so you confirm the spend before it happens. LOOK at the set
     before importing."""
-    try:
-        root = _Path(_root())
-        # `limit` bounds the COUNT and never bounded the money: a 12-item grid
-        # at high quality is ~$2 that an exhausted daily budget could not refuse.
-        refused = _gate_images(str(root), max(1, int(limit)), quality,
-                               f"generating up to {int(limit)} variants of {base_name!r}")
-        if refused:
-            return refused
-        style_clause = _item_style_clause(root, character)
-        specs = _items.plan_variants(item_class, base_name, descriptor,
-                                     materials=materials, elements=elements,
-                                     tiers=tiers, style_clause=style_clause)
-        to_mint, skipped = (specs, []) if force else _items.split_existing(
-            specs, lambda rel: (root / rel).is_file())
-        estimate = _items.estimate_cost(len(to_mint), quality)
-        if len(to_mint) > max(1, limit):
-            return {"ok": False, "planned": len(specs),
-                    "to_buy": len(to_mint), "already_minted": len(skipped),
-                    "limit": limit, "estimated_cost_usd": estimate,
-                    "names": [s["name"] for s in to_mint],
-                    "error": f"grid needs {len(to_mint)} new images "
-                             f"(~${estimate:.2f} at {quality!r}, > limit "
-                             f"{limit}); raise limit to confirm the spend or "
-                             "narrow the axes"}
-        results = [_mint_item(root, s, quality) for s in to_mint]
-        made = [r for r in results if r.get("ok")]
-        _log("art", f"minted {len(made)}/{len(to_mint)} {item_class} variants "
-             f"of {base_name}"
-             + (f" ({len(skipped)} already on disk)" if skipped else ""))
-        return {"ok": all(r.get("ok") for r in results),
-                "class": item_class, "count": len(made),
-                "skipped": [s["name"] for s in skipped],
-                "estimated_cost_usd": estimate,
-                "style_rail": bool(style_clause),
-                "items": results}
-    except Exception as exc:
-        return _fail(exc)
+    root = _Path(_root())
+    style_clause = _item_style_clause(root, character)
+    specs = _items.plan_variants(item_class, base_name, descriptor,
+                                 materials=materials, elements=elements,
+                                 tiers=tiers, style_clause=style_clause)
+    to_mint, skipped = (specs, []) if force else _items.split_existing(
+        specs, lambda rel: (root / rel).is_file())
+    estimate = _items.estimate_cost(len(to_mint), quality)
+    if len(to_mint) > max(1, limit):
+        return {"ok": False, "planned": len(specs),
+                "to_buy": len(to_mint), "already_minted": len(skipped),
+                "limit": limit, "estimated_cost_usd": estimate,
+                "names": [s["name"] for s in to_mint],
+                "error": f"grid needs {len(to_mint)} new images "
+                         f"(~${estimate:.2f} at {quality!r}, > limit "
+                         f"{limit}); raise limit to confirm the spend or "
+                         "narrow the axes"}
+    # AFTER the free planning refusals - "your grid is over the limit you
+    # set" is an answer about the request, and the more specific answer must
+    # win over "nothing is keyed". `limit` bounds the COUNT and never bounded
+    # the money: a 12-item grid at high quality is ~$2 that an exhausted
+    # daily budget could not refuse.
+    refused = _gate_images(str(root), max(1, len(to_mint)), quality,
+                           f"generating {len(to_mint)} variants of {base_name!r}")
+    if refused:
+        return refused
+    results = [_mint_item(root, s, quality) for s in to_mint]
+    made = [r for r in results if r.get("ok")]
+    _log("art", f"minted {len(made)}/{len(to_mint)} {item_class} variants "
+         f"of {base_name}"
+         + (f" ({len(skipped)} already on disk)" if skipped else ""))
+    return {"ok": all(r.get("ok") for r in results),
+            "class": item_class, "count": len(made),
+            "skipped": [s["name"] for s in skipped],
+            "estimated_cost_usd": estimate,
+            "style_rail": bool(style_clause),
+            "items": results}
 
 
 def _guide_image(result: dict) -> list[str]:
@@ -3864,33 +3845,30 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
 
     Advisory, never a gate - a turnaround SHOULD flip its facing and a size chart
     SHOULD ramp. It reports; you decide."""
-    try:
-        root = _Path(_root())
-        rel = _assets.normalize_path(root, image)
-        src = root / rel
-        if not src.exists():
-            return {"ok": False, "error": f"no image at {rel}"}
-        report = _spritekit.row_report(src, int(columns), int(rows),
-                                 labels=labels, row_labels=row_labels)
-        report["image"] = rel
-        if guides:
-            out = src.with_name(f"{src.stem}_guides.png")
-            drawn = _spritekit.draw_guides(src, int(columns), out, int(rows),
-                                     report=report)
-            report["guides_png"] = _assets.normalize_path(root, out)
-            report["guides_png_abs"] = str(out)
-            report["guides_note"] = drawn["note"]
-        if not report["flagged"]:
-            report["note"] = (
-                "nothing measurable is wrong with this sheet: the feet are on a "
-                "line, the draw size holds, no head is yawed against its row and "
-                "there is no ink on the canvas that is not the character. This "
-                "says nothing about whether it is the right CHARACTER - that is "
-                "consistency_check, which asks a model, because identity is not "
-                "arithmetic.")
-        return report
-    except Exception as exc:
-        return _fail(exc)
+    root = _Path(_root())
+    rel = _assets.normalize_path(root, image)
+    src = root / rel
+    if not src.exists():
+        return {"ok": False, "error": f"no image at {rel}"}
+    report = _spritekit.row_report(src, int(columns), int(rows),
+                             labels=labels, row_labels=row_labels)
+    report["image"] = rel
+    if guides:
+        out = src.with_name(f"{src.stem}_guides.png")
+        drawn = _spritekit.draw_guides(src, int(columns), out, int(rows),
+                                 report=report)
+        report["guides_png"] = _assets.normalize_path(root, out)
+        report["guides_png_abs"] = str(out)
+        report["guides_note"] = drawn["note"]
+    if not report["flagged"]:
+        report["note"] = (
+            "nothing measurable is wrong with this sheet: the feet are on a "
+            "line, the draw size holds, no head is yawed against its row and "
+            "there is no ink on the canvas that is not the character. This "
+            "says nothing about whether it is the right CHARACTER - that is "
+            "consistency_check, which asks a model, because identity is not "
+            "arithmetic.")
+    return report
 
 
 @_tool
@@ -3904,32 +3882,29 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
     shows in-hand and rides the fighter's facing, before the per-frame worn-gear
     rig exists. sprite is a repo-relative or absolute PNG path. Emits the .tres
     next to the sheet the equip layer will load from res://<res_dir>/."""
-    try:
-        root = _Path(_root())
-        rel = _assets.normalize_path(root, sprite)
-        src = root / rel
-        if not src.exists():
-            return {"ok": False, "error": f"no image at {rel}"}
-        from PIL import Image as _Img
-        with _Img.open(src) as im:
-            size = tuple(frame_size) if frame_size else im.size
-        slug = _items.slugify(name)
-        out_dir = src.parent
-        sheet_name = f"{slug}_sheet.png"
-        # The single frame IS the sheet - copy under the sheet name the tres
-        # expects, so the pair imports together like every other SpriteFrames.
-        from shutil import copyfile
-        copyfile(src, out_dir / sheet_name)
-        tres = _sprites._sprite_frames_tres(  # noqa: SLF001 - shared emitter
-            sheet_name, [("default", 1)], (int(size[0]), int(size[1])),
-            1.0, res_dir)
-        tres_rel = out_dir / f"{slug}_frames.tres"
-        tres_rel.write_text(tres, encoding="utf-8")
-        return {"ok": True, "tres": _assets.normalize_path(root, tres_rel),
-                "sheet": _assets.normalize_path(root, out_dir / sheet_name),
-                "animation": "default", "res_dir": res_dir}
-    except Exception as exc:
-        return _fail(exc)
+    root = _Path(_root())
+    rel = _assets.normalize_path(root, sprite)
+    src = root / rel
+    if not src.exists():
+        return {"ok": False, "error": f"no image at {rel}"}
+    from PIL import Image as _Img
+    with _Img.open(src) as im:
+        size = tuple(frame_size) if frame_size else im.size
+    slug = _items.slugify(name)
+    out_dir = src.parent
+    sheet_name = f"{slug}_sheet.png"
+    # The single frame IS the sheet - copy under the sheet name the tres
+    # expects, so the pair imports together like every other SpriteFrames.
+    from shutil import copyfile
+    copyfile(src, out_dir / sheet_name)
+    tres = _sprites._sprite_frames_tres(  # noqa: SLF001 - shared emitter
+        sheet_name, [("default", 1)], (int(size[0]), int(size[1])),
+        1.0, res_dir)
+    tres_rel = out_dir / f"{slug}_frames.tres"
+    tres_rel.write_text(tres, encoding="utf-8")
+    return {"ok": True, "tres": _assets.normalize_path(root, tres_rel),
+            "sheet": _assets.normalize_path(root, out_dir / sheet_name),
+            "animation": "default", "res_dir": res_dir}
 
 
 @_tool
@@ -3942,15 +3917,12 @@ def sprite_contract_get(character: str = "", action: str = "") -> dict:
     it is how a four-corner top-down game and an E/W side-scroller use the
     same pipeline. With character/action, returns the fully resolved contract
     for that piece of work (override ladder applied)."""
-    try:
-        root = _root()
-        from bgate_core import spritecontract as _sc
-        if character or action:
-            return {"ok": True, **_sc.contract_for(root, character, action)}
-        return {"ok": True, **_sc.load(root),
-                "presets": sorted(_sc.PRESETS)}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    from bgate_core import spritecontract as _sc
+    if character or action:
+        return {"ok": True, **_sc.contract_for(root, character, action)}
+    return {"ok": True, **_sc.load(root),
+            "presets": sorted(_sc.PRESETS)}
 
 
 @_tool
@@ -3964,21 +3936,18 @@ def sprite_contract_set(preset: str = "", patch: Optional[dict] = None) -> dict:
     This is the swappable-config lever: setting a different preset reshapes
     what every future generation produces, what the battery expects, and how
     sheets are laid out, with no other changes anywhere."""
-    try:
-        root = _root()
-        from bgate_core import spritecontract as _sc
-        if preset:
-            saved = _sc.apply_preset(root, preset, patch)
-        else:
-            current = _sc.load(root)
-            current.update(patch or {})
-            saved = _sc.save(root, current)
-        _log("art", f"sprite contract set: {saved['preset']} "
-                    f"({len(saved['directions'])} directions, "
-                    f"{saved['cell'][0]}x{saved['cell'][1]})")
-        return {"ok": True, **saved}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    from bgate_core import spritecontract as _sc
+    if preset:
+        saved = _sc.apply_preset(root, preset, patch)
+    else:
+        current = _sc.load(root)
+        current.update(patch or {})
+        saved = _sc.save(root, current)
+    _log("art", f"sprite contract set: {saved['preset']} "
+                f"({len(saved['directions'])} directions, "
+                f"{saved['cell'][0]}x{saved['cell'][1]})")
+    return {"ok": True, **saved}
 
 
 #: Game-side action names -> RD's advanced-animation styles. Anything not
@@ -4000,7 +3969,7 @@ _RD_PROMPTS = {"walk": "confident, steady steps",
 def animation_generate(character: str, action: str,
                        source_sheet: str = "", prompt: str = "",
                        frames: int = 0, max_retries: int = 1,
-                       max_cost_usd: float = 2.0) -> dict:
+                       max_cost_usd: float = 0.0) -> dict:
     """CONTRACT-DRIVEN character animation via Retro Diffusion.
 
     Reads the sprite contract (sprite_contract_get) for this character+action:
@@ -4017,191 +3986,191 @@ def animation_generate(character: str, action: str,
     Start-frame quality decides identity fidelity: in-distribution characters
     (small, game-styled) come back intact; large detailed characters get
     redrawn at ~70% and this tool says so rather than hiding it."""
-    try:
-        import base64 as _b64mod
-        import io as _io
+    import base64 as _b64mod
+    import io as _io
 
-        from PIL import Image as _Img
+    from PIL import Image as _Img
 
-        from bgate_adapters import retrodiffusion as _rd
-        from bgate_core import spritecontract as _sc
+    from bgate_adapters import retrodiffusion as _rd
+    from bgate_core import spritecontract as _sc
 
-        root = _Path(_root())
-        contract = _sc.contract_for(str(root), character, action)
-        act = str(action).strip().lower()
-        drawn = contract["drawn"]
-        cw, ch = contract["cell"]
-        spec = contract.get("action") or {}
-        n_frames = int(frames or spec.get("frames") or 8)
-        # RD only generates 4/6/8/10/12/16; the CONTRACT owns the sheet's
-        # frame count. Generate the nearest count AT OR ABOVE and keep the
-        # first n_frames — a 2-frame hurt is the first two cells of a 4-frame
-        # flinch, not a format the game has to bend for.
-        eligible = [f for f in _rd.FRAME_COUNTS if f >= n_frames]
-        rd_frames = min(eligible) if eligible else max(_rd.FRAME_COUNTS)
-        keep = min(n_frames, rd_frames)
-        fps = float(spec.get("fps") or 8.0)
-        rd_action = _RD_ACTIONS.get(act, "custom_action")
-        motion = prompt or _RD_PROMPTS.get(act, f"{act} animation, smooth motion")
+    root = _Path(_root())
+    refused = _paid_gate(str(root), "animate", 0.0, "an animation cycle")
+    if refused:
+        return refused
+    contract = _sc.contract_for(str(root), character, action)
+    act = str(action).strip().lower()
+    drawn = contract["drawn"]
+    cw, ch = contract["cell"]
+    spec = contract.get("action") or {}
+    n_frames = int(frames or spec.get("frames") or 8)
+    # RD only generates 4/6/8/10/12/16; the CONTRACT owns the sheet's
+    # frame count. Generate the nearest count AT OR ABOVE and keep the
+    # first n_frames — a 2-frame hurt is the first two cells of a 4-frame
+    # flinch, not a format the game has to bend for.
+    eligible = [f for f in _rd.FRAME_COUNTS if f >= n_frames]
+    rd_frames = min(eligible) if eligible else max(_rd.FRAME_COUNTS)
+    keep = min(n_frames, rd_frames)
+    fps = float(spec.get("fps") or 8.0)
+    rd_action = _RD_ACTIONS.get(act, "custom_action")
+    motion = prompt or _RD_PROMPTS.get(act, f"{act} animation, smooth motion")
 
-        probe = _rd.available(str(root))
-        if not probe.get("available"):
-            return {"ok": False, "error": probe.get("reason")}
-        est = len(drawn) * _rd.ACTION_COST.get(rd_action, _rd.DEFAULT_ACTION_COST)
-        if max_cost_usd and est > max_cost_usd:
-            return {"ok": False, "error":
-                    f"{len(drawn)} direction(s) at {rd_action} ≈ ${est:.2f}, "
-                    f"over max_cost_usd={max_cost_usd:.2f}"}
+    probe = _rd.available(str(root))
+    if not probe.get("available"):
+        return {"ok": False, "error": probe.get("reason")}
+    est = len(drawn) * _rd.ACTION_COST.get(rd_action, _rd.DEFAULT_ACTION_COST)
+    if max_cost_usd and est > max_cost_usd:
+        return {"ok": False, "error":
+                f"{len(drawn)} direction(s) at {rd_action} ≈ ${est:.2f}, "
+                f"over max_cost_usd={max_cost_usd:.2f}"}
 
-        starts = _anim_start_frames(root, character, act, contract, source_sheet)
-        if not starts.get("ok"):
-            return starts
+    starts = _anim_start_frames(root, character, act, contract, source_sheet)
+    if not starts.get("ok"):
+        return starts
 
-        out_dir = root / ".bgate_out" / "sprites"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        pinned = _artdirection.palette_pinned(str(root))
-        per_dir: dict[str, dict] = {}
-        frame_files: dict[str, str] = {}
-        ordered: list[str] = []
-        spent = 0.0
-        loop = spec.get("loop")
-        if loop is None:
-            loop = act not in _sprites.NO_LOOP
-        # WHICH generated frames survive a trim is not "the first keep". A
-        # one-shot's payoff is its LAST frame — trimming a 4-frame collapse to
-        # its first 3 shipped a ko that never reached the floor. One-shots
-        # sample evenly INCLUDING the endpoint; loops stride the cycle so the
-        # wrap-around stays a genuine adjacent pair.
-        if keep >= rd_frames:
-            picks = list(range(rd_frames))
-        elif loop:
-            picks = [(i * rd_frames) // keep for i in range(keep)]
-        elif keep == 1:
-            picks = [rd_frames - 1]
-        else:
-            picks = [round(i * (rd_frames - 1) / (keep - 1))
-                     for i in range(keep)]
-        for direction in drawn:
-            # RE-ROLL LOOP. RD is stochastic: the same seed frame can come
-            # back with white trousers on half the frames one run and clean
-            # the next. A flagged strip is re-bought (bounded by max_retries
-            # and the cost ceiling) and the roll with the fewest findings is
-            # the one that ships — the hr_bard pattern, automated.
-            best = None
-            attempts = max(1, 1 + int(max_retries))
-            for attempt in range(attempts):
-                if attempt and max_cost_usd and spent + est / max(1, len(drawn)) > max_cost_usd:
-                    break
-                got = _rd.animate(starts["frames"][direction], rd_action,
-                                  frames=rd_frames, size=(cw, ch), prompt=motion,
-                                  root=str(root))
-                spent += float(got.get("usd") or 0.0)
-                sheet_img = _rd.key_background(_Img.open(
-                    _io.BytesIO(_b64mod.b64decode(got["sheet_b64"]))))
-                cols = max(1, sheet_img.width // cw)
-                trial_files: dict[str, str] = {}
-                trial_order: list[str] = []
-                for i, src_index in enumerate(picks):
-                    r, c = divmod(src_index, cols)
-                    cell = sheet_img.crop((c * cw, r * ch,
-                                           (c + 1) * cw, (r + 1) * ch))
-                    path = out_dir / (f"{character}_{act}_{direction}_{i}"
-                                      + (f"_try{attempt}" if attempt else "")
-                                      + ".png")
-                    cell.save(path)
-                    if pinned:
-                        _spritekit.lock_palette(str(path), pinned)
-                    label = f"{act}_{direction}/{i}"
-                    trial_files[label] = str(path)
-                    trial_order.append(label)
-                report = _spritekit.facing_report(
-                    trial_order, trial_files, expected=direction,
-                    reference=starts["frames"][direction])
-                report["findings"].extend(_spritekit.flicker_report(
-                    trial_order, trial_files)["findings"])
-                trial = {"files": trial_files, "order": trial_order,
-                         "findings": report["findings"],
-                         "balance": got.get("balance"), "attempt": attempt}
-                if best is None or len(trial["findings"]) < len(best["findings"]):
-                    best = trial
-                if not trial["findings"]:
-                    break
-            # promote the winning attempt to the canonical filenames
-            for i, label in enumerate(best["order"]):
-                src = _Path(best["files"][label])
-                dest = out_dir / f"{character}_{act}_{direction}_{i}.png"
-                if src != dest:
-                    src.replace(dest)
-                frame_files[label] = str(dest)
-                ordered.append(label)
-            per_dir[direction] = {
-                "findings": best["findings"],
-                "attempts": best["attempt"] + 1,
-                "balance": best["balance"],
-            }
+    out_dir = root / ".bgate_out" / "sprites"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pinned = _artdirection.palette_pinned(str(root))
+    per_dir: dict[str, dict] = {}
+    frame_files: dict[str, str] = {}
+    ordered: list[str] = []
+    spent = 0.0
+    loop = spec.get("loop")
+    if loop is None:
+        loop = act not in _sprites.NO_LOOP
+    # WHICH generated frames survive a trim is not "the first keep". A
+    # one-shot's payoff is its LAST frame — trimming a 4-frame collapse to
+    # its first 3 shipped a ko that never reached the floor. One-shots
+    # sample evenly INCLUDING the endpoint; loops stride the cycle so the
+    # wrap-around stays a genuine adjacent pair.
+    if keep >= rd_frames:
+        picks = list(range(rd_frames))
+    elif loop:
+        picks = [(i * rd_frames) // keep for i in range(keep)]
+    elif keep == 1:
+        picks = [rd_frames - 1]
+    else:
+        picks = [round(i * (rd_frames - 1) / (keep - 1))
+                 for i in range(keep)]
+    for direction in drawn:
+        # RE-ROLL LOOP. RD is stochastic: the same seed frame can come
+        # back with white trousers on half the frames one run and clean
+        # the next. A flagged strip is re-bought (bounded by max_retries
+        # and the cost ceiling) and the roll with the fewest findings is
+        # the one that ships — the hr_bard pattern, automated.
+        best = None
+        attempts = max(1, 1 + int(max_retries))
+        for attempt in range(attempts):
+            if attempt and max_cost_usd and spent + est / max(1, len(drawn)) > max_cost_usd:
+                break
+            got = _rd.animate(starts["frames"][direction], rd_action,
+                              frames=rd_frames, size=(cw, ch), prompt=motion,
+                              root=str(root))
+            spent += float(got.get("usd") or 0.0)
+            sheet_img = _rd.key_background(_Img.open(
+                _io.BytesIO(_b64mod.b64decode(got["sheet_b64"]))))
+            cols = max(1, sheet_img.width // cw)
+            trial_files: dict[str, str] = {}
+            trial_order: list[str] = []
+            for i, src_index in enumerate(picks):
+                r, c = divmod(src_index, cols)
+                cell = sheet_img.crop((c * cw, r * ch,
+                                       (c + 1) * cw, (r + 1) * ch))
+                path = out_dir / (f"{character}_{act}_{direction}_{i}"
+                                  + (f"_try{attempt}" if attempt else "")
+                                  + ".png")
+                cell.save(path)
+                if pinned:
+                    _spritekit.lock_palette(str(path), pinned)
+                label = f"{act}_{direction}/{i}"
+                trial_files[label] = str(path)
+                trial_order.append(label)
+            report = _spritekit.facing_report(
+                trial_order, trial_files, expected=direction,
+                reference=starts["frames"][direction])
+            report["findings"].extend(_spritekit.flicker_report(
+                trial_order, trial_files)["findings"])
+            trial = {"files": trial_files, "order": trial_order,
+                     "findings": report["findings"],
+                     "balance": got.get("balance"), "attempt": attempt}
+            if best is None or len(trial["findings"]) < len(best["findings"]):
+                best = trial
+            if not trial["findings"]:
+                break
+        # promote the winning attempt to the canonical filenames
+        for i, label in enumerate(best["order"]):
+            src = _Path(best["files"][label])
+            dest = out_dir / f"{character}_{act}_{direction}_{i}.png"
+            if src != dest:
+                src.replace(dest)
+            frame_files[label] = str(dest)
+            ordered.append(label)
+        per_dir[direction] = {
+            "findings": best["findings"],
+            "attempts": best["attempt"] + 1,
+            "balance": best["balance"],
+        }
 
-        # Contract-shaped sheet: one row per drawn direction, in drawn order.
-        plan = _spritekit.layout(len(ordered), cw, ch, columns=keep)
-        sheet_path = out_dir / f"{character}_{act}_sheet.png"
-        _sprites._stitch([frame_files[p] for p in ordered], sheet_path,  # noqa: SLF001
-                         plan=plan)
-        anims = [(f"{act}_{d}", keep) for d in drawn]
-        timing = {name: {"fps": fps, "loop": bool(loop)} for name, _ in anims}
-        tres_path = out_dir / f"{character}_{act}_frames.tres"
-        tres_path.write_text(
-            _sprites._sprite_frames_tres(  # noqa: SLF001 - shared emitter
-                sheet_path.name, anims, (cw, ch), fps, "assets/characters",
-                timing=timing, plan=plan),
-            encoding="utf-8")
-        previews = _gif_previews(frame_files, str(sheet_path),
-                                 f"{character}_{act}", timing, fps)
-        motion_report = _spritekit.sheet_report(
-            ordered, frame_files,
-            no_loop=() if loop else tuple(name for name, _ in anims))
-        # THE CROSS-DIRECTION CHECK — the consistency the per-strip battery
-        # cannot see: every direction of this action must contain the same
-        # character at the same scale on the same palette.
-        drift = _spritekit.set_drift({
-            f"{act}_{d}": [frame_files[p] for p in ordered
-                           if p.startswith(f"{act}_{d}/")]
-            for d in drawn})
-        # The .aseprite master, same as image_sprites builds — a contract
-        # sheet is exactly the thing somebody hand-fixes one frame of.
-        ase = _ase_master_for(str(sheet_path), (cw, ch),
-                              {name: rd_frames for name, _ in anims},
-                              timing, fps)
-        result = {"ok": True, "character": character, "action": act,
-                  "sheet": str(sheet_path), "tres": str(tres_path),
-                  "animations": {name: rd_frames for name, _ in anims},
-                  "mirror": contract["mirror"],
-                  "unplayable": contract.get("unplayable", []),
-                  "cell": [cw, ch], "frames_per_direction": rd_frames,
-                  "directions": per_dir, "motion": motion_report,
-                  "set": drift,
-                  **({"aseprite": ase} if ase is not None else {}),
+    # Contract-shaped sheet: one row per drawn direction, in drawn order.
+    plan = _spritekit.layout(len(ordered), cw, ch, columns=keep)
+    sheet_path = out_dir / f"{character}_{act}_sheet.png"
+    _sprites._stitch([frame_files[p] for p in ordered], sheet_path,  # noqa: SLF001
+                     plan=plan)
+    anims = [(f"{act}_{d}", keep) for d in drawn]
+    timing = {name: {"fps": fps, "loop": bool(loop)} for name, _ in anims}
+    tres_path = out_dir / f"{character}_{act}_frames.tres"
+    tres_path.write_text(
+        _sprites._sprite_frames_tres(  # noqa: SLF001 - shared emitter
+            sheet_path.name, anims, (cw, ch), fps, "assets/characters",
+            timing=timing, plan=plan),
+        encoding="utf-8")
+    previews = _gif_previews(frame_files, str(sheet_path),
+                             f"{character}_{act}", timing, fps)
+    motion_report = _spritekit.sheet_report(
+        ordered, frame_files,
+        no_loop=() if loop else tuple(name for name, _ in anims))
+    # THE CROSS-DIRECTION CHECK — the consistency the per-strip battery
+    # cannot see: every direction of this action must contain the same
+    # character at the same scale on the same palette.
+    drift = _spritekit.set_drift({
+        f"{act}_{d}": [frame_files[p] for p in ordered
+                       if p.startswith(f"{act}_{d}/")]
+        for d in drawn})
+    # The .aseprite master, same as image_sprites builds — a contract
+    # sheet is exactly the thing somebody hand-fixes one frame of.
+    ase = _ase_master_for(str(sheet_path), (cw, ch),
+                          {name: rd_frames for name, _ in anims},
+                          timing, fps)
+    result = {"ok": True, "character": character, "action": act,
+              "sheet": str(sheet_path), "tres": str(tres_path),
+              "animations": {name: rd_frames for name, _ in anims},
+              "mirror": contract["mirror"],
+              "unplayable": contract.get("unplayable", []),
+              "cell": [cw, ch], "frames_per_direction": rd_frames,
+              "directions": per_dir, "motion": motion_report,
+              "set": drift,
+              **({"aseprite": ase} if ase is not None else {}),
+              "animation_previews": previews,
+              "start_frames": starts["frames"],
+              "spend": {"usd": round(spent, 4), "calls": len(drawn),
+                        "provider": "retrodiffusion"}}
+    archived = _archive_preview(str(sheet_path), f"anim-{character}-{act}")
+    artifact = _register_artifact(
+        f"{character}_{act}", str(sheet_path),
+        producer="animation_generate",
+        refs=list(starts["frames"].values()),
+        metadata={"contract": {k: contract[k] for k in
+                               ("preset", "view", "drawn", "cell", "layout")},
+                  "preview": archived or "",
                   "animation_previews": previews,
-                  "start_frames": starts["frames"],
-                  "spend": {"usd": round(spent, 4), "calls": len(drawn),
-                            "provider": "retrodiffusion"}}
-        archived = _archive_preview(str(sheet_path), f"anim-{character}-{act}")
-        artifact = _register_artifact(
-            f"{character}_{act}", str(sheet_path),
-            producer="animation_generate",
-            refs=list(starts["frames"].values()),
-            metadata={"contract": {k: contract[k] for k in
-                                   ("preset", "view", "drawn", "cell", "layout")},
-                      "preview": archived or "",
-                      "animation_previews": previews,
-                      "motion": motion_report,
-                      "directions": {d: r["findings"] for d, r in per_dir.items()},
-                      "estimated_usd": round(spent, 4)})
-        if artifact:
-            result["artifact"] = artifact
-        _log("art", f"animated {character} {act}: {len(drawn)} direction(s), "
-                    f"${spent:.2f}", ref=str(sheet_path))
-        return result
-    except Exception as exc:
-        return _fail(exc)
+                  "motion": motion_report,
+                  "directions": {d: r["findings"] for d, r in per_dir.items()},
+                  "estimated_usd": round(spent, 4)})
+    if artifact:
+        result["artifact"] = artifact
+    _log("art", f"animated {character} {act}: {len(drawn)} direction(s), "
+                f"${spent:.2f}", ref=str(sheet_path))
+    return result
 
 
 def _anim_start_frames(root: _Path, character: str, action: str,
@@ -4374,77 +4343,74 @@ def palette_pin(colors: Optional[list[str]] = None,
     at most max_colors; without Aseprite, the refs' dominant colours are used.
     Re-running replaces the pinned palette. 16-40 colours is the useful range:
     fewer flattens faces, more stops being a palette."""
-    try:
-        root = _root()
-        hexes: list[str] = []
-        source = "explicit"
-        if colors:
-            for entry in colors:
-                text = str(entry).strip().lstrip("#").lower()
-                if len(text) != 6 or any(c not in "0123456789abcdef" for c in text):
-                    return {"ok": False, "error": f"not a hex colour: {entry!r}"}
-                if text not in hexes:
-                    hexes.append(text)
+    root = _root()
+    hexes: list[str] = []
+    source = "explicit"
+    if colors:
+        for entry in colors:
+            text = str(entry).strip().lstrip("#").lower()
+            if len(text) != 6 or any(c not in "0123456789abcdef" for c in text):
+                return {"ok": False, "error": f"not a hex colour: {entry!r}"}
+            if text not in hexes:
+                hexes.append(text)
+    else:
+        anchors = _artdirection.anchors_for(root, limit=4)
+        if not anchors:
+            return {"ok": False, "error":
+                    "no colors given and no style refs pinned to derive "
+                    "from - pass colors=[...] or ref_pin a style image first"}
+        from bgate_adapters import aseprite as _ase
+        if _ase.available().get("available"):
+            source = "derived (aseprite quantise over style refs)"
+            seen: list[str] = []
+            for anchor in anchors:
+                with _tempfile.TemporaryDirectory() as tmp:
+                    got = _ase.conform(anchor, str(_Path(tmp) / "q.png"),
+                                       max_colors=max(2, int(max_colors)))
+                for hexcode in got.get("palette") or []:
+                    if hexcode not in seen:
+                        seen.append(hexcode)
+            hexes = seen
         else:
-            anchors = _artdirection.anchors_for(root, limit=4)
-            if not anchors:
-                return {"ok": False, "error":
-                        "no colors given and no style refs pinned to derive "
-                        "from - pass colors=[...] or ref_pin a style image first"}
-            from bgate_adapters import aseprite as _ase
-            if _ase.available().get("available"):
-                source = "derived (aseprite quantise over style refs)"
-                seen: list[str] = []
-                for anchor in anchors:
-                    with _tempfile.TemporaryDirectory() as tmp:
-                        got = _ase.conform(anchor, str(_Path(tmp) / "q.png"),
-                                           max_colors=max(2, int(max_colors)))
-                    for hexcode in got.get("palette") or []:
-                        if hexcode not in seen:
-                            seen.append(hexcode)
-                hexes = seen
-            else:
-                source = "derived (dominant ref colours - no aseprite)"
-                for anchor in anchors:
-                    for r, g, b in _chroma.palette_of(anchor, colors=max_colors):
-                        hexcode = f"{r:02x}{g:02x}{b:02x}"
-                        if hexcode not in hexes:
-                            hexes.append(hexcode)
-            if len(hexes) > int(max_colors):
-                # Multiple refs can each contribute a near-duplicate ramp; cap
-                # by re-quantising the union down to the asked-for size.
-                from PIL import Image as _Img
-                strip = _Img.new("RGB", (len(hexes), 1))
-                strip.putdata([tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
-                               for h in hexes])
-                quant = strip.quantize(colors=int(max_colors),
-                                       method=_Img.Quantize.MEDIANCUT)
-                table = quant.getpalette() or []
-                used = sorted(set(quant.getdata()))
-                hexes = [f"{table[i * 3]:02x}{table[i * 3 + 1]:02x}"
-                         f"{table[i * 3 + 2]:02x}" for i in used]
-        if not hexes:
-            return {"ok": False, "error": "no colours to pin"}
+            source = "derived (dominant ref colours - no aseprite)"
+            for anchor in anchors:
+                for r, g, b in _chroma.palette_of(anchor, colors=max_colors):
+                    hexcode = f"{r:02x}{g:02x}{b:02x}"
+                    if hexcode not in hexes:
+                        hexes.append(hexcode)
+        if len(hexes) > int(max_colors):
+            # Multiple refs can each contribute a near-duplicate ramp; cap
+            # by re-quantising the union down to the asked-for size.
+            from PIL import Image as _Img
+            strip = _Img.new("RGB", (len(hexes), 1))
+            strip.putdata([tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+                           for h in hexes])
+            quant = strip.quantize(colors=int(max_colors),
+                                   method=_Img.Quantize.MEDIANCUT)
+            table = quant.getpalette() or []
+            used = sorted(set(quant.getdata()))
+            hexes = [f"{table[i * 3]:02x}{table[i * 3 + 1]:02x}"
+                     f"{table[i * 3 + 2]:02x}" for i in used]
+    if not hexes:
+        return {"ok": False, "error": "no colours to pin"}
 
-        body = ("Every shipped 2D asset uses exactly these colours - sheets, "
-                "items and VFX are conformed to them automatically:\n"
-                + " ".join(f"#{h}" for h in hexes))
-        existing = next(
-            (s for s in _bible.list_sections(root, "constraint")
-             if _artdirection.PALETTE_TITLE in str(s.get("title") or "")), None)
-        if existing:
-            _bible.update(root, int(existing["id"]), body=body)
-            section_id = int(existing["id"])
-        else:
-            section_id = _bible.add(root, "constraint",
-                                    _artdirection.PALETTE_TITLE, body)["id"]
-        _log("art", f"pinned {len(hexes)}-colour project palette ({source})")
-        return {"ok": True, "section_id": section_id, "source": source,
-                "colors": [f"#{h}" for h in hexes], "count": len(hexes),
-                "note": "every future sheet/item/vfx conforms to this palette; "
-                        "regenerate or re-conform existing art to migrate it"}
-    except Exception as exc:
-        return _fail(exc)
+    body = ("Every shipped 2D asset uses exactly these colours - sheets, "
+            "items and VFX are conformed to them automatically:\n"
+            + " ".join(f"#{h}" for h in hexes))
+    existing = next(
+        (s for s in _bible.list_sections(root, "constraint")
+         if _artdirection.PALETTE_TITLE in str(s.get("title") or "")), None)
+    if existing:
+        _bible.update(root, int(existing["id"]), body=body)
+        section_id = int(existing["id"])
+    else:
+        section_id = _bible.add(root, "constraint",
+                                _artdirection.PALETTE_TITLE, body)["id"]
+    _log("art", f"pinned {len(hexes)}-colour project palette ({source})")
+    return {"ok": True, "section_id": section_id, "source": source,
+            "colors": [f"#{h}" for h in hexes], "count": len(hexes),
+            "note": "every future sheet/item/vfx conforms to this palette; "
+                    "regenerate or re-conform existing art to migrate it"}
 
 
 @_tool
@@ -4463,41 +4429,38 @@ def aseprite_master(sheet: str, cell: list[int],
     in sheet order; omitted, the whole sheet becomes one looping "default".
     After editing in Aseprite, aseprite_export brings it back as sheet + an
     EXACT SpriteFrames .tres."""
-    try:
-        root = _Path(_root())
-        rel = _assets.normalize_path(root, sheet)
-        src = root / rel
-        if not src.exists():
-            return {"ok": False, "error": f"no sheet at {rel}"}
-        from bgate_adapters import aseprite as _ase
-        from PIL import Image as _Img
-        cw, ch = int(cell[0]), int(cell[1])
-        with _Img.open(src) as im:
-            width, height = im.size
-        if width % cw or height % ch:
+    root = _Path(_root())
+    rel = _assets.normalize_path(root, sheet)
+    src = root / rel
+    if not src.exists():
+        return {"ok": False, "error": f"no sheet at {rel}"}
+    from bgate_adapters import aseprite as _ase
+    from PIL import Image as _Img
+    cw, ch = int(cell[0]), int(cell[1])
+    with _Img.open(src) as im:
+        width, height = im.size
+    if width % cw or height % ch:
+        return {"ok": False, "error":
+                f"cell {cw}x{ch} does not tile the {width}x{height} sheet"}
+    total = (width // cw) * (height // ch)
+    if anims:
+        animations = {str(a["name"]): int(a.get("frames") or 1) for a in anims}
+        timing = {str(a["name"]): {"fps": float(a["fps"])} for a in anims
+                  if a.get("fps")}
+        for a in anims:
+            if a.get("loop") is not None:
+                timing.setdefault(str(a["name"]), {})["loop"] = bool(a["loop"])
+        claimed = sum(animations.values())
+        if claimed > total:
             return {"ok": False, "error":
-                    f"cell {cw}x{ch} does not tile the {width}x{height} sheet"}
-        total = (width // cw) * (height // ch)
-        if anims:
-            animations = {str(a["name"]): int(a.get("frames") or 1) for a in anims}
-            timing = {str(a["name"]): {"fps": float(a["fps"])} for a in anims
-                      if a.get("fps")}
-            for a in anims:
-                if a.get("loop") is not None:
-                    timing.setdefault(str(a["name"]), {})["loop"] = bool(a["loop"])
-            claimed = sum(animations.values())
-            if claimed > total:
-                return {"ok": False, "error":
-                        f"anims claim {claimed} frames but the sheet has {total}"}
-        else:
-            animations, timing = {"default": total}, {}
-        got = _ase.master(str(src), str(src.with_suffix(".aseprite")),
-                          cell=(cw, ch),
-                          anims=_ase_anim_specs(animations, timing, float(fps)))
-        got["master"] = _assets.normalize_path(root, src.with_suffix(".aseprite"))
-        return got
-    except Exception as exc:
-        return _fail(exc)
+                    f"anims claim {claimed} frames but the sheet has {total}"}
+    else:
+        animations, timing = {"default": total}, {}
+    got = _ase.master(str(src), str(src.with_suffix(".aseprite")),
+                      cell=(cw, ch),
+                      anims=_ase_anim_specs(animations, timing, float(fps)))
+    got["master"] = _assets.normalize_path(root, src.with_suffix(".aseprite"))
+    return got
 
 
 @_tool
@@ -4521,42 +4484,40 @@ def aseprite_export(master: str, res_dir: str = "assets/sprites",
     - Every tag gets a playable GIF preview at the authored timing, and the
       export is re-graded (motion_report + pinned-palette check) ADVISORY -
       a human edited this on purpose, so findings report, never refuse."""
+    _contained_path(out_dir, "out_dir")
+    root = _Path(_root())
+    rel = _assets.normalize_path(root, master)
+    src = root / rel
+    if not src.exists():
+        return {"ok": False, "error": f"no master at {rel}"}
+    from bgate_adapters import aseprite as _ase
+    from bgate_core import asejson as _asejson
+    stem = src.stem.removesuffix("_sheet")
+    dest = (root / out_dir) if out_dir else src.parent
+    dest.mkdir(parents=True, exist_ok=True)
+    sheet_path = dest / f"{stem}_sheet.png"
+    data_path = dest / f"{stem}_frames.json"
+    data = _ase.export(str(src), str(sheet_path), str(data_path))
+    tres_path = dest / f"{stem}_frames.tres"
+    tres_path.write_text(
+        _asejson.spriteframes_text(data, sheet_path.name, res_dir),
+        encoding="utf-8")
+    frames = data.get("frames") or []
+    tags = [t.get("name") for t in
+            (data.get("meta") or {}).get("frameTags") or []]
     try:
-        root = _Path(_root())
-        rel = _assets.normalize_path(root, master)
-        src = root / rel
-        if not src.exists():
-            return {"ok": False, "error": f"no master at {rel}"}
-        from bgate_adapters import aseprite as _ase
-        from bgate_core import asejson as _asejson
-        stem = src.stem.removesuffix("_sheet")
-        dest = (root / out_dir) if out_dir else src.parent
-        dest.mkdir(parents=True, exist_ok=True)
-        sheet_path = dest / f"{stem}_sheet.png"
-        data_path = dest / f"{stem}_frames.json"
-        data = _ase.export(str(src), str(sheet_path), str(data_path))
-        tres_path = dest / f"{stem}_frames.tres"
-        tres_path.write_text(
-            _asejson.spriteframes_text(data, sheet_path.name, res_dir),
-            encoding="utf-8")
-        frames = data.get("frames") or []
-        tags = [t.get("name") for t in
-                (data.get("meta") or {}).get("frameTags") or []]
-        try:
-            _assets.track(root, sheet_path)
-        except Exception:
-            pass
-        result = {"ok": True,
-                  "sheet": _assets.normalize_path(root, sheet_path),
-                  "tres": _assets.normalize_path(root, tres_path),
-                  "data": _assets.normalize_path(root, data_path),
-                  "frames": len(frames), "animations": tags or ["default"],
-                  "res_dir": res_dir}
-        result.update(_ase_export_review(root, data, sheet_path, stem))
-        result.update(_ase_export_anchors(data, sheet_path, stem))
-        return result
-    except Exception as exc:
-        return _fail(exc)
+        _assets.track(root, sheet_path)
+    except Exception:
+        pass
+    result = {"ok": True,
+              "sheet": _assets.normalize_path(root, sheet_path),
+              "tres": _assets.normalize_path(root, tres_path),
+              "data": _assets.normalize_path(root, data_path),
+              "frames": len(frames), "animations": tags or ["default"],
+              "res_dir": res_dir}
+    result.update(_ase_export_review(root, data, sheet_path, stem))
+    result.update(_ase_export_anchors(data, sheet_path, stem))
+    return result
 
 
 def _ase_export_review(root: _Path, data: dict, sheet_path: _Path,
@@ -5023,42 +4984,39 @@ def sprite_plan(archetypes: Optional[list[str]] = None, view: str = "",
     image_sprites, or edit them first - this is a starting point with reasons
     attached, not a rule.
     """
-    try:
-        if not archetypes:
-            return {"ok": True, "catalog": _animspec.catalog(),
-                    "note": "pass archetypes=[...] for the pose list and price of "
-                            "a specific run. `generated` is what you pay for; "
-                            "`steps` is how many frames actually play - they "
-                            "differ where ping-pong is doing its job."}
-        built = _animspec.plans(list(archetypes), view=view)
-        from bgate_adapters import imagegen as _ig
+    if not archetypes:
+        return {"ok": True, "catalog": _animspec.catalog(),
+                "note": "pass archetypes=[...] for the pose list and price of "
+                        "a specific run. `generated` is what you pay for; "
+                        "`steps` is how many frames actually play - they "
+                        "differ where ping-pong is doing its job."}
+    built = _animspec.plans(list(archetypes), view=view)
+    from bgate_adapters import imagegen as _ig
 
-        per = _ig.price_per_image(quality)
-        details = []
-        for entry in archetypes:
-            key = _animspec.resolve(entry)
-            if key:
-                spec = _animspec.ARCHETYPES[key]
-                details.append({"asked": entry, "archetype": key,
-                                "why": spec["why"], "loop": spec["loop"],
-                                "pingpong": spec["pingpong"], "fps": spec["fps"]})
-        return {
-            "ok": True,
-            "animations": built["animations"],
-            "poses": built["poses"],
-            "timing": built["timing"],
-            "generated": built["generated"],
-            "steps": built["steps"],
-            "estimated_usd": round(per * built["generated"] + per, 4),
-            "detail": details,
-            "note": f"{built['generated']} images to generate, {built['steps']} "
-                    f"frames of playback (the difference is ping-pong), plus one "
-                    f"reference. Pass archetypes={list(archetypes)!r} to "
-                    "image_sprites to run exactly this, or edit `poses` and pass "
-                    "those instead.",
-        }
-    except Exception as exc:
-        return _fail(exc)
+    per = _ig.price_per_image(quality)
+    details = []
+    for entry in archetypes:
+        key = _animspec.resolve(entry)
+        if key:
+            spec = _animspec.ARCHETYPES[key]
+            details.append({"asked": entry, "archetype": key,
+                            "why": spec["why"], "loop": spec["loop"],
+                            "pingpong": spec["pingpong"], "fps": spec["fps"]})
+    return {
+        "ok": True,
+        "animations": built["animations"],
+        "poses": built["poses"],
+        "timing": built["timing"],
+        "generated": built["generated"],
+        "steps": built["steps"],
+        "estimated_usd": round(per * built["generated"] + per, 4),
+        "detail": details,
+        "note": f"{built['generated']} images to generate, {built['steps']} "
+                f"frames of playback (the difference is ping-pong), plus one "
+                f"reference. Pass archetypes={list(archetypes)!r} to "
+                "image_sprites to run exactly this, or edit `poses` and pass "
+                "those instead.",
+    }
 
 
 @_tool
@@ -5883,119 +5841,116 @@ def image_talkhead(subject: str, name: str, anchor: str = "",
 
     Returns {ok, sheet, tres, frames:[{frame, drift, attempts}], worst_drift}.
     """
-    try:
-        from bgate_core import talkhead as _th
+    from bgate_core import talkhead as _th
 
-        root = _Path(_scratch_root())
-        # Same resolution as image_sprites: preference, then identity routing.
-        # The old default was the literal "krea", which failed a krea-less
-        # setup unless the agent thought to override it.
-        provider = _providers.provider_for("portrait", asked=provider,
-                                           root=root)
-        refused = _gate_images(str(root), _th.FRAME_COUNT if hasattr(_th, 'FRAME_COUNT') else 4,
-                               quality, f"painting a talking head for {name!r}")
-        if refused:
-            return refused
-        limit = float(drift_limit or _th.DRIFT_LIMIT)
-        stage = root / ".bgate_out" / "art" / "talkheads" / name
-        stage.mkdir(parents=True, exist_ok=True)
+    root = _Path(_scratch_root())
+    # Same resolution as image_sprites: preference, then identity routing.
+    # The old default was the literal "krea", which failed a krea-less
+    # setup unless the agent thought to override it.
+    provider = _providers.provider_for("portrait", asked=provider,
+                                       root=root)
+    refused = _gate_images(str(root), _th.FRAME_COUNT if hasattr(_th, 'FRAME_COUNT') else 4,
+                           quality, f"painting a talking head for {name!r}")
+    if refused:
+        return refused
+    limit = float(drift_limit or _th.DRIFT_LIMIT)
+    stage = root / ".bgate_out" / "art" / "talkheads" / name
+    stage.mkdir(parents=True, exist_ok=True)
 
-        # An anchor may be a pinned reference NAME or a path. Resolving the pin
-        # here means an art agent uses the same anchor the rest of the pipeline
-        # already agreed on, instead of inventing a second source of truth.
-        anchor_path = ""
-        if anchor:
-            try:
-                from bgate_core import refs as _refs
-                hit = _refs.resolve(root, anchor)
-                anchor_path = str(hit) if hit else ""
-            except Exception:
-                anchor_path = ""
-            if not anchor_path and _Path(anchor).is_file():
-                anchor_path = anchor
-
-        made: dict[str, str] = {}
-        report: list[dict] = []
-        for frame in _th.MOUTHS:
-            dest = stage / f"{frame}.png"
-            attempts = 0
-            drift_val = None
-            while attempts <= int(max_retries):
-                attempts += 1
-                res = _chroma.generate(
-                    _th.prompt_for(subject, frame,
-                                   has_anchor=bool(anchor_path)),
-                    dest, provider=provider, model=model, task_kind="portrait",
-                    keyed=True, size="1024x1024", quality=quality,
-                    ref_paths=[anchor_path] if anchor_path else (),
-                    ref_strength=ref_strength, timeout=timeout, root=root,
-                    logical_name=f"{name}_{frame}")
-                if not res.get("ok"):
-                    return {"ok": False, "error": res.get("error"),
-                            "frame": frame}
-                made[frame] = str(dest)
-                # The FIRST successful frame becomes the anchor when none was
-                # given, which is what makes a no-anchor call still coherent.
-                if not anchor_path:
-                    anchor_path = str(dest)
-                if len(made) == 1:
-                    drift_val = 0.0
-                    break
-                drift_val = _th.drift(made, limit=limit)[frame]["drift"]
-                if drift_val <= limit:
-                    break
-            report.append({"frame": frame, "drift": drift_val,
-                           "attempts": attempts,
-                           "ok": (drift_val or 0.0) <= limit})
-
-        order = list(_th.MOUTHS)
-        # res_dir and name arrive from the model, and this writes with pathlib
-        # rather than the Write tool - so the PreToolUse lane hook never sees
-        # it. "../../.." would land outside the project entirely; contain it
-        # here, where the write happens.
-        out_dir = (root / "game" / res_dir).resolve()
+    # An anchor may be a pinned reference NAME or a path. Resolving the pin
+    # here means an art agent uses the same anchor the rest of the pipeline
+    # already agreed on, instead of inventing a second source of truth.
+    anchor_path = ""
+    if anchor:
         try:
-            out_dir.relative_to(root.resolve())
-        except ValueError:
-            return {"ok": False,
-                    "error": f"res_dir {res_dir!r} escapes the project"}
-        if "/" in name or "\\" in name or name in ("", ".", ".."):
-            return {"ok": False,
-                    "error": f"name {name!r} must be a bare asset name"}
-        stitched = _th.sheet([(f, made[f]) for f in order],
-                             out_dir / f"{name}_talk.png", cell=cell)
-        tres_path = out_dir / f"{name}_talk.tres"
-        tres_path.write_text(
-            _th.spriteframes(f"{name}_talk.png", cell=cell, fps=fps,
-                             order=order), encoding="utf-8")
+            from bgate_core import refs as _refs
+            hit = _refs.resolve(root, anchor)
+            anchor_path = str(hit) if hit else ""
+        except Exception:
+            anchor_path = ""
+        if not anchor_path and _Path(anchor).is_file():
+            anchor_path = anchor
 
-        worst = max((r["drift"] or 0.0) for r in report)
-        result = {"ok": True, "sheet": stitched["path"], "tres": str(tres_path),
-                  "frames": report, "worst_drift": worst,
-                  "drift_limit": limit, "registration": stitched["registration"],
-                  "anchor": anchor_path}
-        if worst > limit:
-            # Reported, not raised: three good frames and one off-model is still
-            # worth handing back, and the number tells the agent which to redo.
-            result["warning"] = (
-                f"{sum(1 for r in report if not r['ok'])} frame(s) still past "
-                f"the drift limit after {max_retries} retries")
+    made: dict[str, str] = {}
+    report: list[dict] = []
+    for frame in _th.MOUTHS:
+        dest = stage / f"{frame}.png"
+        attempts = 0
+        drift_val = None
+        while attempts <= int(max_retries):
+            attempts += 1
+            res = _chroma.generate(
+                _th.prompt_for(subject, frame,
+                               has_anchor=bool(anchor_path)),
+                dest, provider=provider, model=model, task_kind="portrait",
+                keyed=True, size="1024x1024", quality=quality,
+                ref_paths=[anchor_path] if anchor_path else (),
+                ref_strength=ref_strength, timeout=timeout, root=root,
+                logical_name=f"{name}_{frame}")
+            if not res.get("ok"):
+                return {"ok": False, "error": res.get("error"),
+                        "frame": frame}
+            made[frame] = str(dest)
+            # The FIRST successful frame becomes the anchor when none was
+            # given, which is what makes a no-anchor call still coherent.
+            if not anchor_path:
+                anchor_path = str(dest)
+            if len(made) == 1:
+                drift_val = 0.0
+                break
+            drift_val = _th.drift(made, limit=limit)[frame]["drift"]
+            if drift_val <= limit:
+                break
+        report.append({"frame": frame, "drift": drift_val,
+                       "attempts": attempts,
+                       "ok": (drift_val or 0.0) <= limit})
 
-        archived = _archive_preview(stitched["path"], f"talkhead-{name}")
-        if archived:
-            result["preview"] = archived
-        artifact = _register_artifact(
-            f"{name}_talk", stitched["path"], producer="image_talkhead",
-            model=model or provider, prompt=subject,
-            metadata={"frames": order, "cell": cell, "fps": fps,
-                      "worst_drift": worst, "preview": archived or ""})
-        if artifact:
-            result["artifact"] = artifact
-        _log("art", f"talking portrait {name} ({len(order)} frames, "
-                    f"worst drift {worst})", ref=archived or stitched["path"])
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    order = list(_th.MOUTHS)
+    # res_dir and name arrive from the model, and this writes with pathlib
+    # rather than the Write tool - so the PreToolUse lane hook never sees
+    # it. "../../.." would land outside the project entirely; contain it
+    # here, where the write happens.
+    out_dir = (root / "game" / res_dir).resolve()
+    try:
+        out_dir.relative_to(root.resolve())
+    except ValueError:
+        return {"ok": False,
+                "error": f"res_dir {res_dir!r} escapes the project"}
+    if "/" in name or "\\" in name or name in ("", ".", ".."):
+        return {"ok": False,
+                "error": f"name {name!r} must be a bare asset name"}
+    stitched = _th.sheet([(f, made[f]) for f in order],
+                         out_dir / f"{name}_talk.png", cell=cell)
+    tres_path = out_dir / f"{name}_talk.tres"
+    tres_path.write_text(
+        _th.spriteframes(f"{name}_talk.png", cell=cell, fps=fps,
+                         order=order), encoding="utf-8")
+
+    worst = max((r["drift"] or 0.0) for r in report)
+    result = {"ok": True, "sheet": stitched["path"], "tres": str(tres_path),
+              "frames": report, "worst_drift": worst,
+              "drift_limit": limit, "registration": stitched["registration"],
+              "anchor": anchor_path}
+    if worst > limit:
+        # Reported, not raised: three good frames and one off-model is still
+        # worth handing back, and the number tells the agent which to redo.
+        result["warning"] = (
+            f"{sum(1 for r in report if not r['ok'])} frame(s) still past "
+            f"the drift limit after {max_retries} retries")
+
+    archived = _archive_preview(stitched["path"], f"talkhead-{name}")
+    if archived:
+        result["preview"] = archived
+    artifact = _register_artifact(
+        f"{name}_talk", stitched["path"], producer="image_talkhead",
+        model=model or provider, prompt=subject,
+        metadata={"frames": order, "cell": cell, "fps": fps,
+                  "worst_drift": worst, "preview": archived or ""})
+    if artifact:
+        result["artifact"] = artifact
+    _log("art", f"talking portrait {name} ({len(order)} frames, "
+                f"worst drift {worst})", ref=archived or stitched["path"])
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -6004,11 +5959,8 @@ def image_talkhead(subject: str, name: str, anchor: str = "",
 @_tool
 def godot_status() -> dict:
     """Is Godot available, and which version? Check before engine work."""
-    try:
-        probe = _godot.available()
-        return {**probe, **(_godot.version() if probe["available"] else {})}
-    except Exception as exc:
-        return _fail(exc)
+    probe = _godot.available()
+    return {**probe, **(_godot.version() if probe["available"] else {})}
 
 
 @_tool
@@ -6024,11 +5976,8 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     godot_project is the GODOT project directory (the one holding project.godot),
     not the Builders Gate root - that one is `project_dir`.
     """
-    try:
-        _contained_path(godot_project, "godot_project")
-        return _godot.run_script(script, project_dir=godot_project, timeout=timeout)
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    return _godot.run_script(script, project_dir=godot_project, timeout=timeout)
 
 
 # THE QA SEAT HAD NO WAY TO RUN A TEST. Its mission is "Own tests, repro,
@@ -6068,114 +6017,109 @@ def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
 
     Each script must `extends SceneTree` and call `quit()`, like godot_run.
     """
-    try:
-        import re as _re
+    _contained_path(godot_project, "godot_project")
+    import re as _re
 
-        root = _root()
-        base = (_Path(godot_project) if godot_project
-                else _project.game_dir(root))
-        if base is None or not (_Path(base) / "project.godot").is_file():
-            return {"ok": False, "no_tests": True,
-                    "error": "no Godot project found - looked for project.godot "
-                             f"at {root} and {_Path(root) / 'game'}. Run "
-                             "godot_scaffold, or pass godot_project."}
-        base = _Path(base)
-        tests_dir = base / "tests"
+    root = _root()
+    base = (_Path(godot_project) if godot_project
+            else _project.game_dir(root))
+    if base is None or not (_Path(base) / "project.godot").is_file():
+        return {"ok": False, "no_tests": True,
+                "error": "no Godot project found - looked for project.godot "
+                         f"at {root} and {_Path(root) / 'game'}. Run "
+                         "godot_scaffold, or pass godot_project."}
+    base = _Path(base)
+    tests_dir = base / "tests"
 
-        scripts: list[_Path] = []
-        missing: list[str] = []
-        if paths:
-            for raw in paths:
-                for candidate in (_Path(raw), base / raw, _Path(root) / raw):
-                    if candidate.is_file():
-                        scripts.append(candidate)
-                        break
-                else:
-                    missing.append(str(raw))
-        else:
-            try:
-                scripts = sorted(p for p in tests_dir.glob("*.gd"))
-            except OSError:
-                scripts = []
+    scripts: list[_Path] = []
+    missing: list[str] = []
+    if paths:
+        for raw in paths:
+            for candidate in (_Path(raw), base / raw, _Path(root) / raw):
+                if candidate.is_file():
+                    scripts.append(candidate)
+                    break
+            else:
+                missing.append(str(raw))
+    else:
+        try:
+            scripts = sorted(p for p in tests_dir.glob("*.gd"))
+        except OSError:
+            scripts = []
 
-        if not scripts:
-            return {
-                "ok": False, "no_tests": True, "tests_dir": str(tests_dir),
-                "missing": missing, "scripts": [], "scripts_run": 0,
-                "error": (f"none of {missing} exist" if missing else
-                          f"no test scripts in {tests_dir} - this project has "
-                          "no regression baseline to check. Write one "
-                          "(extends SceneTree, print PASS/FAIL per assertion, "
-                          "call quit()) before claiming tests are green."),
-            }
-
-        fail_marker = _re.compile(r"\bFAIL(?:ED|URE|URES)?\b", _re.I)
-        pass_marker = _re.compile(r"\bPASS(?:ED|ES)?\b", _re.I)
-
-        results, failed, total_pass, total_fail = [], 0, 0, 0
-        for script in scripts:
-            rel = (script.resolve().relative_to(base.resolve()).as_posix()
-                   if str(script.resolve()).startswith(str(base.resolve()))
-                   else str(script))
-            try:
-                source = script.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                results.append({"script": rel, "ok": False, "passed": 0,
-                                "failed": 0, "error": f"unreadable: {exc}"})
-                failed += 1
-                continue
-            run = _godot.run_script(source, project_dir=str(base),
-                                    timeout=timeout)
-            output = (run.get("stdout") or "") + (run.get("stderr") or "")
-            passes = len(pass_marker.findall(output))
-            fails = len(fail_marker.findall(output))
-            errors = run.get("errors") or []
-            ok = bool(run.get("ok")) and fails == 0 and not errors
-            entry = {
-                "script": rel, "ok": ok, "passed": passes, "failed": fails,
-                "exit_code": run.get("exit_code"), "seconds": run.get("seconds"),
-                "errors": errors,
-            }
-            if not ok:
-                # Only the failures carry their output. A green run's stdout is
-                # thousands of lines of engine boot chatter, and returning it
-                # for every script is how a passing suite stops fitting in a
-                # tool result.
-                entry["output"] = output[-4000:]
-                if run.get("error"):
-                    entry["error"] = run["error"]
-                failed += 1
-            total_pass += passes
-            total_fail += fails
-            results.append(entry)
-
+    if not scripts:
         return {
-            "ok": failed == 0,
-            "no_tests": False,
-            "tests_dir": str(tests_dir),
-            "godot_project": str(base),
-            "scripts_run": len(results),
-            "scripts_failed": failed,
-            "assertions_passed": total_pass,
-            "assertions_failed": total_fail,
-            "failures": [r["script"] for r in results if not r["ok"]],
-            "missing": missing,
-            "scripts": results,
-            "error": (f"{failed} of {len(results)} test script(s) failed: "
-                      + ", ".join(r["script"] for r in results if not r["ok"])
-                      if failed else ""),
+            "ok": False, "no_tests": True, "tests_dir": str(tests_dir),
+            "missing": missing, "scripts": [], "scripts_run": 0,
+            "error": (f"none of {missing} exist" if missing else
+                      f"no test scripts in {tests_dir} - this project has "
+                      "no regression baseline to check. Write one "
+                      "(extends SceneTree, print PASS/FAIL per assertion, "
+                      "call quit()) before claiming tests are green."),
         }
-    except Exception as exc:
-        return _fail(exc)
+
+    fail_marker = _re.compile(r"\bFAIL(?:ED|URE|URES)?\b", _re.I)
+    pass_marker = _re.compile(r"\bPASS(?:ED|ES)?\b", _re.I)
+
+    results, failed, total_pass, total_fail = [], 0, 0, 0
+    for script in scripts:
+        rel = (script.resolve().relative_to(base.resolve()).as_posix()
+               if str(script.resolve()).startswith(str(base.resolve()))
+               else str(script))
+        try:
+            source = script.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            results.append({"script": rel, "ok": False, "passed": 0,
+                            "failed": 0, "error": f"unreadable: {exc}"})
+            failed += 1
+            continue
+        run = _godot.run_script(source, project_dir=str(base),
+                                timeout=timeout)
+        output = (run.get("stdout") or "") + (run.get("stderr") or "")
+        passes = len(pass_marker.findall(output))
+        fails = len(fail_marker.findall(output))
+        errors = run.get("errors") or []
+        ok = bool(run.get("ok")) and fails == 0 and not errors
+        entry = {
+            "script": rel, "ok": ok, "passed": passes, "failed": fails,
+            "exit_code": run.get("exit_code"), "seconds": run.get("seconds"),
+            "errors": errors,
+        }
+        if not ok:
+            # Only the failures carry their output. A green run's stdout is
+            # thousands of lines of engine boot chatter, and returning it
+            # for every script is how a passing suite stops fitting in a
+            # tool result.
+            entry["output"] = output[-4000:]
+            if run.get("error"):
+                entry["error"] = run["error"]
+            failed += 1
+        total_pass += passes
+        total_fail += fails
+        results.append(entry)
+
+    return {
+        "ok": failed == 0,
+        "no_tests": False,
+        "tests_dir": str(tests_dir),
+        "godot_project": str(base),
+        "scripts_run": len(results),
+        "scripts_failed": failed,
+        "assertions_passed": total_pass,
+        "assertions_failed": total_fail,
+        "failures": [r["script"] for r in results if not r["ok"]],
+        "missing": missing,
+        "scripts": results,
+        "error": (f"{failed} of {len(results)} test script(s) failed: "
+                  + ", ".join(r["script"] for r in results if not r["ok"])
+                  if failed else ""),
+    }
 
 
 @_tool
 def godot_templates() -> dict:
     """What project templates are available to scaffold."""
-    try:
-        return {"templates": _scaffold.list_templates()}
-    except Exception as exc:
-        return _fail(exc)
+    return {"templates": _scaffold.list_templates()}
 
 
 @_tool
@@ -6211,14 +6155,11 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
     The result lists `created`, `unchanged`, `skipped` and `replaced`, so say
     what happened rather than letting the user find it in a diff.
     """
-    try:
-        target = dest or str(_Path(_root()) / "game")
-        result = _scaffold.new_project(target, name, kind=kind, force=force,
-                                       replace=replace)
-        _log("scaffold", f"scaffolded {kind} project {name!r}", ref=result["path"])
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    target = dest or str(_Path(_root()) / "game")
+    result = _scaffold.new_project(target, name, kind=kind, force=force,
+                                   replace=replace)
+    _log("scaffold", f"scaffolded {kind} project {name!r}", ref=result["path"])
+    return result
 
 
 @_tool
@@ -6227,10 +6168,8 @@ def godot_check_project(godot_project: str, timeout: int = 180) -> dict:
 
     godot_project: the directory holding project.godot.
     """
-    try:
-        return _godot.check_project(godot_project, timeout=timeout)
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    return _godot.check_project(godot_project, timeout=timeout)
 
 
 @_tool
@@ -6267,34 +6206,31 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
 
     godot_project: the directory holding project.godot.
     """
-    try:
-        _contained_path(godot_project, "godot_project")
-        result = _godot.import_asset(godot_project, src_path, dest_rel=dest_rel,
-                                     timeout=timeout)
-        warning = (result.get("alpha_mode") or {}).get("warning")
-        if warning:
-            _log("asset", f"alphaMode:MASK in {src_path} - {warning[:160]}")
-        # Register the landed asset so asset_verify covers it from birth. Only
-        # possible when the game project lives inside the bgate root.
-        if result.get("ok") and result.get("copied_to"):
-            try:
-                result["registry"] = _assets.track(_root(), result["copied_to"])
-            except Exception as exc:
-                result["registry"] = {"tracked": False, "reason": str(exc)}
-            tris = result.get("engine_view", {}).get("total_tris", "?")
-            _log("asset", f"landed {result['res_path']} ({tris} tris in-engine)",
-                 ref=result["res_path"])
-            try:
-                linked = _artifacts.record_check(
-                    _root(), result["copied_to"], "engine_import", result)
-                if linked is None:
-                    _artifacts.record_check(
-                        _root(), src_path, "engine_import", result)
-            except Exception:
-                pass
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    result = _godot.import_asset(godot_project, src_path, dest_rel=dest_rel,
+                                 timeout=timeout)
+    warning = (result.get("alpha_mode") or {}).get("warning")
+    if warning:
+        _log("asset", f"alphaMode:MASK in {src_path} - {warning[:160]}")
+    # Register the landed asset so asset_verify covers it from birth. Only
+    # possible when the game project lives inside the bgate root.
+    if result.get("ok") and result.get("copied_to"):
+        try:
+            result["registry"] = _assets.track(_root(), result["copied_to"])
+        except Exception as exc:
+            result["registry"] = {"tracked": False, "reason": str(exc)}
+        tris = result.get("engine_view", {}).get("total_tris", "?")
+        _log("asset", f"landed {result['res_path']} ({tris} tris in-engine)",
+             ref=result["res_path"])
+        try:
+            linked = _artifacts.record_check(
+                _root(), result["copied_to"], "engine_import", result)
+            if linked is None:
+                _artifacts.record_check(
+                    _root(), src_path, "engine_import", result)
+        except Exception:
+            pass
+    return result
 
 
 def _delivery_shot(result: dict) -> list[str]:
@@ -6548,7 +6484,7 @@ _PROP_LOOK = (
 def prop_generate(name: str, style: str = "", types: str = "",
                   tile_px: int = 32, godot_project: str = "",
                   res_dir: str = "assets/tiles", install: bool = False,
-                  max_cost_usd: float = 2.0) -> dict:
+                  max_cost_usd: float = 0.0) -> dict:
     """GENERATE THE PROPS FOR A LEVEL - art, cleanup, atlas and manifest.
 
     ONE CALL. You do not pack an atlas, you do not work out texture origins,
@@ -6581,145 +6517,148 @@ def prop_generate(name: str, style: str = "", types: str = "",
     `types` is a comma list, "" for the default set. `install=False` leaves
     everything in `.bgate_out/props/` for review.
     """
-    try:
-        from PIL import Image
+    _contained_path(godot_project, "godot_project")
+    from PIL import Image
 
-        from bgate_adapters import kie as _kie
-        from bgate_adapters import retrodiffusion as _rd
+    from bgate_adapters import kie as _kie
+    from bgate_adapters import retrodiffusion as _rd
 
-        root = _Path(_root())
-        view = _gameview.load(root)
-        want = tuple(types.replace(",", " ").split()) or _props.DEFAULT_TYPES
-        for n in want:
-            _props.prop_type(n)
-            if not _gameview.supports(view, _props.PROP_TYPES[n]["mount"]):
-                return {"ok": False, "error": (
-                    f"{n} mounts on {_props.PROP_TYPES[n]['mount']!r}, which "
-                    f"means nothing in a {view} level")}
-
-        palette = _artdirection.palette_pinned(str(root))
-        if not palette:
+    root = _Path(_root())
+    refused = _paid_gate(str(root), "image", 0.0, "a prop-sheet generation")
+    if refused:
+        return refused
+    view = _gameview.load(root)
+    want = tuple(types.replace(",", " ").split()) or _props.DEFAULT_TYPES
+    for n in want:
+        _props.prop_type(n)
+        if not _gameview.supports(view, _props.PROP_TYPES[n]["mount"]):
             return {"ok": False, "error": (
-                "no palette is pinned - call palette_pin first. A prop that "
-                "skips the conform carries hundreds of off-palette colours "
-                "and will not match the tileset it stands on.")}
+                f"{n} mounts on {_props.PROP_TYPES[n]['mount']!r}, which "
+                f"means nothing in a {view} level")}
 
-        specs = [_props.art_spec(n, tile_px=tile_px, view=view) for n in want]
-        drawings = sum(max(1, len(s["facings"])) for s in specs)
-        estimate = drawings * 0.02
-        if estimate > max_cost_usd:
+    palette = _artdirection.palette_pinned(str(root))
+    if not palette:
+        return {"ok": False, "error": (
+            "no palette is pinned - call palette_pin first. A prop that "
+            "skips the conform carries hundreds of off-palette colours "
+            "and will not match the tileset it stands on.")}
+
+    specs = [_props.art_spec(n, tile_px=tile_px, view=view) for n in want]
+    drawings = sum(max(1, len(s["facings"])) for s in specs)
+    estimate = drawings * 0.02
+    # 0 means UNCAPPED (the default; ceilings are user-set - see
+    # tileset_generate's twin check for why the shipped guess was cut).
+    if max_cost_usd and estimate > max_cost_usd:
+        return {"ok": False, "error": (
+            f"{drawings} drawings is about ${estimate:.2f}, over the "
+            f"${max_cost_usd:.2f} ceiling you set - raise max_cost_usd or "
+            "ask for fewer types")}
+
+    out_dir = root / ".bgate_out" / "props" / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    images: dict = {}
+    reports: dict = {}
+    spent = 0.0
+    for spec in specs:
+        subject = _PROP_SUBJECTS.get(spec["type"], spec["type"])
+        prompt = f"{subject}. {spec['camera']} {style or _PROP_LOOK}"
+        raw = out_dir / f"{spec['type']}_raw.png"
+        size = ("1024x1024" if spec["cells"][0] == spec["cells"][1]
+                else "1024x2048" if spec["cells"][1] > spec["cells"][0]
+                else "2048x1024")
+        got = _kie.generate_image(prompt, str(raw), model="nano-banana-2",
+                                  size=size, task_kind="prop",
+                                  root=str(root))
+        if not got.get("ok"):
             return {"ok": False, "error": (
-                f"{drawings} drawings is about ${estimate:.2f}, over the "
-                f"${max_cost_usd:.2f} ceiling - raise max_cost_usd or ask for "
-                "fewer types")}
+                f"{spec['type']} failed to generate: "
+                f"{str(got.get('error'))[:200]}")}
+        spent += float(got.get("estimated_usd") or 0.02)
+        keyed = _rd.key_background(Image.open(raw))
+        img = keyed.get("image") if isinstance(keyed, dict) else keyed
+        fitted, rep = _propsheet.conform(img, size=spec["cell_px"],
+                                         art_size=spec["art_px"],
+                                         palette=palette)
+        dest = out_dir / f"{spec['type']}.png"
+        fitted.save(dest)
+        _spritekit.lock_palette(dest, palette, out_path=dest)
+        done = Image.open(dest)
+        images[spec["type"]] = done
+        reports[spec["type"]] = {**rep,
+                                 **_propsheet.measure(done, palette)}
 
-        out_dir = root / ".bgate_out" / "props" / name
-        out_dir.mkdir(parents=True, exist_ok=True)
-        images: dict = {}
-        reports: dict = {}
-        spent = 0.0
-        for spec in specs:
-            subject = _PROP_SUBJECTS.get(spec["type"], spec["type"])
-            prompt = f"{subject}. {spec['camera']} {style or _PROP_LOOK}"
-            raw = out_dir / f"{spec['type']}_raw.png"
-            size = ("1024x1024" if spec["cells"][0] == spec["cells"][1]
-                    else "1024x2048" if spec["cells"][1] > spec["cells"][0]
-                    else "2048x1024")
-            got = _kie.generate_image(prompt, str(raw), model="nano-banana-2",
-                                      size=size, task_kind="prop",
-                                      root=str(root))
-            if not got.get("ok"):
-                return {"ok": False, "error": (
-                    f"{spec['type']} failed to generate: "
-                    f"{str(got.get('error'))[:200]}")}
-            spent += float(got.get("estimated_usd") or 0.02)
-            keyed = _rd.key_background(Image.open(raw))
-            img = keyed.get("image") if isinstance(keyed, dict) else keyed
-            fitted, rep = _propsheet.conform(img, size=spec["cell_px"],
-                                             art_size=spec["art_px"],
-                                             palette=palette)
-            dest = out_dir / f"{spec['type']}.png"
-            fitted.save(dest)
-            _spritekit.lock_palette(dest, palette, out_path=dest)
-            done = Image.open(dest)
-            images[spec["type"]] = done
-            reports[spec["type"]] = {**rep,
-                                     **_propsheet.measure(done, palette)}
+    packed = _propsheet.pack(images, want, tile_px=tile_px, view=view)
+    atlas_png = out_dir / f"{name}_props.png"
+    _propsheet.write(packed["image"], atlas_png)
 
-        packed = _propsheet.pack(images, want, tile_px=tile_px, view=view)
-        atlas_png = out_dir / f"{name}_props.png"
-        _propsheet.write(packed["image"], atlas_png)
+    # mount_origins wants a plan; one stub prop per drawing is enough to
+    # ask "what offset does this facing need", and it keeps the origin
+    # rule in ONE place instead of restating it here
+    stub = {"props": [{"type": n, "mount": _props.PROP_TYPES[n]["mount"],
+                       "faces": f, "x": 0, "y": 0}
+                      for n, f in _propsheet.slots_for(want, view=view)]}
+    origins = _props.mount_origins(stub, packed["atlas"],
+                                   tile_size=(tile_px, tile_px))
+    manifest = {
+        "name": name, "view": view, "tile_px": tile_px,
+        "texture": f"res://{res_dir}/{name}_props.png",
+        "types": list(want),
+        "atlas": {k: ({f: list(c) for f, c in v.items()}
+                      if isinstance(v, dict) else list(v))
+                  for k, v in packed["atlas"].items()},
+        "tiles": [list(c) for c in packed["tiles"]],
+        "sizes": {f"{k[0]},{k[1]}": list(v)
+                  for k, v in packed["sizes"].items()},
+        "origins": {f"{k[0]},{k[1]}": list(v) for k, v in origins.items()},
+        "animation": {f"{k[0]},{k[1]}": v for k, v in
+                      _propsheet.animation_frames(want, packed["atlas"],
+                                                  view=view).items()},
+        "spec": packed["spec"],
+    }
+    man_path = out_dir / f"{name}_props.json"
+    man_path.write_text(_json.dumps(manifest, indent=1), encoding="utf-8")
 
-        # mount_origins wants a plan; one stub prop per drawing is enough to
-        # ask "what offset does this facing need", and it keeps the origin
-        # rule in ONE place instead of restating it here
-        stub = {"props": [{"type": n, "mount": _props.PROP_TYPES[n]["mount"],
-                           "faces": f, "x": 0, "y": 0}
-                          for n, f in _propsheet.slots_for(want, view=view)]}
-        origins = _props.mount_origins(stub, packed["atlas"],
-                                       tile_size=(tile_px, tile_px))
-        manifest = {
-            "name": name, "view": view, "tile_px": tile_px,
-            "texture": f"res://{res_dir}/{name}_props.png",
-            "types": list(want),
-            "atlas": {k: ({f: list(c) for f, c in v.items()}
-                          if isinstance(v, dict) else list(v))
-                      for k, v in packed["atlas"].items()},
-            "tiles": [list(c) for c in packed["tiles"]],
-            "sizes": {f"{k[0]},{k[1]}": list(v)
-                      for k, v in packed["sizes"].items()},
-            "origins": {f"{k[0]},{k[1]}": list(v) for k, v in origins.items()},
-            "animation": {f"{k[0]},{k[1]}": v for k, v in
-                          _propsheet.animation_frames(want, packed["atlas"],
-                                                      view=view).items()},
-            "spec": packed["spec"],
-        }
-        man_path = out_dir / f"{name}_props.json"
-        man_path.write_text(_json.dumps(manifest, indent=1), encoding="utf-8")
+    # EVERY AI-GENERATED SHEET GETS AN ASEPRITE MASTER — house rule, not
+    # a convenience. The props atlas was the one generated sheet that
+    # skipped the cleanup path; a human fixing one bad prop edits the
+    # master and aseprite_export brings it back, same as characters.
+    ase = _ase_master_for(str(atlas_png), (tile_px, tile_px), {}, None,
+                          fps=8.0)
 
-        # EVERY AI-GENERATED SHEET GETS AN ASEPRITE MASTER — house rule, not
-        # a convenience. The props atlas was the one generated sheet that
-        # skipped the cleanup path; a human fixing one bad prop edits the
-        # master and aseprite_export brings it back, same as characters.
-        ase = _ase_master_for(str(atlas_png), (tile_px, tile_px), {}, None,
-                              fps=8.0)
+    installed = None
+    if install and godot_project:
+        import shutil as _shutil
 
-        installed = None
-        if install and godot_project:
-            import shutil as _shutil
+        dest_dir = _Path(godot_project) / res_dir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        _shutil.copy(atlas_png, dest_dir / atlas_png.name)
+        _shutil.copy(man_path, dest_dir / man_path.name)
+        # a freshly copied PNG does not exist to Godot until --import runs
+        _godot.check_project(str(godot_project))
+        installed = f"res://{res_dir}/{man_path.name}"
 
-            dest_dir = _Path(godot_project) / res_dir
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            _shutil.copy(atlas_png, dest_dir / atlas_png.name)
-            _shutil.copy(man_path, dest_dir / man_path.name)
-            # a freshly copied PNG does not exist to Godot until --import runs
-            _godot.check_project(str(godot_project))
-            installed = f"res://{res_dir}/{man_path.name}"
-
-        dirty = sorted(k for k, v in reports.items()
-                       if v.get("off_palette", 0) > _propsheet.OFF_PALETTE_MAX
-                       or v.get("feathered", 0))
-        # a prop touching its own border is oversized or brought a background
-        bordered = sorted(k for k, v in reports.items()
-                          if v.get("border_fill", 0) > _propsheet.BORDER_MAX
-                          and _props.prop_type(k).get("footprint", 0.75) < 1.0)
-        _log("props", f"generated {len(want)} prop types for {name} ({view})",
-             ref=name)
-        return {"ok": True, "name": name, "view": view, "types": list(want),
-                "drawings": packed["slots"], "atlas": str(atlas_png),
-                **({"aseprite": ase} if ase is not None else {}),
-                "manifest": str(man_path),
-                "prop_manifest": installed or str(man_path),
-                "installed": installed, "spent_usd": round(spent, 3),
-                "reports": reports,
-                "findings": {**({"unconformed": dirty} if dirty else {}),
-                             **({"touches_border": bordered} if bordered
-                                else {})},
-                "next": ("level_generate(prop_manifest=<manifest>) - the atlas "
-                         "coordinates, sizes, origins and animation all come "
-                         "from that file; you do not pass them")}
-    except Exception as exc:
-        return _fail(exc)
+    dirty = sorted(k for k, v in reports.items()
+                   if v.get("off_palette", 0) > _propsheet.OFF_PALETTE_MAX
+                   or v.get("feathered", 0))
+    # a prop touching its own border is oversized or brought a background
+    bordered = sorted(k for k, v in reports.items()
+                      if v.get("border_fill", 0) > _propsheet.BORDER_MAX
+                      and _props.prop_type(k).get("footprint", 0.75) < 1.0)
+    _log("props", f"generated {len(want)} prop types for {name} ({view})",
+         ref=name)
+    return {"ok": True, "name": name, "view": view, "types": list(want),
+            "drawings": packed["slots"], "atlas": str(atlas_png),
+            **({"aseprite": ase} if ase is not None else {}),
+            "manifest": str(man_path),
+            "prop_manifest": installed or str(man_path),
+            "installed": installed, "spent_usd": round(spent, 3),
+            "reports": reports,
+            "findings": {**({"unconformed": dirty} if dirty else {}),
+                         **({"touches_border": bordered} if bordered
+                            else {})},
+            "next": ("level_generate(prop_manifest=<manifest>) - the atlas "
+                     "coordinates, sizes, origins and animation all come "
+                     "from that file; you do not pass them")}
 
 
 
@@ -6836,210 +6775,218 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
     Returns the ASCII map, which is the cheapest way to see a level before
     anything is spent on art for it.
     """
-    try:
-        root = _root()
-        view = _gameview.load(root)
-        if view != "side_scroller":
-            return {"ok": False, "error": (
-                f"this project's view is {view!r}. A side-scrolling level in a "
-                f"{view} game is the wrong geometry, not a style choice — set "
-                "it with game_view_set if that is what you meant.")}
+    root = _root()
+    view = _gameview.load(root)
+    if view != "side_scroller":
+        return {"ok": False, "error": (
+            f"this project's view is {view!r}. A side-scrolling level in a "
+            f"{view} game is the wrong geometry, not a style choice — set "
+            "it with game_view_set if that is what you meant.")}
 
-        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
-        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
-        if not tiles_disk.is_file():
-            return {"ok": False, "error": (
-                f"no tileset at {tiles_res} - generate or import it first; a "
-                "level cannot pick tiles from nothing")}
-        parsed_set = _tilemap.parse_tileset(
-            tiles_disk.read_text(encoding="utf-8", errors="replace"))
-        if parsed_set["shape"] != _tilemap.SQUARE:
-            return {"ok": False, "error": (
-                f"{tiles_res} is not a square-tile set (shape "
-                f"{parsed_set['shape']}). A platformer's cells are the squares "
-                "the jump arithmetic runs on — this tileset belongs to a "
-                "different projection.")}
+    scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+    tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
+    if not tiles_disk.is_file():
+        return {"ok": False, "error": (
+            f"no tileset at {tiles_res} - generate or import it first; a "
+            "level cannot pick tiles from nothing")}
+    parsed_set = _tilemap.parse_tileset(
+        tiles_disk.read_text(encoding="utf-8", errors="replace"))
+    if parsed_set["shape"] != _tilemap.SQUARE:
+        return {"ok": False, "error": (
+            f"{tiles_res} is not a square-tile set (shape "
+            f"{parsed_set['shape']}). A platformer's cells are the squares "
+            "the jump arithmetic runs on — this tileset belongs to a "
+            "different projection.")}
 
-        jump_source = "arguments"
-        player_report: dict = {}
-        if player_scene:
-            player_disk, player_res = _res_pair(godot_project, player_scene,
-                                                ".tscn")
-            if not player_disk.is_file():
-                return {"ok": False, "error": (
-                    f"no player scene at {player_res} — the jump is read from "
-                    "the player, so the player has to exist first. "
-                    "godot_scaffold's 2d template ships one.")}
-            tw, th = parsed_set["tile_size"]
-            if tw != th:
-                return {"ok": False, "error": (
-                    f"{tiles_res} has {tw}x{th} tiles. The jump arithmetic "
-                    "runs on square cells; converting a player's pixels "
-                    "through a rectangular cell would be a guess in one axis.")}
-            tuned = _player_jump(_Path(godot_project), player_disk)
-            spec = _jumpmod.from_pixels(
-                speed=tuned["speed"], jump_velocity=tuned["jump_velocity"],
-                gravity=tuned["gravity"],
-                fall_multiplier=tuned["fall_multiplier"],
-                tile_px=tw, body=(1, max(1, body_cells)))
-            jump_source = "player_scene"
-            player_report = {"scene": player_res, "script": tuned["script"],
-                             "pixels": {k: tuned[k] for k in
-                                        (*_JUMP_TUNABLES, "fall_multiplier")}}
-        else:
-            spec = _jumpmod.JumpSpec(run=run, jump_speed=jump_speed,
-                                     gravity=gravity,
-                                     body=(1, max(1, body_cells)))
-        kinds = tuple(segments.replace(",", " ").split()) or None
-        level = _sidescroll.plan(length, height, seed=seed, spec=spec,
-                                 difficulty=difficulty, kinds=kinds)
-        verdict = _sidescroll.check(level, spec)
-        if not verdict["ok"]:
+    jump_source = "arguments"
+    player_report: dict = {}
+    if player_scene:
+        player_disk, player_res = _res_pair(godot_project, player_scene,
+                                            ".tscn")
+        if not player_disk.is_file():
             return {"ok": False, "error": (
-                "this level cannot be played by the character it was built "
-                "for — that is a generator bug, not a difficulty setting"),
-                "findings": verdict["findings"],
-                "ascii": _sidescroll.ascii_map(level, width=min(length, 120))}
-
-        fresh = not scene_disk.is_file()
-        if fresh and not create:
+                f"no player scene at {player_res} — the jump is read from "
+                "the player, so the player has to exist first. "
+                "godot_scaffold's 2d template ships one.")}
+        tw, th = parsed_set["tile_size"]
+        if tw != th:
             return {"ok": False, "error": (
-                f"no scene at {scene_res}. Pass create=true to start a new "
-                "one, or point at an existing scene.")}
-        text = (_EMPTY_SCENE.format(root=scene_disk.stem.title() or "Level")
-                if fresh else
-                scene_disk.read_text(encoding="utf-8", errors="replace"))
+                f"{tiles_res} has {tw}x{th} tiles. The jump arithmetic "
+                "runs on square cells; converting a player's pixels "
+                "through a rectangular cell would be a guess in one axis.")}
+        tuned = _player_jump(_Path(godot_project), player_disk)
+        spec = _jumpmod.from_pixels(
+            speed=tuned["speed"], jump_velocity=tuned["jump_velocity"],
+            gravity=tuned["gravity"],
+            fall_multiplier=tuned["fall_multiplier"],
+            tile_px=tw, body=(1, max(1, body_cells)))
+        jump_source = "player_scene"
+        player_report = {"scene": player_res, "script": tuned["script"],
+                         "pixels": {k: tuned[k] for k in
+                                    (*_JUMP_TUNABLES, "fall_multiplier")}}
+    else:
+        spec = _jumpmod.JumpSpec(run=run, jump_speed=jump_speed,
+                                 gravity=gravity,
+                                 body=(1, max(1, body_cells)))
+    kinds = tuple(segments.replace(",", " ").split()) or None
+    level = _sidescroll.plan(length, height, seed=seed, spec=spec,
+                             difficulty=difficulty, kinds=kinds)
+    verdict = _sidescroll.check(level, spec)
+    if not verdict["ok"]:
+        return {"ok": False, "error": (
+            "this level cannot be played by the character it was built "
+            "for — that is a generator bug, not a difficulty setting"),
+            "findings": verdict["findings"],
+            "ascii": _sidescroll.ascii_map(level, width=min(length, 120))}
 
-        solid = {tuple(c) for c in level["solid"]}
+    fresh = not scene_disk.is_file()
+    if fresh and not create:
+        return {"ok": False, "error": (
+            f"no scene at {scene_res}. Pass create=true to start a new "
+            "one, or point at an existing scene.")}
+    text = (_EMPTY_SCENE.format(root=scene_disk.stem.title() or "Level")
+            if fresh else
+            scene_disk.read_text(encoding="utf-8", errors="replace"))
+
+    solid = {tuple(c) for c in level["solid"]}
+    # Same manifest rule as level_generate: a tileset_generate tileset
+    # describes its own layout, so the solid_* arguments are for
+    # hand-built sheets and any non-default value wins outright.
+    manifest = _tileset_manifest(tiles_disk)
+    solid_defaults = (solid_source == 0 and solid_layout == "grid16"
+                      and solid_atlas_x == 0 and solid_atlas_y == 0)
+    manifest_used = bool(manifest is not None and solid_defaults)
+    if manifest_used:
+        terrain = _manifest_floor(manifest, solid_name)
+    else:
         terrain = _terrain(solid_layout, solid_source, solid_atlas_x,
                            solid_atlas_y, solid_columns, solid_name)
-        cells = _autotile.resolve(sorted(solid), terrain,
-                                  region=(0, 0, length, height))
-        varied = _scatter_variants(cells, tiles_disk)
-        layers = [{"name": solid_name, "terrain": solid_name,
-                   "cells": cells, "unmapped": {}}]
+    cells = _autotile.resolve(sorted(solid), terrain,
+                              region=(0, 0, length, height))
+    varied = _scatter_variants(cells, tiles_disk)
+    layers = [{"name": solid_name, "terrain": solid_name,
+               "cells": cells, "unmapped": {}}]
 
-        prop_report: dict = {}
-        if prop_manifest:
-            man = _read_prop_manifest(root, prop_manifest)
-            prop_source = _manifest_source(tiles_disk, man)
-            parsed_set = _tilemap.parse_tileset(
-                tiles_disk.read_text(encoding="utf-8", errors="replace"))
-            want = tuple(prop_types.replace(",", " ").split()) or \
-                tuple(man["types"])
-            # GROUND MOUNTS ONLY. A side view has no floor plane to stand a
-            # prop on except the surface itself, and `jump.surfaces` already
-            # knows which cells those are — the same function the reachability
-            # gate uses, so a prop can never sit where the player cannot.
-            stand = sorted(_jumpmod.surfaces(solid, body=spec.body))
-            import random as _random
+    prop_report: dict = {}
+    if prop_manifest:
+        man = _read_prop_manifest(root, prop_manifest)
+        prop_source = _manifest_source(tiles_disk, man)
+        parsed_set = _tilemap.parse_tileset(
+            tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        want = tuple(prop_types.replace(",", " ").split()) or \
+            tuple(man["types"])
+        # GROUND MOUNTS ONLY. A side view has no floor plane to stand a
+        # prop on except the surface itself, and `jump.surfaces` already
+        # knows which cells those are — the same function the reachability
+        # gate uses, so a prop can never sit where the player cannot.
+        stand = sorted(_jumpmod.surfaces(solid, body=spec.body))
+        import random as _random
 
-            rng = _random.Random(seed)
-            placed, used = [], []
-            for cell in stand:
-                if any(abs(cell[0] - u) < max(2, prop_spacing) for u in used):
-                    continue
-                name = want[rng.randrange(len(want))]
-                spot = man["atlas"].get(name)
-                if isinstance(spot, dict):
-                    spot = next(iter(spot.values()))
-                if not spot:
-                    continue
-                placed.append({"x": cell[0], "y": cell[1],
-                               "source": int(prop_source),
-                               "ax": int(spot[0]), "ay": int(spot[1]),
-                               "alt": 0})
-                used.append(cell[0])
-            if placed:
-                layers.append({"name": prop_name, "terrain": prop_name,
-                               "cells": placed, "unmapped": {}})
-            prop_report = {"placed": len(placed), "types": list(want),
-                           "manifest": prop_manifest}
+        rng = _random.Random(seed)
+        placed, used = [], []
+        for cell in stand:
+            if any(abs(cell[0] - u) < max(2, prop_spacing) for u in used):
+                continue
+            name = want[rng.randrange(len(want))]
+            spot = man["atlas"].get(name)
+            if isinstance(spot, dict):
+                spot = next(iter(spot.values()))
+            if not spot:
+                continue
+            placed.append({"x": cell[0], "y": cell[1],
+                           "source": int(prop_source),
+                           "ax": int(spot[0]), "ay": int(spot[1]),
+                           "alt": 0})
+            used.append(cell[0])
+        if placed:
+            layers.append({"name": prop_name, "terrain": prop_name,
+                           "cells": placed, "unmapped": {}})
+        prop_report = {"placed": len(placed), "types": list(want),
+                       "manifest": prop_manifest}
 
-        absent = {}
-        for layer in layers:
-            want_at = {(c["source"], c["ax"], c["ay"]) for c in layer["cells"]}
-            gaps = sorted((ax, ay) for src, ax, ay in want_at
-                          if (ax, ay) not in set(map(tuple,
-                              parsed_set["sources"][src]["tiles"])))
-            if gaps:
-                absent[layer["name"]] = [list(g) for g in gaps]
-        if absent:
-            return {"ok": False, "error": (
-                f"{tiles_res} does not define these atlas tiles: {absent}. A "
-                "cell pointing at an undefined tile draws nothing and says "
-                "nothing.")}
+    absent = {}
+    for layer in layers:
+        want_at = {(c["source"], c["ax"], c["ay"]) for c in layer["cells"]}
+        gaps = sorted((ax, ay) for src, ax, ay in want_at
+                      if (ax, ay) not in set(map(tuple,
+                          parsed_set["sources"][src]["tiles"])))
+        if gaps:
+            absent[layer["name"]] = [list(g) for g in gaps]
+    if absent:
+        return {"ok": False, "error": (
+            f"{tiles_res} does not define these atlas tiles: {absent}. A "
+            "cell pointing at an undefined tile draws nothing and says "
+            "nothing.")}
 
-        wired = _scenewire.wire_tilemap(text, tiles_res, layers,
-                                        parent=parent,
-                                        owns=[solid_name, prop_name])
+    wired = _scenewire.wire_tilemap(text, tiles_res, layers,
+                                    parent=parent,
+                                    owns=[solid_name, prop_name])
 
-        tw, th = parsed_set["tile_size"]
-        spawn_px = [round((level["spawn"][0] + 0.5) * tw, 1),
-                    round((level["spawn"][1] + 0.5) * th, 1)]
-        goal_px = [round((level["goal"][0] + 0.5) * tw, 1),
-                   round((level["goal"][1] + 0.5) * th, 1)]
-        if player_scene:
-            # The player goes INTO the scene, at spawn — placed here rather
-            # than left as a coordinate in the result, because a returned
-            # number is a step someone forgets and a placed node is not.
-            # Re-running MOVES the existing instance instead of stacking a
-            # second player, same discipline wire_tilemap holds for layers.
-            ptxt = wired["text"]
-            pparsed = _scenewire.parse(ptxt)
-            want = _scenewire._default_name(player_res)
-            if any(n["name"] == want and n.get("instance")
-                   for n in pparsed["nodes"]):
-                node_name = want if parent == "." else f"{parent}/{want}"
-                placed = "moved"
-            else:
-                w = _scenewire.wire(ptxt, player_res, parent=parent,
-                                    node_name=want)
-                ptxt, node_name = w["text"], w["node"]
-                node_name = (node_name if parent == "."
-                             else f"{parent}/{node_name}")
-                placed = "added"
-            ptxt = _scenewire.set_property(
-                ptxt, node_name, "position",
-                f"Vector2({spawn_px[0]}, {spawn_px[1]})")["text"]
-            wired["text"] = ptxt
-            player_report.update({"node": node_name, "placed": placed,
-                                  "position": spawn_px})
-
-        if dry_run:
-            written = {"written": False}
-        elif fresh:
-            scene_disk.parent.mkdir(parents=True, exist_ok=True)
-            scene_disk.write_text(wired["text"], encoding="utf-8")
-            written = {"written": True, "created": True}
+    tw, th = parsed_set["tile_size"]
+    spawn_px = [round((level["spawn"][0] + 0.5) * tw, 1),
+                round((level["spawn"][1] + 0.5) * th, 1)]
+    goal_px = [round((level["goal"][0] + 0.5) * tw, 1),
+               round((level["goal"][1] + 0.5) * th, 1)]
+    if player_scene:
+        # The player goes INTO the scene, at spawn — placed here rather
+        # than left as a coordinate in the result, because a returned
+        # number is a step someone forgets and a placed node is not.
+        # Re-running MOVES the existing instance instead of stacking a
+        # second player, same discipline wire_tilemap holds for layers.
+        ptxt = wired["text"]
+        pparsed = _scenewire.parse(ptxt)
+        want = _scenewire._default_name(player_res)
+        if any(n["name"] == want and n.get("instance")
+               for n in pparsed["nodes"]):
+            node_name = want if parent == "." else f"{parent}/{want}"
+            placed = "moved"
         else:
-            written = _scenewire.apply(scene_disk, wired["text"], root=_root())
+            w = _scenewire.wire(ptxt, player_res, parent=parent,
+                                node_name=want)
+            ptxt, node_name = w["text"], w["node"]
+            node_name = (node_name if parent == "."
+                         else f"{parent}/{node_name}")
+            placed = "added"
+        ptxt = _scenewire.set_property(
+            ptxt, node_name, "position",
+            f"Vector2({spawn_px[0]}, {spawn_px[1]})")["text"]
+        wired["text"] = ptxt
+        player_report.update({"node": node_name, "placed": placed,
+                              "position": spawn_px})
 
-        if not dry_run:
-            _log("level", f"side-scroller {length}x{height} seed {seed} "
-                          f"into {scene_res}", ref=scene_res)
-        return {"ok": True, "scene": scene_res, "tileset": tiles_res,
-                "seed": seed, "size": [length, height],
-                "spawn": level["spawn"], "goal": level["goal"],
-                "spawn_px": spawn_px, "goal_px": goal_px,
-                "segments": len(level["segments"]),
-                "tile_variants": varied,
-                "jump": {**level["limits"], "source": jump_source},
-                "player": player_report,
-                "playable": verdict,
-                "props": prop_report,
-                "layers": wired["layers"], "summary": wired["summary"],
-                "written": written.get("written", False),
-                "created": bool(written.get("created")),
-                "ascii": _sidescroll.ascii_map(level, width=min(length, 120)),
-                "next": (("the player is in the scene with the jump the level "
-                          "was checked against — godot_run it")
-                         if player_scene else
-                         ("give your player scene the SAME run/jump_speed/"
-                          "gravity — or pass player_scene= and both halves "
-                          "of that sentence happen for you"))}
-    except Exception as exc:
-        return _fail(exc)
+    if dry_run:
+        written = {"written": False}
+    elif fresh:
+        scene_disk.parent.mkdir(parents=True, exist_ok=True)
+        scene_disk.write_text(wired["text"], encoding="utf-8")
+        written = {"written": True, "created": True}
+    else:
+        written = _scenewire.apply(scene_disk, wired["text"], root=_root())
+
+    if not dry_run:
+        _log("level", f"side-scroller {length}x{height} seed {seed} "
+                      f"into {scene_res}", ref=scene_res)
+    return {"ok": True, "scene": scene_res, "tileset": tiles_res,
+            "manifest_used": manifest_used,
+            "seed": seed, "size": [length, height],
+            "spawn": level["spawn"], "goal": level["goal"],
+            "spawn_px": spawn_px, "goal_px": goal_px,
+            "segments": len(level["segments"]),
+            "tile_variants": varied,
+            "jump": {**level["limits"], "source": jump_source},
+            "player": player_report,
+            "playable": verdict,
+            "props": prop_report,
+            "layers": wired["layers"], "summary": wired["summary"],
+            "written": written.get("written", False),
+            "created": bool(written.get("created")),
+            "ascii": _sidescroll.ascii_map(level, width=min(length, 120)),
+            "next": (("the player is in the scene with the jump the level "
+                      "was checked against — godot_run it")
+                     if player_scene else
+                     ("give your player scene the SAME run/jump_speed/"
+                      "gravity — or pass player_scene= and both halves "
+                      "of that sentence happen for you"))}
 
 @_tool
 def game_view_get() -> dict:
@@ -7066,17 +7013,14 @@ def game_view_get() -> dict:
     what it wants inherits the model's default for everything it forgot to
     forbid.
     """
-    try:
-        root = _root()
-        view = _gameview.load(root)
-        out = _gameview.describe(view)
-        out["cameras"] = {m: _gameview.camera_clause(view, m)
-                          for m in _gameview.mounts(view)}
-        out["views_available"] = list(_gameview.VIEWS)
-        out["ok"] = True
-        return out
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    view = _gameview.load(root)
+    out = _gameview.describe(view)
+    out["cameras"] = {m: _gameview.camera_clause(view, m)
+                      for m in _gameview.mounts(view)}
+    out["views_available"] = list(_gameview.VIEWS)
+    out["ok"] = True
+    return out
 
 
 @_tool
@@ -7090,17 +7034,14 @@ def game_view_set(view: str) -> dict:
     Accepts the obvious aliases (platformer, iso, top-down) and refuses
     anything else by name rather than guessing.
     """
-    try:
-        root = _root()
-        spec = _gameview.save(root, view)
-        _log("view", f"game view declared: {spec['view']}", ref=spec["view"])
-        out = _gameview.describe(spec["view"])
-        out["ok"] = True
-        out["warning"] = ("Art already drawn to a different camera cannot be "
-                          "re-projected — it has to be regenerated.")
-        return out
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    spec = _gameview.save(root, view)
+    _log("view", f"game view declared: {spec['view']}", ref=spec["view"])
+    out = _gameview.describe(spec["view"])
+    out["ok"] = True
+    out["warning"] = ("Art already drawn to a different camera cannot be "
+                      "re-projected — it has to be regenerated.")
+    return out
 
 @_tool
 def level_plan(width: int = 48, height: int = 32, seed: int = 0,
@@ -7135,21 +7076,18 @@ def level_plan(width: int = 48, height: int = 32, seed: int = 0,
       margin          gap between a room and its leaf's edge; 0 lets neighbouring
                       rooms fuse into one L-shaped cavity.
     """
-    try:
-        level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
-                               min_room=min_room, margin=margin,
-                               max_depth=max_depth,
-                               corridor_width=corridor_width,
-                               room_fill=room_fill)
-        return {"ok": True, "seed": seed, "width": width, "height": height,
-                "rooms": level["rooms"], "room_count": len(level["rooms"]),
-                "corridor_count": len(level["corridors"]),
-                "floor_cells": len(level["floor"]),
-                "wall_cells": len(level["walls"]),
-                "connected": level["connected"], "spawn": level["spawn"],
-                "exit": level["exit"], "ascii": _levelgen.ascii_map(level)}
-    except Exception as exc:
-        return _fail(exc)
+    level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
+                           min_room=min_room, margin=margin,
+                           max_depth=max_depth,
+                           corridor_width=corridor_width,
+                           room_fill=room_fill)
+    return {"ok": True, "seed": seed, "width": width, "height": height,
+            "rooms": level["rooms"], "room_count": len(level["rooms"]),
+            "corridor_count": len(level["corridors"]),
+            "floor_cells": len(level["floor"]),
+            "wall_cells": len(level["walls"]),
+            "connected": level["connected"], "spawn": level["spawn"],
+            "exit": level["exit"], "ascii": _levelgen.ascii_map(level)}
 
 
 def _read_prop_manifest(root, ref: str) -> dict:
@@ -7182,6 +7120,39 @@ def _read_prop_manifest(root, ref: str) -> dict:
                         if isinstance(v, dict) else tuple(v))
                     for k, v in (man.get("atlas") or {}).items()}
     return man
+
+
+def _tileset_manifest(tiles_disk: _Path) -> Optional[dict]:
+    """The layout knowledge tileset_generate wrote beside its .tres, or None.
+
+    None means a hand-built or older tileset: the caller falls back to the
+    explicit floor_*/wall_* parameters exactly as before. A sidecar that
+    exists but predates the manifest schema (no "kind") is the same answer -
+    it still serves _scatter_variants, it just cannot describe a layout.
+    """
+    side = tiles_disk.with_name(tiles_disk.stem + ".tiles.json")
+    if not side.is_file():
+        return None
+    try:
+        meta = _json.loads(side.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(meta, dict) or meta.get("kind") != "bgate-tileset":
+        return None
+    return meta
+
+
+def _manifest_floor(meta: dict, name: str):
+    """The floor Terrain a manifest describes. Raises on a malformed table -
+    a half-read manifest must fail loudly, not draw a half-right level."""
+    floor = meta.get("floor") or {}
+    table = {int(m): (int(c[0]), int(c[1]))
+             for m, c in (floor.get("table") or {}).items()}
+    solid = floor.get("solid")
+    return _autotile.Terrain.from_table(
+        int(floor.get("source", 0)), table,
+        bits=int(meta.get("bits") or 8), name=name,
+        fallback=(int(solid[0]), int(solid[1])) if solid else None)
 
 
 def _scatter_variants(cells: list, tiles_disk: _Path) -> int:
@@ -7336,6 +7307,17 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                    dry_run: bool = False) -> dict:
     """Generate a level and write it into a scene as TileMapLayer nodes.
 
+    A tileset_generate TILESET NEEDS NO LAYOUT ARGUMENTS AT ALL. Its manifest
+    (<name>.tiles.json, written beside the .tres) carries the mask table,
+    source ids and the safe fill tile, and this tool reads it when every
+    floor_*/wall_* argument is left at its default - so the whole call is
+    godot_project, scene, tileset. The ten layout parameters exist for
+    HAND-BUILT sheets only; passing any of them non-default switches the
+    manifest off entirely and your values drive. Do not copy atlas
+    coordinates out of the art seat's result into this call - that hand
+    carry is the drift this manifest exists to end, and `manifest_used` in
+    the result says which authority drew the level.
+
     The whole chain: BSP layout -> neighbour-bitmask autotiling -> the packed
     binary Godot stores tiles in -> a .tscn edit, backed up. No engine and no
     editor involved, so it runs headless and is a normal reviewable diff.
@@ -7383,213 +7365,270 @@ def level_generate(godot_project: str, scene: str, tileset: str,
     godot_project: the directory holding project.godot.
     scene/tileset: res:// paths, or paths relative to that directory.
     """
-    try:
-        # THE SAME GATE sidescroll_generate holds in the other direction.
-        # Under gravity a connected floor guarantees nothing — you cannot
-        # walk upward — so rooms-and-corridors geometry in a platformer is
-        # the wrong geometry, not a style choice.
-        view = _gameview.load(_root())
-        if view == "side_scroller":
-            return {"ok": False, "error": (
-                "this project's view is 'side_scroller'. Rooms and corridors "
-                "are top-down geometry — use sidescroll_generate, which "
-                "builds for this character's jump, or game_view_set if the "
-                "declared view is wrong.")}
-        if wall_layout not in _WALL_LAYOUTS:
-            raise ValueError(
-                f"wall_layout {wall_layout!r} is not one of {_WALL_LAYOUTS}")
-        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
-        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
+    # THE SAME GATE sidescroll_generate holds in the other direction.
+    # Under gravity a connected floor guarantees nothing — you cannot
+    # walk upward — so rooms-and-corridors geometry in a platformer is
+    # the wrong geometry, not a style choice.
+    view = _gameview.load(_root())
+    if view == "side_scroller":
+        return {"ok": False, "error": (
+            "this project's view is 'side_scroller'. Rooms and corridors "
+            "are top-down geometry — use sidescroll_generate, which "
+            "builds for this character's jump, or game_view_set if the "
+            "declared view is wrong.")}
+    if wall_layout not in _WALL_LAYOUTS:
+        raise ValueError(
+            f"wall_layout {wall_layout!r} is not one of {_WALL_LAYOUTS}")
+    scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+    tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
 
-        if not tiles_disk.is_file():
-            raise ValueError(f"no tileset at {tiles_res} - generate or import it "
-                             "first; a level cannot pick tiles from nothing")
-        parsed_set = _tilemap.parse_tileset(
-            tiles_disk.read_text(encoding="utf-8", errors="replace"))
-        # THE TILESET'S SHAPE MUST AGREE WITH THE VIEW. A square set on an
-        # isometric project renders a plausible, wrong-looking grid — the
-        # exact silent failure tilemap.py documents — and the inverse draws
-        # diamonds flat. Neither errors in the engine, so it errors here.
-        iso = view == "isometric"
-        want_shape = _tilemap.ISOMETRIC if iso else _tilemap.SQUARE
-        if parsed_set["shape"] != want_shape:
-            raise ValueError(
-                f"{tiles_res} has tile shape {parsed_set['shape']} and this "
-                f"project's view is {view!r} (wants shape {want_shape}). "
-                "Godot renders the mismatch without complaint and it looks "
-                "wrong everywhere — fix the tileset or the declared view, "
-                "not this call.")
-        have = sorted(parsed_set["sources"])
-        wanted = {floor_source} | ({wall_source} if wall_layout != "none" else set())
-        missing = sorted(w for w in wanted if w not in parsed_set["sources"])
-        if missing:
-            raise ValueError(
-                f"{tiles_res} has no source {missing} - it has {have}. Source "
-                "ids are not indexes; a tileset numbers them however it likes.")
+    if not tiles_disk.is_file():
+        raise ValueError(f"no tileset at {tiles_res} - generate or import it "
+                         "first; a level cannot pick tiles from nothing")
+    parsed_set = _tilemap.parse_tileset(
+        tiles_disk.read_text(encoding="utf-8", errors="replace"))
+    # THE TILESET'S SHAPE MUST AGREE WITH THE VIEW. A square set on an
+    # isometric project renders a plausible, wrong-looking grid — the
+    # exact silent failure tilemap.py documents — and the inverse draws
+    # diamonds flat. Neither errors in the engine, so it errors here.
+    iso = view == "isometric"
+    want_shape = _tilemap.ISOMETRIC if iso else _tilemap.SQUARE
+    if parsed_set["shape"] != want_shape:
+        raise ValueError(
+            f"{tiles_res} has tile shape {parsed_set['shape']} and this "
+            f"project's view is {view!r} (wants shape {want_shape}). "
+            "Godot renders the mismatch without complaint and it looks "
+            "wrong everywhere — fix the tileset or the declared view, "
+            "not this call.")
+    have = sorted(parsed_set["sources"])
+    # THE MANIFEST DECIDES THE LAYOUT when the caller did not. A tileset
+    # made by tileset_generate carries its own mask table on disk, so the
+    # ten floor_*/wall_* parameters exist only for hand-built sheets -
+    # they used to be re-typed from the art seat's tool result into this
+    # call, which is the cross-seat handoff-by-pasted-string the sidecar
+    # ends. Any explicitly non-default layout argument wins outright: an
+    # override half-applied is worse than either whole.
+    manifest = _tileset_manifest(tiles_disk)
+    defaults = (floor_source == 0 and floor_atlas_x == 0
+                and floor_atlas_y == 0 and floor_layout == "solid"
+                and wall_source == 0 and wall_layout == "blob47"
+                and wall_atlas_x == 0 and wall_atlas_y == 0)
+    manifest_used = bool(manifest is not None and defaults)
+    if manifest_used:
+        floor_terrain = _manifest_floor(manifest, floor_name)
+        man_wall = manifest.get("wall")
+        wall_terrain = (_autotile.Terrain.solid(
+            int(man_wall.get("source", 1)),
+            tuple(man_wall.get("atlas") or (0, 0)), name=wall_name)
+            if man_wall else None)
+    else:
+        # FLOORS AUTOTILE TOO. This was pinned to "solid", so a floor
+        # could only ever be one repeated tile — and with a terrain
+        # transition set that is the WHOLE look: the wall is drawn into
+        # the floor tiles' own edges, so a solid fill throws away every
+        # edge and corner the sheet came with and paints the level in
+        # one square.
+        floor_terrain = _terrain(floor_layout, floor_source, floor_atlas_x,
+                                 floor_atlas_y, floor_columns, floor_name)
+        wall_terrain = (None if wall_layout == "none" else
+                        _terrain(wall_layout, wall_source, wall_atlas_x,
+                                 wall_atlas_y, wall_columns, wall_name))
+    wanted = {floor_terrain.source} | (
+        {wall_terrain.source} if wall_terrain else set())
+    missing = sorted(w for w in wanted if w not in parsed_set["sources"])
+    if missing:
+        raise ValueError(
+            f"{tiles_res} has no source {missing} - it has {have}. Source "
+            "ids are not indexes; a tileset numbers them however it likes.")
 
-        fresh = not scene_disk.is_file()
-        if not fresh:
-            text = scene_disk.read_text(encoding="utf-8", errors="replace")
-        elif create:
-            text = _EMPTY_SCENE.format(root=scene_disk.stem.title() or "Level")
+    fresh = not scene_disk.is_file()
+    if not fresh:
+        text = scene_disk.read_text(encoding="utf-8", errors="replace")
+    elif create:
+        text = _EMPTY_SCENE.format(root=scene_disk.stem.title() or "Level")
+    else:
+        raise ValueError(
+            f"no scene at {scene_res}. Pass create=true to start a new one, "
+            "or point at an existing scene to add the layers to.")
+
+    level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
+                           min_room=min_room, margin=margin,
+                           max_depth=max_depth,
+                           corridor_width=corridor_width,
+                           room_fill=room_fill)
+    # THE MANIFEST DECIDES THE LAYOUT when the caller did not. A tileset
+    # made by tileset_generate carries its own mask table on disk, so the
+    # ten floor_*/wall_* parameters exist only for hand-built sheets -
+    # they used to be re-typed from the art seat's tool result into this
+    # call, which is the cross-seat handoff-by-pasted-string this sidecar
+    # ends. Any explicitly non-default layout argument wins outright: an
+    # override half-applied is worse than either whole.
+    manifest = _tileset_manifest(tiles_disk)
+    defaults = (floor_source == 0 and floor_atlas_x == 0
+                and floor_atlas_y == 0 and floor_layout == "solid"
+                and wall_source == 0 and wall_layout == "blob47"
+                and wall_atlas_x == 0 and wall_atlas_y == 0)
+    manifest_used = False
+    if manifest is not None and defaults:
+        floor_terrain = _manifest_floor(manifest, floor_name)
+        man_wall = manifest.get("wall")
+        wall_terrain = (_autotile.Terrain.solid(
+            int(man_wall.get("source", 1)),
+            tuple(man_wall.get("atlas") or (0, 0)), name=wall_name)
+            if man_wall else None)
+        manifest_used = True
+    else:
+        # FLOORS AUTOTILE TOO. This was pinned to "solid", so a floor
+        # could only ever be one repeated tile — and with a terrain
+        # transition set that is the WHOLE look: the wall is drawn into
+        # the floor tiles' own edges, so a solid fill throws away every
+        # edge and corner the sheet came with and paints the level in
+        # one square.
+        floor_terrain = _terrain(floor_layout, floor_source, floor_atlas_x,
+                                 floor_atlas_y, floor_columns, floor_name)
+        wall_terrain = (None if wall_layout == "none" else
+                        _terrain(wall_layout, wall_source, wall_atlas_x,
+                                 wall_atlas_y, wall_columns, wall_name))
+    layers = _levelgen.layers(
+        level, floor=floor_terrain, wall=wall_terrain,
+        floor_name=floor_name, wall_name=wall_name)
+    if iso:
+        # Isometric is a depth sort or it is a lie: a wall drawn after
+        # the player standing south of it reads as the player inside the
+        # wall. The floor stays flat — nothing ever stands behind a
+        # floor — everything above it y-sorts.
+        for ly in layers:
+            if ly["name"] != floor_name:
+                ly["props"] = {**(ly.get("props") or {}),
+                               "y_sort_enabled": True}
+    varied = sum(_scatter_variants(ly["cells"], tiles_disk)
+                 for ly in layers)
+
+    prop_report: dict = {}
+    if props:
+        want = tuple(prop_types.replace(",", " ").split()) or None
+        # THE MANIFEST IS THE EASY PATH and the one to use: prop_generate
+        # writes it, and it already knows every atlas coordinate, span,
+        # texture origin and animation. The loose prop_atlas/prop_types
+        # arguments stay for a hand-built sheet, but nobody should be
+        # typing atlas coordinates into a tool call to dress a level.
+        if prop_manifest:
+            man = _read_prop_manifest(_root(), prop_manifest)
+            atlas = man["atlas"]
+            prop_source = _manifest_source(tiles_disk, man)
+            if not want:
+                want = tuple(man["types"])
         else:
+            atlas = _prop_atlas(prop_atlas, prop_source)
+        walls = _levelgen.wall_ring({tuple(c) for c in level["floor"]})
+        plan_props = _props.plan(level, seed=seed, density=prop_density,
+                                 walls=walls, types=want,
+                                 view=_gameview.load(_root()))
+        # ONE LAYER PER DRAW LEVEL. A TileMapLayer holds a single tile
+        # per coordinate, so a crack in the floor and the barrel standing
+        # on it can only coexist as two layers — and the decals have to be
+        # under, which is what the LAYERS order is.
+        built = {"types": {}, "mirrored": 0, "cells": []}
+        for lname in _props.LAYERS:
+            part = _props.cells(plan_props, atlas, source=prop_source,
+                                layer=lname)
+            if not part["cells"]:
+                continue
+            node = prop_name if lname == "props" else f"{prop_name}{lname.title()}"
+            layers.append({"name": node, "terrain": node,
+                           "cells": part["cells"], "unmapped": {},
+                           **({"props": {"y_sort_enabled": True}}
+                              if iso and lname != "decals" else {})})
+            built["cells"] += part["cells"]
+            built["mirrored"] += part["mirrored"]
+            for k, v in part["types"].items():
+                built["types"][k] = built["types"].get(k, 0) + v
+        prop_report = {"placed": built["types"],
+                       "mirrored": built["mirrored"],
+                       "purposes": plan_props["purposes"],
+                       "layers": plan_props["layers"],
+                       "view": plan_props["view"],
+                       "skipped": plan_props["skipped"],
+                       "checks": plan_props["checks"]}
+        if not plan_props["checks"]["still_connected"]:
             raise ValueError(
-                f"no scene at {scene_res}. Pass create=true to start a new one, "
-                "or point at an existing scene to add the layers to.")
+                "the props broke the level into more than one region — "
+                "this should be impossible, every solid prop is gated on a "
+                "flood fill, so treat it as a bug and not as a dial")
 
-        level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
-                               min_room=min_room, margin=margin,
-                               max_depth=max_depth,
-                               corridor_width=corridor_width,
-                               room_fill=room_fill)
-        layers = _levelgen.layers(
-            level,
-            # FLOORS AUTOTILE TOO. This was pinned to "solid", so a floor
-            # could only ever be one repeated tile — and with a terrain
-            # transition set that is the WHOLE look: the wall is drawn into
-            # the floor tiles' own edges, so a solid fill throws away every
-            # edge and corner the sheet came with and paints the level in
-            # one square.
-            floor=_terrain(floor_layout, floor_source, floor_atlas_x,
-                           floor_atlas_y, floor_columns, floor_name),
-            wall=(None if wall_layout == "none" else
-                  _terrain(wall_layout, wall_source, wall_atlas_x, wall_atlas_y,
-                           wall_columns, wall_name)),
-            floor_name=floor_name, wall_name=wall_name)
-        if iso:
-            # Isometric is a depth sort or it is a lie: a wall drawn after
-            # the player standing south of it reads as the player inside the
-            # wall. The floor stays flat — nothing ever stands behind a
-            # floor — everything above it y-sorts.
-            for ly in layers:
-                if ly["name"] != floor_name:
-                    ly["props"] = {**(ly.get("props") or {}),
-                                   "y_sort_enabled": True}
-        varied = sum(_scatter_variants(ly["cells"], tiles_disk)
-                     for ly in layers)
+    # THE CHECK THAT MATTERS. The built-in layouts are complete by
+    # construction - every mask has an entry - so "unmapped" can only ever
+    # catch a hand-written table. What actually goes wrong is the layout
+    # pointing at atlas coordinates the SHEET does not define: Godot places
+    # nothing there, reports nothing, and the level is invisible in exactly
+    # the places the shape is most complicated. The .tres lists the tiles it
+    # defines, so this is knowable before anything is written.
+    absent = {}
+    for layer in layers:
+        want = {(c["source"], c["ax"], c["ay"]) for c in layer["cells"]}
+        gaps = sorted(
+            (ax, ay) for src, ax, ay in want
+            if (ax, ay) not in set(map(tuple,
+                                       parsed_set["sources"][src]["tiles"])))
+        if gaps:
+            absent[layer["name"]] = [list(g) for g in gaps]
+    if absent:
+        raise ValueError(
+            f"{tiles_res} does not define these atlas tiles: "
+            + "; ".join(f"{name} wants {coords}"
+                        for name, coords in absent.items())
+            + ". A cell pointing at an undefined tile draws nothing and "
+              "says nothing - add the tiles to the atlas, move the layout "
+              "with *_atlas_x/_atlas_y, or change wall_layout.")
 
-        prop_report: dict = {}
-        if props:
-            want = tuple(prop_types.replace(",", " ").split()) or None
-            # THE MANIFEST IS THE EASY PATH and the one to use: prop_generate
-            # writes it, and it already knows every atlas coordinate, span,
-            # texture origin and animation. The loose prop_atlas/prop_types
-            # arguments stay for a hand-built sheet, but nobody should be
-            # typing atlas coordinates into a tool call to dress a level.
-            if prop_manifest:
-                man = _read_prop_manifest(_root(), prop_manifest)
-                atlas = man["atlas"]
-                prop_source = _manifest_source(tiles_disk, man)
-                if not want:
-                    want = tuple(man["types"])
-            else:
-                atlas = _prop_atlas(prop_atlas, prop_source)
-            walls = _levelgen.wall_ring({tuple(c) for c in level["floor"]})
-            plan_props = _props.plan(level, seed=seed, density=prop_density,
-                                     walls=walls, types=want,
-                                     view=_gameview.load(_root()))
-            # ONE LAYER PER DRAW LEVEL. A TileMapLayer holds a single tile
-            # per coordinate, so a crack in the floor and the barrel standing
-            # on it can only coexist as two layers — and the decals have to be
-            # under, which is what the LAYERS order is.
-            built = {"types": {}, "mirrored": 0, "cells": []}
-            for lname in _props.LAYERS:
-                part = _props.cells(plan_props, atlas, source=prop_source,
-                                    layer=lname)
-                if not part["cells"]:
-                    continue
-                node = prop_name if lname == "props" else f"{prop_name}{lname.title()}"
-                layers.append({"name": node, "terrain": node,
-                               "cells": part["cells"], "unmapped": {},
-                               **({"props": {"y_sort_enabled": True}}
-                                  if iso and lname != "decals" else {})})
-                built["cells"] += part["cells"]
-                built["mirrored"] += part["mirrored"]
-                for k, v in part["types"].items():
-                    built["types"][k] = built["types"].get(k, 0) + v
-            prop_report = {"placed": built["types"],
-                           "mirrored": built["mirrored"],
-                           "purposes": plan_props["purposes"],
-                           "layers": plan_props["layers"],
-                           "view": plan_props["view"],
-                           "skipped": plan_props["skipped"],
-                           "checks": plan_props["checks"]}
-            if not plan_props["checks"]["still_connected"]:
-                raise ValueError(
-                    "the props broke the level into more than one region — "
-                    "this should be impossible, every solid prop is gated on a "
-                    "flood fill, so treat it as a bug and not as a dial")
+    # THE LAYERS THIS GENERATOR OWNS, so a run that produces fewer than the
+    # last one removes what it no longer makes. Turning props off left the
+    # old prop and decal layers in the scene, still drawing, and the scene
+    # loads perfectly — the level just quietly keeps dressing nobody asked
+    # for.
+    owns = [floor_name, wall_name, prop_name,
+            f"{prop_name}{'decals'.title()}"]
+    wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent,
+                                    owns=owns)
+    if dry_run:
+        written = {"written": False, "backup": None}
+    elif fresh:
+        # A brand-new scene has no previous bytes to back up, and apply()
+        # refuses a missing file on purpose - that refusal is what catches a
+        # typo'd path everywhere else.
+        scene_disk.parent.mkdir(parents=True, exist_ok=True)
+        scene_disk.write_text(wired["text"], encoding="utf-8")
+        written = {"written": True, "backup": None, "created": True}
+    else:
+        written = _scenewire.apply(scene_disk, wired["text"], root=_root())
 
-        # THE CHECK THAT MATTERS. The built-in layouts are complete by
-        # construction - every mask has an entry - so "unmapped" can only ever
-        # catch a hand-written table. What actually goes wrong is the layout
-        # pointing at atlas coordinates the SHEET does not define: Godot places
-        # nothing there, reports nothing, and the level is invisible in exactly
-        # the places the shape is most complicated. The .tres lists the tiles it
-        # defines, so this is knowable before anything is written.
-        absent = {}
-        for layer in layers:
-            want = {(c["source"], c["ax"], c["ay"]) for c in layer["cells"]}
-            gaps = sorted(
-                (ax, ay) for src, ax, ay in want
-                if (ax, ay) not in set(map(tuple,
-                                           parsed_set["sources"][src]["tiles"])))
-            if gaps:
-                absent[layer["name"]] = [list(g) for g in gaps]
-        if absent:
-            raise ValueError(
-                f"{tiles_res} does not define these atlas tiles: "
-                + "; ".join(f"{name} wants {coords}"
-                            for name, coords in absent.items())
-                + ". A cell pointing at an undefined tile draws nothing and "
-                  "says nothing - add the tiles to the atlas, move the layout "
-                  "with *_atlas_x/_atlas_y, or change wall_layout.")
-
-        # THE LAYERS THIS GENERATOR OWNS, so a run that produces fewer than the
-        # last one removes what it no longer makes. Turning props off left the
-        # old prop and decal layers in the scene, still drawing, and the scene
-        # loads perfectly — the level just quietly keeps dressing nobody asked
-        # for.
-        owns = [floor_name, wall_name, prop_name,
-                f"{prop_name}{'decals'.title()}"]
-        wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent,
-                                        owns=owns)
-        if dry_run:
-            written = {"written": False, "backup": None}
-        elif fresh:
-            # A brand-new scene has no previous bytes to back up, and apply()
-            # refuses a missing file on purpose - that refusal is what catches a
-            # typo'd path everywhere else.
-            scene_disk.parent.mkdir(parents=True, exist_ok=True)
-            scene_disk.write_text(wired["text"], encoding="utf-8")
-            written = {"written": True, "backup": None, "created": True}
-        else:
-            written = _scenewire.apply(scene_disk, wired["text"], root=_root())
-
-        result = {
-            "ok": True, "scene": scene_res, "tileset": tiles_res,
-            "seed": seed, "size": [width, height],
-            "rooms": len(level["rooms"]),
-            "corridors": len(level["corridors"]),
-            "tile_variants": varied,
-            "connected": level["connected"],
-            "spawn": level["spawn"], "exit": level["exit"],
-            "layers": wired["layers"], "summary": wired["summary"],
-            "written": written.get("written", False),
-            "backup": written.get("backup"),
-            "created": bool(written.get("created")),
-            "dry_run": bool(dry_run),
-            "ascii": _levelgen.ascii_map(level),
-        }
-        if props:
-            result["props"] = prop_report
-        if not dry_run:
-            _log("level", f"generated {width}x{height} level seed {seed} "
-                          f"({len(level['rooms'])} rooms) into {scene_res}",
-                 ref=scene_res)
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    result = {
+        "ok": True, "scene": scene_res, "tileset": tiles_res,
+        # Which layout authority drew this: True = the tileset's own
+        # manifest, False = the explicit floor_*/wall_* arguments. On the
+        # card that says "the doorways look wrong", this field answers
+        # "did somebody hand-type atlas coordinates" in one read.
+        "manifest_used": manifest_used,
+        "seed": seed, "size": [width, height],
+        "rooms": len(level["rooms"]),
+        "corridors": len(level["corridors"]),
+        "tile_variants": varied,
+        "connected": level["connected"],
+        "spawn": level["spawn"], "exit": level["exit"],
+        "layers": wired["layers"], "summary": wired["summary"],
+        "written": written.get("written", False),
+        "backup": written.get("backup"),
+        "created": bool(written.get("created")),
+        "dry_run": bool(dry_run),
+        "ascii": _levelgen.ascii_map(level),
+    }
+    if props:
+        result["props"] = prop_report
+    if not dry_run:
+        _log("level", f"generated {width}x{height} level seed {seed} "
+                      f"({len(level['rooms'])} rooms) into {scene_res}",
+             ref=scene_res)
+    return result
 
 
 @_tool
@@ -7631,6 +7670,7 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
     godot_project: the directory holding project.godot.
     """
     try:
+        _contained_path(godot_project, "godot_project")
         # One file per capture. A single shot.png meant two seats screenshotting
         # at the same moment each got back a path holding the OTHER one's game.
         out = str(_Path(_root()) / ".bgate_out" / "shots" /
@@ -7677,10 +7717,8 @@ def godot_inspect_resource(godot_project: str, res_path: str, timeout: int = 180
 
     godot_project: the directory holding project.godot.
     """
-    try:
-        return _godot.inspect_resource(godot_project, res_path, timeout=timeout)
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    return _godot.inspect_resource(godot_project, res_path, timeout=timeout)
 
 
 @_tool
@@ -7713,19 +7751,17 @@ def godot_retarget_check(godot_project: str, res_path: str,
 
     res_path must already be imported - godot_import_asset first.
     """
-    try:
-        result = _godot.retarget_check(godot_project, res_path,
-                                       bone_map_res=bone_map_res,
-                                       timeout=timeout)
-        if result.get("ok"):
-            _log("godot",
-                 f"retarget check {res_path}: "
-                 f"{'retargetable' if result.get('retargetable') else 'NOT retargetable'} "
-                 f"({result.get('mapped')}/{result.get('profile_bones')} profile bones)",
-                 ref=res_path)
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    result = _godot.retarget_check(godot_project, res_path,
+                                   bone_map_res=bone_map_res,
+                                   timeout=timeout)
+    if result.get("ok"):
+        _log("godot",
+             f"retarget check {res_path}: "
+             f"{'retargetable' if result.get('retargetable') else 'NOT retargetable'} "
+             f"({result.get('mapped')}/{result.get('profile_bones')} profile bones)",
+             ref=res_path)
+    return result
 
 
 @_tool
@@ -7749,6 +7785,7 @@ def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = N
     godot_project: the directory holding project.godot.
     """
     try:
+        _contained_path(godot_project, "godot_project")
         out_dir = str(_Path(_root()) / ".bgate_out" / "evidence" /
                       _run_tag(label or "frame"))
     except Exception:
@@ -7785,11 +7822,8 @@ def evidence_check_ui(manifest_path: str, expect: dict,
     does not fail as a bug. This is the assertion godot_screenshot could never
     support: proof the HUD agrees with the sim, not a picture of a bar.
     """
-    try:
-        manifest = _json.loads(_Path(manifest_path).read_text(encoding="utf-8"))
-        return _godot.check_ui_matches(manifest, expect, tolerance=tolerance)
-    except Exception as exc:
-        return _fail(exc)
+    manifest = _json.loads(_Path(manifest_path).read_text(encoding="utf-8"))
+    return _godot.check_ui_matches(manifest, expect, tolerance=tolerance)
 
 
 # ---------------------------------------------------------------------------
@@ -7902,46 +7936,43 @@ def scene_outline(godot_project: str, scene: str, match: str = "",
     `properties` is off by default: property maps are the bulkiest part of a
     node and are only wanted once you know which node you mean.
     """
-    try:
-        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
-        if not scene_disk.is_file():
-            raise ValueError(f"no scene at {scene_res}")
-        text = scene_disk.read_text(encoding="utf-8", errors="replace")
-        nodes = _scenewire.outline(text)
-        total = len(nodes)
-        # Counted over the WHOLE scene, before filtering - "what is in here" is
-        # the question this answers, and it must not change shape depending on
-        # what the caller happened to search for.
-        roles: dict[str, int] = {}
-        for n in nodes:
-            roles[n["role"]] = roles.get(n["role"], 0) + 1
+    scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+    if not scene_disk.is_file():
+        raise ValueError(f"no scene at {scene_res}")
+    text = scene_disk.read_text(encoding="utf-8", errors="replace")
+    nodes = _scenewire.outline(text)
+    total = len(nodes)
+    # Counted over the WHOLE scene, before filtering - "what is in here" is
+    # the question this answers, and it must not change shape depending on
+    # what the caller happened to search for.
+    roles: dict[str, int] = {}
+    for n in nodes:
+        roles[n["role"]] = roles.get(n["role"], 0) + 1
 
-        needle = match.strip().lower()
-        if needle:
-            nodes = [n for n in nodes if needle in n["name"].lower()
-                     or needle in n["path"].lower()]
-        if role.strip():
-            nodes = [n for n in nodes if n["role"] == role.strip()]
-        if parent.strip():
-            want = parent.strip()
-            nodes = [n for n in nodes
-                     if n["path"] == want or n["path"].startswith(want + "/")]
-        matched = len(nodes)
-        if limit and limit > 0:
-            nodes = nodes[:limit]
-        if not properties:
-            nodes = [{k: v for k, v in n.items() if k != "properties"}
-                     for n in nodes]
+    needle = match.strip().lower()
+    if needle:
+        nodes = [n for n in nodes if needle in n["name"].lower()
+                 or needle in n["path"].lower()]
+    if role.strip():
+        nodes = [n for n in nodes if n["role"] == role.strip()]
+    if parent.strip():
+        want = parent.strip()
+        nodes = [n for n in nodes
+                 if n["path"] == want or n["path"].startswith(want + "/")]
+    matched = len(nodes)
+    if limit and limit > 0:
+        nodes = nodes[:limit]
+    if not properties:
+        nodes = [{k: v for k, v in n.items() if k != "properties"}
+                 for n in nodes]
 
-        held = _assets.lock_holder(_root(), scene_disk)
-        return {"ok": True, "scene": scene_res, "total": total,
-                "matched": matched, "returned": len(nodes),
-                "truncated": matched > len(nodes),
-                "roles": roles, "nodes": nodes,
-                "lock": {"seat": held.get("lock_seat"),
-                         "owner": held.get("lock_owner")} if held else None}
-    except Exception as exc:
-        return _fail(exc)
+    held = _assets.lock_holder(_root(), scene_disk)
+    return {"ok": True, "scene": scene_res, "total": total,
+            "matched": matched, "returned": len(nodes),
+            "truncated": matched > len(nodes),
+            "roles": roles, "nodes": nodes,
+            "lock": {"seat": held.get("lock_seat"),
+                     "owner": held.get("lock_owner")} if held else None}
 
 
 @_tool
@@ -7963,18 +7994,15 @@ def scene_wire(godot_project: str, scene: str, asset: str,
     A .gd is not an asset here; a script attaches to a node that already exists,
     which is scene_attach_script.
     """
-    try:
-        asset_disk, asset_res = _res_pair(godot_project, asset, "")
-        return _scene_edit(
-            godot_project, scene,
-            lambda text: _scenewire.wire(
-                text, asset_res, node_name=node_name or None, parent=parent,
-                node_type=node_type or None,
-                res_type=_res_declared_type(asset_disk)),
-            dry_run=dry_run, force=force,
-            summary=f"wired {asset_res} into {scene}")
-    except Exception as exc:
-        return _fail(exc)
+    asset_disk, asset_res = _res_pair(godot_project, asset, "")
+    return _scene_edit(
+        godot_project, scene,
+        lambda text: _scenewire.wire(
+            text, asset_res, node_name=node_name or None, parent=parent,
+            node_type=node_type or None,
+            res_type=_res_declared_type(asset_disk)),
+        dry_run=dry_run, force=force,
+        summary=f"wired {asset_res} into {scene}")
 
 
 @_tool
@@ -7987,14 +8015,12 @@ def scene_unwire(godot_project: str, scene: str, node: str,
     silently orphaning its subtree is not a thing anyone means. Run it dry first
     if you are not certain what hangs off it; `scene_outline(parent=...)` says.
     """
-    try:
-        return _scene_edit(
-            godot_project, scene,
-            lambda text: _scenewire.unwire(text, node, recursive=recursive),
-            dry_run=dry_run, force=force,
-            summary=f"removed {node} from {scene}")
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    return _scene_edit(
+        godot_project, scene,
+        lambda text: _scenewire.unwire(text, node, recursive=recursive),
+        dry_run=dry_run, force=force,
+        summary=f"removed {node} from {scene}")
 
 
 @_tool
@@ -8007,16 +8033,14 @@ def scene_node_add(godot_project: str, scene: str, name: str, node_type: str,
     call, in Godot's own literal syntax where the type needs it:
     {"position": "Vector2(96, 40)", "z_index": 5, "visible": false}.
     """
-    try:
-        return _scene_edit(
-            godot_project, scene,
-            lambda text: _scenewire.add_node(
-                text, name=name, node_type=node_type, parent=parent,
-                props=props or {}),
-            dry_run=dry_run, force=force,
-            summary=f"added {node_type} {name} to {scene}")
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    return _scene_edit(
+        godot_project, scene,
+        lambda text: _scenewire.add_node(
+            text, name=name, node_type=node_type, parent=parent,
+            props=props or {}),
+        dry_run=dry_run, force=force,
+        summary=f"added {node_type} {name} to {scene}")
 
 
 @_tool
@@ -8038,15 +8062,13 @@ def scene_set_property(godot_project: str, scene: str, node: str, key: str,
     exactly until the next bake. Read the top of the file before moving anything
     in it.
     """
-    try:
-        return _scene_edit(
-            godot_project, scene,
-            lambda text: _scenewire.set_property(
-                text, node, key, None if clear else value),
-            dry_run=dry_run, force=force,
-            summary=f"set {node}.{key} in {scene}")
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    return _scene_edit(
+        godot_project, scene,
+        lambda text: _scenewire.set_property(
+            text, node, key, None if clear else value),
+        dry_run=dry_run, force=force,
+        summary=f"set {node}.{key} in {scene}")
 
 
 @_tool
@@ -8060,17 +8082,14 @@ def scene_swap_resource(godot_project: str, scene: str, node: str, asset: str,
     everybody skips, which leaves the old asset looking referenced to every tool
     that counts references - including Atlas's dead-asset rail.
     """
-    try:
-        asset_disk, asset_res = _res_pair(godot_project, asset, "")
-        return _scene_edit(
-            godot_project, scene,
-            lambda text: _scenewire.swap_resource(
-                text, node, asset_res, prop=property or None,
-                res_type=_res_declared_type(asset_disk)),
-            dry_run=dry_run, force=force,
-            summary=f"swapped {node} to {asset_res} in {scene}")
-    except Exception as exc:
-        return _fail(exc)
+    asset_disk, asset_res = _res_pair(godot_project, asset, "")
+    return _scene_edit(
+        godot_project, scene,
+        lambda text: _scenewire.swap_resource(
+            text, node, asset_res, prop=property or None,
+            res_type=_res_declared_type(asset_disk)),
+        dry_run=dry_run, force=force,
+        summary=f"swapped {node} to {asset_res} in {scene}")
 
 
 @_tool
@@ -8078,15 +8097,12 @@ def scene_attach_script(godot_project: str, scene: str, script: str,
                         node: str = ".", dry_run: bool = False,
                         force: bool = False) -> dict:
     """Attach a .gd to a node that already exists. Defaults to the scene root."""
-    try:
-        _, script_res = _res_pair(godot_project, script, ".gd")
-        return _scene_edit(
-            godot_project, scene,
-            lambda text: _scenewire.attach_script(text, script_res, node=node),
-            dry_run=dry_run, force=force,
-            summary=f"attached {script_res} to {node} in {scene}")
-    except Exception as exc:
-        return _fail(exc)
+    _, script_res = _res_pair(godot_project, script, ".gd")
+    return _scene_edit(
+        godot_project, scene,
+        lambda text: _scenewire.attach_script(text, script_res, node=node),
+        dry_run=dry_run, force=force,
+        summary=f"attached {script_res} to {node} in {scene}")
 
 
 @_tool
@@ -8098,14 +8114,12 @@ def scene_rename_node(godot_project: str, scene: str, node: str, name: str,
     NodePath properties elsewhere in the scene point at the old name. Doing it
     by hand is how a scene loads with half its wiring pointing at nothing.
     """
-    try:
-        return _scene_edit(
-            godot_project, scene,
-            lambda text: _scenewire.rename_node(text, node, name),
-            dry_run=dry_run, force=force,
-            summary=f"renamed {node} to {name} in {scene}")
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    return _scene_edit(
+        godot_project, scene,
+        lambda text: _scenewire.rename_node(text, node, name),
+        dry_run=dry_run, force=force,
+        summary=f"renamed {node} to {name} in {scene}")
 
 
 @_tool
@@ -8119,14 +8133,12 @@ def scene_reparent_node(godot_project: str, scene: str, node: str,
     land somewhere else on screen. Reparent for structure (into a YSort, onto a
     CanvasLayer), then fix position with scene_set_property.
     """
-    try:
-        return _scene_edit(
-            godot_project, scene,
-            lambda text: _scenewire.reparent(text, node, parent),
-            dry_run=dry_run, force=force,
-            summary=f"reparented {node} under {parent} in {scene}")
-    except Exception as exc:
-        return _fail(exc)
+    _contained_path(godot_project, "godot_project")
+    return _scene_edit(
+        godot_project, scene,
+        lambda text: _scenewire.reparent(text, node, parent),
+        dry_run=dry_run, force=force,
+        summary=f"reparented {node} under {parent} in {scene}")
 
 
 # ---------------------------------------------------------------------------
@@ -8169,23 +8181,20 @@ def causal_chains(spec: str, session: Optional[int] = None,
     Filter with actor, outcome ("landed", "failed", "blocked", "refused",
     "aborted", "dropped", "unresolved"), failed_gate, or move.
     """
-    try:
-        path = _telemetry_path(session, telemetry_path)
-        chains = _causal.chains_from_file(path, spec, _root())
-        summary = _causal.summarize(chains)
-        filtered = _causal.find(
-            chains, actor=actor or None, outcome=outcome or None,
-            failed_gate=failed_gate or None, move=move or None, limit=limit)
-        return {
-            "ok": True,
-            "telemetry": path,
-            "spec": spec,
-            "summary": summary,
-            "returned": len(filtered),
-            "chains": filtered,
-        }
-    except Exception as exc:
-        return _fail(exc)
+    path = _telemetry_path(session, telemetry_path)
+    chains = _causal.chains_from_file(path, spec, _root())
+    summary = _causal.summarize(chains)
+    filtered = _causal.find(
+        chains, actor=actor or None, outcome=outcome or None,
+        failed_gate=failed_gate or None, move=move or None, limit=limit)
+    return {
+        "ok": True,
+        "telemetry": path,
+        "spec": spec,
+        "summary": summary,
+        "returned": len(filtered),
+        "chains": filtered,
+    }
 
 
 @_tool
@@ -8198,18 +8207,15 @@ def causal_specs() -> dict:
     checked it against the source yet, and chains from it mark passed gates
     with '~'.
     """
-    try:
-        specs = _causal.load_specs(_root())
-        if not specs:
-            return {"ok": True, "specs": {}, "count": 0,
-                    "hint": "none defined for this project - run "
-                            "causal_infer_spec against a telemetry file to "
-                            "draft one from the events your game emits."}
-        return {"ok": True, "count": len(specs),
-                "specs": {name: _causal.describe_spec(s)
-                          for name, s in specs.items()}}
-    except Exception as exc:
-        return _fail(exc)
+    specs = _causal.load_specs(_root())
+    if not specs:
+        return {"ok": True, "specs": {}, "count": 0,
+                "hint": "none defined for this project - run "
+                        "causal_infer_spec against a telemetry file to "
+                        "draft one from the events your game emits."}
+    return {"ok": True, "count": len(specs),
+            "specs": {name: _causal.describe_spec(s)
+                      for name, s in specs.items()}}
 
 
 @_tool
@@ -8231,18 +8237,15 @@ def causal_infer_spec(session: Optional[int] = None, telemetry_path: str = "",
 
     save=True writes it to .bgate/causal_specs.json.
     """
-    try:
-        path = _telemetry_path(session, telemetry_path)
-        result = _causal.infer_spec(_causal.read_events(path), name=name,
-                                    family=family)
-        if result.get("ok") and save:
-            spec_name = next(iter(result["spec"]))
-            spec = _causal.spec_from_dict(spec_name, result["spec"][spec_name])
-            result["saved"] = _causal.save_spec(_root(), spec)
-        result["telemetry"] = path
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    path = _telemetry_path(session, telemetry_path)
+    result = _causal.infer_spec(_causal.read_events(path), name=name,
+                                family=family)
+    if result.get("ok") and save:
+        spec_name = next(iter(result["spec"]))
+        spec = _causal.spec_from_dict(spec_name, result["spec"][spec_name])
+        result["saved"] = _causal.save_spec(_root(), spec)
+    result["telemetry"] = path
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -8259,19 +8262,13 @@ def ref_pin(name: str, path: str, kind: str = "style", note: str = "") -> dict:
     things art must stay consistent WITH. Re-pinning a name upgrades the anchor
     in place. kind: character | style | ui | concept.
     """
-    try:
-        return _refs.pin(_root(), name, path, kind=kind, note=note)
-    except Exception as exc:
-        return _fail(exc)
+    return _refs.pin(_root(), name, path, kind=kind, note=note)
 
 
 @_tool
 def ref_list(kind: Optional[str] = None) -> dict:
     """The pinned reference anchors. Check BEFORE generating character/style art."""
-    try:
-        return {"refs": _refs.list_refs(_root(), kind=kind)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"refs": _refs.list_refs(_root(), kind=kind)}
 
 
 @_tool
@@ -8282,21 +8279,15 @@ def profile_set(name: str, traits: str, style: str, negative: str) -> dict:
     against it. traits = what the character IS; style = the rendering style
     every frame must hold; negative = what must never appear.
     """
-    try:
-        return _refs.profile_set(_root(), name, traits=traits, style=style,
-                                 negative=negative)
-    except Exception as exc:
-        return _fail(exc)
+    return _refs.profile_set(_root(), name, traits=traits, style=style,
+                             negative=negative)
 
 
 @_tool
 def profile_get(name: str) -> dict:
     """A character's stored visual identity (or {missing: true})."""
-    try:
-        got = _refs.profile_get(_root(), name)
-        return got if got else {"missing": True, "name": name}
-    except Exception as exc:
-        return _fail(exc)
+    got = _refs.profile_get(_root(), name)
+    return got if got else {"missing": True, "name": name}
 
 
 @_tool
@@ -8309,107 +8300,104 @@ def consistency_check(candidate_path: str, character: str) -> dict:
     line passes. This exists because three off-style batches were approved by
     agents judging frames in isolation.
     """
+    from PIL import Image
+
+    root = _Path(_root())
+    ref_path = _refs.resolve(root, character)
+    profile = _refs.profile_get(root, character)
+
+    def _board(img: Image.Image) -> Image.Image:
+        board = Image.new("RGB", img.size, (140, 140, 140))
+        tile = 16
+        for y in range(0, img.size[1], tile):
+            for x in range(0, img.size[0], tile):
+                if (x // tile + y // tile) % 2:
+                    board.paste((180, 180, 180), (x, y, min(x + tile, img.size[0]),
+                                                  min(y + tile, img.size[1])))
+        board.paste(img, (0, 0), img)
+        return board
+
+    ref = Image.open(ref_path).convert("RGBA")
+    cand = Image.open(candidate_path).convert("RGBA")
+    h = 512
+    ref.thumbnail((h, h))
+    cand.thumbnail((h, h))
+    combo = Image.new("RGB", (ref.width + cand.width + 12, max(ref.height, cand.height)),
+                      (24, 24, 28))
+    combo.paste(_board(ref), (0, 0))
+    combo.paste(_board(cand), (ref.width + 12, 0))
+    # Per-call composite: the shared consistency_check.png meant a second
+    # seat's comparison landed on the path the first seat was told to LOOK
+    # at, so a frame could be judged against someone else's reference.
+    out = (root / ".bgate_out" / "art" / "checks" /
+           f"{_run_tag(_Path(candidate_path).stem)}.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    combo.save(out)
+    archived = _archive_preview(str(out),
+                                f"check-{_Path(candidate_path).stem}"[:40])
+
+    # Palette tripwire (advisory - catches color drift, blind to identity).
+    def _pal(img, n=6):
+        img = img.copy()
+        img.thumbnail((128, 128))
+        px = [(r, g, b) for r, g, b, a in img.getdata() if a > 64]
+        if not px:
+            return []
+        q = Image.new("RGB", (len(px), 1))
+        q.putdata(px)
+        q = q.quantize(n)
+        pal = q.getpalette()[:n * 3]
+        return [tuple(pal[i * 3:i * 3 + 3]) for _, i in
+                sorted(q.getcolors(), reverse=True)[:n]]
+
+    pa, pb = _pal(ref), _pal(cand)
+    drift = (round(sum(min(sum((x - y) ** 2 for x, y in zip(c, d)) ** 0.5
+                           for d in pb) for c in pa) / len(pa), 1)
+             if pa and pb else None)
+
+    checklist = ["same character design (species/build/proportions)",
+                 "same rendering style (brushwork/detail level - no added "
+                 "texture like fur, hair, etched lines)",
+                 "same palette family", "no extra elements (glow, shadow, props)"]
+    if profile:
+        checklist.insert(0, f"matches traits: {profile['traits'][:160]}")
+        checklist.insert(1, f"holds style: {profile['style'][:160]}")
+        checklist.append(f"nothing from the negative list: {profile['negative'][:160]}")
+
+    # ALPHA / TRANSPARENCY TRIPWIRE (automated - the palette check above is
+    # blind to transparency because it samples only a>64). White halos,
+    # feathered fringes, opaque background bleed, dirty RGB under zero alpha
+    # and hollow interiors are what a checklist-by-eye keeps missing. The
+    # measurements live in bgate_core.chroma.audit, which is the SAME code
+    # the keyable path gates on at generation time - a frame cannot pass one
+    # and fail the other.
     try:
-        from PIL import Image
+        alpha = _chroma.audit(candidate_path)
+    except Exception as ae:
+        alpha = {"flags": [], "clean": None, "error": str(ae)}
 
-        root = _Path(_root())
-        ref_path = _refs.resolve(root, character)
-        profile = _refs.profile_get(root, character)
+    checklist = (["ALPHA fail: " + f for f in alpha.get("flags", [])]
+                 + ["ALPHA look: " + f for f in alpha.get("review", [])]
+                 + checklist)
 
-        def _board(img: Image.Image) -> Image.Image:
-            board = Image.new("RGB", img.size, (140, 140, 140))
-            tile = 16
-            for y in range(0, img.size[1], tile):
-                for x in range(0, img.size[0], tile):
-                    if (x // tile + y // tile) % 2:
-                        board.paste((180, 180, 180), (x, y, min(x + tile, img.size[0]),
-                                                      min(y + tile, img.size[1])))
-            board.paste(img, (0, 0), img)
-            return board
-
-        ref = Image.open(ref_path).convert("RGBA")
-        cand = Image.open(candidate_path).convert("RGBA")
-        h = 512
-        ref.thumbnail((h, h))
-        cand.thumbnail((h, h))
-        combo = Image.new("RGB", (ref.width + cand.width + 12, max(ref.height, cand.height)),
-                          (24, 24, 28))
-        combo.paste(_board(ref), (0, 0))
-        combo.paste(_board(cand), (ref.width + 12, 0))
-        # Per-call composite: the shared consistency_check.png meant a second
-        # seat's comparison landed on the path the first seat was told to LOOK
-        # at, so a frame could be judged against someone else's reference.
-        out = (root / ".bgate_out" / "art" / "checks" /
-               f"{_run_tag(_Path(candidate_path).stem)}.png")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        combo.save(out)
-        archived = _archive_preview(str(out),
-                                    f"check-{_Path(candidate_path).stem}"[:40])
-
-        # Palette tripwire (advisory - catches color drift, blind to identity).
-        def _pal(img, n=6):
-            img = img.copy()
-            img.thumbnail((128, 128))
-            px = [(r, g, b) for r, g, b, a in img.getdata() if a > 64]
-            if not px:
-                return []
-            q = Image.new("RGB", (len(px), 1))
-            q.putdata(px)
-            q = q.quantize(n)
-            pal = q.getpalette()[:n * 3]
-            return [tuple(pal[i * 3:i * 3 + 3]) for _, i in
-                    sorted(q.getcolors(), reverse=True)[:n]]
-
-        pa, pb = _pal(ref), _pal(cand)
-        drift = (round(sum(min(sum((x - y) ** 2 for x, y in zip(c, d)) ** 0.5
-                               for d in pb) for c in pa) / len(pa), 1)
-                 if pa and pb else None)
-
-        checklist = ["same character design (species/build/proportions)",
-                     "same rendering style (brushwork/detail level - no added "
-                     "texture like fur, hair, etched lines)",
-                     "same palette family", "no extra elements (glow, shadow, props)"]
-        if profile:
-            checklist.insert(0, f"matches traits: {profile['traits'][:160]}")
-            checklist.insert(1, f"holds style: {profile['style'][:160]}")
-            checklist.append(f"nothing from the negative list: {profile['negative'][:160]}")
-
-        # ALPHA / TRANSPARENCY TRIPWIRE (automated - the palette check above is
-        # blind to transparency because it samples only a>64). White halos,
-        # feathered fringes, opaque background bleed, dirty RGB under zero alpha
-        # and hollow interiors are what a checklist-by-eye keeps missing. The
-        # measurements live in bgate_core.chroma.audit, which is the SAME code
-        # the keyable path gates on at generation time - a frame cannot pass one
-        # and fail the other.
-        try:
-            alpha = _chroma.audit(candidate_path)
-        except Exception as ae:
-            alpha = {"flags": [], "clean": None, "error": str(ae)}
-
-        checklist = (["ALPHA fail: " + f for f in alpha.get("flags", [])]
-                     + ["ALPHA look: " + f for f in alpha.get("review", [])]
-                     + checklist)
-
-        result = {"composite": archived or str(out), "reference": ref_path,
-                  "palette_drift": drift,
-                  "palette_note": "advisory: >30 = color drift likely; low values "
-                                  "do NOT prove identity",
-                  "alpha": alpha,
-                  "auto_fail": bool(alpha.get("flags")),
-                  "checklist": checklist,
-                  "instruction": ("LOOK at the composite. Verdict every checklist "
-                                  "line explicitly. Any fail = do not land. If "
-                                  "alpha.flags is non-empty the frame AUTO-FAILS on "
-                                  "transparency (white halo / bleed / hollow / dirty "
-                                  "alpha) - regenerate; do not land it.")}
-        try:
-            _artifacts.record_check(
-                _root(), candidate_path, "consistency", result)
-        except Exception:
-            pass
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    result = {"composite": archived or str(out), "reference": ref_path,
+              "palette_drift": drift,
+              "palette_note": "advisory: >30 = color drift likely; low values "
+                              "do NOT prove identity",
+              "alpha": alpha,
+              "auto_fail": bool(alpha.get("flags")),
+              "checklist": checklist,
+              "instruction": ("LOOK at the composite. Verdict every checklist "
+                              "line explicitly. Any fail = do not land. If "
+                              "alpha.flags is non-empty the frame AUTO-FAILS on "
+                              "transparency (white halo / bleed / hollow / dirty "
+                              "alpha) - regenerate; do not land it.")}
+    try:
+        _artifacts.record_check(
+            _root(), candidate_path, "consistency", result)
+    except Exception:
+        pass
+    return result
 
 
 @_tool
@@ -8484,16 +8472,13 @@ def art_tournament_verdict(match_id: int, winner_artifact_id: int,
     from every decided match so a corrected verdict can never leave a stale
     number behind.
     """
-    try:
-        root = _root()
-        match = _art_tournament.record_verdict(
-            root, int(match_id), winner_artifact_id=int(winner_artifact_id),
-            reasons=reasons)
-        return {"ok": True, "match_id": match["id"],
-                "logical_name": match["logical_name"],
-                "winner_id": match["winner_id"]}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    match = _art_tournament.record_verdict(
+        root, int(match_id), winner_artifact_id=int(winner_artifact_id),
+        reasons=reasons)
+    return {"ok": True, "match_id": match["id"],
+            "logical_name": match["logical_name"],
+            "winner_id": match["winner_id"]}
 
 
 @_tool
@@ -8510,21 +8495,15 @@ def art_tournament_standings(logical_name: str, tournament_ref: str = "") -> dic
     ranked highest first, decided_matches, pending_matches}. An artifact
     with no matches yet does not appear - it has no rating to report.
     """
-    try:
-        root = _root()
-        return {"ok": True, **_art_tournament.standings(
-            root, logical_name, tournament_ref=(tournament_ref or None))}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    return {"ok": True, **_art_tournament.standings(
+        root, logical_name, tournament_ref=(tournament_ref or None))}
 
 
 @_tool
 def ref_unpin(name: str) -> dict:
     """Remove a pin (the file itself is kept - deleting canon art is a human call)."""
-    try:
-        return _refs.unpin(_root(), name)
-    except Exception as exc:
-        return _fail(exc)
+    return _refs.unpin(_root(), name)
 
 
 # ---------------------------------------------------------------------------
@@ -8539,11 +8518,8 @@ def asset_lock(path: str, seat: str) -> dict:
     lock errors rather than queues: decide to wait, or work on something else.
     Lock-before-create is the normal flow for new assets.
     """
-    try:
-        bound_seat, owner = _lock_identity(seat)
-        return _assets.lock(_root(), path, bound_seat, owner=owner)
-    except Exception as exc:
-        return _fail(exc)
+    bound_seat, owner = _lock_identity(seat)
+    return _assets.lock(_root(), path, bound_seat, owner=owner)
 
 
 @_tool
@@ -8553,32 +8529,23 @@ def asset_release(path: str, seat: str, force: bool = False) -> dict:
     Only the holding seat can release. force=True breaks anyone's lock (for a
     dead agent's stale claim) - a human's call, not a convenience.
     """
-    try:
-        if force:
-            return _assets.force_release(_root(), path)
-        bound_seat, owner = _lock_identity(seat)
-        return _assets.release(_root(), path, bound_seat, owner=owner)
-    except Exception as exc:
-        return _fail(exc)
+    if force:
+        return _assets.force_release(_root(), path)
+    bound_seat, owner = _lock_identity(seat)
+    return _assets.release(_root(), path, bound_seat, owner=owner)
 
 
 @_tool
 def asset_track(path: str) -> dict:
     """Register an existing file under its content hash (sha256)."""
-    try:
-        return _assets.track(_root(), path)
-    except Exception as exc:
-        return _fail(exc)
+    return _assets.track(_root(), path)
 
 
 @_tool
 def asset_status(kind: Optional[str] = None, locked_only: bool = False) -> dict:
     """List tracked assets, optionally by kind or only the locked ones."""
-    try:
-        return {"assets": _assets.list_assets(_root(), kind=kind,
-                                              locked_only=locked_only)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"assets": _assets.list_assets(_root(), kind=kind,
+                                          locked_only=locked_only)}
 
 
 @_tool
@@ -8615,64 +8582,61 @@ def pending_decisions(limit: int = 40) -> dict:
     candidate is exactly who must not clear it. Hand the list to the human with
     what each decision is blocking, and keep working on what it does not block.
     """
+    from bgate_core import gates as _gatemode
+    from bgate_core import queue as _q
+    from bgate_core import steerbox as _steerbox
+
+    root = _root()
+    cap = max(1, min(int(limit or 40), 200))
+
+    parked = [{"item_id": int(r["id"]), "seat": r["seat"],
+               "title": r["title"], "since": r["updated_at"],
+               "result": (r["result"] or "")[:240]}
+              for r in _q.awaiting_review(root)[:cap]]
+
+    candidates = []
+    for art in _artifacts.list_revisions(root, status="candidate",
+                                         limit=cap):
+        qa = (art.get("metadata") or {}).get("qa_review") or {}
+        candidates.append({
+            "artifact_id": int(art["id"]),
+            "logical_name": art.get("logical_name") or "",
+            "revision": art.get("revision"),
+            "path": art.get("path") or "",
+            "work_item_id": art.get("work_item_id"),
+            "producer": art.get("producer") or "",
+            # WHETHER A MACHINE HAS ALREADY LOOKED. A candidate with a
+            # passing qa_review is a different ask than a raw one - the human
+            # is confirming a check, not performing the first one.
+            "machine_verdict": qa.get("verdict") or "",
+            "machine_note": (qa.get("reasons") or "")[:200],
+        })
+
     try:
-        from bgate_core import gates as _gatemode
-        from bgate_core import queue as _q
-        from bgate_core import steerbox as _steerbox
+        questions = _steerbox.open_questions(root)[:cap]
+    except Exception:
+        questions = []
 
-        root = _root()
-        cap = max(1, min(int(limit or 40), 200))
-
-        parked = [{"item_id": int(r["id"]), "seat": r["seat"],
-                   "title": r["title"], "since": r["updated_at"],
-                   "result": (r["result"] or "")[:240]}
-                  for r in _q.awaiting_review(root)[:cap]]
-
-        candidates = []
-        for art in _artifacts.list_revisions(root, status="candidate",
-                                             limit=cap):
-            qa = (art.get("metadata") or {}).get("qa_review") or {}
-            candidates.append({
-                "artifact_id": int(art["id"]),
-                "logical_name": art.get("logical_name") or "",
-                "revision": art.get("revision"),
-                "path": art.get("path") or "",
-                "work_item_id": art.get("work_item_id"),
-                "producer": art.get("producer") or "",
-                # WHETHER A MACHINE HAS ALREADY LOOKED. A candidate with a
-                # passing qa_review is a different ask than a raw one - the human
-                # is confirming a check, not performing the first one.
-                "machine_verdict": qa.get("verdict") or "",
-                "machine_note": (qa.get("reasons") or "")[:200],
-            })
-
-        try:
-            questions = _steerbox.open_questions(root)[:cap]
-        except Exception:
-            questions = []
-
-        state = _gatemode.state(root)
-        total = len(parked) + len(candidates) + len(questions)
-        return {
-            "gate": {"mode": state["mode"], "source": state.get("source", ""),
-                     "env_override": state.get("env_override", "")},
-            "blocked_chains": parked,
-            "candidates": candidates,
-            "questions": questions,
-            "total": total,
-            "note": (
-                "nothing is waiting on a human" if not total else
-                f"{len(parked)} chain(s) stopped, {len(candidates)} candidate(s) "
-                f"and {len(questions)} question(s) waiting. Only a human clears "
-                "these - surface the list, say what each blocks, and carry on "
-                "with the work that is not behind one."
-                + (" NOTE: the approval gate is 'none' for this project, so "
-                   "nothing here should be stopping for a human - report that "
-                   "rather than working around it."
-                   if state["mode"] == _gatemode.NONE else "")),
-        }
-    except Exception as exc:
-        return _fail(exc)
+    state = _gatemode.state(root)
+    total = len(parked) + len(candidates) + len(questions)
+    return {
+        "gate": {"mode": state["mode"], "source": state.get("source", ""),
+                 "env_override": state.get("env_override", "")},
+        "blocked_chains": parked,
+        "candidates": candidates,
+        "questions": questions,
+        "total": total,
+        "note": (
+            "nothing is waiting on a human" if not total else
+            f"{len(parked)} chain(s) stopped, {len(candidates)} candidate(s) "
+            f"and {len(questions)} question(s) waiting. Only a human clears "
+            "these - surface the list, say what each blocks, and carry on "
+            "with the work that is not behind one."
+            + (" NOTE: the approval gate is 'none' for this project, so "
+               "nothing here should be stopping for a human - report that "
+               "rather than working around it."
+               if state["mode"] == _gatemode.NONE else "")),
+    }
 
 
 @_tool
@@ -8683,10 +8647,7 @@ def asset_verify() -> dict:
     outside edit. Locked files are expected to differ and aren't drift. Run this
     before builds and after any multi-agent session.
     """
-    try:
-        return _assets.verify(_root())
-    except Exception as exc:
-        return _fail(exc)
+    return _assets.verify(_root())
 
 
 # ---------------------------------------------------------------------------
@@ -8695,22 +8656,16 @@ def asset_verify() -> dict:
 @_tool
 def iteration_status(limit: int = 10) -> dict:
     """Causal iteration history: snapshots, assets, playtests, decisions, work, outcome."""
-    try:
-        return {"iterations": _iterations.list_iterations(_root(), limit=limit)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"iterations": _iterations.list_iterations(_root(), limit=limit)}
 
 
 @_tool
 def iteration_record_checks(status: str, summary: str = "",
                             checks: Optional[dict] = None) -> dict:
     """Attach automated-check results to the active iteration and next snapshot."""
-    try:
-        return _iterations.record_checks(
-            _root(), {"status": status, "summary": summary,
-                      "checks": checks or {}})
-    except Exception as exc:
-        return _fail(exc)
+    return _iterations.record_checks(
+        _root(), {"status": status, "summary": summary,
+                  "checks": checks or {}})
 
 
 # ---------------------------------------------------------------------------
@@ -8719,15 +8674,12 @@ def iteration_record_checks(status: str, summary: str = "",
 @_tool
 def playtest_devices(filter_text: str = "") -> dict:
     """List mic inputs and open windows - pick what to record before starting."""
-    try:
-        return {
-            "inputs": _recorder.list_inputs(),
-            "windows": _recorder.list_windows(filter_text),
-            "note": "pass an input 'index' as mic_device, and a window 'title' "
-                    "as window_title",
-        }
-    except Exception as exc:
-        return _fail(exc)
+    return {
+        "inputs": _recorder.list_inputs(),
+        "windows": _recorder.list_windows(filter_text),
+        "note": "pass an input 'index' as mic_device, and a window 'title' "
+                "as window_title",
+    }
 
 
 @_tool
@@ -8741,12 +8693,9 @@ def playtest_check(mic_device: Optional[int] = None,
     which looks identical to a working one until the transcript comes back empty
     and the whole playthrough is wasted.
     """
-    try:
-        return _playtest.preflight(
-            mic_device=mic_device, window_title=window_title,
-            root=_root(), native=native)
-    except Exception as exc:
-        return _fail(exc)
+    return _playtest.preflight(
+        mic_device=mic_device, window_title=window_title,
+        root=_root(), native=native)
 
 
 @_tool
@@ -8764,12 +8713,9 @@ def playtest_start(name: str, window_title: Optional[str] = None,
     with BGATE_TELEMETRY already attached; game_cmd optionally overrides the
     default <root>/game project command.
     """
-    try:
-        return _playtest.start(_root(), name, window_title=window_title,
-                               mic_device=mic_device, build_ref=build_ref, fps=fps,
-                               launch_native=launch_native, game_cmd=game_cmd)
-    except Exception as exc:
-        return _fail(exc)
+    return _playtest.start(_root(), name, window_title=window_title,
+                           mic_device=mic_device, build_ref=build_ref, fps=fps,
+                           launch_native=launch_native, game_cmd=game_cmd)
 
 
 @_tool
@@ -8781,11 +8727,8 @@ def playtest_stop(session_id: Optional[int] = None, model: str = "base",
     per 10 minutes of audio on CPU (the first run also downloads the model).
     Items land as 'new' - nothing becomes work until you promote it.
     """
-    try:
-        return _playtest.stop(_root(), session_id, model=model,
-                              transcribe_now=transcribe_now)
-    except Exception as exc:
-        return _fail(exc)
+    return _playtest.stop(_root(), session_id, model=model,
+                          transcribe_now=transcribe_now)
 
 
 @_tool
@@ -8799,20 +8742,14 @@ def playtest_brief(session_id: int, include_transcript: bool = False,
     the game events within window_s of it, and `transcript` is what the player
     said, timestamped. Line frames up with the transcript by t.
     """
-    try:
-        return _playtest.brief(_root(), session_id, window_s=window_s,
-                               include_transcript=include_transcript)
-    except Exception as exc:
-        return _fail(exc)
+    return _playtest.brief(_root(), session_id, window_s=window_s,
+                           include_transcript=include_transcript)
 
 
 @_tool
 def playtest_list(status: Optional[str] = None) -> dict:
     """List play sessions. status: recording | processing | ready | failed."""
-    try:
-        return {"sessions": _playtest.list_sessions(_root(), status=status)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"sessions": _playtest.list_sessions(_root(), status=status)}
 
 
 @_tool
@@ -8823,28 +8760,19 @@ def playtest_promote(item_id: int, seat: Optional[str] = None,
     This is the human's call. Do not promote items on the user's behalf without
     being asked - thinking out loud mid-play is not a decision to build.
     """
-    try:
-        return _playtest.promote(_root(), item_id, seat=seat, kind=kind, ref=ref)
-    except Exception as exc:
-        return _fail(exc)
+    return _playtest.promote(_root(), item_id, seat=seat, kind=kind, ref=ref)
 
 
 @_tool
 def playtest_dismiss(item_id: int) -> dict:
     """Drop a feedback item - noise, or already handled."""
-    try:
-        return _playtest.dismiss(_root(), item_id)
-    except Exception as exc:
-        return _fail(exc)
+    return _playtest.dismiss(_root(), item_id)
 
 
 @_tool
 def playtest_telemetry_contract() -> dict:
     """What the game must emit so spoken feedback becomes actionable numbers."""
-    try:
-        return _playtest.telemetry_contract()
-    except Exception as exc:
-        return _fail(exc)
+    return _playtest.telemetry_contract()
 
 
 # ---------------------------------------------------------------------------
@@ -8853,10 +8781,7 @@ def playtest_telemetry_contract() -> dict:
 @_tool
 def seat_list() -> dict:
     """The project's seats: role, mission, write lanes. Adopt one before working."""
-    try:
-        return {"seats": list(_seats.roles_for(_root()).values())}
-    except Exception as exc:
-        return _fail(exc)
+    return {"seats": list(_seats.roles_for(_root()).values())}
 
 
 @_tool
@@ -8868,10 +8793,7 @@ def seat_brief(role: str) -> dict:
     recent blackboard notes. Read this BEFORE doing seat work - it replaces
     re-deriving the project state from scratch.
     """
-    try:
-        return _seats.brief(_root(), role)
-    except Exception as exc:
-        return _fail(exc)
+    return _seats.brief(_root(), role)
 
 
 @_tool
@@ -8882,10 +8804,7 @@ def seat_can_write(role: str, path: str) -> dict:
     and the file must not be locked by another seat - being in-lane does not
     excuse stomping a locked binary. Fails closed for unknown/disabled seats.
     """
-    try:
-        return _seats.can_write(_root(), role, path)
-    except Exception as exc:
-        return _fail(exc)
+    return _seats.can_write(_root(), role, path)
 
 
 @_tool
@@ -8927,23 +8846,20 @@ def seat_configure(role: str, enabled: Optional[bool] = None,
     {ok: false, error} - including on the permission refusal, which is a normal
     result to read and route around, not a crash.
     """
-    try:
-        privileged = [name for name, value in
-                      (("write_globs", write_globs), ("enabled", enabled))
-                      if value is not None]
-        if privileged and _caller_is_agent():
-            raise PermissionError(
-                f"{_actor() or 'an agent session'} may not change "
-                f"{', '.join(privileged)} on seat {role!r} - write lanes and the "
-                "enabled flag are a human's call, because a seat that can widen "
-                "its own lanes has no lanes. Change the mission here if that is "
-                "what you meant, or ask the human to edit the seat in the "
-                "dashboard (Seats -> " + role + ").")
-        return _seats.configure(_root(), role, enabled=enabled,
-                                write_globs=write_globs, mission=mission,
-                                persona=persona)
-    except Exception as exc:
-        return _fail(exc)
+    privileged = [name for name, value in
+                  (("write_globs", write_globs), ("enabled", enabled))
+                  if value is not None]
+    if privileged and _caller_is_agent():
+        raise PermissionError(
+            f"{_actor() or 'an agent session'} may not change "
+            f"{', '.join(privileged)} on seat {role!r} - write lanes and the "
+            "enabled flag are a human's call, because a seat that can widen "
+            "its own lanes has no lanes. Change the mission here if that is "
+            "what you meant, or ask the human to edit the seat in the "
+            "dashboard (Seats -> " + role + ").")
+    return _seats.configure(_root(), role, enabled=enabled,
+                            write_globs=write_globs, mission=mission,
+                            persona=persona)
 
 
 @_tool
@@ -8953,10 +8869,7 @@ def seat_post_note(role: str, body: str, topic: str = "") -> dict:
     Post when your work changes another seat's world: an asset re-exported, a
     tunable renamed, a scope call made. Short and factual beats long and vague.
     """
-    try:
-        return _seats.post_note(_root(), role, body, topic=topic)
-    except Exception as exc:
-        return _fail(exc)
+    return _seats.post_note(_root(), role, body, topic=topic)
 
 
 @_tool
@@ -8987,10 +8900,7 @@ def handoff_note(kind: str, text: str, refs: Optional[list] = None) -> dict:
     refs: ids/paths this note points at - "bible#12", "item 41",
     "game/data/loot/floor_0.json". Cite, do not duplicate.
     """
-    try:
-        return _handoff.note(_root(), kind, text, refs=refs)
-    except Exception as exc:
-        return _fail(exc)
+    return _handoff.note(_root(), kind, text, refs=refs)
 
 
 @_tool
@@ -9002,23 +8912,17 @@ def handoff_read(limit: int = 0, kind: str = "") -> dict:
     (`deferred` before you "fix" something, `decision` before you re-litigate
     one). limit=0 is everything; a positive limit takes the most recent N.
     """
-    try:
-        trail = _handoff.read(_root(), limit=limit, kind=kind)
-        return {"notes": trail, "count": len(trail),
-                "path": str(_handoff.path_for(_root()))}
-    except Exception as exc:
-        return _fail(exc)
+    trail = _handoff.read(_root(), limit=limit, kind=kind)
+    return {"notes": trail, "count": len(trail),
+            "path": str(_handoff.path_for(_root()))}
 
 
 @_tool
 def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
                limit: int = 20) -> dict:
     """Read the blackboard, newest first, optionally filtered by topic or role."""
-    try:
-        return {"notes": _seats.read_notes(_root(), topic=topic, role=role,
-                                           limit=limit)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"notes": _seats.read_notes(_root(), topic=topic, role=role,
+                                       limit=limit)}
 
 
 # ---------------------------------------------------------------------------
@@ -9098,13 +9002,10 @@ def decision_list(state: Optional[str] = None,
     sees at a glance what is ruled, what is waiting on a human, and what was
     replaced. A superseded row keeps `superseded_by` pointing at whatever won - that pair is how you learn an idea was already tried.
     """
-    try:
-        rows = _decisions.list_decisions(_root(), state=state or "",
-                                         work_item_id=work_item_id)
-        return {"decisions": rows, "count": len(rows),
-                "open": sum(1 for r in rows if r["state"] == "open")}
-    except Exception as exc:
-        return _fail(exc)
+    rows = _decisions.list_decisions(_root(), state=state or "",
+                                     work_item_id=work_item_id)
+    return {"decisions": rows, "count": len(rows),
+            "open": sum(1 for r in rows if r["state"] == "open")}
 
 
 @_tool
@@ -9178,11 +9079,8 @@ def not_building_list(tag: Optional[str] = None) -> dict:
     hope nobody notices, and do not silently work around it either, because a
     workaround for a deliberate no is the no getting built with extra steps.
     """
-    try:
-        rows = _decisions.list_not_building(_root(), tag=tag or "")
-        return {"not_building": rows, "count": len(rows)}
-    except Exception as exc:
-        return _fail(exc)
+    rows = _decisions.list_not_building(_root(), tag=tag or "")
+    return {"not_building": rows, "count": len(rows)}
 
 
 # ---------------------------------------------------------------------------
@@ -9234,24 +9132,18 @@ def quest_add(title: str, steps: list, premise: str = "", reward: str = "",
     The returned row carries `ok` and `problems` - the shape checks, each naming
     its step.
     """
-    try:
-        out = _quests.add(_root(), title, steps=steps, premise=premise,
-                          reward=reward, giver=giver, state=state)
-        _log("narrative", f"quest {out['title'][:60]!r}", ref=f"quest:{out['id']}")
-        return out
-    except Exception as exc:
-        return _fail(exc)
+    out = _quests.add(_root(), title, steps=steps, premise=premise,
+                      reward=reward, giver=giver, state=state)
+    _log("narrative", f"quest {out['title'][:60]!r}", ref=f"quest:{out['id']}")
+    return out
 
 
 @_tool
 def quest_step_add(quest: str, text: str, done_when: str,
                    optional: bool = False) -> dict:
     """Append one step to an existing quest. Order continues the sequence."""
-    try:
-        return _quests.add_step(_root(), quest, text, done_when,
-                                optional=optional)
-    except Exception as exc:
-        return _fail(exc)
+    return _quests.add_step(_root(), quest, text, done_when,
+                            optional=optional)
 
 
 @_tool
@@ -9262,10 +9154,7 @@ def quest_step_cut(step_id: int) -> dict:
     a hole makes the panel, the agent and whoever implements the quest disagree
     about which step that is.
     """
-    try:
-        return _quests.cut_step(_root(), step_id)
-    except Exception as exc:
-        return _fail(exc)
+    return _quests.cut_step(_root(), step_id)
 
 
 @_tool
@@ -9278,11 +9167,8 @@ def quest_update(quest: str, premise: Optional[str] = None,
     shipping this, and here is what it was" is the most useful thing the next
     person to propose it can read, exactly as with a superseded decision.
     """
-    try:
-        return _quests.update(_root(), quest, premise=premise, reward=reward,
-                              state=state, giver=giver)
-    except Exception as exc:
-        return _fail(exc)
+    return _quests.update(_root(), quest, premise=premise, reward=reward,
+                          state=state, giver=giver)
 
 
 @_tool
@@ -9295,21 +9181,15 @@ def quest_list(state: Optional[str] = None) -> dict:
 
     state: draft | active | done | cut. No state returns all of them.
     """
-    try:
-        out = _quests.brief(_root(), state or "")
-        out["count"] = len(out["quests"])
-        return out
-    except Exception as exc:
-        return _fail(exc)
+    out = _quests.brief(_root(), state or "")
+    out["count"] = len(out["quests"])
+    return out
 
 
 @_tool
 def quest_read(quest: str) -> dict:
     """One quest, whole: fields, giver resolved, steps in order, verdict."""
-    try:
-        return _quests.get(_root(), quest)
-    except Exception as exc:
-        return _fail(exc)
+    return _quests.get(_root(), quest)
 
 
 # ---------------------------------------------------------------------------
@@ -9357,18 +9237,15 @@ def brainstorm_list(seat: Optional[str] = None, status: Optional[str] = None,
     from brainstorm_open, because an index that ships every scratch document is
     an index nobody can afford to poll.
     """
-    try:
-        root = _root()
-        if seat and seat not in _bs.SEATS:
-            return {"ok": False, "error": f"seat must be one of {_bs.SEATS}"}
-        if status and status not in _bs.STATUSES:
-            return {"ok": False, "error": f"status must be one of {_bs.STATUSES}"}
-        return {"sessions": _bs.list_sessions(root, seat=seat, status=status,
-                                              limit=min(int(limit or 50), 200)),
-                "seats": list(_bs.SEATS),
-                "model": _bs.available(root)}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    if seat and seat not in _bs.SEATS:
+        return {"ok": False, "error": f"seat must be one of {_bs.SEATS}"}
+    if status and status not in _bs.STATUSES:
+        return {"ok": False, "error": f"status must be one of {_bs.STATUSES}"}
+    return {"sessions": _bs.list_sessions(root, seat=seat, status=status,
+                                          limit=min(int(limit or 50), 200)),
+            "seats": list(_bs.SEATS),
+            "model": _bs.available(root)}
 
 
 @_tool
@@ -9386,10 +9263,7 @@ def brainstorm_new(seat: str = "director", title: str = "") -> dict:
       narrative  what is TRUE - canon, lore, the bible. May propose narrative
                  work only.
     """
-    try:
-        return _bs.create(_root(), seat=seat, title=title)
-    except Exception as exc:
-        return _fail(exc)
+    return _bs.create(_root(), seat=seat, title=title)
 
 
 @_tool
@@ -9412,13 +9286,10 @@ def brainstorm_open(session_id: int) -> dict:
     `reply=` to brainstorm_say - if a partner is already live, its answers and
     yours are two voices in one conversation.
     """
-    try:
-        root = _root()
-        session = _bs.read(root, int(session_id))
-        return {**session, "drawing_text": _bs.drawing_digest(session["drawing"]),
-                "thinker": _bs.thinker(root, int(session_id))}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    session = _bs.read(root, int(session_id))
+    return {**session, "drawing_text": _bs.drawing_digest(session["drawing"]),
+            "thinker": _bs.thinker(root, int(session_id))}
 
 
 @_tool
@@ -9458,86 +9329,83 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
     part. Do not write a task list here - proposing the work is a separate step
     (brainstorm_synthesize) that a human takes when they are ready.
     """
-    try:
-        root = _root()
-        session = _bs.read(root, int(session_id))
-        _bs.ensure_open(session)
-        answered = str(reply or "").strip()[:_bs.MAX_MESSAGE]
-        # Resolved BEFORE the sentence is stored: a message addressed to a seat
-        # that is not in the room has been said to nobody, and storing it would
-        # leave a question in the transcript that nothing will ever answer.
-        speaking = ([""] if answered
-                    else _bs.answerers(root, int(session_id), to))
-        said = _bs.append_message(root, int(session_id), "user", text)
-        model = {"ok": True, "answered_by": "the caller", "estimated_usd": 0.0}
-        replies: list = []
-        if not answered and _caller_is_agent():
-            model = {"ok": False, "error":
-                     "pass reply= - you are a model holding this session "
-                     "already, and spawning a second CLI session to think on "
-                     "your behalf costs a turn against the subscription for an "
-                     "answer you can simply write. The sentence is stored; "
-                     "nothing was lost."}
-            speaking = []
-        elif not answered:
-            answers = []
+    root = _root()
+    session = _bs.read(root, int(session_id))
+    _bs.ensure_open(session)
+    answered = str(reply or "").strip()[:_bs.MAX_MESSAGE]
+    # Resolved BEFORE the sentence is stored: a message addressed to a seat
+    # that is not in the room has been said to nobody, and storing it would
+    # leave a question in the transcript that nothing will ever answer.
+    speaking = ([""] if answered
+                else _bs.answerers(root, int(session_id), to))
+    said = _bs.append_message(root, int(session_id), "user", text)
+    model = {"ok": True, "answered_by": "the caller", "estimated_usd": 0.0}
+    replies: list = []
+    if not answered and _caller_is_agent():
+        model = {"ok": False, "error":
+                 "pass reply= - you are a model holding this session "
+                 "already, and spawning a second CLI session to think on "
+                 "your behalf costs a turn against the subscription for an "
+                 "answer you can simply write. The sentence is stored; "
+                 "nothing was lost."}
+        speaking = []
+    elif not answered:
+        answers = []
 
-            def _round(discuss: bool) -> int:
-                spoke = 0
-                for seat in speaking:
-                    # session_id makes the room a CONVERSATION: one spawned
-                    # session per voice answers every message rather than a
-                    # fresh process per turn. An invited seat's process is built
-                    # by the same read-only spawner as the room's own partner - # it holds an opinion, never a tool.
-                    system = (_bs.participant_system(root, seat,
-                                                     discuss=discuss) if seat
-                              else _bs.chat_system(session["seat"],
-                                                   discuss=discuss, root=root))
-                    got = _bs.ask(root, system,
-                                  _bs.transcript(root, int(session_id),
-                                                 for_seat=seat),
-                                  session_id=int(session_id), seat=seat)
-                    got["seat"] = seat
-                    got["discuss"] = bool(discuss)
-                    _bs.record_turn(root, int(session_id), seat, got)
-                    passed = (discuss and got.get("ok")
-                              and _bs.is_pass(got.get("text")))
-                    got["passed"] = bool(passed)
-                    answers.append(got)
-                    if got.get("ok") and not passed:
-                        spoke += 1
-                        replies.append(_bs.append_message(
-                            root, int(session_id), "assistant",
-                            got["text"][:_bs.MAX_MESSAGE], seat=seat))
-                return spoke
+        def _round(discuss: bool) -> int:
+            spoke = 0
+            for seat in speaking:
+                # session_id makes the room a CONVERSATION: one spawned
+                # session per voice answers every message rather than a
+                # fresh process per turn. An invited seat's process is built
+                # by the same read-only spawner as the room's own partner - # it holds an opinion, never a tool.
+                system = (_bs.participant_system(root, seat,
+                                                 discuss=discuss) if seat
+                          else _bs.chat_system(session["seat"],
+                                               discuss=discuss, root=root))
+                got = _bs.ask(root, system,
+                              _bs.transcript(root, int(session_id),
+                                             for_seat=seat),
+                              session_id=int(session_id), seat=seat)
+                got["seat"] = seat
+                got["discuss"] = bool(discuss)
+                _bs.record_turn(root, int(session_id), seat, got)
+                passed = (discuss and got.get("ok")
+                          and _bs.is_pass(got.get("text")))
+                got["passed"] = bool(passed)
+                answers.append(got)
+                if got.get("ok") and not passed:
+                    spoke += 1
+                    replies.append(_bs.append_message(
+                        root, int(session_id), "assistant",
+                        got["text"][:_bs.MAX_MESSAGE], seat=seat))
+            return spoke
 
-            _round(False)
-            # FREE DISCUSSION, same three bounds as the dashboard door: the
-            # room's own discuss_rounds setting (0 = off, the default), more
-            # than one voice present, and a round where everybody passed ends
-            # it. Both doors run it because both doors are the same room.
-            rounds = _bs.discuss_rounds(session)
-            if rounds and len(speaking) > 1:
-                for _ in range(rounds):
-                    if not _round(True):
-                        break
-            model = answers[0] if answers else {"ok": False,
-                                                "error": "nobody answered"}
-        wrote = replies[0] if replies else None
-        if answered:
-            wrote = _bs.append_message(root, int(session_id), "assistant",
-                                       answered)
-            replies = [wrote]
-        out = {"message": said, "reply": wrote, "replies": replies,
-               "model": model, "spoke": speaking,
-               "session_id": int(session_id)}
-        if wrote is None:
-            out["note"] = ("the sentence is stored and nothing was lost - pass "
-                           "reply= to write the answer yourself, which needs no "
-                           "key and spawns nothing")
-        return out
-    except Exception as exc:
-        return _fail(exc)
+        _round(False)
+        # FREE DISCUSSION, same three bounds as the dashboard door: the
+        # room's own discuss_rounds setting (0 = off, the default), more
+        # than one voice present, and a round where everybody passed ends
+        # it. Both doors run it because both doors are the same room.
+        rounds = _bs.discuss_rounds(session)
+        if rounds and len(speaking) > 1:
+            for _ in range(rounds):
+                if not _round(True):
+                    break
+        model = answers[0] if answers else {"ok": False,
+                                            "error": "nobody answered"}
+    wrote = replies[0] if replies else None
+    if answered:
+        wrote = _bs.append_message(root, int(session_id), "assistant",
+                                   answered)
+        replies = [wrote]
+    out = {"message": said, "reply": wrote, "replies": replies,
+           "model": model, "spoke": speaking,
+           "session_id": int(session_id)}
+    if wrote is None:
+        out["note"] = ("the sentence is stored and nothing was lost - pass "
+                       "reply= to write the answer yourself, which needs no "
+                       "key and spawns nothing")
+    return out
 
 
 @_tool
@@ -9563,13 +9431,10 @@ def brainstorm_invite(session_id: int, seat: str) -> dict:
     runner that has not declared a read-only mode - that last one is refused
     rather than started with dispatch flags, which is the whole guarantee.
     """
-    try:
-        root = _root()
-        out = _bs.invite(root, int(session_id), str(seat or ""))
-        return {**out,
-                "participants": _bs.participants(root, int(session_id))}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    out = _bs.invite(root, int(session_id), str(seat or ""))
+    return {**out,
+            "participants": _bs.participants(root, int(session_id))}
 
 
 @_tool
@@ -9582,13 +9447,10 @@ def brainstorm_leave(session_id: int, seat: str) -> dict:
     Re-inviting the same seat later reuses the row, so its cost keeps summing
     over the whole session.
     """
-    try:
-        root = _root()
-        out = _bs.leave(root, int(session_id), str(seat or ""))
-        return {**out,
-                "participants": _bs.participants(root, int(session_id))}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    out = _bs.leave(root, int(session_id), str(seat or ""))
+    return {**out,
+            "participants": _bs.participants(root, int(session_id))}
 
 
 @_tool
@@ -9609,28 +9471,25 @@ def brainstorm_note(session_id: int, notes: Optional[str] = None,
 
     Omitted fields are left alone. Nothing here queues anything.
     """
-    try:
-        root = _root()
-        session = _bs.read(root, int(session_id))
-        _bs.ensure_open(session)
-        changed: list[str] = []
-        if title is not None:
-            _bs.rename(root, int(session_id), str(title))
-            changed.append("title")
-        if notes is not None:
-            _bs.set_notes(root, int(session_id), str(notes))
-            changed.append("notes")
-        if drawing is not None:
-            _bs.set_drawing(root, int(session_id), drawing)
-            changed.append("drawing")
-        if not changed:
-            return {"ok": False,
-                    "error": "nothing to change - pass notes, title or drawing"}
-        after = _bs.read(root, int(session_id))
-        return {**after, "changed": changed,
-                "drawing_text": _bs.drawing_digest(after["drawing"])}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    session = _bs.read(root, int(session_id))
+    _bs.ensure_open(session)
+    changed: list[str] = []
+    if title is not None:
+        _bs.rename(root, int(session_id), str(title))
+        changed.append("title")
+    if notes is not None:
+        _bs.set_notes(root, int(session_id), str(notes))
+        changed.append("notes")
+    if drawing is not None:
+        _bs.set_drawing(root, int(session_id), drawing)
+        changed.append("drawing")
+    if not changed:
+        return {"ok": False,
+                "error": "nothing to change - pass notes, title or drawing"}
+    after = _bs.read(root, int(session_id))
+    return {**after, "changed": changed,
+            "drawing_text": _bs.drawing_digest(after["drawing"])}
 
 
 @_tool
@@ -9652,35 +9511,32 @@ def brainstorm_synthesize(session_id: int) -> dict:
     you can write the plan yourself in that same shape - the review step is what
     matters, not which model drafted it.
     """
-    try:
-        root = _root()
-        session = _bs.read(root, int(session_id))
-        turns = _bs.synthesis_turns(root, session)
-        # persist=False: a synthesis is one question under a different system
-        # prompt, and its JSON must not land in the middle of the conversation
-        # the human is going to read back.
-        answer = _bs.ask(root, _bs.synthesis_system(session["seat"]), turns,
-                         session_id=int(session_id), persist=False,
-                         tag="synth", timeout=_bs.SYNTH_TIMEOUT,
-                         usd=_bs.USD_PER_SYNTH)
-        if not answer.get("ok"):
-            return {"ok": False, "wrote_nothing": True,
-                    "error": answer.get("error") or "synthesis failed",
-                    "note": "no model here - draft the plan yourself in the "
-                            "shape brainstorm_deploy takes and put it in front "
-                            "of the human"}
-        plan = _bs.parse_plan(answer["text"], session["seat"])
-        return {"session_id": int(session_id), "seat": session["seat"],
-                "plan": plan,
-                # Said out loud in the payload because the whole design of this
-                # step is that it is safe to press.
-                "wrote_nothing": True,
-                "already_filed": _bs.already_filed(session, plan),
-                "model": {k: answer[k]
-                          for k in ("model", "runner", "seconds",
-                                    "estimated_usd") if k in answer}}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    session = _bs.read(root, int(session_id))
+    turns = _bs.synthesis_turns(root, session)
+    # persist=False: a synthesis is one question under a different system
+    # prompt, and its JSON must not land in the middle of the conversation
+    # the human is going to read back.
+    answer = _bs.ask(root, _bs.synthesis_system(session["seat"]), turns,
+                     session_id=int(session_id), persist=False,
+                     tag="synth", timeout=_bs.SYNTH_TIMEOUT,
+                     usd=_bs.USD_PER_SYNTH)
+    if not answer.get("ok"):
+        return {"ok": False, "wrote_nothing": True,
+                "error": answer.get("error") or "synthesis failed",
+                "note": "no model here - draft the plan yourself in the "
+                        "shape brainstorm_deploy takes and put it in front "
+                        "of the human"}
+    plan = _bs.parse_plan(answer["text"], session["seat"])
+    return {"session_id": int(session_id), "seat": session["seat"],
+            "plan": plan,
+            # Said out loud in the payload because the whole design of this
+            # step is that it is safe to press.
+            "wrote_nothing": True,
+            "already_filed": _bs.already_filed(session, plan),
+            "model": {k: answer[k]
+                      for k in ("model", "runner", "seconds",
+                                "estimated_usd") if k in answer}}
 
 
 @_tool
@@ -9765,10 +9621,7 @@ def brainstorm_close(session_id: int) -> dict:
     nobody their work, and an agent that noticed a room has gone quiet should be
     able to stop it paying for a listener. Idempotent.
     """
-    try:
-        return _bs.close_partner(_root(), int(session_id))
-    except Exception as exc:
-        return _fail(exc)
+    return _bs.close_partner(_root(), int(session_id))
 
 
 @_tool
@@ -9784,10 +9637,7 @@ def brainstorm_discuss(session_id: int, rounds: int) -> dict:
     rounds is ten turns on one sentence. The ceiling is small on purpose - past
     it a human should be steering, not buying more of the same argument.
     """
-    try:
-        return _bs.set_discuss(_root(), int(session_id), int(rounds))
-    except Exception as exc:
-        return _fail(exc)
+    return _bs.set_discuss(_root(), int(session_id), int(rounds))
 
 
 @_tool
@@ -9807,10 +9657,7 @@ def brainstorm_reset(session_id: int, keep_pads: bool = True) -> dict:
     Deploys are never touched - work already on the board outlives the thread
     that thought of it.
     """
-    try:
-        return _bs.reset(_root(), int(session_id), keep_pads=bool(keep_pads))
-    except Exception as exc:
-        return _fail(exc)
+    return _bs.reset(_root(), int(session_id), keep_pads=bool(keep_pads))
 
 
 @_tool
@@ -9827,10 +9674,7 @@ def brainstorm_feed(session_id: int, cursor: int = 0) -> dict:
     want to check the room's promise rather than take it on trust: the `init`
     step names every tool the process holds, and there should be exactly two.
     """
-    try:
-        return _bs.feed(_root(), int(session_id), cursor=int(cursor or 0))
-    except Exception as exc:
-        return _fail(exc)
+    return _bs.feed(_root(), int(session_id), cursor=int(cursor or 0))
 
 
 @_tool
@@ -9843,10 +9687,7 @@ def brainstorm_archive(session_id: int, archived: bool = True) -> dict:
     filed work stays 'deployed', because resetting it to 'open' would erase the
     one field saying that work exists.
     """
-    try:
-        return _bs.archive(_root(), int(session_id), archived=bool(archived))
-    except Exception as exc:
-        return _fail(exc)
+    return _bs.archive(_root(), int(session_id), archived=bool(archived))
 
 
 @_tool
@@ -9863,16 +9704,13 @@ def brainstorm_delete(session_id: int) -> dict:
     board, they are somebody's job, and they outlive the room they were thought
     up in.
     """
-    try:
-        if _caller_is_agent():
-            raise PermissionError(
-                f"{_actor() or 'an agent session'} may not delete brainstorm "
-                f"{session_id} - it holds writing that exists nowhere else. "
-                "Use brainstorm_archive, which files it away, deletes nothing "
-                "and can be undone.")
-        return _bs.delete(_root(), int(session_id))
-    except Exception as exc:
-        return _fail(exc)
+    if _caller_is_agent():
+        raise PermissionError(
+            f"{_actor() or 'an agent session'} may not delete brainstorm "
+            f"{session_id} - it holds writing that exists nowhere else. "
+            "Use brainstorm_archive, which files it away, deletes nothing "
+            "and can be undone.")
+    return _bs.delete(_root(), int(session_id))
 
 
 # ---------------------------------------------------------------------------
@@ -9901,15 +9739,12 @@ def voice_status() -> dict:
     absent (DEEPGRAM_API_KEY, and the `websockets` extra) and they need
     different actions from the human, so both are reported separately.
     """
-    try:
-        from bgate_adapters import deepgram as _deepgram
-        verdict = dict(_deepgram.available(_root()))
-        verdict["speak_models"] = list(_deepgram.SPEAK_MODELS)
-        verdict["listen_models"] = list(_deepgram.LISTEN_MODELS)
-        verdict["max_speak_chars"] = _deepgram.MAX_SPEAK_CHARS
-        return verdict
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_adapters import deepgram as _deepgram
+    verdict = dict(_deepgram.available(_root()))
+    verdict["speak_models"] = list(_deepgram.SPEAK_MODELS)
+    verdict["listen_models"] = list(_deepgram.LISTEN_MODELS)
+    verdict["max_speak_chars"] = _deepgram.MAX_SPEAK_CHARS
+    return verdict
 
 
 @_tool
@@ -9926,72 +9761,70 @@ def voice_speak(text: str, out_path: str = "",
                so a generated read-aloud never turns up in the game's history.
     model      an Aura voice; default aura-2-thalia-en. voice_status lists them.
     """
-    try:
-        import time as _time
-        from pathlib import Path as _Path
+    _contained_path(out_path, "out_path")
+    import time as _time
+    from pathlib import Path as _Path
 
-        from bgate_adapters import deepgram as _deepgram
-        from bgate_core import spend as _spend
+    from bgate_adapters import deepgram as _deepgram
+    from bgate_core import spend as _spend
 
-        root = _root()
-        verdict = _deepgram.available(root)
-        if not verdict["available"]:
-            raise RuntimeError(verdict["reason"])
+    root = _root()
+    verdict = _deepgram.available(root)
+    if not verdict["available"]:
+        raise RuntimeError(verdict["reason"])
 
-        # BILLED PER CHARACTER AND NEVER CHECKED. This path recorded its
-        # spend and never asked the budget - the one paid tool an
-        # unattended loop could run up with no gate at all. Priced from
-        # the same table the adapter bills from; an unpriced model quotes
-        # None there rather than 0.0, and an unknown price must not read
-        # as free, so it is gated at the most expensive known rate.
-        # Explicit ask, then the stored preference, then the adapter default.
-        speak_model = str(model or "").strip()
-        if not speak_model:
-            try:
-                from bgate_core import settings as _settings_mod
-
-                speak_model = str(_settings_mod.get(root, "voice.model")
-                                  or "").strip()
-            except Exception:
-                speak_model = ""
-        speak_model = speak_model or str(_deepgram.DEFAULT_SPEAK_MODEL)
-        per_1k = _deepgram.USD_PER_1K_CHARS.get(speak_model)
-        if per_1k is None:
-            known = [v for v in _deepgram.USD_PER_1K_CHARS.values()
-                     if isinstance(v, (int, float))]
-            per_1k = max(known) if known else 0.0
-        refused = _spend_gate(
-            str(root), (len(str(text)) / 1000.0) * float(per_1k),
-            f"speaking {len(str(text))} characters", _run_ceiling(str(root)))
-        if refused:
-            return refused
-        result = _deepgram.speak(str(text), model=speak_model)
-        if not result.get("ok"):
-            raise RuntimeError(str(result.get("error") or "speech failed"))
-
-        rel = str(out_path or f".bgate/voice/speak-{int(_time.time())}.wav")
-        target = (_Path(root) / rel).resolve()
-        # The same refusal deps.safe_under makes on the HTTP side: a path that
-        # leaves the project is refused before anything is written, not after.
-        # relative_to, NOT startswith: a prefix compare passes
-        # C:\proj-evil\x.wav for a root of C:\proj, which is an escape into
-        # any sibling directory sharing the root's name prefix.
+    # BILLED PER CHARACTER AND NEVER CHECKED. This path recorded its
+    # spend and never asked the budget - the one paid tool an
+    # unattended loop could run up with no gate at all. Priced from
+    # the same table the adapter bills from; an unpriced model quotes
+    # None there rather than 0.0, and an unknown price must not read
+    # as free, so it is gated at the most expensive known rate.
+    # Explicit ask, then the stored preference, then the adapter default.
+    speak_model = str(model or "").strip()
+    if not speak_model:
         try:
-            target.relative_to(_Path(root).resolve())
-        except ValueError:
-            raise ValueError(f"{rel} escapes the project root")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(result["audio"])
+            from bgate_core import settings as _settings_mod
 
-        _spend.record(root, float(result.get("usd") or 0.0), kind="speech",
-                      model=str(result.get("model") or ""),
-                      detail=f"deepgram tts {result.get('chars', 0)} chars")
-        return {"ok": True, "path": rel, "bytes": len(result["audio"]),
-                "chars": result.get("chars"), "usd": result.get("usd"),
-                "model": result.get("model"),
-                "request_id": result.get("request_id")}
-    except Exception as exc:
-        return _fail(exc)
+            speak_model = str(_settings_mod.get(root, "voice.model")
+                              or "").strip()
+        except Exception:
+            speak_model = ""
+    speak_model = speak_model or str(_deepgram.DEFAULT_SPEAK_MODEL)
+    per_1k = _deepgram.USD_PER_1K_CHARS.get(speak_model)
+    if per_1k is None:
+        known = [v for v in _deepgram.USD_PER_1K_CHARS.values()
+                 if isinstance(v, (int, float))]
+        per_1k = max(known) if known else 0.0
+    refused = _spend_gate(
+        str(root), (len(str(text)) / 1000.0) * float(per_1k),
+        f"speaking {len(str(text))} characters", _run_ceiling(str(root)))
+    if refused:
+        return refused
+    result = _deepgram.speak(str(text), model=speak_model)
+    if not result.get("ok"):
+        raise RuntimeError(str(result.get("error") or "speech failed"))
+
+    rel = str(out_path or f".bgate/voice/speak-{int(_time.time())}.wav")
+    target = (_Path(root) / rel).resolve()
+    # The same refusal deps.safe_under makes on the HTTP side: a path that
+    # leaves the project is refused before anything is written, not after.
+    # relative_to, NOT startswith: a prefix compare passes
+    # C:\proj-evil\x.wav for a root of C:\proj, which is an escape into
+    # any sibling directory sharing the root's name prefix.
+    try:
+        target.relative_to(_Path(root).resolve())
+    except ValueError:
+        raise ValueError(f"{rel} escapes the project root")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(result["audio"])
+
+    _spend.record(root, float(result.get("usd") or 0.0), kind="speech",
+                  model=str(result.get("model") or ""),
+                  detail=f"deepgram tts {result.get('chars', 0)} chars")
+    return {"ok": True, "path": rel, "bytes": len(result["audio"]),
+            "chars": result.get("chars"), "usd": result.get("usd"),
+            "model": result.get("model"),
+            "request_id": result.get("request_id")}
 
 
 # ---------------------------------------------------------------------------
@@ -10011,13 +9844,10 @@ def sfx_kinds() -> dict:
     and its alias `"shoot"` do not. Every entry says how long it comes out and
     what its base frequency is, which are the two knobs worth moving first.
     """
-    try:
-        from bgate_core import sfx as _sfx
+    from bgate_core import sfx as _sfx
 
-        return {"kinds": _sfx.kinds(), "sample_rate": _sfx.DEFAULT_RATE,
-                "max_seconds": _sfx.MAX_SECONDS}
-    except Exception as exc:
-        return _fail(exc)
+    return {"kinds": _sfx.kinds(), "sample_rate": _sfx.DEFAULT_RATE,
+            "max_seconds": _sfx.MAX_SECONDS}
 
 
 @_tool
@@ -10045,29 +9875,27 @@ def sfx_generate(kind: str, name: str, seed: Optional[int] = None,
     regenerating is a no-op rather than a diff nobody asked for. Pass an
     explicit seed to get a different roll of the noise.
     """
-    try:
-        from bgate_core import sfx as _sfx
+    _contained_path(out_dir, "out_dir")
+    from bgate_core import sfx as _sfx
 
-        root = _root()
-        result = _sfx.generate(root, kind, name, out_dir=out_dir or None,
-                               seed=seed, base_hz=base_hz,
-                               duration_s=duration_s, gain=gain,
-                               sample_rate=sample_rate, bits=bits)
-        artifact = _register_artifact(
-            f"sfx_{result['name']}", result["path"], producer="sfx_generate",
-            model="procedural",
-            prompt=f"{result['kind']} sfx",
-            metadata={"kind": result["kind"], "seed": result["seed"],
-                      "seconds": result["seconds"],
-                      "recipe": result["recipe_rel_path"]})
-        if artifact:
-            result["artifact"] = artifact
-        _log("audio", f"synthesized {result['kind']} sfx {result['name']} "
-                      f"({result['seconds']}s)", ref=result["rel_path"])
-        result.pop("recipe", None)     # the sidecar holds it; don't echo it twice
-        return {"ok": True, **result}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    result = _sfx.generate(root, kind, name, out_dir=out_dir or None,
+                           seed=seed, base_hz=base_hz,
+                           duration_s=duration_s, gain=gain,
+                           sample_rate=sample_rate, bits=bits)
+    artifact = _register_artifact(
+        f"sfx_{result['name']}", result["path"], producer="sfx_generate",
+        model="procedural",
+        prompt=f"{result['kind']} sfx",
+        metadata={"kind": result["kind"], "seed": result["seed"],
+                  "seconds": result["seconds"],
+                  "recipe": result["recipe_rel_path"]})
+    if artifact:
+        result["artifact"] = artifact
+    _log("audio", f"synthesized {result['kind']} sfx {result['name']} "
+                  f"({result['seconds']}s)", ref=result["rel_path"])
+    result.pop("recipe", None)     # the sidecar holds it; don't echo it twice
+    return {"ok": True, **result}
 
 
 @_tool
@@ -10081,21 +9909,18 @@ def sfx_rerender(recipe_path: str, out_path: str = "") -> dict:
 
     recipe_path may be absolute or relative to the project root.
     """
-    try:
-        _contained_path(out_path, "out_path")
-        from bgate_core import sfx as _sfx
+    _contained_path(out_path, "out_path")
+    from bgate_core import sfx as _sfx
 
-        root = _root()
-        path = _Path(recipe_path)
-        if not path.is_absolute():
-            path = _Path(root) / recipe_path
-        result = _sfx.rerender(path, out_path=out_path or None)
-        _log("audio", f"re-rendered {result['name']} from its recipe "
-                      f"(identical={result['identical']})", ref=result["path"])
-        result.pop("recipe", None)
-        return {"ok": True, **result}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    path = _Path(recipe_path)
+    if not path.is_absolute():
+        path = _Path(root) / recipe_path
+    result = _sfx.rerender(path, out_path=out_path or None)
+    _log("audio", f"re-rendered {result['name']} from its recipe "
+                  f"(identical={result['identical']})", ref=result["path"])
+    result.pop("recipe", None)
+    return {"ok": True, **result}
 
 
 @_tool
@@ -10106,17 +9931,14 @@ def sfx_list() -> dict:
     hidden: it is exactly the dead end the audio house rule exists to prevent,
     and the seat can only fix what it can see.
     """
-    try:
-        from bgate_core import sfx as _sfx
+    from bgate_core import sfx as _sfx
 
-        root = _root()
-        found = _sfx.list_sfx(root)
-        return {"dir": str(_sfx.sfx_dir(root)), "count": len(found),
-                "sfx": found,
-                "without_recipe": [f["name"] for f in found
-                                   if not f["has_recipe"]]}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    found = _sfx.list_sfx(root)
+    return {"dir": str(_sfx.sfx_dir(root)), "count": len(found),
+            "sfx": found,
+            "without_recipe": [f["name"] for f in found
+                               if not f["has_recipe"]]}
 
 
 # ---------------------------------------------------------------------------
@@ -10146,19 +9968,16 @@ def dialogue_write(name: str, nodes: list[dict], start: str = "",
     Lands at <godot project>/dialogue/<name>.dialogue.json - inside the
     narrative seat's own lane, for both project layouts.
     """
-    try:
-        from bgate_core import dialogue as _dialogue
+    from bgate_core import dialogue as _dialogue
 
-        result = _dialogue.write(_root(), name, nodes, start=start, title=title,
-                                 summary=summary,
-                                 allow_canon_conflict=bool(allow_canon_conflict))
-        _log("narrative", f"wrote dialogue {result['name']} "
-                          f"({result['nodes']} nodes, {result['choices']} choices, "
-                          f"canon {result['canon']['verdict']})",
-             ref=result["rel_path"])
-        return {"ok": True, **result}
-    except Exception as exc:
-        return _fail(exc)
+    result = _dialogue.write(_root(), name, nodes, start=start, title=title,
+                             summary=summary,
+                             allow_canon_conflict=bool(allow_canon_conflict))
+    _log("narrative", f"wrote dialogue {result['name']} "
+                      f"({result['nodes']} nodes, {result['choices']} choices, "
+                      f"canon {result['canon']['verdict']})",
+         ref=result["rel_path"])
+    return {"ok": True, **result}
 
 
 @_tool
@@ -10168,12 +9987,9 @@ def dialogue_read(name: str) -> dict:
     Read before editing: dialogue_write replaces the file outright, so a partial
     node list silently deletes every branch it left out.
     """
-    try:
-        from bgate_core import dialogue as _dialogue
+    from bgate_core import dialogue as _dialogue
 
-        return {"ok": True, **_dialogue.read(_root(), name)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **_dialogue.read(_root(), name)}
 
 
 @_tool
@@ -10184,16 +10000,13 @@ def dialogue_list() -> dict:
     the reason - hand edits and merges break `goto` targets, and the listing is
     the cheapest place to find that out.
     """
-    try:
-        from bgate_core import dialogue as _dialogue
+    from bgate_core import dialogue as _dialogue
 
-        root = _root()
-        found = _dialogue.list_dialogues(root)
-        return {"dir": str(_dialogue.dialogue_dir(root)), "count": len(found),
-                "dialogues": found,
-                "broken": [d["name"] for d in found if not d["ok"]]}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    found = _dialogue.list_dialogues(root)
+    return {"dir": str(_dialogue.dialogue_dir(root)), "count": len(found),
+            "dialogues": found,
+            "broken": [d["name"] for d in found if not d["ok"]]}
 
 
 # ---------------------------------------------------------------------------
@@ -10215,57 +10028,54 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
     Pass full=True only when you genuinely need brief text for several items at
     once, and keep the limit small when you do.
     """
-    try:
-        from bgate_core import queue as _q
-        root = _root()
-        rows = _q.list_items(root, status=status, seat=seat)
-        cap = max(1, min(int(limit or 40), 200))
-        shown = rows[:cap]
-        items = []
-        for row in shown:
-            item = dict(row)
-            brief = item.get("brief") or ""
-            result = item.get("result") or ""
-            if not full:
-                item["brief"] = brief[:240]
-                item["brief_len"] = len(brief)
-                item["result"] = result[:240]
-            # WHY IS THIS NOT RUNNING - answered on the row, because a queued
-            # item that nothing will ever dispatch used to look exactly like
-            # one that is next in line, and the difference lived in three
-            # different modules. Best-effort: an unreadable blocker is not a
-            # reason to fail the whole listing.
-            if item.get("status") == "queued":
-                if str(item.get("source") or "") in _q.HELD_SOURCES:
+    from bgate_core import queue as _q
+    root = _root()
+    rows = _q.list_items(root, status=status, seat=seat)
+    cap = max(1, min(int(limit or 40), 200))
+    shown = rows[:cap]
+    items = []
+    for row in shown:
+        item = dict(row)
+        brief = item.get("brief") or ""
+        result = item.get("result") or ""
+        if not full:
+            item["brief"] = brief[:240]
+            item["brief_len"] = len(brief)
+            item["result"] = result[:240]
+        # WHY IS THIS NOT RUNNING - answered on the row, because a queued
+        # item that nothing will ever dispatch used to look exactly like
+        # one that is next in line, and the difference lived in three
+        # different modules. Best-effort: an unreadable blocker is not a
+        # reason to fail the whole listing.
+        if item.get("status") == "queued":
+            if str(item.get("source") or "") in _q.HELD_SOURCES:
+                item["waiting_on"] = (
+                    f"held: source {item.get('source')!r} is never "
+                    "auto-dispatched - a human (or the director session) "
+                    "must take it")
+            else:
+                try:
+                    blk = _q.blocker(root, int(item["id"]))
+                except Exception:
+                    blk = None
+                if blk is not None:
                     item["waiting_on"] = (
-                        f"held: source {item.get('source')!r} is never "
-                        "auto-dispatched - a human (or the director session) "
-                        "must take it")
-                else:
-                    try:
-                        blk = _q.blocker(root, int(item["id"]))
-                    except Exception:
-                        blk = None
-                    if blk is not None:
-                        item["waiting_on"] = (
-                            f"blocked: depends on #{blk['id']} which is "
-                            f"{blk['status']!r}"
-                            + ("" if blk["status"] in ("queued", "dispatched",
-                                                       "review")
-                               else " - that predecessor will never reach "
-                                    "'done' on its own; queue_reopen it or "
-                                    "queue_cut_dependency to release this"))
-            items.append(item)
-        return {
-            "items": items,
-            "shown": len(items),
-            "total": len(rows),
-            "truncated": len(rows) > len(items),
-            "note": ("briefs are previews - queue_get(item_id) returns one item "
-                     "whole" if not full else "full briefs; keep limit small"),
-        }
-    except Exception as exc:
-        return _fail(exc)
+                        f"blocked: depends on #{blk['id']} which is "
+                        f"{blk['status']!r}"
+                        + ("" if blk["status"] in ("queued", "dispatched",
+                                                   "review")
+                           else " - that predecessor will never reach "
+                                "'done' on its own; queue_reopen it or "
+                                "queue_cut_dependency to release this"))
+        items.append(item)
+    return {
+        "items": items,
+        "shown": len(items),
+        "total": len(rows),
+        "truncated": len(rows) > len(items),
+        "note": ("briefs are previews - queue_get(item_id) returns one item "
+                 "whole" if not full else "full briefs; keep limit small"),
+    }
 
 
 @_tool
@@ -10275,11 +10085,8 @@ def queue_get(item_id: int) -> dict:
     The other half of queue_list's preview: scan the board with the list, read
     the one item you are about to act on with this.
     """
-    try:
-        from bgate_core import queue as _q
-        return _q.get(_root(), int(item_id))
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    return _q.get(_root(), int(item_id))
 
 
 @_tool
@@ -10309,34 +10116,31 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     an item silently waiting on nothing is indistinguishable from one that is
     ready, and it would dispatch immediately - the exact failure being prevented.
     """
+    from bgate_core import queue as _q
+    item = _q.add(_root(), seat, title, brief=brief, priority=priority,
+                  source=f"seat:{_seat() or 'unknown'}",
+                  depends_on=depends_on)
+    if depends_on is None:
+        return item
+    # SAY WHAT THE BOARD WILL DO WITH IT. A caller that files a dependency
+    # and sees an ordinary queued row has no way to tell the wait took, and
+    # the difference only becomes visible when the item does (or does not)
+    # start.
     try:
-        from bgate_core import queue as _q
-        item = _q.add(_root(), seat, title, brief=brief, priority=priority,
-                      source=f"seat:{_seat() or 'unknown'}",
-                      depends_on=depends_on)
-        if depends_on is None:
-            return item
-        # SAY WHAT THE BOARD WILL DO WITH IT. A caller that files a dependency
-        # and sees an ordinary queued row has no way to tell the wait took, and
-        # the difference only becomes visible when the item does (or does not)
-        # start.
-        try:
-            blocker = _q.get(_root(), int(depends_on))
-            waiting = blocker["status"] != "done"
-        except Exception:
-            blocker, waiting = {}, True
-        return {**item, "waits_for": {
-            "item": int(depends_on),
-            "title": str(blocker.get("title") or "")[:120],
-            "status": blocker.get("status") or "",
-            "note": (f"#{item['id']} will not dispatch until #{depends_on} is "
-                     "done" + (" - approved, if this project runs an approval "
-                               "gate" if waiting else "")
-                     if waiting else
-                     f"#{depends_on} is already done, so #{item['id']} is "
-                     "ready now")}}
-    except Exception as exc:
-        return _fail(exc)
+        blocker = _q.get(_root(), int(depends_on))
+        waiting = blocker["status"] != "done"
+    except Exception:
+        blocker, waiting = {}, True
+    return {**item, "waits_for": {
+        "item": int(depends_on),
+        "title": str(blocker.get("title") or "")[:120],
+        "status": blocker.get("status") or "",
+        "note": (f"#{item['id']} will not dispatch until #{depends_on} is "
+                 "done" + (" - approved, if this project runs an approval "
+                           "gate" if waiting else "")
+                 if waiting else
+                 f"#{depends_on} is already done, so #{item['id']} is "
+                 "ready now")}}
 
 
 @_tool
@@ -10370,18 +10174,15 @@ def queue_add_chain(links: list, chain_id: str = "") -> dict:
     Returns {chain_id, items: [...]} in running order. Nothing dispatches until
     `bgate serve` is up, exactly as with queue_add.
     """
-    try:
-        from bgate_core import queue as _q
-        rows = _q.add_chain(
-            _root(),
-            [dict(link) for link in (links or [])],
-            chain_id=chain_id, source=f"seat:{_seat() or 'unknown'}")
-        return {"chain_id": rows[0]["chain_id"], "count": len(rows),
-                "items": [{"id": r["id"], "seat": r["seat"], "title": r["title"],
-                           "chain_pos": r["chain_pos"],
-                           "depends_on": r["depends_on"]} for r in rows]}
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    rows = _q.add_chain(
+        _root(),
+        [dict(link) for link in (links or [])],
+        chain_id=chain_id, source=f"seat:{_seat() or 'unknown'}")
+    return {"chain_id": rows[0]["chain_id"], "count": len(rows),
+            "items": [{"id": r["id"], "seat": r["seat"], "title": r["title"],
+                       "chain_pos": r["chain_pos"],
+                       "depends_on": r["depends_on"]} for r in rows]}
 
 
 @_tool
@@ -10394,12 +10195,9 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
     watching the recording. Only the fields you pass change; status and lineage
     stay put. Pass the full new brief text (this replaces, it does not append).
     """
-    try:
-        from bgate_core import queue as _q
-        return _q.update(_root(), item_id, title=title, brief=brief,
-                         seat=seat, priority=priority)
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    return _q.update(_root(), item_id, title=title, brief=brief,
+                     seat=seat, priority=priority)
 
 
 @_tool
@@ -10410,12 +10208,9 @@ def queue_next(seat: str) -> dict:
     wants to actually take the item it sees here uses queue_claim_next, which
     claims atomically - acting on this read alone races the dashboard.
     """
-    try:
-        from bgate_core import queue as _q
-        item = _q.next_for(_root(), seat)
-        return item if item else {"empty": True, "seat": seat}
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    item = _q.next_for(_root(), seat)
+    return item if item else {"empty": True, "seat": seat}
 
 
 @_tool
@@ -10433,11 +10228,8 @@ def board_digest(hours: int = 12) -> dict:
 
     Spends nothing. Read it at the start of a session before deciding anything.
     """
-    try:
-        from bgate_core import gameplan as _gameplan
-        return _gameplan.digest(_root(), hours=int(hours))
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import gameplan as _gameplan
+    return _gameplan.digest(_root(), hours=int(hours))
 
 
 @_tool
@@ -10458,12 +10250,9 @@ def queue_cut_dependency(item_id: int, depends_on: int) -> dict:
     queue_get shows what an item waits on; the refusal message on a blocked
     dispatch names it too.
     """
-    try:
-        from bgate_core import queue as _q
-        return _q.cut_dependency(_root(), int(item_id), int(depends_on),
-                                 by=_actor())
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    return _q.cut_dependency(_root(), int(item_id), int(depends_on),
+                             by=_actor())
 
 
 @_tool
@@ -10475,11 +10264,8 @@ def queue_add_dependency(item_id: int, depends_on: int) -> dict:
     the sound AND the script. Call this for each extra parent; the item does
     not dispatch until every one of them reaches 'done'.
     """
-    try:
-        from bgate_core import queue as _q
-        return _q.add_dependency(_root(), int(item_id), int(depends_on))
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    return _q.add_dependency(_root(), int(item_id), int(depends_on))
 
 
 @_tool
@@ -10497,11 +10283,8 @@ def plan_status() -> dict:
     declaring anything finished, and uses queue_add to put uncovered rows on
     the board.
     """
-    try:
-        from bgate_core import gameplan as _gameplan
-        return _gameplan.status(_root())
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import gameplan as _gameplan
+    return _gameplan.status(_root())
 
 
 @_tool
@@ -10528,31 +10311,28 @@ def queue_claim_next() -> dict:
     Returns the claimed item (its brief is the task) or {empty: true}, which
     means: queue_complete and finish - an empty board is a finished shift.
     """
-    try:
-        from bgate_core import queue as _q
-        seat = _seat()
-        origin = _work_item_id()
-        if not seat or not origin:
-            raise PermissionError(
-                "queue_claim_next is the dispatched worker's pickup loop, and "
-                "this session was not dispatched against a work item. File "
-                "work with queue_add (it dispatches when `bgate serve` is up) "
-                "instead of claiming it.")
-        item = _q.claim_next(_root(), seat, actor=f"agent:item-{int(origin)}")
-        if item is None:
-            return {"empty": True, "seat": seat,
-                    "note": "nothing ready for your seat - queue_complete "
-                            "your current item and finish."}
-        _log("queue", f"claimed #{item['id']} to continue after "
-                      f"item {origin}", ref=str(item["id"]))
-        return {**item, "claimed": True,
-                "note": (f"item #{item['id']} is yours. queue_complete your "
-                         f"current item (#{origin}) first, then work this one "
-                         "under the same lanes and rules, and queue_complete "
-                         "it too when it lands. Claim again before that "
-                         "completion if you still have budget for more.")}
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    seat = _seat()
+    origin = _work_item_id()
+    if not seat or not origin:
+        raise PermissionError(
+            "queue_claim_next is the dispatched worker's pickup loop, and "
+            "this session was not dispatched against a work item. File "
+            "work with queue_add (it dispatches when `bgate serve` is up) "
+            "instead of claiming it.")
+    item = _q.claim_next(_root(), seat, actor=f"agent:item-{int(origin)}")
+    if item is None:
+        return {"empty": True, "seat": seat,
+                "note": "nothing ready for your seat - queue_complete "
+                        "your current item and finish."}
+    _log("queue", f"claimed #{item['id']} to continue after "
+                  f"item {origin}", ref=str(item["id"]))
+    return {**item, "claimed": True,
+            "note": (f"item #{item['id']} is yours. queue_complete your "
+                     f"current item (#{origin}) first, then work this one "
+                     "under the same lanes and rules, and queue_complete "
+                     "it too when it lands. Claim again before that "
+                     "completion if you still have budget for more.")}
 
 
 @_tool
@@ -10569,11 +10349,8 @@ def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
     chained behind it does not start until it reaches 'done'. Do not "fix" a
     'review' status by re-reporting: it is the gate working.
     """
-    try:
-        from bgate_core import queue as _q
-        return _q.complete(_root(), item_id, result=result, failed=failed)
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    return _q.complete(_root(), item_id, result=result, failed=failed)
 
 
 @_tool
@@ -10593,20 +10370,17 @@ def queue_reopen(item_id: int, reason: str) -> dict:
     already wrote into the new brief, so a fix round continues instead of
     regenerating.
     """
-    try:
-        from bgate_core import queue as _q
-        root = _root()
-        item = _q.get(root, item_id)
-        if item["status"] not in ("done", "failed"):
-            # queue.reopen also accepts 'cancelled', deliberately not offered
-            # here: cancelled is a human calling work off, and a machine
-            # un-cancelling it is the human's call being overridden.
-            raise ValueError(
-                f"item {item_id} is {item['status']!r} - only done/failed "
-                "items can be reopened")
-        return _q.reopen(root, item_id, (reason or "").strip())
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import queue as _q
+    root = _root()
+    item = _q.get(root, item_id)
+    if item["status"] not in ("done", "failed"):
+        # queue.reopen also accepts 'cancelled', deliberately not offered
+        # here: cancelled is a human calling work off, and a machine
+        # un-cancelling it is the human's call being overridden.
+        raise ValueError(
+            f"item {item_id} is {item['status']!r} - only done/failed "
+            "items can be reopened")
+    return _q.reopen(root, item_id, (reason or "").strip())
 
 
 @_tool
@@ -10628,28 +10402,25 @@ def agent_steer_all(text: str) -> dict:
     sentence that only makes sense to the art seat is noise in the middle of a
     tech run.
     """
-    try:
-        from bgate_core import steerbox as _steerbox
-        from bgate_core import queue as _q
-        root = _root()
-        said = str(text or "").strip()
-        if not said:
-            return {"ok": False, "error": "steer text is empty"}
-        running = [it for it in _q.list_items(root, status="dispatched")]
-        if not running:
-            return {"ok": True, "count": 0, "sent": [],
-                    "note": "nothing is running - there was nobody to steer"}
-        sent = []
-        for item in running:
-            posted = _steerbox.post_long(root, int(item["id"]), said,
-                                         by=f"seat:{_seat() or 'director'}")
-            sent.append({"item_id": int(item["id"]), "seat": item.get("seat") or "",
-                         "steer_id": posted["id"]})
-        return {"ok": True, "count": len(sent), "sent": sent,
-                "delivery": "queued for the dashboard to hand over; each agent "
-                            "reads it when its current step ends"}
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import steerbox as _steerbox
+    from bgate_core import queue as _q
+    root = _root()
+    said = str(text or "").strip()
+    if not said:
+        return {"ok": False, "error": "steer text is empty"}
+    running = [it for it in _q.list_items(root, status="dispatched")]
+    if not running:
+        return {"ok": True, "count": 0, "sent": [],
+                "note": "nothing is running - there was nobody to steer"}
+    sent = []
+    for item in running:
+        posted = _steerbox.post_long(root, int(item["id"]), said,
+                                     by=f"seat:{_seat() or 'director'}")
+        sent.append({"item_id": int(item["id"]), "seat": item.get("seat") or "",
+                     "steer_id": posted["id"]})
+    return {"ok": True, "count": len(sent), "sent": sent,
+            "delivery": "queued for the dashboard to hand over; each agent "
+                        "reads it when its current step ends"}
 
 
 @_tool
@@ -10686,29 +10457,26 @@ def agent_steer(item_id: int, text: str) -> dict:
     Delivery, and any failure to deliver, is recorded in the activity ledger
     against the item.
     """
-    try:
-        from bgate_core import steerbox as _steerbox
-        from bgate_core import queue as _q
-        root = _root()
-        item = _q.get(root, int(item_id))
-        if item["status"] != "dispatched":
-            return {"ok": False,
-                    "error": f"item {item_id} is {item['status']!r}, not running "
-                             " - there is no agent to steer",
-                    "status": item["status"]}
-        posted = _steerbox.post_long(root, int(item_id), text,
-                                     by=f"seat:{_seat() or 'director'}")
-        out = {"ok": True, "item_id": int(item_id), "steer_id": posted["id"],
-               "delivery": "queued for the dashboard to hand over; the agent "
-                           "reads it when its current step ends"}
-        if posted.get("excerpted"):
-            out["note_path"] = posted["note_path"]
-            out["delivery"] += (f" - over {_steerbox.MAX_TEXT} characters, so it "
-                                "was handed over as an excerpt plus the path to "
-                                "the full text")
-        return out
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import steerbox as _steerbox
+    from bgate_core import queue as _q
+    root = _root()
+    item = _q.get(root, int(item_id))
+    if item["status"] != "dispatched":
+        return {"ok": False,
+                "error": f"item {item_id} is {item['status']!r}, not running "
+                         " - there is no agent to steer",
+                "status": item["status"]}
+    posted = _steerbox.post_long(root, int(item_id), text,
+                                 by=f"seat:{_seat() or 'director'}")
+    out = {"ok": True, "item_id": int(item_id), "steer_id": posted["id"],
+           "delivery": "queued for the dashboard to hand over; the agent "
+                       "reads it when its current step ends"}
+    if posted.get("excerpted"):
+        out["note_path"] = posted["note_path"]
+        out["delivery"] += (f" - over {_steerbox.MAX_TEXT} characters, so it "
+                            "was handed over as an excerpt plus the path to "
+                            "the full text")
+    return out
 
 
 @_tool
@@ -10731,21 +10499,18 @@ def agent_activity(item_id: int, limit: int = 30) -> dict:
     steps almost always name the actual wall the agent hit, and a
     queue_reopen whose reason quotes it beats one that guesses.
     """
+    from bgate_core import agentlog as _agentlog
+    root = _root()
+    out = _agentlog.tail(root, int(item_id), limit=int(limit))
     try:
-        from bgate_core import agentlog as _agentlog
-        root = _root()
-        out = _agentlog.tail(root, int(item_id), limit=int(limit))
-        try:
-            from bgate_core import queue as _q
-            item = _q.get(root, int(item_id))
-            out["status"] = item["status"]
-            out["seat"] = out.get("seat") or item.get("seat") or ""
-            out["title"] = item.get("title") or ""
-        except LookupError:
-            out["status"] = None
-        return {"ok": True, **out}
-    except Exception as exc:
-        return _fail(exc)
+        from bgate_core import queue as _q
+        item = _q.get(root, int(item_id))
+        out["status"] = item["status"]
+        out["seat"] = out.get("seat") or item.get("seat") or ""
+        out["title"] = item.get("title") or ""
+    except LookupError:
+        out["status"] = None
+    return {"ok": True, **out}
 
 
 @_tool
@@ -10777,25 +10542,22 @@ def ask_human(question: str, refs: Optional[list] = None) -> dict:
     answer, "any thoughts?" does not. `refs` are ids or paths the human should
     look at ("item 41", "bible#12", "game/scenes/hub.tscn"); cite, do not paste.
     """
-    try:
-        from bgate_core import steerbox as _steerbox
-        root = _root()
-        item_id = _work_item_id() or 0
-        result = _steerbox.ask(root, question, refs=refs, item_id=item_id,
-                               seat=_seat() or "director", by=_actor())
-        _log("question", f"asked the human: {str(question)[:120]}",
-             ref=str(item_id or result["seq"]))
-        if item_id:
-            arrives = ("as a steer into this run if you are still going when "
-                       "they answer, otherwise as a handoff decision note for "
-                       "the next session")
-        else:
-            arrives = ("as a handoff decision note - this session is not a "
-                       "dispatched work item, so there is no run to steer")
-        return {**result, "answer_arrives": arrives,
-                "note": "returns immediately - do not wait for the answer"}
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import steerbox as _steerbox
+    root = _root()
+    item_id = _work_item_id() or 0
+    result = _steerbox.ask(root, question, refs=refs, item_id=item_id,
+                           seat=_seat() or "director", by=_actor())
+    _log("question", f"asked the human: {str(question)[:120]}",
+         ref=str(item_id or result["seq"]))
+    if item_id:
+        arrives = ("as a steer into this run if you are still going when "
+                   "they answer, otherwise as a handoff decision note for "
+                   "the next session")
+    else:
+        arrives = ("as a handoff decision note - this session is not a "
+                   "dispatched work item, so there is no run to steer")
+    return {**result, "answer_arrives": arrives,
+            "note": "returns immediately - do not wait for the answer"}
 
 
 # ---------------------------------------------------------------------------
@@ -10837,18 +10599,15 @@ def cutout_templates() -> dict:
     the near-side drawings with a tint, which is what makes a side-view kit ten
     images instead of sixteen.
     """
-    try:
-        from bgate_core import cutout as _cutout
-        return {"ok": True, "templates": _cutout.templates(),
-                "layout": "game/assets/characters/<name>/",
-                "not_built_yet": [
-                    "cutout_kit_generate - generating the parts themselves "
-                    "still goes through image_generate/chroma by hand against "
-                    "a pinned reference",
-                    "cutout_part_rerun - regenerate one part in place",
-                ]}
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import cutout as _cutout
+    return {"ok": True, "templates": _cutout.templates(),
+            "layout": "game/assets/characters/<name>/",
+            "not_built_yet": [
+                "cutout_kit_generate - generating the parts themselves "
+                "still goes through image_generate/chroma by hand against "
+                "a pinned reference",
+                "cutout_part_rerun - regenerate one part in place",
+            ]}
 
 
 @_tool
@@ -10959,13 +10718,10 @@ def cutout_status(name: str) -> dict:
       origin           the rig's feet are not on the ground line, so it hovers
                        or sinks in every scene it is placed in.
     """
-    try:
-        from bgate_core import cutout as _cutout
-        root = _root()
-        doc = _cutout.load(_cutout_dir(root, name) / f"{name}{_cutout.SUFFIX}")
-        return {"ok": True, **_cutout.status(doc, root=root)}
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import cutout as _cutout
+    root = _root()
+    doc = _cutout.load(_cutout_dir(root, name) / f"{name}{_cutout.SUFFIX}")
+    return {"ok": True, **_cutout.status(doc, root=root)}
 
 
 @_tool
@@ -10983,43 +10739,40 @@ def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = Non
     means cutout_status will tell you if the part is later regenerated under it
     rather than letting the pivot quietly point somewhere else.
     """
+    from bgate_core import cutout as _cutout, cutoutwire as _wire
+    root = _root()
+    home = _cutout_dir(root, name)
+    doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
+    target = _Path(texture)
+    if not target.is_absolute():
+        target = _Path(root) / texture
+    if not target.is_file():
+        return {"ok": False, "error": f"no part at {target}"}
+    entry = dict(doc["skin"].get(slot) or {})
+    entry["texture"] = str(target)
+    entry["part_hash"] = _cutout.part_hash(target)
+    if pivot:
+        entry["pivot"] = list(pivot)
+        entry["pivot_source"] = "authored"
+    doc["skin"][slot] = entry
+    doc = _cutout.normalise(doc)
+    sizes = {}
     try:
-        from bgate_core import cutout as _cutout, cutoutwire as _wire
-        root = _root()
-        home = _cutout_dir(root, name)
-        doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
-        target = _Path(texture)
-        if not target.is_absolute():
-            target = _Path(root) / texture
-        if not target.is_file():
-            return {"ok": False, "error": f"no part at {target}"}
-        entry = dict(doc["skin"].get(slot) or {})
-        entry["texture"] = str(target)
-        entry["part_hash"] = _cutout.part_hash(target)
-        if pivot:
-            entry["pivot"] = list(pivot)
-            entry["pivot_source"] = "authored"
-        doc["skin"][slot] = entry
-        doc = _cutout.normalise(doc)
-        sizes = {}
-        try:
-            from PIL import Image
-            for name_, ent in doc["skin"].items():
-                with Image.open(ent["texture"]) as img:
-                    sizes[name_] = img.size
-        except Exception:
-            pass
-        _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
-        emitted = _wire.emit(doc, project_dir=root,
-                             scene_path=home / f"{name}.tscn",
-                             sizes=sizes, force=force)
-        if emitted.get("ok"):
-            _log("cutout", f"equipped {name}.{slot} -> {target.name}",
-                 ref=emitted["scene_res"])
-        return {**emitted, "slot": slot, "texture": str(target),
-                "pivot_source": entry.get("pivot_source", "default")}
-    except Exception as exc:
-        return _fail(exc)
+        from PIL import Image
+        for name_, ent in doc["skin"].items():
+            with Image.open(ent["texture"]) as img:
+                sizes[name_] = img.size
+    except Exception:
+        pass
+    _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
+    emitted = _wire.emit(doc, project_dir=root,
+                         scene_path=home / f"{name}.tscn",
+                         sizes=sizes, force=force)
+    if emitted.get("ok"):
+        _log("cutout", f"equipped {name}.{slot} -> {target.name}",
+             ref=emitted["scene_res"])
+    return {**emitted, "slot": slot, "texture": str(target),
+            "pivot_source": entry.get("pivot_source", "default")}
 
 
 # ---------------------------------------------------------------------------
@@ -11051,15 +10804,12 @@ def kie_status() -> dict:
     kie is one key over three capabilities: images (Nano Banana, FLUX.2, Qwen),
     Suno music, and Seedance video. No 3D - that stays on Krea.
     """
-    try:
-        root = _root()  # triggers .env load
-        from bgate_adapters import kie
+    root = _root()  # triggers .env load
+    from bgate_adapters import kie
 
-        got = dict(kie.available(root))
-        got["models"] = kie.models()
-        return {"ok": True, **got}
-    except Exception as exc:
-        return _fail(exc)
+    got = dict(kie.available(root))
+    got["models"] = kie.models()
+    return {"ok": True, **got}
 
 
 @_tool
@@ -11071,12 +10821,9 @@ def music_options() -> dict:
     locally before the request is sent, so exceeding one costs a refusal rather
     than a round trip and a 422 that does not say which field was too long.
     """
-    try:
-        from bgate_core import music as _music
+    from bgate_core import music as _music
 
-        return {"ok": True, **_music.options(_root())}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **_music.options(_root())}
 
 
 @_tool
@@ -11118,22 +10865,22 @@ def music_generate(prompt: str, name: str = "", instrumental: bool = True,
 
     Runs for one to three minutes. This blocks for the whole batch.
     """
-    try:
-        from bgate_core import music as _music
+    from bgate_core import music as _music
 
-        suno: dict = {"instrumental": bool(instrumental), "custom": bool(custom)}
-        for key, value in (("model", model), ("style", style), ("title", title),
-                           ("negative_tags", negative_tags),
-                           ("vocal_gender", vocal_gender)):
-            if value:
-                suno[key] = value
-        if duration is not None:
-            suno["duration"] = int(duration)
-        return _music.generate(_root(), prompt, name=name,
-                               work_item_id=_work_item_id(),
-                               timeout=float(timeout), **suno)
-    except Exception as exc:
-        return _fail(exc)
+    suno: dict = {"instrumental": bool(instrumental), "custom": bool(custom)}
+    for key, value in (("model", model), ("style", style), ("title", title),
+                       ("negative_tags", negative_tags),
+                       ("vocal_gender", vocal_gender)):
+        if value:
+            suno[key] = value
+    if duration is not None:
+        suno["duration"] = int(duration)
+    refused = _paid_gate(_root(), "music", 0.0, "a music generation")
+    if refused:
+        return refused
+    return _music.generate(_root(), prompt, name=name,
+                           work_item_id=_work_item_id(),
+                           timeout=float(timeout), **suno)
 
 
 @_tool
@@ -11148,12 +10895,9 @@ def music_status(task_id: str) -> dict:
     the audio on disk - do not re-run music_generate to get files for a task
     that already has them, that is paying twice.
     """
-    try:
-        from bgate_core import music as _music
+    from bgate_core import music as _music
 
-        return _music.status(_root(), task_id)
-    except Exception as exc:
-        return _fail(exc)
+    return _music.status(_root(), task_id)
 
 
 @_tool
@@ -11173,13 +10917,10 @@ def music_stuck_tracks(older_than_s: int = 0, poll: bool = True) -> dict:
     tickets alone and reaches no provider, which is the right call when you only
     want to know whether anything is outstanding.
     """
-    try:
-        from bgate_core import music as _music
-        return _music.stuck_tracks(
-            _root(), older_than_s=int(older_than_s) or _music.STUCK_AFTER_S,
-            poll=bool(poll))
-    except Exception as exc:
-        return _fail(exc)
+    from bgate_core import music as _music
+    return _music.stuck_tracks(
+        _root(), older_than_s=int(older_than_s) or _music.STUCK_AFTER_S,
+        poll=bool(poll))
 
 
 @_tool
@@ -11203,13 +10944,10 @@ def music_recover(task_id: str, name: str = "") -> dict:
     NO COST IS CLAIMED against this call - the charge happened at submit time,
     possibly days ago, and a balance delta measured now would be fiction.
     """
-    try:
-        from bgate_core import music as _music
+    from bgate_core import music as _music
 
-        return _music.recover(_root(), task_id, name=name,
-                              work_item_id=_work_item_id())
-    except Exception as exc:
-        return _fail(exc)
+    return _music.recover(_root(), task_id, name=name,
+                          work_item_id=_work_item_id())
 
 
 @_tool
@@ -11221,17 +10959,14 @@ def music_candidates(logical_name: str = "", limit: int = 100) -> dict:
     keeping it - the dashboard's audio seat plays them inline; from a shell the
     path is a real file.
     """
-    try:
-        from bgate_core import music as _music
+    from bgate_core import music as _music
 
-        root = _root()
-        cap = max(1, min(int(limit), 500))
-        return {"ok": True,
-                "candidates": _music.candidates(root, logical_name=logical_name,
-                                                limit=cap),
-                "kept": _music.kept(root, limit=cap)}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    cap = max(1, min(int(limit), 500))
+    return {"ok": True,
+            "candidates": _music.candidates(root, logical_name=logical_name,
+                                            limit=cap),
+            "kept": _music.kept(root, limit=cap)}
 
 
 @_tool
@@ -11249,12 +10984,9 @@ def music_keep(artifact_id: int, note: str = "") -> dict:
     refuses you, say which candidate you would keep and why; do not look for
     another route to the same write.
     """
-    try:
-        from bgate_core import music as _music
+    from bgate_core import music as _music
 
-        return _music.keep(_root(), int(artifact_id), note=note)
-    except Exception as exc:
-        return _fail(exc)
+    return _music.keep(_root(), int(artifact_id), note=note)
 
 
 @_tool
@@ -11273,12 +11005,9 @@ def music_install(artifact_id: int) -> dict:
     Idempotent, and it does not change review state - music_keep is what picks a
     DIFFERENT take from an auto-approved batch.
     """
-    try:
-        from bgate_core import music as _music
+    from bgate_core import music as _music
 
-        return _music.install(_root(), int(artifact_id))
-    except Exception as exc:
-        return _fail(exc)
+    return _music.install(_root(), int(artifact_id))
 
 
 @_tool
@@ -11291,12 +11020,9 @@ def music_discard(artifact_id: int, note: str = "") -> dict:
     immutable revision row. Say what was wrong with it; 'discarded' teaches the
     next generation nothing.
     """
-    try:
-        from bgate_core import music as _music
+    from bgate_core import music as _music
 
-        return _music.discard(_root(), int(artifact_id), note=note)
-    except Exception as exc:
-        return _fail(exc)
+    return _music.discard(_root(), int(artifact_id), note=note)
 
 
 @_tool
@@ -11334,53 +11060,50 @@ def kie_video_generate(prompt: str, filename: str, seconds: Optional[int] = None
     the same clip through the candidate -> human decision -> transcoded asset
     path, which is what makes it playable.
     """
-    try:
-        root = _Path(_root())
-        from bgate_adapters import kie
+    root = _Path(_root())
+    from bgate_adapters import kie
 
-        # THE MOST EXPENSIVE UNIT THIS PRODUCT BUYS, and it was ungated.
-        #
-        # kie reports an unknown price as None, never 0.0, and that distinction
-        # has to survive here or the gate reads "free" for exactly the models
-        # whose cost is least predictable. So: a KNOWN price is gated on the
-        # number. An UNKNOWN one still asks the budget (which catches a project
-        # already over its ceiling) and then says so in the result - a spend
-        # nobody could price is a fact the caller is owed, not something to
-        # bury under a passing check.
+    # THE MOST EXPENSIVE UNIT THIS PRODUCT BUYS, and it was ungated.
+    #
+    # kie reports an unknown price as None, never 0.0, and that distinction
+    # has to survive here or the gate reads "free" for exactly the models
+    # whose cost is least predictable. So: a KNOWN price is gated on the
+    # number. An UNKNOWN one still asks the budget (which catches a project
+    # already over its ceiling) and then says so in the result - a spend
+    # nobody could price is a fact the caller is owed, not something to
+    # bury under a passing check.
+    priced = None
+    try:
+        quote = kie.estimate_usd(model=model, seconds=seconds)
+        if isinstance(quote, dict) and quote.get("usd") is not None:
+            priced = float(quote["usd"])
+    except Exception:
         priced = None
-        try:
-            quote = kie.estimate_usd(model=model, seconds=seconds)
-            if isinstance(quote, dict) and quote.get("usd") is not None:
-                priced = float(quote["usd"])
-        except Exception:
-            priced = None
-        refused = _spend_gate(
-            str(root), priced or 0.0,
-            f"buying {seconds}s of video on {model or 'the default model'}"
-            + ("" if priced is not None else " (price UNKNOWN for this model)"),
-            _run_ceiling(str(root)))
-        if refused:
-            return refused
-        base = (root / ".bgate_out" / "video").resolve()
-        out = (base / (filename or "clip.mp4")).resolve()
-        try:
-            out.relative_to(base)
-        except ValueError:
-            return {"ok": False,
-                    "error": "filename must stay inside .bgate_out/video - "
-                             f"refusing {filename!r}"}
-        result = kie.generate_video(
-            prompt, str(out), model=model or kie.DEFAULT_VIDEO_MODEL,
-            seconds=seconds, quality=quality, shape=shape,
-            first_frame=first_frame, audio=audio,
-            root=str(root), logical_name=out.stem,
-            work_item_id=_work_item_id(), timeout=float(timeout))
-        if result.get("ok"):
-            _log("video", f"generated a {result.get('model')} clip {out.name}",
-                 ref=result["path"])
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    refused = _spend_gate(
+        str(root), priced or 0.0,
+        f"buying {seconds}s of video on {model or 'the default model'}"
+        + ("" if priced is not None else " (price UNKNOWN for this model)"),
+        _run_ceiling(str(root)))
+    if refused:
+        return refused
+    base = (root / ".bgate_out" / "video").resolve()
+    out = (base / (filename or "clip.mp4")).resolve()
+    try:
+        out.relative_to(base)
+    except ValueError:
+        return {"ok": False,
+                "error": "filename must stay inside .bgate_out/video - "
+                         f"refusing {filename!r}"}
+    result = kie.generate_video(
+        prompt, str(out), model=model or kie.DEFAULT_VIDEO_MODEL,
+        seconds=seconds, quality=quality, shape=shape,
+        first_frame=first_frame, audio=audio,
+        root=str(root), logical_name=out.stem,
+        work_item_id=_work_item_id(), timeout=float(timeout))
+    if result.get("ok"):
+        _log("video", f"generated a {result.get('model')} clip {out.name}",
+             ref=result["path"])
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -11409,12 +11132,9 @@ def cinematic_options() -> dict:
     of it - so this is worth reading before the first shot, and
     cinematic_generate_shot checks it before spending anyway.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return {"ok": True, **_cine.options(_root())}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **_cine.options(_root())}
 
 
 @_tool
@@ -11515,20 +11235,17 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
     Re-running this to edit the list PRESERVES shots whose action text did not
     change, along with the clips already paid for; only changed shots reset.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.plan(_root(), name, list(shots or []), logline=logline,
-                          style=style, style_note=style_note,
-                          style_refs=list(style_refs or []),
-                          locations=list(locations or []), model=model,
-                          aspect_ratio=aspect_ratio, resolution=resolution,
-                          audio_track=audio_track,
-                          audio_gain_db=float(audio_gain_db),
-                          fade_in=float(fade_in), fade_out=float(fade_out),
-                          work_item_id=_work_item_id())
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.plan(_root(), name, list(shots or []), logline=logline,
+                      style=style, style_note=style_note,
+                      style_refs=list(style_refs or []),
+                      locations=list(locations or []), model=model,
+                      aspect_ratio=aspect_ratio, resolution=resolution,
+                      audio_track=audio_track,
+                      audio_gain_db=float(audio_gain_db),
+                      fade_in=float(fade_in), fade_out=float(fade_out),
+                      work_item_id=_work_item_id())
 
 
 @_tool
@@ -11539,15 +11256,12 @@ def cinematic_sequences(name: str = "") -> dict:
     which shots were bought, which were kept, and which are still planned, so a
     successor never re-buys a shot that already exists.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        root = _root()
-        if name:
-            return {"ok": True, "sequence": _cine.sequence(root, name)}
-        return {"ok": True, "sequences": _cine.sequences(root)}
-    except Exception as exc:
-        return _fail(exc)
+    root = _root()
+    if name:
+        return {"ok": True, "sequence": _cine.sequence(root, name)}
+    return {"ok": True, "sequences": _cine.sequences(root)}
 
 
 @_tool
@@ -11571,21 +11285,24 @@ def cinematic_generate_shot(name: str, idx: int, model: str = "",
     Local conditioning frames are uploaded to the provider automatically. Both
     the budget and the encoder are checked BEFORE anything is charged.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        result = _cine.generate_shot(_root(), name, int(idx), model=model,
-                                     generate_audio=bool(generate_audio),
-                                     overwrite=bool(overwrite),
-                                     previs_ok=bool(previs_ok),
-                                     timeout=float(timeout),
-                                     work_item_id=_work_item_id())
-        if result.get("ok"):
-            _log("video", f"generated {name} shot {idx}",
-                 ref=str(result.get("artifact_id") or ""))
-        return result
-    except Exception as exc:
-        return _fail(exc)
+    # Provider preflight only - the shot pipeline runs its own budget
+    # arithmetic (the docstring's promise), but a drained kie account
+    # refuses regardless of price and is cheaper to learn here.
+    refused = _provider_gate(_root(), "video", "a video shot")
+    if refused:
+        return refused
+    result = _cine.generate_shot(_root(), name, int(idx), model=model,
+                                 generate_audio=bool(generate_audio),
+                                 overwrite=bool(overwrite),
+                                 previs_ok=bool(previs_ok),
+                                 timeout=float(timeout),
+                                 work_item_id=_work_item_id())
+    if result.get("ok"):
+        _log("video", f"generated {name} shot {idx}",
+             ref=str(result.get("artifact_id") or ""))
+    return result
 
 
 @_tool
@@ -11601,12 +11318,9 @@ def cinematic_assemble(name: str, quality: int = 6) -> dict:
     before keeping it: shots were judged alone, and a cut is judged as a cut - the light jumping, a character swapping hands, the camera crossing the line
     are all invisible shot by shot.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.assemble(_root(), name, quality=int(quality))
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.assemble(_root(), name, quality=int(quality))
 
 
 @_tool
@@ -11618,16 +11332,13 @@ def cinematic_candidates(logical_name: str = "", limit: int = 100) -> dict:
     project was transcoded from THIS revision - so a superseded take cannot
     claim to be the clip the game loads.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        root, cap = _root(), max(1, min(int(limit), 500))
-        return {"ok": True,
-                "candidates": _cine.candidates(root, logical_name=logical_name,
-                                               limit=cap),
-                "kept": _cine.kept(root, limit=cap)}
-    except Exception as exc:
-        return _fail(exc)
+    root, cap = _root(), max(1, min(int(limit), 500))
+    return {"ok": True,
+            "candidates": _cine.candidates(root, logical_name=logical_name,
+                                           limit=cap),
+            "kept": _cine.kept(root, limit=cap)}
 
 
 @_tool
@@ -11654,14 +11365,11 @@ def cinematic_keep(artifact_id: int, note: str = "", quality: int = 6,
     install_to_engine overrides the default either way - pass true for a single
     clip used on its own, as an attract-mode loop or a sting with no cut.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.keep(_root(), int(artifact_id), note=note,
-                          quality=int(quality),
-                          install_to_engine=install_to_engine)
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.keep(_root(), int(artifact_id), note=note,
+                      quality=int(quality),
+                      install_to_engine=install_to_engine)
 
 
 @_tool
@@ -11674,12 +11382,9 @@ def cinematic_install(artifact_id: int, quality: int = 6) -> dict:
     when cinematic_candidates shows a kept clip with `installed: false`, or when
     an approved cutscene's .ogv was deleted out of the engine project.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.install(_root(), int(artifact_id), quality=int(quality))
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.install(_root(), int(artifact_id), quality=int(quality))
 
 
 @_tool
@@ -11692,12 +11397,9 @@ def cinematic_discard(artifact_id: int, note: str = "") -> dict:
     Say what was wrong with it: 'discarded' teaches the re-roll nothing, and at
     video prices the re-roll is the expensive part.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.discard(_root(), int(artifact_id), note=note)
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.discard(_root(), int(artifact_id), note=note)
 
 
 @_tool
@@ -11733,16 +11435,13 @@ def cinematic_register_model(name: str, model: str, intent: dict,
     listed, so nothing confuses your entry for a verified one. The registration
     lives for the life of this server process.
     """
-    try:
-        from bgate_adapters import kie
+    from bgate_adapters import kie
 
-        return {"ok": True, **kie.register_video_model(name, {
-            "model": model, "intent": dict(intent or {}), "label": label,
-            "note": note, "enums": enums or {}, "ranges": ranges or {},
-            "caps": caps or {}, "intent_values": intent_values or {},
-            "intent_scale": intent_scale or {}, "credits": credits or {}})}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **kie.register_video_model(name, {
+        "model": model, "intent": dict(intent or {}), "label": label,
+        "note": note, "enums": enums or {}, "ranges": ranges or {},
+        "caps": caps or {}, "intent_values": intent_values or {},
+        "intent_scale": intent_scale or {}, "credits": credits or {}})}
 
 
 @_tool
@@ -11763,13 +11462,10 @@ def cinematic_estimate(name: str, model: str = "") -> dict:
     off an invoice. Set BGATE_KIE_USD_PER_CREDIT once you have real figures, or
     BGATE_KIE_VIDEO_CREDITS to correct a model's rate without a code change.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return {"ok": True, **_cine.estimate_sequence(_root(), name,
-                                                      model=model)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **_cine.estimate_sequence(_root(), name,
+                                                  model=model)}
 
 
 @_tool
@@ -11797,15 +11493,12 @@ def cinematic_stuck_shots(older_than_s: int = 0, poll: bool = True) -> dict:
     returned one, so there is probably nothing to collect and nothing was
     charged. `unknown` means the provider was asked and did not say.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return {"ok": True, **_cine.stuck_shots(
-            _root(),
-            older_than_s=int(older_than_s) or _cine.STUCK_AFTER_S,
-            poll=bool(poll))}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **_cine.stuck_shots(
+        _root(),
+        older_than_s=int(older_than_s) or _cine.STUCK_AFTER_S,
+        poll=bool(poll))}
 
 
 @_tool
@@ -11828,13 +11521,10 @@ def cinematic_probe_model(name: str, timeout: float = 30.0) -> dict:
     Registered models are marked unverified until this says otherwise. An
     unverified model is not a broken one; it is one nobody has confirmed.
     """
-    try:
-        from bgate_adapters import kie
+    from bgate_adapters import kie
 
-        return {"ok": True, **kie.probe_model_id(name, root=_root(),
-                                                 timeout=float(timeout))}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **kie.probe_model_id(name, root=_root(),
+                                             timeout=float(timeout))}
 
 
 @_tool
@@ -11851,13 +11541,10 @@ def cinematic_styles() -> dict:
     A style that is not in this table is not refused: free prose works, and so
     do style_refs, which beat prose.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return {"ok": True, "styles": _cine.styles(),
-                "fallback": _cine.STYLE_FALLBACK}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, "styles": _cine.styles(),
+            "fallback": _cine.STYLE_FALLBACK}
 
 
 @_tool
@@ -11868,12 +11555,9 @@ def cinematic_shot_status(task_id: str) -> dict:
     puts the clip on disk - do NOT re-run cinematic_generate_shot to get a file
     for a task that has already been charged.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.shot_status(_root(), task_id)
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.shot_status(_root(), task_id)
 
 
 @_tool
@@ -11890,14 +11574,11 @@ def cinematic_recover_shot(name: str, idx: int, task_id: str = "",
     there: an agent that died mid-generation left the id behind, so its
     successor needs no archaeology. No cost is recorded against this call - the charge happened at submit, possibly days ago.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.recover_shot(_root(), name, int(idx), task_id,
-                                  overwrite=bool(overwrite),
-                                  work_item_id=_work_item_id())
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.recover_shot(_root(), name, int(idx), task_id,
+                              overwrite=bool(overwrite),
+                              work_item_id=_work_item_id())
 
 
 @_tool
@@ -11913,13 +11594,10 @@ def cinematic_transitions() -> dict:
     shot durations, and caption timing is computed from that rather than from
     the naive sum.
     """
-    try:
-        from bgate_core import cinecut as _cut
+    from bgate_core import cinecut as _cut
 
-        return {"ok": True, "transitions": _cut.TRANSITIONS,
-                "default": _cut.DEFAULT_TRANSITION}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, "transitions": _cut.TRANSITIONS,
+            "default": _cut.DEFAULT_TRANSITION}
 
 
 @_tool
@@ -11939,12 +11617,9 @@ def cinematic_continuity(name: str) -> dict:
     shot, which is a decision to make before paying for the assembly - or
     softening the join with a dissolve, which is what a dissolve is for.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.check_continuity(_root(), name)
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.check_continuity(_root(), name)
 
 
 def _animatic_images(result: dict) -> list[str]:
@@ -12003,13 +11678,10 @@ def cinematic_animatic(name: str, source: str = "auto", fps: int = 12,
     browser and never by the engine. The panels come back as images so you can
     look at the edit rather than reading a runtime.
     """
-    try:
-        from bgate_core import animatic as _anim
+    from bgate_core import animatic as _anim
 
-        return _anim.build(_root(), name, source=str(source or "auto"),
-                           fps=int(fps), burn_captions=bool(burn_captions))
-    except Exception as exc:
-        return _fail(exc)
+    return _anim.build(_root(), name, source=str(source or "auto"),
+                       fps=int(fps), burn_captions=bool(burn_captions))
 
 
 @_tool
@@ -12042,12 +11714,9 @@ def cinematic_deliver(name: str, force: bool = False) -> dict:
     changed - a project will want its own skip input or a letterbox - so
     delivery detects a hand-edited file and keeps it. Pass force to replace it.
     """
-    try:
-        from bgate_core import cinematic as _cine
+    from bgate_core import cinematic as _cine
 
-        return _cine.deliver(_root(), name, force=bool(force))
-    except Exception as exc:
-        return _fail(exc)
+    return _cine.deliver(_root(), name, force=bool(force))
 
 
 # ---------------------------------------------------------------------------
@@ -12112,18 +11781,19 @@ def storyboard_auto(name: str, premise: str = "", frames: int = 6,
     kept and approved rather than redrawn, and a board that already has beats
     keeps them rather than having a model overwrite somebody's edits.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return _sb.auto(
-            _root(), name, premise, frames=int(frames), style=style,
-            style_note=style_note,
-            cast_refs=list(cast_refs) if cast_refs else None,
-            aspect_ratio=aspect_ratio, quality=quality,
-            promote_to=promote_to, model=model,
-            work_item_id=_work_item_id())
-    except Exception as exc:
-        return _fail(exc)
+    refused = _gate_images(_root(), max(1, int(frames)), quality,
+                           "a storyboard build")
+    if refused:
+        return refused
+    return _sb.auto(
+        _root(), name, premise, frames=int(frames), style=style,
+        style_note=style_note,
+        cast_refs=list(cast_refs) if cast_refs else None,
+        aspect_ratio=aspect_ratio, quality=quality,
+        promote_to=promote_to, model=model,
+        work_item_id=_work_item_id())
 
 
 @_tool
@@ -12155,15 +11825,12 @@ def storyboard_write_script(name: str, premise: str, frames: int = 6,
     Re-running replaces the board's beats. Frames that already have an image keep
     it at the same index, so re-writing the script does not throw away drawings.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return _sb.write_script(
-            _root(), name, premise, frames=int(frames), style=style,
-            style_note=style_note, cast_refs=list(cast_refs or []),
-            characters=characters, aspect_ratio=aspect_ratio)
-    except Exception as exc:
-        return _fail(exc)
+    return _sb.write_script(
+        _root(), name, premise, frames=int(frames), style=style,
+        style_note=style_note, cast_refs=list(cast_refs or []),
+        characters=characters, aspect_ratio=aspect_ratio)
 
 
 @_tool
@@ -12192,30 +11859,24 @@ def storyboard_plan(name: str, frames: Optional[list] = None, premise: str = "",
     storyboard_write_script does this from a premise with one cheap model call.
     Use this to fix what it wrote, or when you already know your beats.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return _sb.plan(
-            _root(), name,
-            None if frames is None else list(frames),
-            premise=premise, logline=logline, style=style,
-            style_note=style_note,
-            style_refs=None if style_refs is None else list(style_refs),
-            cast_refs=None if cast_refs is None else list(cast_refs),
-            aspect_ratio=aspect_ratio)
-    except Exception as exc:
-        return _fail(exc)
+    return _sb.plan(
+        _root(), name,
+        None if frames is None else list(frames),
+        premise=premise, logline=logline, style=style,
+        style_note=style_note,
+        style_refs=None if style_refs is None else list(style_refs),
+        cast_refs=None if cast_refs is None else list(cast_refs),
+        aspect_ratio=aspect_ratio)
 
 
 @_tool
 def storyboard_boards(limit: int = 100) -> dict:
     """Every storyboard in this project, newest first, with its frame counts."""
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return {"ok": True, "boards": _sb.boards(_root(), limit=int(limit))}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, "boards": _sb.boards(_root(), limit=int(limit))}
 
 
 @_tool(images=_frames_images)
@@ -12227,12 +11888,9 @@ def storyboard_open(name: str) -> dict:
     `ready.blockers` is the specific list of what stands between this board and
     a paid sequence. Read it before reaching for allow_unanchored.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return {"ok": True, **_sb.board(_root(), name)}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **_sb.board(_root(), name)}
 
 
 @_tool(images=_board_images)
@@ -12266,15 +11924,15 @@ def storyboard_frame_generate(name: str, idx: int, prompt: str = "",
     Comes back as 'drafted', never 'approved'. A human or a judging pass decides
     that, because approval is what lets a shot be bought against this frame.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return _sb.frame_generate(
-            _root(), name, int(idx), prompt=prompt, provider=provider,
-            model=model, refs=list(refs or []), use_cast=bool(use_cast),
-            ref_strength=float(ref_strength), quality=quality)
-    except Exception as exc:
-        return _fail(exc)
+    refused = _gate_images(_root(), 1, quality, "a storyboard frame")
+    if refused:
+        return refused
+    return _sb.frame_generate(
+        _root(), name, int(idx), prompt=prompt, provider=provider,
+        model=model, refs=list(refs or []), use_cast=bool(use_cast),
+        ref_strength=float(ref_strength), quality=quality)
 
 
 @_tool
@@ -12295,13 +11953,10 @@ def storyboard_frame_attach(name: str, idx: int, image: str = "",
     approve=True marks it approved in the same call. Only do that if you are the
     one who decided, not merely the one who attached it.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return _sb.frame_attach(_root(), name, int(idx), image=image, ref=ref,
-                                approve=bool(approve))
-    except Exception as exc:
-        return _fail(exc)
+    return _sb.frame_attach(_root(), name, int(idx), image=image, ref=ref,
+                            approve=bool(approve))
 
 
 @_tool
@@ -12322,16 +11977,13 @@ def storyboard_frame_set(name: str, idx: int, beat: Optional[str] = None,
     An image is changed with storyboard_frame_generate or _frame_attach, never
     here, so how it got there is always recorded.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        fields = {"beat": beat, "action": action, "camera": camera,
-                  "dialogue": dialogue, "duration": duration, "note": note,
-                  "status": status, "slug": slug}
-        return _sb.frame_set(_root(), name, int(idx),
-                             **{k: v for k, v in fields.items() if v is not None})
-    except Exception as exc:
-        return _fail(exc)
+    fields = {"beat": beat, "action": action, "camera": camera,
+              "dialogue": dialogue, "duration": duration, "note": note,
+              "status": status, "slug": slug}
+    return _sb.frame_set(_root(), name, int(idx),
+                         **{k: v for k, v in fields.items() if v is not None})
 
 
 @_tool
@@ -12341,15 +11993,12 @@ def storyboard_frame_add(name: str, beat: str = "", action: str = "",
                          after: Optional[int] = None) -> dict:
     """Insert one frame. At the end by default, or straight after `after`.
     Everything below it shifts down and keeps its drawing."""
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return _sb.frame_add(_root(), name, beat=beat, action=action,
-                             camera=camera, dialogue=dialogue,
-                             duration=duration,
-                             after=None if after is None else int(after))
-    except Exception as exc:
-        return _fail(exc)
+    return _sb.frame_add(_root(), name, beat=beat, action=action,
+                         camera=camera, dialogue=dialogue,
+                         duration=duration,
+                         after=None if after is None else int(after))
 
 
 @_tool
@@ -12359,12 +12008,9 @@ def storyboard_frame_cut(name: str, idx: int) -> dict:
     Cut rather than deleted because a drawn frame was paid for, and an argument
     about whether the scene needs it is one you may lose twice.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return {"ok": True, **_sb.frame_cut(_root(), name, int(idx))}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **_sb.frame_cut(_root(), name, int(idx))}
 
 
 @_tool
@@ -12375,12 +12021,9 @@ def storyboard_reorder(name: str, order: list) -> dict:
     than interpreted, because a reorder that quietly dropped a frame would throw
     away an image somebody paid for.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return {"ok": True, **_sb.frame_reorder(_root(), name, list(order or []))}
-    except Exception as exc:
-        return _fail(exc)
+    return {"ok": True, **_sb.frame_reorder(_root(), name, list(order or []))}
 
 
 @_tool
@@ -12403,14 +12046,11 @@ def storyboard_promote(name: str, sequence_name: str = "", model: str = "",
     cinematic_sequences, then buy it one shot at a time with
     cinematic_generate_shot.
     """
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return _sb.promote(_root(), name, sequence_name=sequence_name,
-                           model=model, resolution=resolution,
-                           allow_unanchored=bool(allow_unanchored))
-    except Exception as exc:
-        return _fail(exc)
+    return _sb.promote(_root(), name, sequence_name=sequence_name,
+                       model=model, resolution=resolution,
+                       allow_unanchored=bool(allow_unanchored))
 
 
 @_tool
@@ -12418,12 +12058,9 @@ def storyboard_delete(name: str, drop_images: bool = False) -> dict:
     """Remove a board. Its generated images stay on disk unless you ask
     otherwise - they were paid for, and a deleted row is not a reason to burn
     them."""
-    try:
-        from bgate_core import storyboard as _sb
+    from bgate_core import storyboard as _sb
 
-        return _sb.delete(_root(), name, drop_images=bool(drop_images))
-    except Exception as exc:
-        return _fail(exc)
+    return _sb.delete(_root(), name, drop_images=bool(drop_images))
 
 
 def main() -> None:

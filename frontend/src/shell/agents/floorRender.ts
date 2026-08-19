@@ -27,16 +27,38 @@ import { SEAT_COLOR } from "../nav";
 
 const imgCache = new Map<string, HTMLImageElement>();
 const loading = new Set<string>();
+/* A FAILED LOAD IS NOT A FACT ABOUT THE FILE FOREVER. The broken element used
+   to stay in imgCache, and the hit branch below answered null for it on every
+   frame after — so one transient 404 (the server restarting, art still being
+   generated) blanked that room's painting until a full page reload. The cache
+   itself has to stay, because this runs inside a 60fps draw loop and an
+   uncached miss would be sixty requests a second; instead a failure is
+   remembered WITH A CLOCK, and once it ages out the next frame asks again. A
+   room that genuinely has no painting re-asks once per interval, which is the
+   price of the rooms that do. */
+const failedAt = new Map<string, number>();
+const RETRY_MS = 15000;
 
 function getImg(src: string): HTMLImageElement | null {
   const hit = imgCache.get(src);
   if (hit) return hit.complete && hit.naturalWidth > 0 ? hit : null;
   if (loading.has(src)) return null;
+  const failed = failedAt.get(src);
+  if (failed !== undefined) {
+    if (Date.now() - failed < RETRY_MS) return null;
+    failedAt.delete(src);
+  }
   loading.add(src);
   const img = new Image();
   img.src = src;
   img.onload = () => { imgCache.set(src, img); loading.delete(src); };
-  img.onerror = () => { loading.delete(src); };
+  img.onerror = () => {
+    /* Out of the cache, so the hit branch cannot pin the failure — the
+       failedAt stamp is what holds the retry off, and it expires. */
+    imgCache.delete(src);
+    loading.delete(src);
+    failedAt.set(src, Date.now());
+  };
   imgCache.set(src, img);
   return null;
 }
