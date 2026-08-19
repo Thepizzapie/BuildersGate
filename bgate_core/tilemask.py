@@ -960,3 +960,79 @@ def diamond_tiles(floor_tile, void_tile, wanted: Sequence[int], *,
         sheet.paste(tiles[mask], (tx * tw, ty * th))
         table[mask] = (tx, ty)
     return {"ok": True, "image": sheet, "table": table, "inset": inset}
+
+
+#: How the two visible side faces of a block are lit, as multipliers on the
+#: material. Light comes from the upper LEFT, which is the convention the
+#: floor band already implies and the one nearly every isometric game uses:
+#: the face turned south-west catches some of it, the face turned south-east
+#: catches least. Equal faces read as a flat hexagon rather than a cube — the
+#: whole illusion is that two planes at different angles are different values.
+ISO_FACE_LEFT = 0.72
+ISO_FACE_RIGHT = 0.48
+
+
+def iso_block(top, material, *, tile_size: tuple[int, int], lift: int,
+              faces: tuple[float, float] = (ISO_FACE_LEFT, ISO_FACE_RIGHT)
+              ) -> dict:
+    """A raised isometric cell: a diamond top with two side faces below it.
+
+    THE ONE PRIMITIVE BEHIND BOTH WALLS AND ELEVATION, because in an
+    isometric world they are the same object seen twice: a wall is a cell
+    raised by `lift` that you may not enter, and a terrace is a cell raised by
+    `lift` that you may. Building them from one function is not tidiness — it
+    is why a wall and the ledge beside it cannot end up drawn with different
+    geometry or lit from different directions.
+
+    The art is ``(tw, th + lift)``: the top diamond occupies the first ``th``
+    rows and the faces hang below it, each column falling from the diamond's
+    own lower boundary so the silhouette is exact at any tile aspect. The
+    faces are the material again rather than flat colour, sampled wrapped so
+    the stone continues down the wall instead of stretching.
+
+    Returns ``{image, origin, size}``. ``origin`` is the ``texture_origin``
+    Godot needs — ``(0, lift // 2)`` — which puts the art's BOTTOM EDGE on the
+    diamond's bottom vertex and therefore the block's TOP face exactly `lift`
+    above the cell's floor plane. That rule is `tilemap.tile_rect`'s, stated
+    from the other end; get its sign wrong and every wall sinks into the floor.
+    """
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    lift = int(lift)
+    if lift < 1:
+        return {"ok": False, "reason": f"a {lift}px lift is not a block"}
+    top = top.convert("RGBA").resize((tw, th), Image.NEAREST)
+    mat = material.convert("RGBA").resize((tw, th), Image.NEAREST)
+    left_k, right_k = faces
+
+    out = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
+    out.paste(top, (0, 0))
+    opx, mpx = out.load(), mat.load()
+    for px in range(tw):
+        u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+        if abs(u) > 1.0:
+            continue
+        # the diamond's lower boundary in this column: |u| + |v| = 1
+        y_low = (th / 2.0) * (2.0 - abs(u))
+        k = left_k if u < 0 else right_k
+        # SAME CENTRE-SAMPLING RULE AS THE DIAMOND, and it has to be: taking
+        # int(y_low) as the first row truncated the fractional boundary, and
+        # at the centre column — where the diamond's bottom vertex sits — that
+        # left the block's lowest pixel row empty. A one-pixel notch at the
+        # tip of every wall, which tiles into a dotted line along every ledge.
+        for py in range(int(y_low), th + lift):
+            if not (y_low <= py + 0.5 <= y_low + lift):
+                continue
+            r, g, b, a = mpx[px, py % th]
+            if a:
+                opx[px, py] = (int(r * k), int(g * k), int(b * k), 255)
+    return {"ok": True, "image": out, "origin": (0, lift // 2),
+            "size": (tw, th + lift)}
+
+
+def crop_tile(sheet, at: Sequence[int], tile_size: tuple[int, int]):
+    """One tile out of a packed sheet, by its (tx, ty) atlas coordinate."""
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    tx, ty = int(at[0]), int(at[1])
+    return sheet.crop((tx * tw, ty * th, tx * tw + tw, ty * th + th))

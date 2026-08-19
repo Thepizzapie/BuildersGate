@@ -420,3 +420,53 @@ class TestTheDiamond:
         assert ys[0] == -16.0 and ys[-1] == 16.0
         # every vertex sits ON an axis — that is what a diamond is
         assert all(p[0] == 0.0 or p[1] == 0.0 for p in poly)
+
+
+class TestTheBlock:
+    """Walls and elevation are one primitive: a raised cell."""
+
+    def _mat(self, tw=64, th=32):
+        from PIL import Image
+        return Image.new("RGBA", (tw, th), (180, 160, 130, 255))
+
+    def _block(self, lift=32, tw=64, th=32):
+        mat = self._mat(tw, th)
+        full = tilemask.BIT_N | tilemask.BIT_E | tilemask.BIT_S | tilemask.BIT_W
+        sheet = tilemask.diamond_tiles(mat, mat, [full], tile_size=(tw, th))
+        top = tilemask.crop_tile(sheet["image"], sheet["table"][full], (tw, th))
+        return tilemask.iso_block(top, mat, tile_size=(tw, th), lift=lift)
+
+    def test_the_art_is_taller_than_the_cell_and_says_by_how_much(self):
+        got = self._block(lift=32)
+        assert got["ok"] and got["size"] == (64, 64)
+        # texture_origin = art_h/2 - tile_h/2, which is tilemap.tile_rect's
+        # rule stated from the other end: it lands the art's BOTTOM edge on
+        # the diamond's bottom vertex, so the top face sits `lift` above the
+        # floor plane. Get the sign wrong and every wall sinks into the floor.
+        assert got["origin"] == (0, 16)
+
+    def test_the_two_visible_faces_are_different_values(self):
+        """Equal faces read as a flat hexagon. The whole isometric illusion
+        is that two planes at different angles to the light differ."""
+        px = self._block(lift=32)["image"].load()
+        left = px[8, 30]
+        right = px[56, 30]
+        assert left[3] == 255 and right[3] == 255, "a face is missing"
+        assert sum(left[:3]) > sum(right[:3]), "left face is not the lit one"
+
+    def test_the_faces_hang_from_the_diamond_not_from_a_rectangle(self):
+        """A block whose sides start at the tile rect would be a box with the
+        diamond floating inside it."""
+        px = self._block(lift=32)["image"].load()
+        # the far left column's diamond boundary is at y = th/2 = 16, so the
+        # face runs 16..48 there and nothing is drawn above it
+        assert px[0, 8][3] == 0, "art above the diamond's left vertex"
+        assert px[0, 20][3] == 255, "no face below the left vertex"
+        # the centre column's boundary is the bottom vertex at y = 32
+        assert px[32, 20][3] == 255, "the top face has a hole"
+        assert px[32, 60][3] == 255, "no face below the bottom vertex"
+        assert px[32, 63][3] == 255
+
+    def test_a_lift_of_nothing_is_not_a_block(self):
+        got = self._block(lift=0)
+        assert got["ok"] is False and "block" in got["reason"]

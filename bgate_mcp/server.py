@@ -2982,7 +2982,7 @@ def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> 
 @_tool
 def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                      bits: int = 8, void_prompt: str = "",
-                     wall_prompt: str = "",
+                     wall_prompt: str = "", wall_lift: int = 0,
                      godot_project: str = "", res_dir: str = "assets/tiles",
                      install: bool = False,
                      collide: bool = True,
@@ -3018,6 +3018,13 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
     eight bits costs no extra image call and no extra money.
     `install=False` lands everything in .bgate_out/tiles/ for review; True also
     writes into the Godot project and LOADS IT IN THE ENGINE to prove it.
+
+    ISOMETRIC PROJECTS GET BLOCKS. The view's tiles are diamonds, its walls
+    are raised cells showing two camera-facing sides, and both come from one
+    primitive — a wall is a cell you may not enter and a terrace is one you
+    may. `wall_lift` is that height in pixels (0 = one tile height); the
+    resource carries the taller region and the texture_origin that lands the
+    block's top face exactly that far above the floor plane.
 
     The atlas is also written as an Aseprite master — every AI-generated
     sheet goes through the Aseprite cleanup, tilesets included.
@@ -3231,9 +3238,52 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         # wall art came back brighter than the floor, which reads as lit
         # paths around dark pits rather than as rooms with walls.
         wall_source = None
-        if wall_prompt:
+        if iso:
+            # AN ISOMETRIC LEVEL NEEDS ITS WALLS AS BLOCKS, always — there is
+            # no flat wall tile that reads as a wall in this projection, only
+            # a raised cell with its two camera-facing sides showing. So this
+            # is built whether or not a wall material was asked for: without
+            # `wall_prompt` the block is the floor's own stone, and the face
+            # shading alone is what separates a wall from the ground it
+            # stands on (it is enough — the two planes are at different
+            # angles to the light, which is the entire isometric illusion).
+            lift = int(wall_lift) or th
             try:
-                wtile, usd = _texture(wall_prompt, "wall")
+                if wall_prompt:
+                    wmat, _unused, usd = _texture(wall_prompt, "wall")
+                    spent += usd
+                else:
+                    # THE WALL MASS IS ROCK, NOT FLOOR. Built from the floor's
+                    # own tile the block came back with a top face identical
+                    # to the ground, so a filled wall region rendered as a
+                    # plateau of flagstone and the rooms were legible only by
+                    # the shadow lines between them. The darkened material —
+                    # the same one the floor's edge band is cut from — makes
+                    # the raised mass read as stone and the walkable floor
+                    # read as floor, which is the distinction the square path
+                    # already makes by toning its wall to 0.62 of the floor.
+                    wmat = void_tile
+                block = _tilemask.iso_block(
+                    _tilemask.crop_tile(
+                        _tilemask.diamond_tiles(wmat, wmat, [full],
+                                                tile_size=(tw, th))["image"],
+                        (0, 0), (tw, th)),
+                    wmat, tile_size=(tw, th), lift=lift)
+                if not block.get("ok"):
+                    raise ValueError(block.get("reason"))
+                wall_png = out_dir / f"{name}_wall.png"
+                block["image"].save(wall_png)
+                if pinned:
+                    _spritekit.lock_palette(str(wall_png), pinned)
+                wall_source = {"ok": True, "path": str(wall_png),
+                               "lift": lift, "origin": list(block["origin"]),
+                               "size": list(block["size"])}
+            except Exception as exc:                            # noqa: BLE001
+                wall_source = {"ok": False,
+                               "error": f"{type(exc).__name__}: {exc}"}
+        elif wall_prompt:
+            try:
+                wtile, _unused, usd = _texture(wall_prompt, "wall")
                 spent += usd
                 wall_source = _wall_tile_from(wtile, sheet, tile_px, out_dir,
                                               name)
@@ -3284,6 +3334,19 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                 "id": 1,
                 "texture": f"res://{res_dir.strip('/')}/{name}_wall.png",
                 "tiles": [(0, 0)],
+                # A BLOCK IS TALLER THAN ITS CELL, and the resource has to say
+                # so twice: the region is the art's real size, and the origin
+                # puts the art's bottom edge on the diamond's bottom vertex so
+                # the top face lands exactly `lift` above the floor plane.
+                # ORIGINS, PLURAL — texture_origin is TileData, not source
+                # data. Written at the source level Godot accepts the file,
+                # ignores the key and reports origin (0, 0), which drew every
+                # wall at half the height it was built with: plausible enough
+                # in a screenshot, wrong by lift/2 everywhere. The engine
+                # probe is what said so.
+                **({"region": tuple(wall_source["size"]),
+                    "origins": {(0, 0): tuple(wall_source["origin"])}}
+                   if iso else {}),
                 # The wall is solid all the way through, so its collider is
                 # the whole cell rather than an edge band.
                 "collision": {(0, 0): [
@@ -7408,6 +7471,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 "are top-down geometry — use sidescroll_generate, which "
                 "builds for this character's jump, or game_view_set if the "
                 "declared view is wrong.")}
+        iso = view == "isometric"
         if wall_layout not in _WALL_LAYOUTS:
             raise ValueError(
                 f"wall_layout {wall_layout!r} is not one of {_WALL_LAYOUTS}")
@@ -7423,7 +7487,6 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         # isometric project renders a plausible, wrong-looking grid — the
         # exact silent failure tilemap.py documents — and the inverse draws
         # diamonds flat. Neither errors in the engine, so it errors here.
-        iso = view == "isometric"
         want_shape = _tilemap.ISOMETRIC if iso else _tilemap.SQUARE
         if parsed_set["shape"] != want_shape:
             raise ValueError(
@@ -7432,6 +7495,28 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 "Godot renders the mismatch without complaint and it looks "
                 "wrong everywhere — fix the tileset or the declared view, "
                 "not this call.")
+        # AN ISOMETRIC WALL IS A BLOCK, AND A BLOCK IS A BLOCK. The 47- and
+        # 16-mask layouts exist so a FLAT wall can show which sides face open
+        # floor; a raised cell shows its two camera-facing sides whatever its
+        # neighbours do, and the cell in front covers what it should because
+        # the layer is y-sorted. So those layouts are not reduced here, they
+        # are meaningless. The blocks live in the tileset's second source,
+        # which is where tileset_generate writes them — and a set that has no
+        # block source draws its floor and says so, rather than refusing over
+        # a default the caller never typed.
+        iso_walls = None
+        if iso and wall_layout in ("blob47", "grid16"):
+            if 1 in parsed_set["sources"] or wall_source in parsed_set["sources"]:
+                wall_layout = "solid"
+                if wall_source == 0 and 1 in parsed_set["sources"]:
+                    wall_source = 1
+                iso_walls = "blocks"
+            else:
+                wall_layout = "none"
+                iso_walls = ("floor only: this tileset has no block source. "
+                             "tileset_generate writes one for an isometric "
+                             "project; a set imported from elsewhere needs "
+                             "its wall blocks as source 1.")
         have = sorted(parsed_set["sources"])
         wanted = {floor_source} | ({wall_source} if wall_layout != "none" else set())
         missing = sorted(w for w in wanted if w not in parsed_set["sources"])
@@ -7585,6 +7670,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             "rooms": len(level["rooms"]),
             "corridors": len(level["corridors"]),
             "tile_variants": varied,
+            **({"iso_walls": iso_walls} if iso_walls else {}),
             "connected": level["connected"],
             "spawn": level["spawn"], "exit": level["exit"],
             "layers": wired["layers"], "summary": wired["summary"],
