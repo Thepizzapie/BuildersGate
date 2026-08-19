@@ -554,14 +554,18 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
             # one cell of the gap belongs to the shared wall between rooms
             grid.append(Rect(x, y, cw - 1, chh - 1))
 
-    # THE ROUTE IS A WALK OVER THE GRID: along the top row, down, back along
-    # the next, so consecutive rooms are always neighbours and the corridor
-    # between them is a doorway rather than a trek.
-    order = []
-    for r in range(rows):
-        band = list(range(r * cols, min(len(grid), (r + 1) * cols)))
-        order += band if r % 2 == 0 else band[::-1]
-    placed = [grid[i] for i in order[:rooms + max(0, side_rooms)]]
+    # THE ROUTE IS A SPINE, AND A SIDE ROOM IS OFF IT. Walking the grid
+    # serpentine made every room a link in one snake: eight rooms in a J,
+    # each one on the way to the next, and "side" was a label with no
+    # geometry behind it. A side room is a room you can DECLINE to enter —
+    # a dead end hanging off the route — so the route is a straight run of
+    # `rooms` along the first band, and everything else is a leaf.
+    band = list(range(0, min(cols, len(grid))))
+    if len(band) < rooms:                       # a short plate wraps the spine
+        band += list(range(cols, min(len(grid), cols + (rooms - len(band)))))
+    order = band[:rooms]
+    rest = [i for i in range(len(grid)) if i not in order]
+    placed = [grid[i] for i in order + rest[:max(0, side_rooms)]]
 
     main = list(range(min(rooms, len(placed))))
     # SIDE ROOMS HANG OFF THE CHAIN, never between two links of it: a detour
@@ -650,6 +654,9 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
     # closet behind IT — and hanging every side room directly off the route
     # gives a comb instead. Each one attaches to the nearest room already
     # reachable, main or side, so depth appears where the geometry allows it.
+    # each leaf attaches to ONE room already reachable — a main room, or
+    # another leaf, which is how a store room ends up behind a break room.
+    # One join means one way in and out: a dead end, not a shortcut.
     reached = list(main)
     for idx in side:
         here = placed[idx].center
