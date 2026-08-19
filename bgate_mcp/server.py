@@ -7254,6 +7254,230 @@ def game_view_set(view: str) -> dict:
         return _fail(exc)
 
 @_tool
+def level_reskin(godot_project: str, scene: str, tileset: str,
+                 out_scene: str = "", floor_layer: str = "",
+                 wall_layer: str = "Walls", sunken: str = "",
+                 doors: str = "", parent: str = ".",
+                 dry_run: bool = False) -> dict:
+    """RE-BUILD AN EXISTING LEVEL'S LAYOUT against a different tileset.
+
+    The layout is the expensive part and the art is not. A floor somebody
+    designed by hand — where the rooms are, which cells are corridor, where
+    the walls run — is worth keeping when the tile set under it changes, and
+    re-drawing it by hand in the editor is how a re-skin never happens.
+
+    So this reads the CELL SETS out of a scene's TileMapLayers and emits them
+    again against a new tileset: the floor re-autotiled from its own shape, so
+    every cell gets the edge its neighbours imply rather than the flat tile it
+    had, and the walls placed as whatever the new set uses for a wall — in an
+    isometric project that is the raised BLOCK, which is what turns a flat
+    wall layer into a room you can see the inside of.
+
+    It writes a NEW scene by default (`out_scene`, or `<scene>_reskin.tscn`).
+    The source scene is never modified: a level carries props, scripts,
+    spawns and quest wiring that this tool knows nothing about, and quietly
+    rewriting the layers under them is not a re-skin, it is a demolition.
+
+    `sunken` is "x,y,w,h" — a region that stays on the base plane while
+    everything else rises one level, which is how you get a BASEMENT out of a
+    generator that only knows how to raise things. The rim of the drop is
+    ramped wherever the two heights actually touch, and because the walls of
+    a designed floor already separate its rooms, the only places they touch
+    are its doorways. Reachability is then checked the same way the
+    side-scroller checks its jumps: if a walker cannot get from the high
+    ground into the hole, that is refused rather than rendered.
+
+    `doors` is "x,y x,y ..." — cells the WALL layer holds that are actually
+    openings. A designed floor does not have to leave gaps in its wall layer
+    to have doorways: downsizing's tutorial floor draws a door tile inside
+    the wall run and records the opening in its level data, which is a scene
+    reader's blind spot. Without them the walkable set comes apart into one
+    component per room — measured here, eighteen of them — and any question
+    about reaching anything is answered wrongly rather than refused. Given
+    them, the cells stop being walls and become floor, which is what a
+    doorway looks like when the wall is a solid block.
+
+    Returns the cell counts it moved and the masks the new set could not
+    answer, which is the list to hand an artist.
+    """
+    try:
+        import re as _re2
+
+        root = _Path(_root())
+        view = _gameview.load(root)
+        iso = view == "isometric"
+        src_disk, src_res = _res_pair(godot_project, scene, ".tscn")
+        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
+        if not src_disk.is_file():
+            return {"ok": False, "error": f"no scene at {src_res}"}
+        if not tiles_disk.is_file():
+            return {"ok": False, "error": f"no tileset at {tiles_res}"}
+        parsed_set = _tilemap.parse_tileset(
+            tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        want_shape = _tilemap.ISOMETRIC if iso else _tilemap.SQUARE
+        if parsed_set["shape"] != want_shape:
+            return {"ok": False, "error": (
+                f"{tiles_res} has tile shape {parsed_set['shape']} and this "
+                f"project's view is {view!r} — the re-skin would draw the "
+                "layout in the wrong projection")}
+
+        text = src_disk.read_text(encoding="utf-8", errors="replace")
+        found = {}
+        for name, body in _re2.findall(
+                r'\[node name="([^"]+)" type="TileMapLayer"[^\]]*\]'
+                r'((?:(?!\n\[node).)*)', text, _re2.S):
+            hit = _re2.search(r'tile_map_data = PackedByteArray\("([^"]*)"\)',
+                              body)
+            if hit:
+                found[name] = {(c["x"], c["y"])
+                               for c in _tilemap.decode_cells(hit.group(1))}
+        if not found:
+            return {"ok": False, "error": (
+                f"{src_res} has no TileMapLayer carrying cells — there is no "
+                "layout in it to re-skin")}
+
+        # WHICH LAYER IS THE FLOOR: named, or the biggest one that is not the
+        # wall layer. A guess is fine here and a wrong guess is visible
+        # immediately, which is not true of most guesses in this pipeline.
+        floor_name = floor_layer or next(
+            (n for n, c in sorted(found.items(), key=lambda kv: -len(kv[1]))
+             if n != wall_layer), "")
+        if floor_name not in found:
+            return {"ok": False, "error": (
+                f"no layer named {floor_name!r} in {src_res} — it has "
+                f"{sorted(found)}")}
+        floor_cells = found[floor_name]
+        wall_cells = found.get(wall_layer, set())
+        door_cells = set()
+        for pair in str(doors).replace(";", " ").split():
+            try:
+                dx, dy = (int(v) for v in pair.split(","))
+            except ValueError:
+                return {"ok": False, "error": (
+                    f"doors={doors!r} is 'x,y x,y ...'")}
+            door_cells.add((dx, dy))
+        wall_cells -= door_cells
+        floor_cells |= door_cells
+
+        side = _iso_blocks(tiles_disk)
+        layers = []
+        terrain = _terrain("grid16", 0, 0, 0, 4, "Floor")
+        cells = _autotile.resolve(sorted(floor_cells), terrain)
+        missing = _autotile.unmapped(sorted(floor_cells), terrain)
+        _scatter_variants(cells, tiles_disk)
+        layers.append({"name": "Floor", "terrain": "Floor", "cells": cells,
+                       "unmapped": {}})
+
+        # ELEVATION, if a region was named. Everything rises except the hole,
+        # which is the same thing as digging it and is the only one of the two
+        # the block primitive can draw.
+        elevation = None
+        if sunken:
+            try:
+                sx, sy, sw, sh = (int(v) for v in
+                                  sunken.replace(",", " ").split())
+            except ValueError:
+                return {"ok": False, "error": (
+                    f"sunken={sunken!r} is not 'x,y,w,h'")}
+            low = {(x, y) for x in range(sx, sx + sw)
+                   for y in range(sy, sy + sh)} & floor_cells
+            if not low:
+                return {"ok": False, "error": (
+                    f"the sunken region {sunken!r} holds no floor cells")}
+            # WALKABLE IS NOT THE SAME AS FLOORED. A designed level paints
+            # floor UNDER its walls — downsizing ships a `floor_underwall`
+            # tile for exactly that — so the floor layer alone says the
+            # basement's whole rim touches open ground and ramps it, all
+            # forty cells of it. The walls are what make a doorway a doorway,
+            # so they decide where the two heights are allowed to meet.
+            walk = floor_cells - wall_cells
+            low_walk = low & walk
+            heights = {c: 1 for c in walk if c not in low}
+            ramps = {}
+            for (x, y) in sorted(heights):
+                for face, (dx, dy) in _levelgen.RAMP_DIRS.items():
+                    if (x + dx, y + dy) in low_walk:
+                        ramps[(x, y)] = face
+                        break
+            start = next(iter(sorted(walk - low)), None)
+            got = _levelgen.reachable(walk, heights, ramps, start=start)
+            if len(got) != len(walk):
+                return {"ok": False, "error": (
+                    f"{len(walk) - len(got)} walkable cells cannot be reached "
+                    "once that region is sunk — the hole has no way in"),
+                    "unreachable": sorted(walk - got)[:20]}
+            side_blocks = (side or {}).get("blocks") or {}
+            if not side_blocks.get("terrace"):
+                return {"ok": False, "error": (
+                    "this tileset has no raised tiles, so a sunken region "
+                    "cannot be drawn")}
+            # every floored cell that is not the hole draws raised, walls
+            # included: a wall standing on the high ground has to sit on it.
+            raised = []
+            for cell in sorted({c: 1 for c in floor_cells if c not in low}):
+                face = ramps.get(cell)
+                at = (side_blocks.get(f"ramp_{face}") if face
+                      else side_blocks.get("terrace"))
+                if at:
+                    raised.append({"x": cell[0], "y": cell[1], "source": 1,
+                                   "ax": int(at[0]), "ay": int(at[1]),
+                                   "alt": 0})
+            if raised:
+                layers.append({"name": "Terrace", "terrain": "Terrace",
+                               "cells": raised, "unmapped": {},
+                               "props": {"y_sort_enabled": True}})
+            elevation = {"sunken_cells": len(low_walk),
+                         "raised_cells": len(heights),
+                         "ramps": {f"{x},{y}": d for (x, y), d in
+                                   sorted(ramps.items())},
+                         "reachable": True}
+
+        wall_at, wall_src = None, None
+        if wall_cells:
+            if side and side["blocks"].get("wall") and 1 in parsed_set["sources"]:
+                wall_at, wall_src = tuple(side["blocks"]["wall"]), 1
+            elif 1 in parsed_set["sources"]:
+                wall_at, wall_src = (0, 0), 1
+            if wall_at is not None:
+                layers.append({
+                    "name": "Walls", "terrain": "Walls",
+                    "cells": [{"x": x, "y": y, "source": wall_src,
+                               "ax": wall_at[0], "ay": wall_at[1], "alt": 0}
+                              for (x, y) in sorted(wall_cells)],
+                    "unmapped": {},
+                    **({"props": {"y_sort_enabled": True}} if iso else {})})
+
+        dest = out_scene or scene.replace(".tscn", "_reskin.tscn")
+        dest_disk, dest_res = _res_pair(godot_project, dest, ".tscn")
+        base = (_EMPTY_SCENE.format(root=dest_disk.stem.title() or "Level")
+                if not dest_disk.is_file() else
+                dest_disk.read_text(encoding="utf-8", errors="replace"))
+        wired = _scenewire.wire_tilemap(base, tiles_res, layers, parent=parent,
+                                        owns=["Floor", "Walls", "Terrace"])
+        if not dry_run:
+            dest_disk.parent.mkdir(parents=True, exist_ok=True)
+            dest_disk.write_text(wired["text"], encoding="utf-8")
+            _log("level", f"reskinned {src_res} onto {tiles_res}",
+                 ref=dest_res)
+        return {"ok": True, "source": src_res, "scene": dest_res,
+                "tileset": tiles_res, "view": view,
+                **({"elevation": elevation} if elevation else {}),
+                "read": {n: len(c) for n, c in sorted(found.items())},
+                "floor_layer": floor_name,
+                "floor_cells": len(floor_cells),
+                "wall_cells": len(wall_cells),
+                "doors": len(door_cells),
+                "walls": ("blocks" if side and wall_src else
+                          "source 1" if wall_src else
+                          "not drawn: the new tileset has no wall source"),
+                "unmapped": {str(m): n for m, n in sorted(missing.items())},
+                "written": not dry_run,
+                "summary": wired["summary"]}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def level_plan(width: int = 48, height: int = 32, seed: int = 0,
                min_leaf: int = 10, min_room: int = 4, margin: int = 1,
                max_depth: int = 5, corridor_width: int = 2,
@@ -7805,7 +8029,15 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         # loads perfectly — the level just quietly keeps dressing nobody asked
         # for.
         owns = [floor_name, wall_name, prop_name,
-                f"{prop_name}{'decals'.title()}"]
+                f"{prop_name}{'decals'.title()}",
+                # TERRACE IS OWNED TOO, and leaving it off was the same bug
+                # this list exists to prevent, committed one layer later. A
+                # level generated with levels=2 and then regenerated FLAT
+                # kept its raised layer: 300 blocks of a previous elevation
+                # still drawing over the new floor, which reads as a second
+                # storey hanging off the map and notches the walls wherever
+                # a stale block overlaps one. The scene loads perfectly.
+                "Terrace"]
         wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent,
                                         owns=owns)
         if dry_run:

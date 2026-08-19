@@ -445,9 +445,10 @@ ISO_TILESET_BLOCKS = (
              '\n[sub_resource type="TileSetAtlasSource" id="B"]\n'
              'texture = ExtResource("2_w")\n'
              "texture_region_size = Vector2i(64, 64)\n"
-             "0:0/0 = 0\n"
-             "0:0/0/texture_origin = Vector2i(0, 16)\n"
-             "\n[resource]")
+             + "".join(f"{i}:0/0 = 0\n"
+                       f"{i}:0/0/texture_origin = Vector2i(0, 16)\n"
+                       for i in range(6))
+             + "\n[resource]")
     .replace('sources/0 = SubResource("A")',
              'sources/0 = SubResource("A")\nsources/1 = SubResource("B")'))
 
@@ -512,6 +513,37 @@ class TestTheViewRoutesTheGeometry:
         assert "y_sort_enabled = true" in walls
         floor = text[text.index('[node name="Floor"'):text.index('[node name="Walls"')]
         assert "y_sort_enabled" not in floor
+
+    async def test_regenerating_flat_removes_a_previous_terrace_layer(
+            self, root, game):
+        """The owns-list bug, one layer later: a level generated with
+        elevation and then regenerated FLAT kept 300 raised blocks drawing
+        over the new floor — a second storey nobody asked for, and the scene
+        loads perfectly."""
+        import json as _json
+
+        from bgate_core import gameview
+        gameview.save(root, "isometric")
+        (game / "tiles" / "iso.tres").write_text(ISO_TILESET_BLOCKS,
+                                                 encoding="utf-8")
+        (game / "tiles" / "iso.tiles.json").write_text(_json.dumps(
+            {"interior": [3, 3], "variants": [],
+             "blocks": {"wall": [0, 0], "terrace": [1, 0],
+                        "ramp_n": [2, 0], "ramp_e": [3, 0],
+                        "ramp_s": [4, 0], "ramp_w": [5, 0]},
+             "lift": 32}), encoding="utf-8")
+        kw = dict(godot_project=str(game), scene="scenes/level.tscn",
+                  tileset="tiles/iso.tres", width=30, height=30, seed=3,
+                  create=True)
+        first = await call("level_generate", levels=2, raised=1.0, **kw)
+        assert first["ok"], first.get("error")
+        text = (game / "scenes" / "level.tscn").read_text(encoding="utf-8")
+        assert '[node name="Terrace"' in text, "nothing rose to begin with"
+
+        again = await call("level_generate", levels=1, **kw)
+        assert again["ok"], again.get("error")
+        text = (game / "scenes" / "level.tscn").read_text(encoding="utf-8")
+        assert '[node name="Terrace"' not in text, "the old storey is still there"
 
     async def test_a_hand_built_set_keeps_the_wall_source_it_was_given(
             self, root, game):
