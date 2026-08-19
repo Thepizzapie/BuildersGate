@@ -106,6 +106,8 @@
       ".pv-sech{display:flex;align-items:baseline;gap:9px;font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--text-3);margin-bottom:9px;padding-bottom:6px;border-bottom:1px solid var(--line)}",
       ".pv-sech .n{color:var(--text-2)}",
       ".pv-none{font-size:12px;color:var(--text-3);padding:10px 0}",
+      ".pv-drained{color:var(--red,#e5534b);font-weight:600}",
+      ".pv-balbtn{margin-left:auto;cursor:pointer}",
     ].join("");
     document.head.appendChild(s);
   }
@@ -154,10 +156,25 @@ when you are not in a project at all. A project's own key still wins over it.">
       <div class="pv-foot">
         <span>${esc(row.env)}</span>
         ${fp}${src ? `<span>· ${src}</span>` : ""}
+        ${balanceHtml(row)}
         <a class="pv-link" href="${esc(row.key_url)}" target="_blank"
            rel="noopener noreferrer">get a key ↗</a>
       </div>
     </div>`;
+  }
+
+  /* What is LEFT on the account, where the provider will say. null balance is
+     UNKNOWN (openai never says; krea's API balance only surfaces as a 402 at
+     call time) and must never render as zero — an agent already made that
+     exact mistake and hand-rolled a sprite over it. */
+  function balanceHtml(row) {
+    const bal = PK.balances && PK.balances[row.id];
+    if (!bal || !bal.keyed) return "";
+    if (bal.balance == null) return `<span>· balance: provider won't say</span>`;
+    const amount = `${bal.balance} ${esc(bal.balance_unit || "credits")}`;
+    return Number(bal.balance) <= 0
+      ? `<span class="pv-drained">· DRAINED — 0 ${esc(bal.balance_unit || "credits")} left</span>`
+      : `<span>· ${amount} left</span>`;
   }
 
   /* Where the key goes, said once and said plainly. This paragraph is the
@@ -194,6 +211,7 @@ when you are not in a project at all. A project's own key still wins over it.">
 
   const PK = {
     data: null, _read: 0, _busy: "", _reading: false,
+    balances: null, _balBusy: false,
     hosts: {},           // where: element
 
     async load(force) {
@@ -211,6 +229,27 @@ when you are not in a project at all. A project's own key still wins over it.">
       return this.data;
     },
 
+    /* THE MONEY ROW. Separate fetch from load() because it probes the
+       network per provider (the gateway caches ~2 minutes server-side);
+       the key panel must paint offline-fast and the balances arrive as a
+       second coat. fresh=true is the button a human presses after topping
+       an account up. */
+    async loadBalances(fresh) {
+      if (this._balBusy) return;
+      this._balBusy = true;
+      try {
+        const d = await window.readJSON(
+          "/api/providers/balances" + (fresh ? "?fresh=1" : ""), {});
+        if (d && !d.__error && d.providers) {
+          this.balances = {};
+          d.providers.forEach(r => { this.balances[r.id] = r; });
+        }
+      } finally {
+        this._balBusy = false;
+      }
+      Object.keys(this.hosts).forEach(w => this.paint(w));
+    },
+
     mount(where, host) {
       if (!host) return false;
       injectStyle();
@@ -223,6 +262,7 @@ when you are not in a project at all. A project's own key still wins over it.">
           const id = hit.dataset.pvId;
           if (hit.dataset.pvAct === "save") this.save(id, where, hit);
           if (hit.dataset.pvAct === "clear") this.clear(id, where, hit);
+          if (hit.dataset.pvAct === "balances") this.loadBalances(true);
         });
         /* Enter saves. Without it the only way to commit is the button, and
            "I pasted it and pressed enter" is the most common way to believe a
@@ -245,6 +285,7 @@ when you are not in a project at all. A project's own key still wins over it.">
       el.innerHTML = `<div class="pv-wrap"><div class="pv-none">loading providers…</div></div>`;
       await this.load(true);
       this.paint("settings");
+      this.loadBalances(false);   // second coat; repaints when it lands
       return true;
     },
 
@@ -254,6 +295,7 @@ when you are not in a project at all. A project's own key still wins over it.">
       host.innerHTML = `<div class="pv-wrap"><div class="pv-none">loading generators…</div></div>`;
       await this.load(true);
       this.paint("studio");
+      this.loadBalances(false);   // second coat; repaints when it lands
       return true;
     },
 
@@ -276,6 +318,9 @@ when you are not in a project at all. A project's own key still wins over it.">
         <div class="pv-head">
           <span class="pv-eyebrow">Credentials</span>
           <h3>Art providers</h3>
+          <a class="pv-link pv-balbtn" data-pv-act="balances"
+             title="Balances are cached for ~2 minutes — press after topping an account up.">
+             re-check balances</a>
         </div>
         ${storageNote(d)}
         <div class="pv-grid">${rows.map(r => card(r, "settings")).join("")}</div>

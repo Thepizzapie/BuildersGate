@@ -89,7 +89,10 @@ class TestProcessBoundary:
 
     def run_hook(self, data: dict, seat: str, cwd: str) -> subprocess.CompletedProcess:
         import os
-        env = {**os.environ, "BGATE_SEAT": seat}
+        # BGATE_LANES=block pins the lane dial: these tests are about the
+        # process contract (exit codes, stderr routing), not about the
+        # advisory default, which has its own tests in TestWorkerLaneMode.
+        env = {**os.environ, "BGATE_SEAT": seat, "BGATE_LANES": "block"}
         return subprocess.run([sys.executable, "-m", "bgate_cli.hook"],
                               input=json.dumps(data), capture_output=True,
                               text=True, timeout=60, cwd=cwd, env=env)
@@ -122,6 +125,71 @@ class TestProcessBoundary:
                              cwd=str(root),
                              env={**os.environ, "BGATE_SEAT": "gameplay"})
         assert got.returncode == 0  # fail-safe: never dam the session
+
+
+class TestWorkerLaneMode:
+    """The seated worker's lane went ADVISORY on 2026-08-19.
+
+    A seat is a toolset plus the aegis project boundary; the lane table inside
+    that boundary is a map, not a wall. The observed cost of the wall: on any
+    project whose layout missed the <root>/game scaffold, every seat was
+    refused on contact with the real source tree, and agents answered a
+    refusal by dying politely rather than routing. The refusal MESSAGE
+    survives as a warning to the human; the write lands.
+    """
+
+    def _judge(self, root, path, seat, owner, mode):
+        data = {"tool_name": "Write", "cwd": str(root),
+                "tool_input": {"file_path": str(path)}}
+        return hook.decide(data, seat, owner, mode)
+
+    def test_warn_is_the_default_and_garbage_falls_back(self, monkeypatch):
+        monkeypatch.delenv("BGATE_LANES", raising=False)
+        assert hook.worker_lane_mode() == "warn"
+        monkeypatch.setenv("BGATE_LANES", "BLOCK")
+        assert hook.worker_lane_mode() == "block"     # case-insensitive
+        monkeypatch.setenv("BGATE_LANES", "nonsense")
+        assert hook.worker_lane_mode() == "warn"
+
+    def test_the_dial_is_single_sourced_in_seats(self, monkeypatch):
+        from bgate_core import seats
+        monkeypatch.setenv("BGATE_LANES", "collide")
+        assert hook.worker_lane_mode() == seats.lane_mode() == "collide"
+
+    def test_warn_lets_an_out_of_lane_write_land_and_tells_the_human(self, root):
+        code, msg = self._judge(root, root / "game/assets/rock.png",
+                                "gameplay", "item-1", "warn")
+        # Exit 1: non-blocking, stderr goes to the HUMAN. The write lands.
+        assert code == hook.WARN
+        assert "gameplay" in msg
+
+    def test_collide_waives_the_lane_silently(self, root):
+        code, msg = self._judge(root, root / "game/assets/rock.png",
+                                "gameplay", "item-1", "collide")
+        assert (code, msg) == (hook.ALLOW, "")
+
+    def test_the_softened_write_still_takes_the_lease(self, root):
+        """warn is collide plus a sentence — the NEXT writer must collide with
+        something, or the softening silently turned leases off."""
+        target = root / "game" / "assets" / "rock.png"
+        self._judge(root, target, "gameplay", "item-1", "warn")
+        code, msg = self._judge(root, target, "tech", "item-2", "warn")
+        assert code == hook.BLOCK
+        assert "item-1" in msg
+
+    def test_a_lock_still_blocks_in_every_softened_mode(self, root):
+        """The lane is advisory; a second writer in the same binary is not."""
+        assets.lock(root, "game/assets/shard.blend", "art")
+        for mode in ("warn", "collide"):
+            code, msg = self._judge(root, root / "game/assets/shard.blend",
+                                    "tech", f"item-{mode}", mode)
+            assert code == hook.BLOCK
+            assert "locked by art" in msg
+
+    def test_block_is_still_available_for_a_curated_board(self, root):
+        code, _ = self._judge(root, root / "game/assets/rock.png",
+                              "gameplay", "item-1", "block")
+        assert code == hook.BLOCK
 
 
 class TestDirectorMode:
@@ -368,10 +436,12 @@ class TestContainment:
         loose = tmp_path_factory.mktemp("loose") / "notes.txt"
         assert self.write(root, loose)[0] == hook.ALLOW
 
-    def test_warn_is_the_default_and_garbage_falls_back_to_it(self, monkeypatch):
-        assert hook.aegis_mode() == "warn"
-        monkeypatch.setenv("BGATE_AEGIS", "BLOCK")
-        assert hook.aegis_mode() == "block"       # case-insensitive
+    def test_block_is_the_default_and_garbage_falls_back_to_it(self, monkeypatch):
+        # The default moved warn -> block on 2026-08-19: a seat is a toolset
+        # plus THIS boundary, and lanes inside it went advisory the same day.
+        assert hook.aegis_mode() == "block"
+        monkeypatch.setenv("BGATE_AEGIS", "WARN")
+        assert hook.aegis_mode() == "warn"        # case-insensitive
         monkeypatch.setenv("BGATE_AEGIS", "nonsense")
         assert hook.aegis_mode() == hook.DEFAULT_AEGIS_MODE
 

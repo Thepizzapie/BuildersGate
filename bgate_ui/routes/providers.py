@@ -93,6 +93,26 @@ def providers_view() -> dict:
     return api.ok(_payload(_providers.status(root())))
 
 
+@router.get("/api/providers/balances")
+def providers_balances(fresh: bool = False) -> dict:
+    """Keyed-and-funded per provider, from the gateway - the panel's money row.
+
+    A SEPARATE ROUTE from /api/providers on the same reasoning kie keeps
+    credits() out of available(): the status view must answer offline, and a
+    balance probe is a network call per provider. This one is fetched when
+    the panel is actually open, cached ~2 minutes in the gateway, and
+    ``?fresh=1`` re-probes - the button a human presses after topping an
+    account up. `balance` null means the provider will not say (openai never
+    does; krea's API balance only surfaces as a 402 at call time), which the
+    panel must render as unknown, never as zero.
+    """
+    from bgate_core import gateway as _gateway
+
+    return api.ok({"providers": _gateway.status(root(), fresh=bool(fresh)),
+                   "capabilities": {k: list(v)
+                                    for k, v in _gateway.CAPABILITIES.items()}})
+
+
 @router.post("/api/providers/{provider_id}/key")
 def provider_set_key(provider_id: str, request: Request, payload: dict) -> dict:
     """Store one provider's key in the project's .env.

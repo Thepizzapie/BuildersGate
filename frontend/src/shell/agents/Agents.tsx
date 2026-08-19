@@ -624,10 +624,13 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
      into twenty toasts — so this is sequential, stops at the first real
      failure, and reports how far it got. */
   async function deployAll() {
-    const ready = queued.filter((i) => i.ready !== false);
+    /* Held rows (escalations, chat) are one-at-a-time human acts — a bulk
+       deploy firing one is exactly the auto-dispatch they are held from. */
+    const ready = queued.filter((i) => i.ready !== false && !i.held);
     const held = queued.length - ready.length;
     if (!ready.length) {
-      toast(held ? `${held} item(s) are waiting on earlier links` : "nothing to deploy");
+      toast(held ? `${held} item(s) are waiting on earlier links or held for you`
+                 : "nothing to deploy");
       return;
     }
     setBusy(true);
@@ -737,9 +740,28 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
 
 function QueueCard({ item, items }: { item: Item; items: Item[] }) {
   const c = SEAT_COLOR[item.seat] || "var(--text-3)";
-  const blocker = item.depends_on
+  /* THE SERVER'S VERDICT WINS. _chain_state stamps ready/waiting_on across
+     BOTH dependency stores; the local depends_on lookup survives only as the
+     fallback for a payload from an older server, because it cannot see
+     fan-in parents and its blocker may sit outside the board window. */
+  const localBlocker = item.depends_on
     ? items.find((x) => x.id === item.depends_on) : undefined;
-  const waiting = !!blocker && !CLOSED.has(blocker.status);
+  const blocker = item.waiting_on
+    ?? (localBlocker && !CLOSED.has(localBlocker.status)
+        ? localBlocker : undefined);
+  const waiting = item.ready === false || (item.ready == null && !!blocker);
+  /* A dead predecessor is not "waiting" — nothing will ever free it. Name
+     the two acts that do, or the card reads as patience when it is a stall. */
+  const stuck = !!item.stuck
+    || (!!blocker && (blocker.status === "failed" || blocker.status === "cancelled"));
+  const more = (item.waiting_count || 0) > 1 ? ` +${item.waiting_count! - 1}` : "";
+  const line = item.held
+    ? "held for you — no auto-dispatcher takes this"
+    : stuck && blocker
+      ? `stuck: #${blocker.id} is ${blocker.status} — reopen it or cut the dependency`
+      : waiting && blocker
+        ? `blocked until #${blocker.id}${more} closes`
+        : item.seat;
   return (
     <Paper p="xs" withBorder className="bg4-sidecard"
            onClick={() => setSelection({ key: `i${item.id}`, kind: "item",
@@ -752,11 +774,14 @@ function QueueCard({ item, items }: { item: Item; items: Item[] }) {
           <Text size="xs" fw={500} lineClamp={2}>{item.title}</Text>
           <Text size="xs" c="dimmed" ff="var(--mono)" lineClamp={1}>
             {item.chain_pos != null ? `lane ${item.chain_pos} · ` : ""}
-            {waiting ? `blocked until #${blocker!.id} closes` : item.seat}
+            {line}
           </Text>
         </div>
-        <Badge size="xs" variant="default" color={waiting ? "yellow" : undefined}>
-          {waiting ? "waiting" : item.status}
+        <Badge size="xs" variant="default"
+               color={stuck ? "red" : item.held ? "grape"
+                      : waiting ? "yellow" : undefined}>
+          {stuck ? "stuck" : item.held ? "held"
+           : waiting ? "waiting" : item.status}
         </Badge>
       </Group>
     </Paper>

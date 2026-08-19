@@ -559,7 +559,7 @@ class TestWiring:
     def test_the_mcp_server_exposes_the_two_new_capabilities(self):
         from bgate_mcp import server
 
-        for name in ("kie_status", "kie_music_generate", "kie_video_generate"):
+        for name in ("kie_status", "music_generate", "kie_video_generate"):
             assert hasattr(server, name), f"{name} is not an MCP tool"
 
 

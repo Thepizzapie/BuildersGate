@@ -295,13 +295,17 @@ class Setting:
 SETTINGS: tuple[Setting, ...] = (
     # -- Dispatch -----------------------------------------------------------
     Setting(
-        key="autopilot.on", group="Dispatch", kind=BOOL, default=False,
+        key="autopilot.on", group="Dispatch", kind=BOOL, default=True,
         store=("workspace", "director", "autopilot", "on"),
         env_coerce=("BGATE_AUTODEPLOY", lambda raw: False if _falsey(raw) else None),
         env_note="BGATE_AUTODEPLOY=0 stops the loop from starting at all, so the "
                  "stored switch cannot take effect until the server restarts",
         help="Dispatch queued work automatically as slots free up, instead of "
-             "waiting for somebody to press deploy on each item."),
+             "waiting for somebody to press deploy on each item. ON by "
+             "default since 2026-08-19: shipped off, a filed chain looked "
+             "exactly like a running one and sat still until somebody found "
+             "the toggle - 'my chains never auto-deploy' was this default. "
+             "Turn it off for a board you want to hand-dispatch."),
     Setting(
         key="dispatch.allow_dirty", group="Dispatch", kind=BOOL, default=False,
         store=("registry", "dispatch.allow_dirty"), scope=MACHINE,
@@ -629,11 +633,13 @@ SETTINGS: tuple[Setting, ...] = (
              "breaks the promise the rest of the tool makes. https only, no "
              "private or link-local addresses, one attempt."),
     Setting(
-        key="notify.stall_hours", group="Notifications", kind=FLOAT, default=2.0,
+        key="notify.stall_hours", group="Notifications", kind=FLOAT, default=0.5,
         minimum=0.25, maximum=168.0, store=("registry", "notify.stall_hours"),
         help="How long a chain's head may sit in review or blocked before it "
              "is called stalled. The bus is transition-driven, so without this "
-             "the quiet failure — nothing happening — emits nothing."),
+             "the quiet failure — nothing happening — emits nothing. Half an "
+             "hour by default: at the old two hours, a chain parked behind a "
+             "dead predecessor was invisible for a whole working session."),
     Setting(
         key="notify.question_stale_h", group="Notifications", kind=FLOAT,
         default=12.0, minimum=0.25, maximum=168.0,

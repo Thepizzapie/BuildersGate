@@ -279,7 +279,7 @@ export function Audio({ seat, active, tab }: SeatBodyProps) {
         <Head label="Library" hint={`${sounds.length} files on disk`} />
         <ReadError error={lib.__error} what="the audio library" />
         {!sounds.length && !lib.__error && (
-          <Nothing what="no audio in the project" how="sfx_generate and kie_music_generate write into game/assets/audio" />
+          <Nothing what="no audio in the project" how="sfx_generate and music_generate write into game/assets/audio" />
         )}
         {!!sounds.length && (
           <div className="bgs-table" style={{ ["--cols" as string]: "24px 1fr 84px 116px 96px" }}>

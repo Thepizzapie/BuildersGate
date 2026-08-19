@@ -114,6 +114,46 @@ class TestTheStateShowsWhatJustClosed:
         assert done and done[0]["title"] == "the thing that actually landed"
 
 
+class TestChainStateTellsTheWholeTruth:
+    """The card's readiness must match what dispatch would actually do.
+
+    Three lies the wire used to carry: an unmet EXTRA parent (work_item_dep)
+    rendered `ready` with a deploy button whose one outcome was a refusal; a
+    held row (escalation, chat) looked like any queued item; and a successor
+    behind a FAILED predecessor read as patiently "waiting" on a link that
+    was never going to close on its own.
+    """
+
+    def _items(self, client) -> dict:
+        rows = client.get("/api/console/state").json()["items"]
+        return {int(r["id"]): r for r in rows}
+
+    def test_an_extra_parent_blocks_the_card(self, client, root):
+        parent = _queue.add(root, "art", "the tileset")
+        child = _queue.add(root, "gameplay", "the level")
+        _queue.add_dependency(root, child["id"], parent["id"])
+        got = self._items(client)[int(child["id"])]
+        assert got["ready"] is False
+        assert got["waiting_on"]["id"] == parent["id"]
+
+    def test_a_dead_predecessor_is_stuck_not_waiting(self, client, root):
+        parent = _queue.add(root, "art", "doomed")
+        child = _queue.add(root, "gameplay", "downstream",
+                           depends_on=int(parent["id"]))
+        _queue.set_status(root, parent["id"], "failed")
+        got = self._items(client)[int(child["id"])]
+        assert got["ready"] is False
+        assert got["stuck"] is True
+
+    def test_a_held_row_says_so(self, client, root):
+        held = _queue.add(root, "director", "two agents disagreed",
+                          source="qa-gate-escalation", source_ref="1")
+        plain = _queue.add(root, "art", "ordinary work")
+        items = self._items(client)
+        assert items[int(held["id"])]["held"] is True
+        assert items[int(plain["id"])].get("held") is False
+
+
 class TestTheMessageSurvives:
     LONG = ("the hub screen feels dead — give it parallax, a day/night tint, and "
             "make the door hum when you can afford to open it, which is the bit "
@@ -272,8 +312,10 @@ class TestOnePayload:
 # Auto-deploy
 # ---------------------------------------------------------------------------
 class TestAutoDeploy:
-    def test_it_is_off_until_asked(self, client):
-        assert client.get("/api/console/autopilot").json()["on"] is False
+    def test_it_is_on_by_default(self, client):
+        # Flipped 2026-08-19: shipped off, a filed chain looked exactly like a
+        # running one and sat still until somebody found the toggle.
+        assert client.get("/api/console/autopilot").json()["on"] is True
 
     def test_the_switch_persists_to_the_project(self, client, root):
         client.post("/api/console/autopilot", json={"on": True})

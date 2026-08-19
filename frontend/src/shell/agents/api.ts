@@ -24,12 +24,25 @@ export type Item = {
    *  it is blocked behind. */
   chain_id?: number | null; chain_pos?: number | null; depends_on?: number | null;
   /** False when an earlier link has not landed. deploy-all skips these rather
-   *  than aborting on the refusal they would return. */
+   *  than aborting on the refusal they would return. Covers BOTH the
+   *  depends_on column and the fan-in parents in work_item_dep — deriving
+   *  this client-side from depends_on alone is how a card with an unmet
+   *  extra parent got a deploy button whose one outcome was a refusal. */
   ready?: boolean;
   /** The link this one is blocked behind, when it is blocked. _chain_state
    *  sends the predecessor's own row so a card can name WHO it is waiting on
    *  rather than printing a bare id at somebody. */
   waiting_on?: { id: number; seat?: string; title?: string; status?: string } | null;
+  /** How many parents are unmet when it is more than the one in waiting_on. */
+  waiting_count?: number;
+  /** A blocking predecessor is failed/cancelled: it will NEVER reach done on
+   *  its own, so this is not "waiting", it is parked until a human reopens
+   *  the predecessor or cuts the dependency. The card copy must say so —
+   *  "waiting" on a dead link is how chains sat still for days. */
+  stuck?: boolean;
+  /** Queued, but no auto-dispatcher will ever take it (escalations, chat):
+   *  a human acts on it. Without the flag it looked like any queued item. */
+  held?: boolean;
 };
 export type Question = { id: number; seat?: string; text?: string; asked_at?: string };
 /** `blocking` IS THE FIELD THAT DECIDES WHETHER A HUMAN IS NEEDED, and it was

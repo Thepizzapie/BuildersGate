@@ -141,6 +141,40 @@ def director_mode() -> str:
 
 
 # ---------------------------------------------------------------------------
+# THE SEATED WORKER'S LANE - advisory by default since 2026-08-19.
+#
+# A seat is a TOOLSET plus a PROJECT BOUNDARY (aegis, which now defaults to
+# block). The lane table inside that boundary turned out to do more harm than
+# good as a hard gate: the default lanes assume the <root>/game + <root>/design
+# scaffold, so on an adopted repo every seat was refused on contact with the
+# real source tree, and the observed agent response to a refusal was not
+# routing but dying politely - "failed" with nothing done, cleared and
+# redispatched by a human. The refusal MESSAGE (which seat owns the path, the
+# queue_add call that hands work over) earned its keep; the exit code 2 did
+# not. So the message survives as a warning to the human and the write lands.
+#
+# Same ladder shape as DIRECTOR_MODES, different population. THE LADDER
+# ITSELF LIVES IN bgate_core.seats (LANE_MODES / lane_mode), single-sourced
+# for the same reason aegis's ladder is: two processes must answer alike.
+#
+#   collide  lanes waived silently; a collision with another live run still
+#            blocks and the lease is still taken.
+#   warn     DEFAULT. As collide, plus out-of-lane writes reported to the
+#            human on exit 1. The write lands; the agent is not interrupted.
+#   block    the old behaviour - out of lane is refused. For projects whose
+#            lane table is curated and trusted.
+def worker_lane_mode() -> str:
+    """How hard to enforce a SEATED worker's lane. Never raises.
+
+    Imported lazily like every bgate_core import here - the hook is a fresh
+    process on every tool call.
+    """
+    from bgate_core import seats
+
+    return seats.lane_mode()
+
+
+# ---------------------------------------------------------------------------
 # CONTAINMENT - the where-question, and its own ladder.
 #
 # Deliberately NOT folded into DIRECTOR_MODES even though it reads the same
@@ -157,12 +191,11 @@ def director_mode() -> str:
 # The names stay because callers and tests here use them.
 #
 #   off    the old behaviour: the boundary is not checked at all.
-#   warn   DEFAULT FOR THIS RELEASE. The call lands and the human is told on
-#          exit 1. This is not timidity: the gate's whole job right now is to
-#          produce the log that proves `block` would deny nothing legitimate.
-#          Turning it straight to block would have every false positive land as
-#          a dead agent in somebody's board, discovered hours later.
-#   block  a seated agent touching another tree is refused.
+#   warn   the call lands and the human is told on exit 1 - the
+#          evidence-gathering mode this gate shipped at.
+#   block  DEFAULT since 2026-08-19. A seated agent touching another tree is
+#          refused. The boundary hardened the same day the lane gate went
+#          advisory: a seat is a toolset plus THIS line.
 def aegis_mode() -> str:
     """How hard to enforce the project boundary. Never raises.
 
@@ -574,10 +607,11 @@ def decide(payload: dict, seat: str, owner: str = "",
            mode: str = "block") -> tuple[int, str]:
     """Pure decision, separated from stdio so tests can hit it directly.
 
-    `mode` is "block" for a dispatched seat worker - its lane is the whole point
-    of dispatching it - and one of DIRECTOR_MODES for a session that adopted no
-    seat. It only ever softens the LANE gate; a lock or lease collision is a
-    second live writer in the same file and is refused in every mode but "off".
+    `mode` is one of WORKER_LANE_MODES for a dispatched seat worker (default
+    "warn" - the lane is advisory, the project boundary is what a seat
+    enforces) and one of DIRECTOR_MODES for a session that adopted no seat.
+    It only ever softens the LANE gate; a lock or lease collision is a second
+    live writer in the same file and is refused in every mode but "off".
     """
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
@@ -1278,7 +1312,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         seat = os.environ.get("BGATE_SEAT", "").strip()
         owner = os.environ.get("BGATE_LOCK_OWNER", "").strip()
-        mode = "block"
+        # A dispatched worker's lane is advisory by default (BGATE_LANES) -
+        # the project boundary (aegis) is what a seat enforces. See
+        # WORKER_LANE_MODES.
+        mode = worker_lane_mode()
         if not seat:
             # THIS LINE USED TO BE `return ALLOW`. It read as "no adopted
             # identity, nothing to enforce", and the first half was true - but a
@@ -1293,13 +1330,15 @@ def main(argv: list[str] | None = None) -> int:
         # hand-started session lives in the payload, not the environment.
         payload = json.loads(sys.stdin.read() or "{}")
         if mode != "block":
-            # Only the director path invents an owner, and only when it has to.
-            # A SEATED worker with no BGATE_LOCK_OWNER keeps the old semantics - # can_write treats an ownerless caller as unable to write over an
-            # owned lock, which is stricter than anything derived here, and
-            # loosening that to "no owner, no checks" would have quietly turned
-            # the gate off for exactly the agents it was written for.
+            # A dispatched worker already has BGATE_LOCK_OWNER=item-<id>;
+            # session_owner is the fallback for a hand-started session. A
+            # seated worker somehow lacking both keeps the old strict
+            # semantics via decide() - can_write treats an ownerless caller
+            # as unable to write over an owned lock - so only the DIRECTOR
+            # path may bail out on a missing identity.
             owner = owner or session_owner(payload)
-            if not owner:
+            if not owner and seat == DIRECTOR_SEAT \
+                    and not os.environ.get("BGATE_SEAT", "").strip():
                 # Nothing distinguishes this session from any other, so a lease
                 # would be meaningless and a collision unattributable. The
                 # director's lane is advisory anyway; do nothing rather than
