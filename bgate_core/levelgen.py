@@ -564,7 +564,15 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
     if len(band) < rooms:                       # a short plate wraps the spine
         band += list(range(cols, min(len(grid), cols + (rooms - len(band)))))
     order = band[:rooms]
-    rest = [i for i in range(len(grid)) if i not in order]
+    # A BRANCH GOES OFF THE MIDDLE. Taking the leftover cells in grid order
+    # put every side room under the FIRST room of the spine, so the route
+    # bent into it and the whole floor read as one connected L — a detour
+    # you meet at the entrance is just the way in. Prefer the cells under
+    # the middle of the spine, so the player walks past the branch with the
+    # route continuing visibly onward.
+    mid_col = (len(order) - 1) / 2.0
+    rest = sorted((i for i in range(len(grid)) if i not in order),
+                  key=lambda i: abs((i % cols) - mid_col))
     placed = [grid[i] for i in order + rest[:max(0, side_rooms)]]
 
     main = list(range(min(rooms, len(placed))))
@@ -660,7 +668,12 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
     reached = list(main)
     for idx in side:
         here = placed[idx].center
-        host = min(reached,
+        # and it hangs off a MIDDLE room, never the first or the last: a
+        # branch at either end of the route is indistinguishable from the
+        # route itself continuing.
+        inner = [h for h in reached
+                 if h not in (main[0], main[-1])] or list(reached)
+        host = min(inner,
                    key=lambda h: abs(placed[h].center[0] - here[0])
                    + abs(placed[h].center[1] - here[1]))
         floor |= join(placed[idx], placed[host])
