@@ -7577,7 +7577,8 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                  out_scene: str = "", floor_layer: str = "",
                  wall_layer: str = "Walls", sunken: str = "",
                  doors: str = "", material_map: str = "",
-                 wall_map: str = "", parent: str = ".",
+                 wall_map: str = "", keep_art: bool = True,
+                 parent: str = ".",
                  dry_run: bool = False) -> dict:
     """RE-BUILD AN EXISTING LEVEL'S LAYOUT against a different tileset.
 
@@ -7733,10 +7734,25 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                           (cx0, cy0 + 1), (cx0, cy0 - 1)))
         outside = len(floor_cells & air)
         floor_cells = floor_cells - air
-        terrain = _terrain("grid16", 0, 0, 0, 4, "Floor")
-        cells = _autotile.resolve(sorted(floor_cells), terrain)
-        missing = _autotile.unmapped(sorted(floor_cells), terrain)
-        _scatter_variants(cells, tiles_disk)
+        # KEEP THE ART THAT IS ALREADY THERE. This defaulted to re-autotiling
+        # every floor cell against a generated set, which on a project that
+        # already ships correct tiles is not a re-skin, it is a downgrade —
+        # and it was: the tiles it replaced were hand-made, in the game's own
+        # palette, and the ones it painted were invented. A layout tool has
+        # no business inventing colours for a game that has them. Pass an
+        # explicit material_map to restyle a surface deliberately; by default
+        # every cell keeps the source and atlas coordinate it already had.
+        if keep_art:
+            cells = [{"x": c["x"], "y": c["y"], "source": c["source"],
+                      "ax": c["ax"], "ay": c["ay"], "alt": c["alt"]}
+                     for c in _tilemap.decode_cells(found_packed[floor_name])
+                     if (c["x"], c["y"]) in floor_cells]
+            missing = {}
+        else:
+            terrain = _terrain("grid16", 0, 0, 0, 4, "Floor")
+            cells = _autotile.resolve(sorted(floor_cells), terrain)
+            missing = _autotile.unmapped(sorted(floor_cells), terrain)
+            _scatter_variants(cells, tiles_disk)
 
         # KEEP THE SURFACES THE LAYOUT ALREADY HAD. A designed floor changes
         # underfoot at every threshold and says so by drawing those cells
@@ -7863,7 +7879,14 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                     for c in _tilemap.decode_cells(found_packed[wall_layer]):
                         by_wall[(c["x"], c["y"])] = c["source"]
                 wall_out = []
-                for (x, y) in sorted(wall_cells):
+                if keep_art and not wwant and found_packed.get(wall_layer):
+                    wall_out = [
+                        {"x": c["x"], "y": c["y"], "source": c["source"],
+                         "ax": c["ax"], "ay": c["ay"], "alt": c["alt"]}
+                        for c in _tilemap.decode_cells(
+                            found_packed[wall_layer])
+                        if (c["x"], c["y"]) in wall_cells]
+                for (x, y) in ([] if wall_out else sorted(wall_cells)):
                     setm = wwant.get(by_wall.get((x, y)))
                     use_blocks = (setm or {}).get("blocks") or blocks
                     src = int((setm or {}).get("source", wall_src))
@@ -7899,6 +7922,7 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                 "doors": len(door_cells),
                 "clipped_outside": outside,
                 "material_cells": mapped,
+                "kept_art": bool(keep_art),
                 "walls": ("blocks" if side and wall_src else
                           "source 1" if wall_src else
                           "not drawn: the new tileset has no wall source"),
