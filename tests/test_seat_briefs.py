@@ -34,6 +34,11 @@ import pytest
 from bgate_core import project, seats
 
 SERVER_PY = Path(__file__).resolve().parents[1] / "bgate_mcp" / "server.py"
+# The surface is server.py PLUS the carved-out domain modules (tools_*.py) -
+# server star-imports them at its bottom, so a tool defined there is exactly
+# as registered as one defined in server itself.
+SURFACE_FILES = [SERVER_PY, *sorted(
+    SERVER_PY.parent.glob("tools_*.py"))]
 
 
 # ---------------------------------------------------------------------------
@@ -51,10 +56,11 @@ def _is_tool_call(node: ast.AST) -> bool:
 
 
 def _tool_surface() -> dict[str, set[str]]:
-    tree = ast.parse(SERVER_PY.read_text(encoding="utf-8"))
     defs: dict[str, set[str]] = {}
     registered: set[str] = set()
-    for node in tree.body:
+    body = [node for path in SURFACE_FILES
+            for node in ast.parse(path.read_text(encoding="utf-8")).body]
+    for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = node.args
             defs[node.name] = {

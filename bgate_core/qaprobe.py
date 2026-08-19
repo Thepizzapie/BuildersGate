@@ -37,6 +37,14 @@ derives to exactly the six sample keys the old hardcoded probe emitted. Those
 keys are recorded in every stored baseline and in every saved expectation on
 disk, so deriving "something reasonable" for that shape would quietly invalidate
 history that took real runs to build.
+
+A THIN CONTRACT SAYS SO. A derived contract that cannot really watch anything —
+actors with no sampleable property (a game that builds its actors or their
+state at runtime is invisible to a static scan), or the pinned fighter shape on
+a scene whose scripts declare none of the fighter's properties — carries
+``derived_thin: true`` and a reason in ``issues``. Wrong must be visible; an
+empty-but-confident contract is the old hardcoded probe's failure wearing a
+new hat.
 """
 from __future__ import annotations
 
@@ -279,6 +287,59 @@ def _contract_from(game_dir: Path, scene: str, nodes: list[dict]) -> dict:
             "derived": derived, "tick": tick, "shape": "generic"}
 
 
+def _fight_missing(game_dir: Path, nodes: list[dict]) -> list[str]:
+    """The pinned fighter samples whose property no script on the node declares.
+
+    Empty for the fighter the legacy contract was written for. Non-empty for a
+    scene that merely happens to name two nodes Player and Opponent — chess has
+    both — where the pinned hp/stamina samples would read null on every run.
+    """
+    out = []
+    for actor, props in (("Player", ("hp", "stamina")), ("Opponent", ("hp",))):
+        node = next((n for n in nodes if n.get("name") == actor), None)
+        text = _script_text(game_dir, (node or {}).get("script", "") or "")
+        for prop in props:
+            if not re.search(rf"^\s*(@export\s+)?var\s+{prop}\b", text,
+                             re.MULTILINE):
+                out.append(f"{actor}.{prop}")
+    return out
+
+
+def _flag_thin(game_dir: Path, nodes: list[dict], contract: dict,
+               issues: list[str]) -> None:
+    """Stamp ``derived_thin`` on a contract that cannot really watch anything,
+    and put the reason in ``issues``.
+
+    The standard: a wrong or thin contract must be VISIBLY wrong. The two ways
+    derivation goes thin without failing outright are a scene whose actor nodes
+    expose no numeric property the static scan can see, and a Player/Opponent
+    scene that pins the fighter shape while its scripts declare none of the
+    fighter's properties. The pinned shape is kept in that second case — the
+    pinning protects real baselines — but it is never kept silently.
+    """
+    thin = False
+    if not contract.get("samples"):
+        thin = True
+        issues.append(
+            f"{contract.get('scene')} has actor node(s) but none of them "
+            "exposes a numeric property this scan can find. If the game "
+            "spawns its actors or builds their state at runtime, a static "
+            "scan of the scene files cannot see that - add samples to the "
+            "probe contract by hand (key, actor, property)")
+    if contract.get("shape") == "fight":
+        missing = _fight_missing(game_dir, nodes)
+        if missing:
+            thin = True
+            issues.append(
+                "the scene has nodes named Player and Opponent, so the pinned "
+                "fighter contract applies, but their scripts do not declare "
+                + ", ".join(missing)
+                + " - those samples will read null on every run. If this game "
+                "is not the fighter, edit the contract to say what it "
+                "actually is")
+    contract["derived_thin"] = thin
+
+
 def _sweep(game_dir: Path, limit: int = 250) -> list[str]:
     """Every non-scratch scene under scenes/, so a project whose main scene is a
     title screen still gets a probe pointed at something that moves."""
@@ -319,8 +380,9 @@ def derive(game_dir) -> dict:
                 f"{scene} is the conventional gameplay scene and has "
                 f"{len(contract['actors'])} actor node(s) in it")
             contract["alternatives"] = []
-            contract["issues"] = issues
             contract["source"] = "derived"
+            _flag_thin(game_dir, nodes, contract, issues)
+            contract["issues"] = issues
             return contract
 
     if declared:
@@ -341,26 +403,30 @@ def derive(game_dir) -> dict:
             continue
         contract = _contract_from(game_dir, scene, nodes)
         if contract["actors"] and contract["samples"]:
-            scored.append((-len(contract["actors"]), len(scene), scene, contract))
+            scored.append((-len(contract["actors"]), len(scene), scene,
+                           contract, nodes))
     scored.sort(key=lambda row: row[:3])
 
     if not scored:
         return {"scene": "", "actors": [], "samples": [], "derived": [],
                 "tick": {"mode": "frames", "node": "", "method": ""},
                 "shape": "none", "source": "none", "why": "",
-                "alternatives": [],
+                "alternatives": [], "derived_thin": True,
                 "issues": issues + [
                     "no scene under game/scenes has an actor node with a numeric "
-                    "property on it, so there is nothing to sample. Declare the "
-                    "probe contract by hand: scene, actors (key + node name), "
+                    "property on it, so there is nothing to sample. If the game "
+                    "spawns its actors at runtime, a static scan of the scene "
+                    "files cannot see them. Declare the probe contract by hand: "
+                    "scene, actors (key + node name), "
                     "and at least one sample (key, actor, property)"]}
 
-    _n, _len, scene, contract = scored[0]
+    _n, _len, scene, contract, nodes = scored[0]
     contract["source"] = "derived"
     contract["why"] = (
         f"no actor node in the main scene, so the probe fell back to {scene} - "
         f"the scene under game/scenes with the most actors ({len(contract['actors'])})")
     contract["alternatives"] = [row[2] for row in scored[1:6]]
+    _flag_thin(game_dir, nodes, contract, issues)
     contract["issues"] = issues
     return contract
 
@@ -545,6 +611,13 @@ def load(root, game_dir, *, persist: bool = True) -> dict:
     doc = stored(root)
     if doc.get("scene") or doc.get("actors") or doc.get("samples"):
         contract, issues = normalise(doc)
+        if contract.get("source") == "derived":
+            # A machine guess stays visibly thin on EVERY read, not only the
+            # first: a persisted thin derivation re-checked here would
+            # otherwise come back looking like something a human meant.
+            _flag_thin(Path(game_dir),
+                       _outline(Path(game_dir), contract.get("scene", "")),
+                       contract, issues)
         contract["issues"] = issues
         contract["why"] = str(doc.get("why", "") or "")
         contract["alternatives"] = list(doc.get("alternatives") or [])

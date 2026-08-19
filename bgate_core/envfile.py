@@ -1,9 +1,14 @@
 """Project .env loading — secrets live next to the project, never in the repo.
 
 Tiny on purpose (no python-dotenv dependency): KEY=VALUE lines, # comments,
-blanks. Existing process env always wins — a var you set in the shell is not
-silently overridden by a file. Values never get logged; callers must treat
-anything loaded here as radioactive for ledgers and tool results.
+blanks. A var the SHELL set always wins — it is never silently overridden by a
+file. Vars this module itself put into os.environ are a different matter: it
+remembers which file supplied each one (see ``_owned``), so in a long-lived
+process that serves several projects — the MCP server with a project_dir per
+call, the dashboard after a project switch — a later project's .env re-points
+the vars the earlier project's file loaded instead of the first project's keys
+winning forever. Values never get logged; callers must treat anything loaded
+here as radioactive for ledgers and tool results.
 
 It WRITES now as well as reads, because the dashboard grew a panel for setting
 art-provider keys and a second .env parser would be a second thing to get wrong
@@ -26,6 +31,26 @@ from typing import Optional
 # Size rides along with mtime because a fast edit can land inside one filesystem
 # timestamp tick; a key being added always changes the length.
 _stamps: dict[str, tuple[int, int]] = {}
+
+# name -> (source, value): which .env (by its resolved path) supplied the value
+# THIS MODULE put into os.environ, and the value it put there. This is what
+# makes project-scoped keys project-scoped in one process serving several
+# projects: without it, load's never-overwrite rule means whichever project
+# loads FIRST owns every shared name (OPENAI_API_KEY, ...) for the life of the
+# process. Only vars this module set (or adopted, see load_project_env) appear
+# here; a var the shell exported is never owned and therefore never re-pointed
+# or evicted. The value rides along so an external change (a test's
+# monkeypatch, a caller assigning os.environ directly) is detected and
+# ownership is relinquished rather than the external value being stomped.
+_owned: dict[str, tuple[str, str]] = {}
+
+# The names the SHELL owned when this process started. Used only to gate
+# ADOPTION: a var that appears later with exactly the value a layer's file
+# holds was almost certainly assigned by our own code (providers._reapply
+# writes os.environ directly after a key save), and adopting it lets a project
+# switch re-point it — but a name the shell exported at startup is never
+# adopted, whatever its value, because the shell always wins.
+_shell_names = frozenset(os.environ)
 
 
 def global_dir() -> Path:
@@ -58,29 +83,79 @@ def global_path() -> Path:
 def load_env(root: Optional[str | os.PathLike[str]] = None) -> dict[str, list[str]]:
     """Load the project's .env and then the machine-wide one. Keys, never values.
 
-    ORDER IS THE PRECEDENCE, and it is the only thing here that is load-bearing.
-    :func:`load_project_env` refuses to overwrite a name already in
-    ``os.environ``, so whatever is loaded FIRST wins:
+    THE PRECEDENCE, and it is the only thing here that is load-bearing:
 
-        shell environment  >  project .env  >  ~/.bgate/.env
+        shell environment  >  THIS project's .env  >  ~/.bgate/.env
 
     Most specific first, which is the rule every layer of this product already
-    follows. A shell export still beats both — that was already true and is why
+    follows. A shell export beats both files — that was already true and is why
     the status panel has a ``shadowed`` state. The project beats the global
     because standing in a project is a statement about which credentials you
     mean, exactly as ``require_root`` treats standing in a project as beating
     the remembered active one.
 
+    "THIS project" is not "whichever project loaded first". In one process
+    serving several projects, a var an earlier project's .env supplied is
+    evicted here (see :func:`_evict_stale`) before this project's layers load,
+    so the answer for project B is B's key, then the global fallback — never
+    A's leftovers. Vars the shell set are untouched by all of this.
+
     Returns ``{"project": [...], "global": [...]}`` so a caller can say which
     layer supplied what. ``root=None`` loads the global layer alone, which is
     the whole point of there being one: a tool that needs a key and not a game
-    should not have to invent a project to hold it.
+    should not have to invent a project to hold it. (With no project named,
+    nothing is evicted — there is no project to re-point to.)
     """
     loaded = {"project": [], "global": []}
     if root:
+        _evict_stale(_source_key(root))
         loaded["project"] = load_project_env(root)
     loaded["global"] = load_project_env(global_dir())
     return loaded
+
+
+def _source_key(root: str | os.PathLike[str]) -> str:
+    """The identity of <root>/.env as an ownership source."""
+    path = Path(root) / ".env"
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
+def _global_key() -> str:
+    try:
+        return _source_key(global_dir())
+    except Exception:
+        return ""
+
+
+def _evict_stale(current: str) -> None:
+    """Unload every var owned by a project OTHER than ``current``.
+
+    The cross-project bleed fix. A var is only popped from os.environ when it
+    still holds exactly the value this module set — an external change means
+    someone else owns it now, and their value stands (ownership is dropped
+    either way). When anything was popped the stamps are cleared, so the
+    current project's file and the global one are re-read in full and refill
+    what the eviction uncovered; a set-once stamp would otherwise report
+    "already loaded" for a file whose vars just left the environment.
+
+    Never raises: a failure to tidy must not take a tool call down with it.
+    """
+    try:
+        keep = {current, _global_key()}
+        stale = [name for name, (src, _v) in _owned.items() if src not in keep]
+        popped = False
+        for name in stale:
+            _src, value = _owned.pop(name)
+            if os.environ.get(name) == value:
+                os.environ.pop(name, None)
+                popped = True
+        if popped:
+            _stamps.clear()
+    except Exception:
+        pass
 
 
 def load_project_env(root: str | os.PathLike[str]) -> list[str]:
@@ -105,6 +180,9 @@ def load_project_env(root: str | os.PathLike[str]) -> list[str]:
         return []
     _stamps[key] = stamp
 
+    global_key = _global_key()
+    project_layer = key != global_key
+
     loaded = []
     for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
@@ -114,9 +192,40 @@ def load_project_env(root: str | os.PathLike[str]) -> list[str]:
         name, value = name.strip(), value.strip().strip('"').strip("'")
         if not name or not value:
             continue
-        if name not in os.environ:  # shell wins over file
+        current = os.environ.get(name)
+        owner = _owned.get(name)
+        if owner is not None and current != owner[1]:
+            # Something outside this module changed or removed it since we set
+            # it (a shell-level assignment, a test's monkeypatch). Whoever did
+            # that wins from here on; we only note that it is no longer ours.
+            _owned.pop(name, None)
+            owner = None
+        if current is None:
             os.environ[name] = value
+            _owned[name] = (key, value)
             loaded.append(name)
+        elif owner is None:
+            if current == value and name not in _shell_names:
+                # Exactly the value this file holds, set by our own process
+                # (providers._reapply assigns os.environ directly after a key
+                # save): adopt it, so a later project switch can re-point it.
+                # A name the shell exported at startup is never adopted.
+                _owned[name] = (key, value)
+            # else: the shell set it; a file never overrides the shell.
+        elif owner[0] == key:
+            # Our own earlier load from THIS file — refresh, so a rotated key
+            # actually rotates instead of the first-ever value sticking.
+            if current != value:
+                os.environ[name] = value
+                loaded.append(name)
+            _owned[name] = (key, value)
+        elif project_layer:
+            # A project's .env outranks every other FILE layer: a stale value
+            # another project's .env loaded, or the global fallback.
+            os.environ[name] = value
+            _owned[name] = (key, value)
+            loaded.append(name)
+        # else: the global layer never overrides a project-owned value.
     return loaded
 
 
