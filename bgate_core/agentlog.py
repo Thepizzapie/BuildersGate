@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 # The dashboard rolls the log at 10MB; half of one is far more history than a
 # "what is it doing" question needs, and keeps the worst-case read bounded.

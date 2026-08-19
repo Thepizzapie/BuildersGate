@@ -65,7 +65,7 @@ POLL_S = 4.0
 # automatic dispatcher in a second process and must hold the same items back;
 # two copies of this tuple is how one of them grabs an escalation. The names
 # stay importable from here — this module is where the policy is explained.
-from bgate_core.queue import HELD_SOURCES, PLACEHOLDER_BRIEF  # noqa: E402
+from bgate_core.queue import HELD_SOURCES, PLACEHOLDER_BRIEF  # noqa: E402,F401
 
 # A row created in two statements — INSERT with a placeholder, then UPDATE with
 # the real text — is briefly dispatchable with nothing in it. Both the console

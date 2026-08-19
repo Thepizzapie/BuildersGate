@@ -32,9 +32,10 @@ balance reads 0 is named as drained and skipped.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 # Which providers can serve which job. ORDER IS THE DOCTRINE, not a fallback
 # chain of equals: sprites/stills are minted with kie (nano-banana-2), motion
@@ -106,7 +107,19 @@ def _probe(provider: str, root) -> dict:
                 except Exception:
                     row["balance"] = None
     except Exception as exc:
-        row["reason"] = f"{type(exc).__name__}: {exc}"
+        # TYPE NAME ONLY in the row, deliberately. The rows this builds go out
+        # over HTTP (/api/providers/balances), and an exception's MESSAGE can
+        # carry filesystem paths or a provider response body - CodeQL flagged
+        # the flow, and it is right on hygiene even for a loopback-only
+        # surface. The adapters' own `reason` strings above are crafted
+        # sentences and stay; only the unexpected-failure catch is anonymised,
+        # with the full detail kept in the server's own log.
+        logging.getLogger(__name__).warning(
+            "provider probe %s failed: %s: %s", provider,
+            type(exc).__name__, exc)
+        row["reason"] = (f"the {provider} probe failed "
+                         f"({type(exc).__name__}) - the server log has the "
+                         "detail")
     return row
 
 
