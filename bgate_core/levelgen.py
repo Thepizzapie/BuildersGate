@@ -554,11 +554,25 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
     for _ in range(max(0, side_rooms)):
         host = rng.randrange(1, rooms - 1) if rooms > 2 else 0
         base = placed[host]
-        rw, rh = max(5, room_w - 3), max(5, room_h - 4)
-        above = base.y - rh - 3 >= margin
-        y = (base.y - rh - 3) if above else (base.y + base.h + 3)
-        if y < margin or y + rh > height - margin:
+        # A SIDE ROOM THAT DOES NOT FIT IS NOT A SIDE ROOM, and silently
+        # dropping it left the floor a bare chain — the author asked for five
+        # main rooms AND a side room. Try above, then below, shrinking to
+        # whatever the band actually has room for rather than giving up on
+        # the first miss.
+        rw = max(5, min(room_w - 3, width - 2 * margin))
+        spot = None
+        for gap in (3, 2):
+            over = base.y - gap - margin
+            under = height - margin - (base.y + base.h + gap)
+            if over >= 5:
+                spot = (min(room_h - 3, over), base.y - gap - min(room_h - 3, over))
+                break
+            if under >= 5:
+                spot = (min(room_h - 3, under), base.y + base.h + gap)
+                break
+        if spot is None:
             continue
+        rh, y = spot
         x = max(margin, min(width - margin - rw, base.x))
         side.append(len(placed))
         placed.append(Rect(x, y, rw, rh))

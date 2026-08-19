@@ -8255,7 +8255,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                    max_depth: int = 5, corridor_width: int = 2,
                    room_fill: float = 0.8,
                    layout: str = "bsp", rooms: int = 5,
-                   side_rooms: int = 1,
+                   side_rooms: int = 1, floor_sources: str = "",
                    levels: int = 1, raised: float = 0.35,
                    props: bool = False, prop_manifest: str = "",
                    prop_source: int = 0,
@@ -8411,13 +8411,34 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 f"no scene at {scene_res}. Pass create=true to start a new one, "
                 "or point at an existing scene to add the layers to.")
 
-        level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
-                               min_room=min_room, margin=margin,
-                               max_depth=max_depth,
-                               corridor_width=corridor_width,
-                               room_fill=room_fill)
+        # A PARTITION OR A ROUTE. BSP gives rooms that are all the same
+        # KIND of thing — every one a box off a corridor, none first or
+        # last — and a designed floor is not that. Shown a real tutorial
+        # floor its author described it as five main rooms with a side
+        # room and drew the path through them: a sequence with branches,
+        # which no partition of a rectangle contains.
+        if str(layout).strip().lower() in ("path", "route", "chain"):
+            level = _levelgen.plan_path(
+                width, height, seed=seed, rooms=rooms,
+                side_rooms=side_rooms, corridor_width=corridor_width,
+                margin=max(1, margin), room_w=min_leaf, room_h=min_leaf)
+        else:
+            level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
+                                   min_room=min_room, margin=margin,
+                                   max_depth=max_depth,
+                                   corridor_width=corridor_width,
+                                   room_fill=room_fill)
+        # A PARTITION IS A LINE, ROCK IS A MASS. wall_fill paints every
+        # non-floor cell, which is right for a dungeon carved out of stone —
+        # the wall has rock behind it and the boundary is drawn once. An
+        # office is the other case: its walls are one cell thick with floor
+        # on both sides, and filling every gap rendered the space BETWEEN
+        # rooms as a solid slab of partition. When the set draws thin panels,
+        # take the ring.
+        thin_walls = bool(iso and iso_walls == "blocks")
         layers = _levelgen.layers(
             level,
+            wall_fill=not thin_walls,
             # FLOORS AUTOTILE TOO. This was pinned to "solid", so a floor
             # could only ever be one repeated tile — and with a terrain
             # transition set that is the WHOLE look: the wall is drawn into
@@ -8486,6 +8507,30 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 layers.append({"name": "Terrace", "terrain": "Terrace",
                                "cells": raised_cells, "unmapped": {},
                                "props": {"y_sort_enabled": True}})
+
+        # A FLOOR PER ROOM. One surface across a whole level is the other
+        # half of why a generated floor reads as generated: a building
+        # changes underfoot at every threshold, and the layout already knows
+        # where its rooms are. `floor_sources` is the atlas sources to deal
+        # out — the project's own carpets, walkway, breakroom, whatever it
+        # ships — and the route gets the first one so the critical path
+        # stays legible as you walk it.
+        room_floors = {}
+        picks = [int(v) for v in str(floor_sources).replace(",", " ").split()
+                 if v.strip().lstrip("-").isdigit()]
+        if picks:
+            for i, room in enumerate(level["rooms"]):
+                src = picks[i % len(picks)]
+                for cy in range(room["y"], room["y"] + room["h"]):
+                    for cx in range(room["x"], room["x"] + room["w"]):
+                        room_floors[(cx, cy)] = src
+            for ly in layers:
+                if ly["name"] != floor_name:
+                    continue
+                for c in ly["cells"]:
+                    src = room_floors.get((c["x"], c["y"]))
+                    if src is not None:
+                        c["source"] = src
 
         # PER-CELL WALL TILES HERE TOO. The iso wall path routes to a SOLID
         # layout, which paints one atlas coordinate at every wall cell — and
@@ -8620,9 +8665,14 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             "seed": seed, "size": [width, height],
             "rooms": len(level["rooms"]),
             "corridors": len(level["corridors"]),
-            **({"main_path": level["main_path"], "side_rooms": level["side"]}
-               if level.get("main_path") is not None else {}),
             "tile_variants": varied,
+            # WHICH ROOMS ARE THE ROUTE AND WHICH ARE THE DETOUR. A caller
+            # dressing a floor wants that distinction — the critical path
+            # earns the set pieces — and it is free here because the layout
+            # knew it while it was building.
+            **({"main_path": level["main_path"],
+                "side_rooms": level["side"]}
+               if level.get("main_path") is not None else {}),
             **({"iso_walls": iso_walls} if iso_walls else {}),
             **({"elevation": {
                 "levels": levels,
