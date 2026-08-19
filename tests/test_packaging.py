@@ -17,6 +17,7 @@ build-install-import loop lives in CI (.github/workflows/ci.yml, wheel-smoke).
 from __future__ import annotations
 
 import fnmatch
+import re
 import subprocess
 import sys
 import tomllib
@@ -320,3 +321,116 @@ class TestBuiltWheel:
     def test_wheel_ships_no_bytecode_or_tests(self, names):
         assert not [n for n in names if n.endswith(".pyc")]
         assert not [n for n in names if n.startswith("tests/")]
+
+
+# ---------------------------------------------------------------------------
+# Declared dependencies vs. what the code actually imports
+# ---------------------------------------------------------------------------
+# numpy was declared ONLY by the `record` extra while bgate_core/propsheet.py,
+# retrodiffusion's background keying and the wall-tile tone match all imported
+# it unguarded. Every developer machine had it — sounddevice pulls it in, and
+# so does half of scientific Python — so the art pipeline worked everywhere it
+# was written and would have raised ImportError on the first clean install.
+# Linux CI caught it, which is luck: CI installs `.[dev]` and happened not to
+# drag numpy in. This test is the guard that does not depend on luck.
+#
+# It is the same failure the `comtypes` comment in pyproject.toml describes, so
+# it has now happened twice.
+
+#: Third-party top-level modules the shipped packages may import WITHOUT the
+#: import being guarded by try/except ImportError. Each maps to why it is
+#: guaranteed to be installed. A new name here is a decision — declare it in
+#: `dependencies`, guard the import, or add it with a reason.
+ALLOWED_UNGUARDED = {
+    # direct, in [project.dependencies]
+    "mcp": "dependencies", "fastapi": "dependencies", "uvicorn": "dependencies",
+    "PIL": "dependencies (Pillow)", "openai": "dependencies",
+    "numpy": "dependencies",
+    # guaranteed BY a direct dependency rather than named itself. Kept honest
+    # rather than moved into `dependencies`: pinning a transitive here would
+    # be a second floor to keep in step with the package that really owns it.
+    "anyio": "installed by mcp and by fastapi/starlette",
+    "pydantic": "installed by fastapi and by mcp",
+    "starlette": "installed by fastapi",
+    # NOT pip-installable: bpy exists only inside Blender's own interpreter,
+    # which is the only thing that ever runs these modules.
+    "bpy": "provided by Blender, never by pip",
+    # optional FEATURE modules, whose extra is what installs them. Importing
+    # unguarded inside the feature's own module is correct: the feature cannot
+    # work without it, and its available() probe is what reports the absence.
+    "sounddevice": "extra: record", "websockets": "extra: voice",
+}
+
+#: Files exempt from the rule above because they ARE the optional feature.
+OPTIONAL_MODULES = {
+    "bgate_adapters/recorder.py": "record",
+    "bgate_adapters/deepgram.py": "voice",
+    "bgate_adapters/_blender_runner.py": "runs inside Blender",
+    "bgate_adapters/_whisper_runner.py": "stt",
+}
+
+SHIPPED_PACKAGES = ("bgate_core", "bgate_adapters", "bgate_mcp", "bgate_ui",
+                    "bgate_cli")
+
+
+def _unguarded_imports() -> dict[str, list[str]]:
+    """Third-party modules imported outside a try/except, by file."""
+    import ast
+
+    out: dict[str, list[str]] = {}
+    for pkg in SHIPPED_PACKAGES:
+        for path in sorted((REPO / pkg).rglob("*.py")):
+            rel = path.relative_to(REPO).as_posix()
+            if rel in OPTIONAL_MODULES:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            spans = [(t.lineno, t.end_lineno or t.lineno)
+                     for t in ast.walk(tree) if isinstance(t, ast.Try)]
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [a.name.split(".")[0] for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                    names = [(node.module or "").split(".")[0]]
+                else:
+                    continue
+                if any(a <= node.lineno <= b for a, b in spans):
+                    continue          # guarded: its absence is handled
+                for name in names:
+                    if (not name or name in sys.stdlib_module_names
+                            or name.startswith("bgate")):
+                        continue
+                    out.setdefault(name, []).append(f"{rel}:{node.lineno}")
+    return out
+
+
+def test_every_unguarded_import_is_guaranteed_to_be_installed():
+    """An import nothing declares is an ImportError on somebody else's machine.
+
+    This is the check that would have caught numpy: present everywhere it was
+    written, declared only by an extra nobody installs for art.
+    """
+    found = _unguarded_imports()
+    undeclared = {name: sites for name, sites in found.items()
+                  if name not in ALLOWED_UNGUARDED}
+    assert not undeclared, (
+        "these modules are imported without a try/except and are not known to "
+        "be installed: "
+        + "; ".join(f"{n} ({', '.join(s[:2])})" for n, s in
+                    sorted(undeclared.items()))
+        + ". Declare it in [project.dependencies], guard the import, or add it "
+          "to ALLOWED_UNGUARDED with the reason it is always there.")
+
+
+def test_the_core_dependencies_actually_declare_what_they_claim(cfg):
+    """Everything ALLOWED_UNGUARDED calls `dependencies` really is one."""
+    declared = {re.split(r"[<>=!\[]", d, maxsplit=1)[0].strip().lower()
+                for d in cfg["project"]["dependencies"]}
+    aliases = {"pil": "pillow"}
+    for name, why in ALLOWED_UNGUARDED.items():
+        if not why.startswith("dependencies"):
+            continue
+        key = aliases.get(name.lower(), name.lower())
+        assert key in declared, (
+            f"{name} is listed as a core dependency in ALLOWED_UNGUARDED but "
+            f"[project.dependencies] does not name it — declared: "
+            f"{sorted(declared)}")
