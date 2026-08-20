@@ -666,7 +666,7 @@ class TestTheViewRoutesTheGeometry:
         from PIL import Image
 
         from bgate_adapters import kie
-        from bgate_core import gameview, tilemap
+        from bgate_core import gameview, gateway, tilemap
 
         gameview.save(root, "isometric")
 
@@ -675,6 +675,8 @@ class TestTheViewRoutesTheGeometry:
             return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
 
         monkeypatch.setattr(kie, "generate_image", fake_generate)
+        monkeypatch.setattr(gateway, "pick", lambda root, cap: {
+            "provider": "kie", "alternatives": [], "why": "stubbed"})
         out = await call("tileset_generate", name="isoset", tile_px=64,
                          prompt="worn flagstone", godot_project=str(game),
                          res_dir="tiles", install=False)

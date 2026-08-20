@@ -28,10 +28,10 @@ from bgate_core import spritekit as _spritekit
 from bgate_core import tilemap as _tilemap
 
 from bgate_mcp.server import (  # noqa: F401
-    _Path, _artdirection, _ase_master_for, _contained_path,
+    _Path, _archive_preview, _artdirection, _ase_master_for, _contained_path,
     _fail, _godot, _json, _log,
     _note_tool_write, _paid_gate, _re, _res_pair,
-    _root, _scenewire, _tool,
+    _root, _run_tag, _scenewire, _tool,
 )
 
 # Level generation
@@ -2075,4 +2075,203 @@ def level_generate(godot_project: str, scene: str, tileset: str,
     except Exception as exc:
         return _fail(exc)
 
+# ---------------------------------------------------------------------------
+# Godot capture + evidence - moved here by the original split; the
+# isometric branch never touched them, so these are main's copies
+# (with the evidence-gate writelog notes) restored after a bad merge
+# dropped them from both files.
+# ---------------------------------------------------------------------------
+@_tool
+def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] = None,
+                     label: str = "", timeout: int = 120) -> dict:
+    """Run the ACTUAL game and capture the viewport to a PNG at `at` seconds.
 
+    The look-iteration loop: headless checks prove the game boots, this shows
+    what it LOOKS like. A game window appears briefly on the user's screen
+    (rendering needs a display) and closes itself after the capture. The shot
+    is archived to the preview gallery - check it before and after visual work.
+
+    THE WINDOW NEVER GAINS TRUE FOREGROUND FOCUS ON WINDOWS, AND THAT IS THIS
+    TOOL'S ARTIFACT, NOT YOUR GAME'S. Read this before "fixing" anything it
+    seems to reveal about input.
+
+    The capture window is spawned by a background process, so Windows does not
+    hand it the foreground. The mouse is therefore never captured:
+    `Input.mouse_mode` stays VISIBLE no matter what `_ready` asked for, and any
+    code gated on MOUSE_MODE_CAPTURED - a viewfinder, a first-person look
+    controller, a pointer-lock HUD - collapses in the shot while working
+    perfectly for a human running the same build.
+
+    Measured cost of not knowing: a previous pass "fixed" this by re-asserting
+    mouse capture EVERY FRAME from the shot rig, with a comment blaming the
+    game. That masked the real finding for a whole pass. **When a fix has to run
+    every frame forever, it is a symptom, not a cure.**
+
+    So: do not conclude anything about input capture from a screenshot, and do
+    not add per-frame re-capture to make one look right. To check input for
+    real, run the game with `godot_run` and assert on state, or have a human
+    play it. `focus` in the result says this out loud on every call.
+
+    Two more things this tool cannot give you. It returns NO STDOUT, so a
+    windowed run's diagnostics must be written to `user://` and read back. And
+    `res://.bgate_shot.gd` is the harness's own helper - it can error during
+    unrelated headless runs; work around it, do not delete it.
+
+    godot_project: the directory holding project.godot.
+    """
+    try:
+        _contained_path(godot_project, "godot_project")
+        # One file per capture. A single shot.png meant two seats screenshotting
+        # at the same moment each got back a path holding the OTHER one's game.
+        out = str(_Path(_root()) / ".bgate_out" / "shots" /
+                  f"{_run_tag(label or 'game')}.png")
+    except Exception:
+        out = f"bgate_shot_{_run_tag()}.png"
+    try:
+        result = _godot.screenshot(godot_project, out, at=at, scene=scene,
+                                   timeout=timeout)
+        if result.get("ok"):
+            _note_tool_write(_root(), result["path"])
+            archived = _archive_preview(result["path"], f"shot-{label or 'game'}")
+            if archived:
+                result["preview"] = archived
+            _log("screenshot", f"captured the running game at t={at}s"
+                               + (f" ({label})" if label else ""),
+                 ref=archived or result["path"])
+        # ON EVERY RESULT, not only when something looks wrong. The failure this
+        # prevents is a correct-looking screenshot being read as evidence about
+        # input - by which point the misreading has already been acted on. A
+        # caveat that only appears once you suspect a problem arrives after the
+        # bug report has been written.
+        result["focus"] = {
+            "foreground": False,
+            "mouse_capture": "unavailable",
+            "note": ("this window never takes true foreground focus on Windows, "
+                     "so Input.mouse_mode stays VISIBLE and anything gated on "
+                     "MOUSE_MODE_CAPTURED will not appear in this shot. That is "
+                     "the harness, not the game - do not fix the game for it, "
+                     "and do not re-assert capture per frame to make the shot "
+                     "look right. Check input with godot_run and an assertion, "
+                     "or with a human at the keyboard."),
+        }
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def godot_inspect_resource(godot_project: str, res_path: str, timeout: int = 180) -> dict:
+    """Load a res:// resource in-engine and report what it actually became.
+
+    Meshes, tri counts, per-surface UV/material, bounding box - the engine's
+    view of an asset already in the project.
+
+    godot_project: the directory holding project.godot.
+    """
+    _contained_path(godot_project, "godot_project")
+    return _godot.inspect_resource(godot_project, res_path, timeout=timeout)
+
+
+@_tool
+def godot_retarget_check(godot_project: str, res_path: str,
+                         bone_map_res: str = "", timeout: int = 180) -> dict:
+    """Ask the ENGINE whether a rigged character is a humanoid it can retarget.
+
+    The rigs this pipeline builds carry Godot's own SkeletonProfileHumanoid bone
+    names, and the whole point of that is that any humanoid animation library
+    then plays on the character. Nothing tested that claim until this tool. A
+    .glb can export 23 perfectly-named bones in a FLAT hierarchy - blender_rig
+    reports 0 unweighted, godot_deliver_asset photographs it happily, and the
+    character can be animated by nothing except a clip authored for it alone.
+
+    Three answers, and they fail independently:
+
+      missing / extra   coverage against the profile, by exact name.
+      chain[].propagates  rotating a shoulder moves the hand. This is the one
+                        that catches a lost hierarchy, and it is invisible to
+                        every other check in the product.
+      clip.drives       a profile-authored rotation track actually turns the
+                        bone. A NodePath that resolves to nothing plays
+                        silently and moves zero.
+
+    `retargetable` is the verdict. False means the humanoid animation ecosystem
+    is unavailable to this asset - treat it the way you treat `rigged: false`.
+
+    bone_map_res: a res:// path to save the BoneMap to, or "" to skip. Written,
+    it is what the user's import settings point at to retarget real clips.
+
+    res_path must already be imported - godot_import_asset first.
+    """
+    _contained_path(godot_project, "godot_project")
+    result = _godot.retarget_check(godot_project, res_path,
+                                   bone_map_res=bone_map_res,
+                                   timeout=timeout)
+    if result.get("ok"):
+        _log("godot",
+             f"retarget check {res_path}: "
+             f"{'retargetable' if result.get('retargetable') else 'NOT retargetable'} "
+             f"({result.get('mapped')}/{result.get('profile_bones')} profile bones)",
+             ref=res_path)
+    return result
+
+
+@_tool
+def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = None,
+                   overlay: bool = True, label: str = "",
+                   timeout: int = 120) -> dict:
+    """Capture a frame PLUS a screen-space manifest of what is actually where.
+
+    The upgrade over godot_screenshot. A PNG shows what the game looks like; it
+    cannot tell you whether the health bar matches the fighter's real hp,
+    whether a hitbox lines up with its sprite, or whether an entity is on
+    screen at all. This runs the game the same way, then walks the live tree at
+    capture time and reports every measurable node as screen-pixel bounds,
+    visibility, z, and - for progress bars and labels - its RUNTIME VALUE.
+
+    Returns beauty.png, an overlay.png with collision shapes (red) and other
+    bounds (blue) stroked over the frame, and manifest.json with `entities` and
+    `ui`. Pair with `causal_chains` - the manifest says what was on screen, the
+    chains say why it happened.
+
+    godot_project: the directory holding project.godot.
+    """
+    try:
+        _contained_path(godot_project, "godot_project")
+        out_dir = str(_Path(_root()) / ".bgate_out" / "evidence" /
+                      _run_tag(label or "frame"))
+    except Exception:
+        out_dir = f"bgate_evidence_{_run_tag()}"
+    try:
+        result = _godot.evidence(godot_project, out_dir, at=at, scene=scene,
+                                 overlay=overlay, timeout=timeout)
+        if result.get("ok"):
+            for key, tag in (("beauty", "beauty"), ("overlay", "overlay")):
+                path = result.get(key)
+                if path:
+                    archived = _archive_preview(
+                        path, f"evidence-{tag}-{label or 'frame'}")
+                    if archived:
+                        result[f"{key}_preview"] = archived
+            counts = result.get("counts", {})
+            _log("evidence",
+                 f"captured {counts.get('entities', 0)} entities / "
+                 f"{counts.get('ui', 0)} ui elements at t={at}s"
+                 + (f" ({label})" if label else ""),
+                 ref=result.get("beauty_preview") or result.get("beauty") or "")
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def evidence_check_ui(manifest_path: str, expect: dict,
+                      tolerance: float = 0.5) -> dict:
+    """Assert HUD values from an evidence manifest against expected state.
+
+    `expect` maps a UI node name to the value it should be showing, e.g.
+    {"PlayerHealth": 92}. Numeric checks use `tolerance` so a bar mid-tween
+    does not fail as a bug. This is the assertion godot_screenshot could never
+    support: proof the HUD agrees with the sim, not a picture of a bar.
+    """
+    manifest = _json.loads(_Path(manifest_path).read_text(encoding="utf-8"))
+    return _godot.check_ui_matches(manifest, expect, tolerance=tolerance)
