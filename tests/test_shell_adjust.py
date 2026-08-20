@@ -90,10 +90,11 @@ class TestMutationsSurfaceTheError:
     @pytest.mark.parametrize("fn, endpoint", [
         ("dispatchItem", "/dispatch"),
         ("stopItem", "/stop"),
-        # `addItem` was the old Agents board's queue composer. Both the form and
-        # the function are gone; what files work now is the console
-        # (POST /api/console/say) and the board's deploy-all, and both go
-        # through mutate() — asserted in the React case below.
+        # `addItem` was the old Agents board's queue composer. Both the form
+        # and the function are gone; what files work now is the director
+        # session (which calls queue_add itself), the seat box in the inspector
+        # (POST /api/queue) and the board's deploy-all — all through mutate(),
+        # asserted in the React case below.
         ("reviewArtifact", "/review"),
     ])
     def test_every_named_mutation_routes_through_mutate(self, page, fn, endpoint):

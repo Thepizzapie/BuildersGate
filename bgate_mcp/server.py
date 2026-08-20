@@ -3074,10 +3074,9 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             The tile is CUT from a 4x-tile downscale of the painting rather
             than the whole frame squeezed into one tile — squeezing turns a
             wall of bricks into noise; cutting keeps the material at a scale
-            where a brick is still a brick. ``variants`` cuts that many MORE
-            tiles from other corners of the same painting: one interior tile
-            repeated is wallpaper, and the repeat is broken with crops the
-            generation already paid for.
+            where a brick is still a brick. ``variants`` returns that many
+            MORE tiles, which are the same tile modulated rather than other
+            crops of the painting — see `_cut`.
             """
             raw = out_dir / f"{name}_{tag}_raw.png"
             # REUSE THE PAINTING IF IT IS ALREADY HERE. Every geometry change
@@ -3088,23 +3087,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             # generation is kept beside the atlas precisely so it can be
             # re-cut; `reuse=False` forces a fresh roll.
             if reuse and raw.is_file():
-                img = _Img.open(raw).convert("RGBA")
-                span = max(2, int(tile_px * _TEXTURE_ZOOM))
-                zoom = img.resize((span, span), _Img.LANCZOS)
-                ox0, oy0 = max(0, (span - tw) // 2), max(0, (span - th) // 2)
-                jitter = ((tw // 2, th // 2), (-tw // 2, th), (tw, -th // 2))
-                extra = []
-                for jx, jy in jitter[:variants]:
-                    cx = min(max(0, ox0 + jx), max(0, span - tw))
-                    cy = min(max(0, oy0 + jy), max(0, span - th))
-                    extra.append(zoom.crop((cx, cy, cx + tw, cy + th)))
-                patch = zoom.crop((ox0, oy0, ox0 + tw // 2, oy0 + th // 2))
-                base = _tilemask.mirror_tile(patch).resize((tw, th),
-                                                           _Img.NEAREST)
-                extra = [_tilemask.mirror_tile(
-                    e.crop((0, 0, tw // 2, th // 2))).resize((tw, th),
-                                                             _Img.NEAREST)
-                         for e in extra]
+                base, extra = _cut(_Img.open(raw).convert("RGBA"), variants)
                 return base, extra, 0.0
             # SAY WHAT YOU WANT, NOT WHAT YOU DO NOT. This asked for a
             # texture with "no border, no vignette, no objects", and a pile
@@ -3144,7 +3127,16 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                        "re-running usually is the fix."
                        if "filter" in why or "Prohibited" in why else ""))
             cost = float(got.get("estimated_usd") or 0.02)
-            img = _Img.open(raw).convert("RGBA")
+            base, extra = _cut(_Img.open(raw).convert("RGBA"), variants)
+            return base, extra, cost
+
+        def _cut(img, variants: int):
+            """One painting to one tile plus its variants.
+
+            Both the fresh roll and the `reuse` path went through their own
+            copy of this, which is how the two drifted apart while the
+            sampling rules were being iterated.
+            """
             # SAMPLE THE PAINTING FINE, NOT BIG. At 4x the tile the crop held
             # a few large features, so the floor read as a handful of motifs
             # repeating — and mirroring them to kill the diamond seams only
@@ -3160,19 +3152,6 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             # vertical scale — the brick would still be a brick, drawn by a
             # bricklayer who had been stood on.
             ox0, oy0 = max(0, (span - tw) // 2), max(0, (span - th) // 2)
-            # VARIANTS ARE MEANT TO BE THE SAME CARPET, NOT A DIFFERENT ONE.
-            # These were cut from the four far corners of the painting, which
-            # on any material with large-scale structure gives four visibly
-            # different swatches — laid next to each other they read as a
-            # patchwork quilt and, in the user's words, strain the eyes. A
-            # short step from the centre breaks the repeat without changing
-            # the material.
-            jitter = ((tw // 2, th // 2), (-tw // 2, th), (tw, -th // 2))
-            extra = []
-            for jx, jy in jitter[:variants]:
-                cx = min(max(0, ox0 + jx), max(0, span - tw))
-                cy = min(max(0, oy0 + jy), max(0, span - th))
-                extra.append(zoom.crop((cx, cy, cx + tw, cy + th)))
             # MIRROR-QUAD A HALF TILE, so the material is continuous across
             # the diagonals where diamonds actually meet — see
             # tilemask.mirror_tile for why "seamless" from the model is not
@@ -3180,9 +3159,18 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             patch = zoom.crop((ox0, oy0, ox0 + tw // 2, oy0 + th // 2))
             base = _tilemask.mirror_tile(patch).resize((tw, th),
                                                        _Img.NEAREST)
-            extra = [_tilemask.mirror_tile(e.crop((0, 0, tw // 2, th // 2)))
-                     .resize((tw, th), _Img.NEAREST) for e in extra]
-            return base, extra, cost
+            # VARIANTS ARE THE SAME TILE MODULATED, NOT A SECOND CROP. Cutting
+            # them from elsewhere in the painting gave visibly different
+            # swatches whose edge pixels no longer agreed, so alternating them
+            # across a room broke the material's own grid at every join and
+            # read as a patchwork quilt. drift_variant keeps the tile — grid,
+            # alpha and edges untouched — and moves only a wrapped
+            # low-frequency cast plus the flecks. See its docstring.
+            extra = [_tilemask.drift_variant(
+                base, phase=ph, drift=dr, lift=lf)
+                for ph, dr, lf in ((5, 0.75, 0.0), (13, -0.62, 0.03),
+                                   (29, 0.40, 0.07))[:variants]]
+            return base, extra
 
         floor_tile, floor_variants, usd = _texture(prompt, "floor",
                                                    variants=3)

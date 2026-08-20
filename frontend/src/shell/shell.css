@@ -91,7 +91,6 @@ body:has(.bg4) {
 .bg4-dot.ok { background: var(--good, #4ec98f) }
 .bg4-dot.bad { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent) }
 /* The count in an area pop-out, matching the one in the open column. */
-.bg4-menun { font: 500 10px var(--mono); color: var(--text-3) }
 /* The four grounds live in a pop-out off one button now — see Grounds(). */
 
 /* ── column 2: the screens of the current area ────────────────────────────── */
@@ -456,11 +455,7 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   flex: none; border-top: 1px solid var(--line); padding: 10px 12px;
   background: var(--solid-1);
 }
-.bg4-bsfoot {
-  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line);
-}
 
-.bg4-turn { margin-bottom: 10px }
 .bg4-msg { padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; max-width: 900px }
 .bg4-msg .who {
   display: flex; align-items: center;
@@ -477,143 +472,18 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-msg.dir.live { border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
 .bg4-msg.dir.bad { border-color: color-mix(in srgb, var(--bad) 45%, transparent) }
 .bg4-msg.dir.live .txt, .bg4-msg.dir .txt.thinking { color: var(--text-2) }
-.bg4-spoiler { font: 500 10px var(--mono) }
 
-/* ── 5a · the idle console ────────────────────────────────────────────────
-   The composer IS the page. No panes, no board, no toolbar: there is nothing
-   to look at yet, so nothing is drawn around it except what helps you start. */
-.bg4-idle { display: flex; flex-direction: column; min-height: 0; height: 100% }
-.bg4-idle-inner {
-  flex: 1; min-height: 0; overflow-y: auto;
-  width: min(760px, 100%); margin: 0 auto; padding: 8vh 24px 24px;
+/* ONE TOOL CALL, ONE LINE — what a terminal session shows while it works. It
+   is deliberately not a card: a turn that reads six files would otherwise be
+   six panels between two sentences. */
+.bg4-toolline {
+  display: flex; align-items: center; gap: 8px; padding: 2px 12px 3px;
+  font: 400 11px var(--mono); color: var(--text-3); max-width: 900px;
 }
-/* ONE BOX, NOT A BOX INSIDE A BOX.
-   The first version framed the card AND let Mantine draw the textarea's own
-   border inside it, so the composer read as a form field posted onto a panel —
-   two rectangles, two radii, a visible seam between the place you type and the
-   controls that send it. It is one surface now: the field is transparent and
-   unbordered, the controls sit on the same ground, and the only edge in the
-   whole thing is the card's.
-
-   Big radius on purpose. 8px is a form control; 16 is an object you address.
-   The padding is generous for the same reason — a chat box that hugs its text
-   reads as a search bar. */
-/* The hero heading and the composer, with nothing perched on it — the mascot
-   that used to overhang this card is gone, and so is the 46px of margin that
-   was reserving room for its head. */
-.bg4-hero { position: relative }
-
-.bg4-composer-hero {
-  border: 1px solid var(--line); border-radius: 16px;
-  background: var(--solid-2); padding: 14px 16px 10px;
-  transition: border-color var(--dur, .16s) var(--ease, ease),
-              box-shadow var(--dur, .16s) var(--ease, ease);
-}
-.bg4-composer-hero:hover { border-color: var(--line-strong) }
-/* The focus state is the border warming, not a ring landing on top of it. A
-   2px accent outline around a 16px card is the thing that makes a soft object
-   look like a validated input. */
-.bg4-composer-hero:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent);
-}
-.bg4-composer-hero .mantine-Textarea-input,
-.bg4-composer .mantine-Textarea-input {
-  background: transparent; border: 0; padding: 0; min-height: 0;
-  font: 400 14px/1.6 var(--sans); color: var(--text);
-}
-.bg4-composer-hero .mantine-Textarea-input::placeholder,
-.bg4-composer .mantine-Textarea-input::placeholder { color: var(--text-3) }
-.bg4-composer-bar { margin-top: 12px }
-
-/* TAGGING A RUNNING AGENT FROM THE COMPOSER.
-   Quiet until it is aimed, then loud — because an aimed box does something
-   different from an unaimed one (it interrupts a run instead of filing work)
-   and that has to be visible without reading the placeholder. */
-.bg4-tag {
-  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
-  border: 1px solid var(--line); border-radius: 9999px; background: transparent;
-  color: var(--text-2); padding: 3px 10px; font: 500 10px var(--mono);
-  white-space: nowrap;
-}
-.bg4-tag:hover { color: var(--text); border-color: var(--text-3) }
-.bg4-tag.on {
-  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
-}
-/* The second line of a menu entry: which run it is, under whose seat. */
-.bg4-tag-sub {
-  display: block; margin-top: 2px;
-  font: 500 9px/1.4 var(--mono); color: var(--text-3);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* ELLIPSIS NEEDS SOMETHING TO ELLIPSIS AGAINST. The rule above was already
-   nowrap + overflow:hidden and the text still ran straight out of the menu,
-   because a flex item's default min-width is `auto` -- it refuses to shrink
-   below its content, so the label grew to fit "Onboarding/coworker-select
-   screen shows wrong portraits, not the hero roster" and pushed it past the
-   300px dropdown instead of clipping it. min-width:0 on the ancestors is what
-   lets the text box be narrower than the text. */
-.mantine-Menu-item:has(.bg4-tag-sub),
-.mantine-Menu-itemLabel:has(.bg4-tag-sub) { min-width: 0; overflow: hidden }
-/* The banner over the box while it is aimed. Says who hears this and what it
-   does to them; the × puts you back in front of the director. */
-.bg4-aimed {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
-  padding: 6px 10px; border-radius: 7px;
-  border: 1px solid var(--accent-line); background: var(--accent-soft);
-  font: 400 11px/1.45 var(--sans); color: var(--text-2);
-}
-.bg4-aimed b { font: 500 10px var(--mono); color: var(--accent) }
-.bg4-aimed span { flex: 1; min-width: 0 }
-.bg4-aimed .x {
-  flex: none; border: 0; background: transparent; cursor: pointer;
-  color: var(--text-3); font-size: 14px; line-height: 1; padding: 0 2px;
-}
-.bg4-aimed .x:hover { color: var(--text) }
-
-/* The mode pills are chrome, not a control panel: no track, no border, and
-   only the chosen one is filled — the same quiet a Chat/Cowork pair has. */
-.bg4-modes.mantine-SegmentedControl-root { background: transparent; padding: 0; gap: 2px }
-.bg4-modes .mantine-SegmentedControl-indicator {
-  background: var(--surface-3); box-shadow: none;
-}
-.bg4-modes .mantine-SegmentedControl-label {
-  color: var(--text-3); padding: 4px 10px; border-radius: 8px;
-}
-.bg4-modes .mantine-SegmentedControl-label[data-active] { color: var(--text) }
-.bg4-modes .mantine-SegmentedControl-control + .mantine-SegmentedControl-control::before {
-  display: none;                    /* the divider between pills */
-}
-.bg4-sendbtn { border-radius: 10px }
-.bg4-suggest { font-weight: 400 }
-.bg4-rule .line { flex: 1; height: 1px; background: var(--line) }
-
-.bg4-closed {
-  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
-  border: 0; border-bottom: 1px solid var(--line); background: transparent;
-  padding: 9px 2px; cursor: pointer;
-}
-.bg4-closed:hover { background: rgba(255, 255, 255, .02) }
-.bg4-closed .tile {
-  display: grid; place-items: center; width: 26px; height: 26px; flex: none;
-  border-radius: 5px;
-}
-.bg4-closed .ttl {
-  flex: 1; min-width: 0; font: 400 12px var(--sans);
-  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.bg4-closed .st {
-  font: 500 10px var(--mono); letter-spacing: .14em;
-  text-transform: uppercase; color: var(--good, #4ec98f);
-}
-.bg4-closed .st.bad { color: var(--bad) }
-.bg4-closed .age {
-  width: 34px; text-align: right; font: 500 10px var(--mono);
-  color: var(--text-3);
-}
-.bg4-idle-foot {
-  flex: none; padding: 10px 16px; border-top: 1px solid var(--line);
-  background: var(--solid-1); color: var(--text-3);
+.bg4-toolline b { color: var(--text-2); font-weight: 500 }
+.bg4-toolline span {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* ── 5b · the live console ───────────────────────────────────────────────── */
@@ -752,13 +622,6 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
 }
-:root[data-theme="orbit"] .bg4-composer-hero {
-  /* No border-radius here — the composer's own 16px is the shape on every
-     ground, and repeating it per theme is how one of them ends up at 12. */
-  background: var(--glass-2);
-  backdrop-filter: var(--glass-filter);
-  -webkit-backdrop-filter: var(--glass-filter);
-}
 :root[data-theme="orbit"] .bg4-sidecard { border-radius: 9px }
 :root[data-theme="orbit"] .bg4-insp { border-radius: 14px 0 0 14px }
 
@@ -766,7 +629,7 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
    into a curved one. Both are shadows: no new layer, and neither touches the
    fill, so the surfaces stay black. */
 :root[data-theme="orbit"] :is(
-    .bg4-composer-hero, .bg4-sidecard, .bg4-console-side, .bg4-insp) {
+    .bg4-sidecard, .bg4-console-side, .bg4-insp) {
   box-shadow: var(--iris-bloom), var(--sheen);
 }
 
@@ -1116,57 +979,6 @@ html.bg-framed body { padding-top: 44px }
 .bg4-set, .bg4-settings-group, .bg4-row, .bg4-panel > * + * { border-color: var(--line-soft) }
 .bg4-card, .bg4-panel, .bg4-settings-split { border-radius: 12px }
 
-/* The composer, breathing rather than posted.
-   A static 3px ring on a 16px card is a validated form field; this is the
-   thing you type into and it should feel alive when it has focus and inert
-   when it does not. The glow is wide, low-opacity and slow — closer to a lamp
-   coming up than to a border turning on. */
-@keyframes bg4-breathe {
-  0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 6%, transparent),
-                         0 8px 34px -14px color-mix(in srgb, var(--accent) 26%, transparent) }
-  50%      { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 9%, transparent),
-                         0 10px 44px -12px color-mix(in srgb, var(--accent) 36%, transparent) }
-}
-.bg4-composer-hero {
-  border-radius: 18px;
-  transition: border-color .28s var(--ease, ease), box-shadow .34s var(--ease, ease);
-}
-.bg4-composer-hero:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
-  animation: bg4-breathe 4.2s ease-in-out infinite;
-}
-/* Unfocused, it still lifts off the page slightly rather than sitting flat
-   inside a hard outline. */
-.bg4-composer-hero {
-  border-color: var(--line-soft);
-  box-shadow: 0 6px 26px -18px rgba(0, 0, 0, .8);
-}
-.bg4-composer-hero:hover { border-color: var(--line) }
-
-/* THE SUGGESTION CHIPS AND THE CLOSED LIST were four hard-edged boxes under a
-   soft one. Same family now. */
-/* The real class names — an earlier pass guessed `.bg4-sugg` and
-   `.bg4-closed-row`, neither of which exists, so the chips and the closed list
-   kept their hard edges while the composer above them softened. */
-.bg4-suggest {
-  border-color: var(--line-soft) !important;
-  border-radius: 11px !important;
-  background: color-mix(in srgb, var(--solid-2) 70%, transparent) !important;
-}
-.bg4-suggest:hover { border-color: var(--line) !important }
-.bg4-closed {
-  border-color: var(--line-soft);
-  border-radius: 10px;
-  transition: background .18s var(--ease, ease), border-color .18s var(--ease, ease);
-}
-.bg4-closed:hover { background: var(--solid-3); border-color: var(--line) }
-
-/* Somebody who has asked for reduced motion has asked for exactly this. */
-@media (prefers-reduced-motion: reduce) {
-  .bg4-composer-hero:focus-within { animation: none;
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 8%, transparent) }
-}
-
 /* ── first-run card, on Mantine ──────────────────────────────────────────────
    The only bespoke pieces left are the two that Mantine has no component for:
    a row that opens a registered project, and a template card that behaves as a
@@ -1309,29 +1121,6 @@ body.ptn-open .bg4 {
   body.ptn-open .bg4 { padding-right: 0 }
 }
 
-
-/* ── linked assets, above the composer ────────────────────────────────────
-   A linked asset changes what the message means, so it sits where the text is
-   being typed rather than behind the picker that added it. Each chip carries
-   its own remove, because choosing the wrong sheet out of a list of thirty is
-   the ordinary mistake here.
-
-   The label truncates and the full path is the title: a chip is an
-   identification, not a path viewer, and three long paths would otherwise push
-   the composer's own controls off the row. */
-.bg4-links { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px }
-.bg4-link {
-  display: inline-flex; align-items: center; gap: 5px; max-width: 260px;
-  padding: 3px 6px; border: 1px solid var(--line); border-radius: 999px;
-  background: var(--surface-2); color: var(--text-2);
-  font: 500 10px/1.4 var(--mono);
-}
-.bg4-link .tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0 }
-.bg4-link .x {
-  border: 0; background: none; cursor: pointer; padding: 0 1px;
-  color: var(--text-3); font-size: 12px; line-height: 1;
-}
-.bg4-link .x:hover { color: var(--text) }
 
 /* ── resume in CLI ─────────────────────────────────────────────────────────── */
 

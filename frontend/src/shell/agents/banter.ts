@@ -361,9 +361,6 @@ export function floorIsQuiet(
      door test is about who is needed; this one is about whether the building is
      empty. */
   if ((state.gates || []).length) return false;
-  /* The director mid-sentence. The transcript is where words go, and two
-     sources of words on one screen is the failure this file is built around. */
-  if ((state.turns || []).some((t) => t.reply?.running)) return false;
   const f = state.floor || {};
   return !(f.running || f.queued || f.dispatched || f.review);
 }

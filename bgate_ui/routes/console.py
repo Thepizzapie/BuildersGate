@@ -1,29 +1,16 @@
-"""The Agents console — one conversation, one live graph, one poll.
+"""The board behind the director's screen — one poll, everything it paints.
 
-The Agents view used to be a composer over four kanban lanes: you typed a task,
-picked the seat yourself, and then watched cards move. That is a to-do list with
-a dispatch button. What the floor actually does is a CONVERSATION — you say what
-you want, the director decides who does it, and work hands off between seats —
-and none of that shape was visible.
-
-So this module backs a different reading of the same data:
-
-  * ``POST /api/console/say`` — a message to the director. It becomes a work
-    item (``source='chat'``) and is answered by the PERSISTENT director session
-    (bgate_ui.directorsession): one full-capability Claude Code session per
-    project, held open between messages and resumed across restarts, which
-    settles the row with its reply. Children it delegates are stamped with the
-    same ``DELEGATED-FROM: #id`` line the delegate endpoint uses — so the
-    children of a sentence are recoverable from the database after a reload,
-    not held in a JS variable. An ``@seat`` address still dispatches a seat
-    worker per message, unchanged.
+THE CONVERSATION IS NOT HERE. It used to be: a message was a work item with a
+fenced brief, a reserved row and an archived cut line, and this module owned
+all of it. A chat is a chat, so it moved to routes/director.py over
+directorsession's own transcript, and what is left here is the BOARD.
 
   * ``GET /api/console/state`` — everything the view paints, in ONE request:
-    the conversation turns with their live replies, the board, the delegation
-    lineage, the running agents WITH their last few steps, the open approval
-    gates, the auto-deploy switch, and a floor tally. The old view needed
-    /api/queue + /api/agents + one /api/agent-activity per live agent every
-    3.5 seconds and still could not draw an edge between two items.
+    the board, the delegation lineage, the running agents WITH their last few
+    steps, the open approval gates, the auto-deploy switch, and a floor tally.
+    The old view needed /api/queue + /api/agents + one /api/agent-activity per
+    live agent every 3.5 seconds and still could not draw an edge between two
+    items.
 
   * ``POST /api/console/autopilot`` — the auto-deploy switch (bgate_ui.autodeploy),
     plus an immediate tick so flipping it on does something visible now rather
@@ -47,7 +34,6 @@ from bgate_core import steerbox as _steerbox
 from bgate_core import workspace as _ws
 from bgate_ui import api as _api
 from bgate_ui import autodeploy as _autodeploy
-from bgate_ui import directorsession as _director
 from bgate_ui import dispatch as _dispatch
 from bgate_ui import phases as _phases
 from bgate_ui.deps import root
@@ -55,16 +41,10 @@ from bgate_ui.routes.orchestrator import _lineage
 
 router = APIRouter()
 
-CHAT_SOURCE = "chat"
 # Where the "a human has seen this claim" record lives. Same store as the
 # auto-deploy switch: per project, survives a restart, no schema change.
 SEAT = "director"
 SIGNOFF_KEY = "signoffs"
-# Where the conversation's cut line and its archived sessions live. Clearing
-# the console must not delete anything: a turn is a work item with a log on
-# disk, and "clear" meaning "destroy the record of what was asked and what the
-# agent did" would be the worst possible reading of the word.
-SESSION_KEY = "console"
 # How far back a finished item still asks for a sign-off. This is a LIVE
 # instrument: work that landed while you were watching wants a decision, work
 # from last Tuesday is history and belongs to the timeline. Without the window,
@@ -88,13 +68,6 @@ def _signoff_hours(root_dir) -> float:
     except Exception:
         return float(SIGNOFF_HOURS)
 
-# The human's message, verbatim, inside the brief. See _turn_brief.
-SAID_OPEN = "<<<SAID"
-SAID_CLOSE = "SAID>>>"
-
-# The conversation window. A turn is one work item, so this is also how far
-# back the graph's "roots" go.
-TURNS = 24
 # Board window. Open work first — a project with 400 done items must not ship
 # all of them to a view that draws maybe forty nodes.
 BOARD = 80
@@ -206,55 +179,6 @@ def _chain_state(conn, items: list[dict]) -> None:
             it["waiting_on"] = dep
 
 
-def _turn_brief(text: str) -> str:
-    """What the turn's work item STORES — the transcript's copy, not a prompt.
-
-    The human's own words are fenced. A work item's title is capped at 80
-    characters and a paragraph typed into the console is routinely longer, so
-    without a fence the transcript could only ever redisplay a truncated first
-    line — the message the human actually sent would exist nowhere. The fence
-    is also what lets the transcript survive a reload without a second store.
-
-    THIS IS NO LONGER WHAT THE DIRECTOR READS. The switchboard era dispatched
-    a fresh seat-worker per message and the brief was its whole world, so the
-    brief carried a routing script ("answer and route, ten tool calls is a
-    bug") — and a director that may not investigate deflects, which is what
-    the human reported. The director is now a persistent full session
-    (bgate_ui.directorsession); the prompt it hears is
-    directorsession.turn_prompt, and the row here is the durable record.
-    """
-    return (f"{SAID_OPEN}\n{text}\n{SAID_CLOSE}\n\n"
-            "(a console turn, answered by the director session)")
-
-
-def _reseed_context(conn, limit: int = 6) -> str:
-    """The recent conversation as plain text — the fallback context for a
-    director session that could not be resumed. Small on purpose: the real
-    memory is the CLI's own session; this is what stops a forced restart from
-    answering with total amnesia."""
-    rows = conn.execute(
-        "SELECT * FROM work_item WHERE source = ? ORDER BY id DESC LIMIT ?",
-        (CHAT_SOURCE, limit)).fetchall()
-    lines = []
-    for row in reversed(rows):
-        asked = said(row["brief"]) or row["title"] or ""
-        if asked:
-            lines.append(f"THEM: {asked[:600]}")
-        reply = (row["result"] or "").strip()
-        if reply:
-            lines.append(f"YOU (earlier): {reply[:600]}")
-    return "\n\n".join(lines)
-
-
-def said(brief: str) -> str:
-    """The human's own words back out of a turn's brief."""
-    text = brief or ""
-    if SAID_OPEN not in text or SAID_CLOSE not in text:
-        return ""
-    body = text.split(SAID_OPEN, 1)[1].split(SAID_CLOSE, 1)[0]
-    return body.strip()
-
-
 def _ws_update(root_dir, key: str, change) -> dict:
     """Read-modify-write a workspace doc, retrying once on a lost update.
 
@@ -275,87 +199,6 @@ def _ws_update(root_dir, key: str, change) -> dict:
                     "another tab changed this first — reload and try again",
                     expected=exc.expected, actual=exc.actual)
     return {}
-
-
-def _session_doc(root_dir) -> dict:
-    doc = _ws.get(root_dir, SEAT, SESSION_KEY, {})
-    doc.setdefault("cleared_before", 0)
-    doc.setdefault("sessions", [])
-    return doc
-
-
-def _turn_rows(conn, limit: int, *, after: int = 0, span: tuple = ()) -> list[dict]:
-    """The conversation. ``after`` is the live console's cut line; ``span`` is
-    an archived session's (from_id, to_id) — the two are exclusive."""
-    if span:
-        rows = conn.execute(
-            "SELECT * FROM work_item WHERE source = ? AND id >= ? AND id <= ? "
-            "ORDER BY id DESC LIMIT ?",
-            (CHAT_SOURCE, span[0], span[1], limit)).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM work_item WHERE source = ? AND id > ? "
-            "ORDER BY id DESC LIMIT ?", (CHAT_SOURCE, after, limit)).fetchall()
-    turns = []
-    for row in reversed(rows):
-        card = _card(row)
-        # The verbatim message, not the 80-character title it was cut down to.
-        card["said"] = said(row["brief"]) or card["title"]
-        turns.append(card)
-    return turns
-
-
-def _reply(root_dir, item: dict) -> dict:
-    """The director's side of one turn: its final summary if it has finished,
-    its last words if it has not, and whether it is still talking.
-
-    Two kinds of turn arrive here and the payload shape is one. A dispatched
-    turn (an @seat address, or history from the switchboard era) has a per-item
-    agent feed. A director-session turn has no feed of its own — the session
-    outlives any item — so its live half comes from directorsession.status,
-    and its session_id is the SESSION's, which is the better answer anyway:
-    resuming it in a terminal picks up the whole conversation, not one turn.
-    """
-    live = _director.status(str(root_dir))
-    if int(live.get("current_item") or 0) == int(item["id"]):
-        return {
-            "text": "",
-            "thinking": (live.get("thinking") or "")[:400],
-            "running": True,
-            "steps": [],
-            "step_count": 0,
-            "session_id": live.get("cli_session_id") or "",
-            "cost": None,
-        }
-    feed = _dispatch.read_activity(str(root_dir), int(item["id"]), limit=STEPS)
-    final = feed.get("final") or {}
-    text = ""
-    if item["status"] == "done" and item.get("result"):
-        text = item["result"]
-    elif final.get("text"):
-        text = str(final["text"])
-    said = [s.get("text", "") for s in feed.get("steps") or []
-            if s.get("kind") == "say" and s.get("text")]
-    return {
-        # NOT 2000. This is the director's answer to the human — the deliverable
-        # of a chat turn, not a status note — and clipping it here reintroduced
-        # the exact mid-word cut queue.clip_result was fixed to stop. The store
-        # already bounds it (queue.MAX_RESULT) and says so when it bites, so a
-        # second, smaller, silent cap on the way out is pure loss.
-        "text": text[:_queue.MAX_RESULT],
-        "thinking": said[-1][:400] if said and not text else "",
-        "running": bool(feed.get("running")),
-        "steps": feed.get("steps") or [],
-        "step_count": feed.get("step_count") or 0,
-        # THE CLAUDE SESSION THIS TURN WAS, so somebody who would rather work in
-        # a terminal can resume it with its whole context instead of restating
-        # the conversation. A director turn falls back to the console SESSION's
-        # id — the per-item feed never had one for those.
-        "session_id": feed.get("session_id")
-        or (live.get("cli_session_id") or ""
-            if item.get("seat") == "director" else ""),
-        "cost": final.get("cost"),
-    }
 
 
 def _gates(root_dir, conn, active: set[int]) -> list[dict]:
@@ -700,11 +543,6 @@ def console_state(steps: bool = True) -> dict:
         items += [_card(row) for row in conn.execute(
             f"SELECT * FROM work_item WHERE id IN ({marks})", missing)]
 
-    doc = _session_doc(r)
-    turns = _turn_rows(conn, TURNS, after=int(doc.get("cleared_before") or 0))
-    for turn in turns:
-        turn["reply"] = _reply(r, turn)
-
     # The live agents, in detail: the card wants the last step, the graph wants
     # the phases, and both come out of one read of the feed.
     live_steps: dict[str, list] = {}
@@ -738,7 +576,6 @@ def console_state(steps: bool = True) -> dict:
 
     from bgate_core import gates as _gatemode
     return {
-        "turns": turns,
         "items": items,
         "agents": agents,
         "lineage": _lineage(r),
@@ -748,14 +585,6 @@ def console_state(steps: bool = True) -> dict:
         "phases": live_phases,
         "sessions_by_item": live_sessions,
         "collab": _collab(r, conn, active),
-        "sessions": list(reversed(doc.get("sessions") or []))[:20],
-        # THE CUT LINE, so the side panel can scope itself to THIS session.
-        # `turns` above is already filtered by it; `items` deliberately is not,
-        # because the board shows live work regardless of when the console was
-        # last cleared. Without this number the Responses tab had no way to
-        # tell one session's results from every result the project has ever
-        # produced, and listed all 400+.
-        "cleared_before": int(doc.get("cleared_before") or 0),
         "autopilot": _autodeploy.state(r),
         "gate": _gatemode.state(r),
         "floor": {
@@ -767,160 +596,6 @@ def console_state(steps: bool = True) -> dict:
             "failed": counts.get("failed", 0),
         },
     }
-
-
-@router.post("/api/console/say")
-def console_say(payload: dict) -> dict:
-    """One message to the director — or straight to a seat you named.
-
-    `seat` ADDRESSES THE WORK INSTEAD OF THE DIRECTOR. Untagged, this is what it
-    has always been: a turn for the director, which answers and delegates. With
-    a seat, the item is filed for that seat and dispatched to it, because
-    "@narrative — write the dialogue tree" typed into the director got a polite
-    paragraph about what it would delegate, and the work still had to go round
-    the houses to arrive where the human had already pointed it.
-
-    The director is still the default, and still the right answer when you do
-    not know whose job it is. This is for when you do.
-    """
-    text = str(payload.get("text") or "").strip()
-    if not text:
-        raise _api.bad_request("say what?  an empty message has nothing to act on")
-    if len(text) > 4000:
-        raise _api.bad_request("that message is too long for one turn — "
-                               "4000 characters is the cap", length=len(text))
-    r = root()
-    seat = str(payload.get("seat") or "").strip().lower() or "director"
-    if seat != "director":
-        from bgate_core import seats as _seats
-        table = _seats.roles_for(r)
-        if seat not in table:
-            raise _api.bad_request(
-                f"{seat!r} is not a seat on this project — "
-                f"known: {', '.join(sorted(table))}", seat=seat)
-    title = text.splitlines()[0][:80] or text[:80]
-    try:
-        turn = _queue.add(r, seat, title=title,
-                          brief="(preparing)", source=CHAT_SOURCE)
-    except ValueError as exc:
-        # Out-of-scope is a ValueError subclass and reads as a real sentence.
-        raise _api.bad_request(str(exc))
-    turn_id = int(turn["id"])
-
-    if seat == "director":
-        # THE DIRECTOR IS A SESSION, NOT A DISPATCH. The turn is still a work
-        # item — the transcript, the DELEGATED-FROM lineage and the archive
-        # all read work items — but it is answered by the persistent
-        # full-capability session in bgate_ui.directorsession, which settles
-        # the row with its reply. reserve() marks it dispatched the same
-        # atomic way a dispatch would, so the board and the graph read a live
-        # turn identically either way.
-        _queue.update(r, turn_id, brief=_turn_brief(text))
-        if not _queue.reserve(r, turn_id):
-            return {"ok": True, "turn_id": turn_id, "dispatched": False,
-                    "refusal": {"code": "not_queued",
-                                "message": "the turn was claimed by something "
-                                           "else before the session could "
-                                           "take it"}}
-        conn = db.connect(r)
-        try:
-            context = _reseed_context(conn)
-        except Exception:
-            context = ""
-        _director.submit(str(r), turn_id,
-                         _director.turn_prompt(text, turn_id),
-                         reseed_context=context)
-        return {"ok": True, "turn_id": turn_id, "dispatched": True,
-                "seat": seat, "session": True}
-
-    # A SEAT GETS THE SENTENCE, NOT A DIRECTOR PROMPT. An addressed turn is
-    # the human's own words plus where they came from, dispatched to that
-    # seat's worker exactly as before.
-    _queue.update(r, turn_id, brief=(
-        text + "\n\n---\n"
-        + f"Addressed to the {seat} seat from the director's console. "
-        "This is the human's own wording, not a brief written for you; "
-        "if it is not yours to do, say so rather than doing it anyway."))
-
-    result = _dispatch.dispatch(str(r), turn_id, actor="console")
-    if not result.get("ok"):
-        # The turn stays on the board and can be dispatched by hand or by
-        # auto-deploy later; the refusal is the answer for now.
-        return {"ok": True, "turn_id": turn_id, "dispatched": False,
-                "refusal": {"code": result.get("code") or "refused",
-                            "message": result.get("error") or "dispatch refused"}}
-    return {"ok": True, "turn_id": turn_id, "dispatched": True,
-            "seat": seat, "pid": result.get("pid")}
-
-
-@router.post("/api/console/clear")
-def console_clear() -> dict:
-    """Close the current conversation and start a fresh one.
-
-    NOTHING IS DELETED. The turns stay work items, their logs stay on disk, and
-    the range is filed as a session you can open again — clearing a console that
-    destroyed the record of what was asked and what the agent did would be the
-    worst possible reading of the word. All this moves is the cut line the live
-    transcript reads from.
-    """
-    r = root()
-    # A cleared console is a NEW conversation, so the director session ends
-    # with it: stop the process and drop the resume marker, or the "fresh"
-    # console would resume a session still carrying everything the human just
-    # archived away. The archived turns keep their replies either way.
-    try:
-        _director.stop(str(r))
-        _director.forget(str(r))
-    except Exception:
-        pass
-    conn = db.connect(r)
-    doc = _session_doc(r)
-    before = int(doc.get("cleared_before") or 0)
-    row = conn.execute(
-        "SELECT min(id) AS lo, max(id) AS hi, count(*) AS n FROM work_item "
-        "WHERE source = ? AND id > ?", (CHAT_SOURCE, before)).fetchone()
-    if not row or not row["n"]:
-        return {"ok": True, "cleared": 0, "sessions": doc.get("sessions") or []}
-
-    first = conn.execute(
-        "SELECT brief, title FROM work_item WHERE id = ?", (row["lo"],)).fetchone()
-    title = (said(first["brief"]) or first["title"] or "session") if first else "session"
-    session = {
-        "id": len(doc["sessions"]) + 1,
-        "from_id": int(row["lo"]), "to_id": int(row["hi"]), "turns": int(row["n"]),
-        "title": title[:90],
-        "at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    def _file(fresh: dict) -> dict:
-        fresh["sessions"] = (fresh.get("sessions") or []) + [session]
-        fresh["cleared_before"] = int(row["hi"])
-        return fresh
-
-    _ws_update(r, SESSION_KEY, _file)
-    _activity.log(r, "console",
-                  f"archived console session {session['id']} "
-                  f"({session['turns']} turn(s), #{session['from_id']}–#{session['to_id']})",
-                  seat="director")
-    return {"ok": True, "cleared": session["turns"], "session": session,
-            "sessions": list(reversed(doc["sessions"]))[:20]}
-
-
-@router.get("/api/console/session/{session_id}")
-def console_session(session_id: int) -> dict:
-    """One archived conversation, replies and all — read it, and open any turn's
-    log from it. The logs never went anywhere; only the cut line moved."""
-    r = root()
-    doc = _session_doc(r)
-    match = [s for s in (doc.get("sessions") or []) if int(s.get("id")) == session_id]
-    if not match:
-        raise _api.not_found(f"no archived session {session_id}")
-    session = match[0]
-    conn = db.connect(r)
-    turns = _turn_rows(conn, 200,
-                       span=(int(session["from_id"]), int(session["to_id"])))
-    for turn in turns:
-        turn["reply"] = _reply(r, turn)
-    return {"session": session, "turns": turns}
 
 
 @router.post("/api/console/signoff")

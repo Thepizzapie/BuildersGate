@@ -26,11 +26,14 @@ So the design is stated by what it is equal to: what you get by running
     marker, same crude-and-honest fallback rules as brainsession: a resume
     that dies before its first successful turn is treated as failed and the
     session restarts fresh, reseeded with the recent transcript).
-  * TURNS ARE STILL WORK ITEMS. console_say files the row exactly as before —
-    the transcript, the DELEGATED-FROM lineage and the archive all read work
-    items, and none of that should know or care what answered. What changed is
-    who completes the row: the collector thread here settles it with the
-    session's reply, instead of the agent calling queue_complete on itself.
+  * A CHAT IS A CHAT. A message is a line in .bgate/console/chat.jsonl and
+    nothing else — no work item, no lineage stamp, no per-turn dispatch row.
+    The transcript records what a terminal shows: what you said, what it said,
+    and which tools it called on the way. Work appears on the board only when
+    the director actually files it with queue_add.
+  * ONE WORK-ITEM PATH SURVIVES, and only because it is not a chat: followup.py
+    escalates a stuck item to the director as a real row it must settle.
+    ``submit`` is that path.
 
 WHAT BOUNDS IT, since the per-item ceilings deliberately do not apply: the
 CLI's own --max-budget-usd per process, a session ceiling across respawns
@@ -82,38 +85,90 @@ POLL_S = 0.15
 FALLBACK_MODEL = "opus"
 
 # Appended to the stock system prompt — the framing, not the capability. The
-# capability is the argv; this only has to stop the two observed failure modes:
-# the deflection ("I can only see the board") and the switchboard reflex of
-# routing without understanding.
+# capability is the argv. This is a session-start prompt and nothing more: who
+# you are, which game this is, who the seats are and what each one can actually
+# call. Everything else a normal `claude` session already knows.
 DIRECTOR_SYSTEM = (
     "You are the DIRECTOR of this game project, in a persistent session behind "
-    "the project dashboard's console. The human who owns the project talks to "
-    "you there; your final message each turn is rendered as your reply in that "
-    "chat. You also hold the full builders-gate MCP toolset (the board, the "
-    "bible, seats, steering) alongside your normal tools.\n"
+    "the project dashboard's chat. You are a full session in the project "
+    "directory — read files, search, run commands — and you also hold the "
+    "builders-gate MCP toolset.\n"
     "\n"
-    "You are a full session in the project directory — read files, search, run "
-    "commands, check logs and the board. Never claim you can only see the "
-    "board or that something is not your problem: if the answer is in the "
-    "project, go get it. When something is genuinely out of reach, say exactly "
-    "what and why.\n"
-    "\n"
-    "Division of labour: investigate, decide, arbitrate and answer yourself; "
-    "small direct fixes are fine. Substantial game work goes on the board — "
-    "queue_add(seat, title, brief) with a self-contained brief, or "
-    "queue_add_chain when pieces depend on each other. Every brief you file "
-    "for a console ask MUST start with the DELEGATED-FROM line the turn gives "
-    "you — it is the only durable record of where the work came from.\n"
-    "\n"
-    "Corrections to work already running are steered, not re-queued: "
-    "queue_list(status='dispatched') to see who is live, then "
-    "agent_steer(item_id, text). Failed items are yours to move: read the "
-    "item's result and log, work out what actually went wrong, then "
-    "queue_reopen with a reason the next agent can act on — do not report a "
-    "failure back to the human as a dead end when you can redispatch it.\n"
+    "Substantial game work goes to a seat: queue_add(seat, title, brief), or "
+    "queue_add_chain when the pieces depend on each other. Nothing dispatches "
+    "unless the dashboard is running, so say so if it is not. Corrections to a "
+    "run already in flight are agent_steer(item_id, text), not a new item. A "
+    "failed item is yours to read and queue_reopen with a reason.\n"
     "\n"
     "Answer the human in plain prose, and lead with the answer."
 )
+
+
+def _game_facts(root) -> str:
+    """The one paragraph that says WHICH GAME this is. Best effort: a project
+    whose row or bible cannot be read still gets a working director."""
+    lines = []
+    try:
+        from bgate_core import project as _project
+
+        row = _project.get(root)
+        name = str(row.get("name") or "").strip() or Path(root).name
+        pitch = str(row.get("pitch") or "").strip()
+        kind = str(row.get("dimension") or "").strip()
+        lines.append(f"GAME: {name}" + (f" — {pitch}" if pitch else "")
+                     + (f" ({kind})" if kind else ""))
+    except Exception:
+        lines.append(f"GAME: {Path(root).name}")
+    try:
+        from bgate_core import bible as _bible
+
+        seen = _bible.overview(root)
+        for key in ("pillars", "loop"):
+            titles = [str(s.get("title") or "") for s in (seen.get(key) or [])]
+            titles = [t for t in titles if t][:6]
+            if titles:
+                lines.append(f"{key.upper()}: " + "; ".join(titles))
+    except Exception:
+        pass
+    lines.append("bible_read gives you the full text of any of that.")
+    return "\n".join(lines)
+
+
+def _seat_table(root) -> str:
+    """The seats, their missions, their write lanes and their tool surfaces.
+
+    The toolset half is not decoration: a seat's MCP registry is trimmed to the
+    crafts it practises (bgate_core.modules.SEAT_CRAFTS), so filing image work
+    with the audio seat hands it a brief it has no tool to do.
+    """
+    from bgate_core import modules as _modules
+    from bgate_core import seats as _seats
+
+    try:
+        table = _seats.roles_for(root)
+    except Exception:
+        table = dict(_seats.DEFAULT_SEATS)
+    out = []
+    for role, cfg in table.items():
+        crafts = _modules.SEAT_CRAFTS.get(role)
+        if crafts is None:
+            tools = "every builders-gate tool"
+        else:
+            prefixes = [p for craft in crafts
+                        for p in _modules.CRAFTS.get(craft, ())]
+            tools = ", ".join(sorted(set(prefixes))) + "* plus the shared spine"
+        mission = " ".join(str(cfg.get("mission") or "").split())
+        lanes = ", ".join(cfg.get("write_globs") or []) or "(no write lane)"
+        out.append(f"  {role} — {mission}\n"
+                   f"    writes: {lanes}\n"
+                   f"    tools: {tools}")
+    return ("SEATS you can file work for (queue_add), and what each one can "
+            "actually call:\n" + "\n".join(out))
+
+
+def system_prompt(root) -> str:
+    """The session-start prompt: the framing, the game, the seats."""
+    return (f"{DIRECTOR_SYSTEM}\n\n{_game_facts(root)}\n\n{_seat_table(root)}")
 
 
 class Unavailable(RuntimeError):
@@ -165,6 +220,120 @@ def forget(root) -> None:
     note = _read_sidecar(root)
     note.pop("cli_session_id", None)
     _write_sidecar(root, note)
+
+
+# ---------------------------------------------------------------------------
+# The transcript — what the chat pane renders
+# ---------------------------------------------------------------------------
+#
+# One line per message in .bgate/console/chat.jsonl: {n, ts, role, text, tool}.
+# `role` is user | assistant | tool | error. That is the whole store — a chat
+# message is not a work item, has no status, and settles nothing.
+
+_seq: dict[str, int] = {}
+_chat_lock = threading.Lock()
+
+# What one poll may carry back. A conversation longer than this is read from
+# the file on disk, which is the durable copy.
+CHAT_LIMIT = 400
+
+
+def chat_path(root) -> Path:
+    return _home(root) / "chat.jsonl"
+
+
+def _read_chat(root) -> list[dict]:
+    out = []
+    try:
+        with open(chat_path(root), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(ev, dict):
+                    out.append(ev)
+    except OSError:
+        return []
+    return out
+
+
+def _post(root, role: str, text: str, tool: str = "") -> dict:
+    """Append one message. Returns it, numbered."""
+    key = _pkey(root)
+    with _chat_lock:
+        if key not in _seq:
+            got = _read_chat(root)
+            _seq[key] = max((int(m.get("n") or 0) for m in got), default=0)
+        _seq[key] += 1
+        entry = {"n": _seq[key], "ts": time.time(), "role": role,
+                 "text": str(text or "")[:20000]}
+        if tool:
+            entry["tool"] = tool
+        try:
+            with open(chat_path(root), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+        except OSError:
+            pass  # an unwritable transcript must not eat the turn
+    return entry
+
+
+def history(root, after: int = 0) -> dict:
+    """The conversation since message ``after``, plus whether one is running."""
+    msgs = [m for m in _read_chat(root) if int(m.get("n") or 0) > int(after)]
+    live = status(root)
+    return {"messages": msgs[-CHAT_LIMIT:],
+            "running": bool(live.get("running")),
+            "live": bool(live.get("live")),
+            "session_id": live.get("cli_session_id") or "",
+            "spent_usd": live.get("spent_usd") or 0.0,
+            "model": _model_for(root),
+            "ceiling_usd": _ceiling(root)}
+
+
+def send(root, text: str) -> dict:
+    """Say one thing to the director. Posts the message and takes the turn in
+    a thread — the poll shows the reply as it arrives."""
+    said = _post(root, "user", text)
+    threading.Thread(target=_run_chat_turn, args=(str(root), str(text)),
+                     daemon=True, name="director-chat").start()
+    return {"ok": True, "n": said["n"]}
+
+
+def reset(root) -> dict:
+    """Start a fresh conversation: stop the process, drop the resume marker,
+    and archive the transcript beside itself rather than deleting it."""
+    stop(root)
+    forget(root)
+    with _chat_lock:
+        _seq.pop(_pkey(root), None)
+        path = chat_path(root)
+        try:
+            if path.exists():
+                path.replace(path.with_name(
+                    f"chat-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"))
+        except OSError:
+            pass
+    return {"ok": True}
+
+
+def _run_chat_turn(root, text: str) -> None:
+    def settle(reply: str, failed: bool) -> None:
+        # A successful turn has already streamed its prose into the transcript
+        # block by block; only a failure has something left to say.
+        if failed:
+            _post(root, "error", reply)
+
+    try:
+        _turn(root, text, "", settle, record=True)
+    except Unavailable as exc:
+        _post(root, "error", str(exc))
+    except Exception as exc:
+        _post(root, "error", f"the director session crashed: "
+                             f"{type(exc).__name__}: {exc}")
 
 
 def _setting(root, key: str, fallback):
@@ -243,7 +412,7 @@ def _spawn(root, resume: str = "") -> dict:
                               "ts": time.time()}) + "\n").encode("utf-8"))
     handle.flush()
     args = _runners._claude_director_args(
-        exe, system=DIRECTOR_SYSTEM, model=_model_for(root),
+        exe, system=system_prompt(root), model=_model_for(root),
         max_usd=_ceiling(root), resume=resume)
     try:
         proc = subprocess.Popen(
@@ -258,7 +427,7 @@ def _spawn(root, resume: str = "") -> dict:
              "log": str(path), "scan_pos": handle.tell(), "rem": b"",
              "spent_usd": 0.0, "turns": 0, "ok_turns": 0,
              "cli_session_id": str(resume or ""), "resumed": bool(resume),
-             "current_item": 0, "says": [],
+             "current_item": 0, "busy": False, "record": "", "says": [],
              "started_at": time.monotonic(), "last_at": time.monotonic(),
              "turn_lock": threading.Lock()}
     with _lock:
@@ -314,17 +483,19 @@ def stop_all(root=None) -> dict:
 
 
 def status(root) -> dict:
-    """What the console's poll needs to paint a live turn: whether a session is
-    up, which item it is answering, and its last words so far."""
+    """What the poll needs: whether a session is up, whether a turn is in
+    flight, which item (if it is an escalation) and its last words so far."""
     with _lock:
         entry = _live.get(_pkey(root))
         if entry is None:
             note = _read_sidecar(root)
-            return {"live": False, "current_item": 0, "thinking": "",
+            return {"live": False, "running": False, "current_item": 0,
+                    "thinking": "",
                     "cli_session_id": str(note.get("cli_session_id") or ""),
                     "spent_usd": 0.0, "turns": 0}
         says = list(entry.get("says") or [])
         return {"live": entry["proc"].poll() is None,
+                "running": bool(entry.get("busy")),
                 "current_item": int(entry.get("current_item") or 0),
                 "thinking": (says[-1][:400] if says else ""),
                 "cli_session_id": str(entry.get("cli_session_id") or ""),
@@ -391,6 +562,24 @@ def _model_of(ev: dict) -> str:
     return str(ev.get("model") or "")
 
 
+def _tool_note(block: dict) -> str:
+    """One line saying what a tool call is ABOUT — the path, the command, the
+    pattern — the way a terminal session shows it. Falls back to compact JSON
+    rather than to nothing, because an unnamed tool call reads as a stall."""
+    args = block.get("input")
+    args = args if isinstance(args, dict) else {}
+    for key in ("file_path", "path", "command", "pattern", "title", "query",
+                "text", "seat", "prompt"):
+        if args.get(key):
+            return str(args[key])[:400]
+    if not args:
+        return ""
+    try:
+        return json.dumps(args)[:400]
+    except (TypeError, ValueError):
+        return ""
+
+
 def _collect(entry: dict, deadline: float) -> dict:
     """Drain the log until this turn's `result` event, or fail saying why.
 
@@ -413,11 +602,18 @@ def _collect(entry: dict, deadline: float) -> dict:
                         f"{info.get('status')}")
             elif kind == "assistant":
                 for block in (ev.get("message") or {}).get("content") or []:
-                    if isinstance(block, dict) and block.get("type") == "text":
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "text":
                         text = str(block.get("text") or "")
                         if text.strip():
                             entry["says"].append(text)
                             del entry["says"][:-12]
+                            if entry.get("record"):
+                                _post(entry["record"], "assistant", text)
+                    elif block.get("type") == "tool_use" and entry.get("record"):
+                        _post(entry["record"], "tool", _tool_note(block),
+                              tool=str(block.get("name") or "tool"))
             elif kind == "result":
                 text = str(ev.get("result") or "").strip() or "\n".join(
                     s for s in entry["says"] if s.strip()).strip()
@@ -478,46 +674,36 @@ def _ensure(root) -> dict:
     return _spawn(root, resume=resume)
 
 
-def turn_prompt(text: str, turn_id: int) -> str:
-    """The human's words, verbatim and FIRST, plus the one line of plumbing a
-    turn needs: which turn this is, for the DELEGATED-FROM stamp. The stamp
-    format is orchestrator.DELEGATED_FROM's, spelled out rather than imported —
-    a routes import here would be upside down, and the format is load-bearing
-    for the console graph either way (test-pinned in test_directorsession)."""
-    return (f"{text}\n\n"
-            f"(console turn #{turn_id} — any brief you file for this starts "
-            f"with the line `DELEGATED-FROM: #{turn_id}`, then a blank line, "
-            "then the brief.)")
-
-
 def submit(root, item_id: int, prompt: str, reseed_context: str = "") -> dict:
-    """Take one console turn, asynchronously. The item is already reserved;
-    a collector thread settles it with the session's reply (or its failure).
-
-    ``reseed_context`` is used ONLY when a resume fails and the conversation
-    restarts fresh: it is the recent transcript, prepended so the new process
-    is not answering with amnesia and pretending otherwise.
+    """Take one turn that must settle a WORK ITEM — followup's escalation of a
+    stuck run. The chat path is `send`; this one exists because an escalation
+    is a row on the board, not a message in a conversation.
     """
     thread = threading.Thread(
-        target=_run_turn, args=(str(root), int(item_id), prompt,
-                                str(reseed_context or "")),
+        target=_run_item_turn, args=(str(root), int(item_id), prompt,
+                                     str(reseed_context or "")),
         daemon=True, name=f"director-turn-{int(item_id)}")
     thread.start()
     return {"ok": True, "item_id": int(item_id)}
 
 
-def _run_turn(root, item_id: int, prompt: str, reseed_context: str) -> None:
+def _run_item_turn(root, item_id: int, prompt: str, reseed_context: str) -> None:
+    def settle(text: str, failed: bool) -> None:
+        _settle(root, item_id, text, failed=failed)
+
     try:
-        _turn(root, item_id, prompt, reseed_context)
+        _turn(root, prompt, reseed_context, settle, item_id=item_id)
     except Unavailable as exc:
-        _settle(root, item_id, str(exc), failed=True)
+        settle(str(exc), True)
     except Exception as exc:  # a crashed collector must never strand the row
-        _settle(root, item_id,
-                f"the director session crashed: {type(exc).__name__}: {exc}",
-                failed=True)
+        settle(f"the director session crashed: {type(exc).__name__}: {exc}",
+               True)
 
 
-def _turn(root, item_id: int, prompt: str, reseed_context: str) -> None:
+def _turn(root, prompt: str, reseed_context: str, settle,
+          *, item_id: int = 0, record: bool = False) -> None:
+    """One turn through the session. ``settle(text, failed)`` is what to do
+    with the answer — post it to the chat, or close a work item with it."""
     ceiling = _ceiling(root)
     # A loop, not a single re-check: this thread may wait on the turn lock
     # while the previous turn kills the process (timeout, budget stop). The
@@ -534,13 +720,13 @@ def _turn(root, item_id: int, prompt: str, reseed_context: str) -> None:
                 # Delivered as the REPLY, not as a failure: "I am out of
                 # budget" is an answer the human can act on, and a failed chat
                 # turn reads as the product breaking.
-                _settle(root, item_id,
-                        f"This console session has spent ${spent:.2f} of its "
-                        f"${ceiling:.2f} ceiling (console.max_usd). Raise it "
-                        "in Settings, or clear the console to start a fresh "
-                        "session.")
+                settle(f"This session has spent ${spent:.2f} of its "
+                       f"${ceiling:.2f} ceiling (console.max_usd). Raise it "
+                       "in Settings, or start a new session.", False)
                 return
             entry["current_item"] = int(item_id)
+            entry["busy"] = True
+            entry["record"] = str(root) if record else ""
             entry["says"] = []
             got, cost = _deliver(root, entry, prompt)
             if _resume_failed(entry, got):
@@ -556,25 +742,25 @@ def _turn(root, item_id: int, prompt: str, reseed_context: str) -> None:
                         ) if reseed_context else ""
                 with fresh["turn_lock"]:
                     fresh["current_item"] = int(item_id)
+                    fresh["busy"] = True
+                    fresh["record"] = str(root) if record else ""
                     fresh["says"] = list(entry.get("says") or [])
                     got, _more = _deliver(root, fresh, head + prompt)
                     fresh["current_item"] = 0
+                    fresh["busy"] = False
                 entry = fresh
             else:
                 entry["current_item"] = 0
+                entry["busy"] = False
             if got.get("ok"):
-                _settle(root, item_id, str(got.get("text") or ""))
+                settle(str(got.get("text") or ""), False)
             else:
-                _settle(root, item_id,
-                        str(got.get("error") or "the director session "
-                                                "answered nothing"),
-                        failed=True)
+                settle(str(got.get("error") or "the director session "
+                                               "answered nothing"), True)
             if got.get("dead"):
                 _reap(_pkey(root), entry)
             return
-    _settle(root, item_id,
-            "the director session kept dying before this turn could start",
-            failed=True)
+    settle("the director session kept dying before this turn could start", True)
 
 
 def _deliver(root, entry: dict, prompt: str) -> tuple[dict, float]:

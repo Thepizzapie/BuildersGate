@@ -20,8 +20,6 @@ import pytest
 
 from bgate_core import queue, settings
 from bgate_ui import directorsession, runners
-from bgate_ui.routes import console as console_route
-from bgate_ui.routes.orchestrator import _DELEGATED_RE
 
 FAKE_SESSION_CLI = r'''
 import json, os, sys
@@ -90,25 +88,32 @@ def no_stray_sessions():
     directorsession.stop_all()
 
 
-def _turn_item(root, text="hello"):
-    item = queue.add(root, "director", title=text[:80],
-                     brief=console_route._turn_brief(text), source="chat")
+def _escalation(root, text="look at this"):
+    """The one path that is still a work item: followup escalating a stuck run."""
+    item = queue.add(root, "director", title=text[:80], brief=text,
+                     source="qa-gate-escalation")
     assert queue.reserve(root, int(item["id"]))
     return int(item["id"])
 
 
+def _chat(root, text="hello"):
+    directorsession._run_chat_turn(str(root), text)
+    return directorsession.history(root)["messages"]
+
+
 # --- pure logic -------------------------------------------------------------
 
-def test_turn_prompt_is_verbatim_and_stamps_lineage():
-    prompt = directorsession.turn_prompt("fix the jump feel", 41)
-    assert prompt.startswith("fix the jump feel\n")
-    # The stamp the prompt teaches must be the one the console graph parses.
-    assert _DELEGATED_RE.search(prompt.replace("`", "")).group(1) == "41"
-
-
-def test_turn_brief_roundtrips_the_message():
-    text = "a message\nwith two lines and " + "x" * 200
-    assert console_route.said(console_route._turn_brief(text)) == text
+def test_the_system_prompt_names_the_game_and_the_seats(root):
+    prompt = directorsession.system_prompt(root)
+    assert "DIRECTOR" in prompt
+    assert "GAME:" in prompt
+    # every seat, with the lanes and the tool surface it actually holds
+    assert "SEATS you can file work for" in prompt
+    for seat in ("narrative", "art", "gameplay"):
+        assert f"  {seat} \u2014 " in prompt
+    assert "writes: game/scripts/**" in prompt      # gameplay's lane
+    assert "blender_" in prompt                     # art's craft surface
+    assert "queue_add" in prompt
 
 
 def test_sidecar_roundtrip_and_forget(root):
@@ -170,15 +175,10 @@ def test_registry_write_does_not_wipe_on_bad_read(root, monkeypatch):
 
 # --- the process, end to end ------------------------------------------------
 
-def test_turn_settles_item_with_reply(root, fake_claude):
-    item_id = _turn_item(root, "what is the state of the board?")
-    directorsession._run_turn(
-        str(root), item_id,
-        directorsession.turn_prompt("what is the state of the board?", item_id),
-        "")
-    item = queue.get(root, item_id)
-    assert item["status"] == "done"
-    assert item["result"].startswith("reply to: what is the state")
+def test_a_turn_lands_in_the_transcript(root, fake_claude):
+    msgs = _chat(root, "what is the state of the board?")
+    assert [m["role"] for m in msgs] == ["assistant"]
+    assert msgs[0]["text"].startswith("thinking about: what is the state")
     # The sidecar remembers the CLI's own conversation for the next respawn.
     assert directorsession._read_sidecar(root)["cli_session_id"] == \
         "fake-session-1"
@@ -189,29 +189,24 @@ def test_turn_settles_item_with_reply(root, fake_claude):
 
 
 def test_second_turn_reuses_the_process(root, fake_claude):
-    first = _turn_item(root, "one")
-    directorsession._run_turn(str(root), first,
-                              directorsession.turn_prompt("one", first), "")
+    _chat(root, "one")
     with directorsession._lock:
         pid = directorsession._live[directorsession._pkey(root)]["proc"].pid
-    second = _turn_item(root, "two")
-    directorsession._run_turn(str(root), second,
-                              directorsession.turn_prompt("two", second), "")
+    msgs = _chat(root, "two")
     with directorsession._lock:
         entry = directorsession._live[directorsession._pkey(root)]
     assert entry["proc"].pid == pid          # one conversation, one process
     assert entry["turns"] == 2
-    assert queue.get(root, second)["result"].startswith("reply to: two")
+    assert msgs[-1]["text"].startswith("thinking about: two")
 
 
 def test_failed_resume_falls_back_to_fresh_reseeded_session(
         root, fake_claude, monkeypatch):
     directorsession._write_sidecar(root, {"cli_session_id": "gone-session"})
     monkeypatch.setenv("BGATE_FAKE_RESUME_DIES", "1")
-    item_id = _turn_item(root, "carry on")
-    directorsession._run_turn(
-        str(root), item_id, directorsession.turn_prompt("carry on", item_id),
-        "THEM: earlier context")
+    item_id = _escalation(root, "carry on")
+    directorsession._run_item_turn(str(root), item_id, "carry on",
+                                   "THEM: earlier context")
     item = queue.get(root, item_id)
     assert item["status"] == "done"
     # The fresh session was reseeded and told it is fresh, honestly.
@@ -223,46 +218,60 @@ def test_failed_resume_falls_back_to_fresh_reseeded_session(
         "fake-session-1"
 
 
-def test_missing_cli_fails_the_turn_with_a_sentence(root, monkeypatch):
+def test_missing_cli_says_so_in_the_chat(root, monkeypatch):
     monkeypatch.setattr(runners, "find_claude", lambda: None)
-    item_id = _turn_item(root, "hello?")
-    directorsession._run_turn(str(root), item_id, "hello?", "")
-    item = queue.get(root, item_id)
-    assert item["status"] == "failed"
-    assert "claude CLI not found" in item["result"]
+    msgs = _chat(root, "hello?")
+    assert msgs[-1]["role"] == "error"
+    assert "claude CLI not found" in msgs[-1]["text"]
 
 
 def test_budget_refusal_is_a_reply_not_a_failure(root, fake_claude):
-    first = _turn_item(root, "one")
-    directorsession._run_turn(str(root), first,
-                              directorsession.turn_prompt("one", first), "")
+    _chat(root, "one")
     with directorsession._lock:
         directorsession._live[directorsession._pkey(root)]["spent_usd"] = 99.0
-    second = _turn_item(root, "two")
-    directorsession._run_turn(str(root), second,
-                              directorsession.turn_prompt("two", second), "")
-    item = queue.get(root, second)
+    item_id = _escalation(root, "two")
+    directorsession._run_item_turn(str(root), item_id, "two", "")
+    item = queue.get(root, item_id)
     assert item["status"] in ("done", "review")
     assert "ceiling" in item["result"]
 
 
 def test_status_reports_idle_session(root, fake_claude):
-    item_id = _turn_item(root, "hello")
-    directorsession._run_turn(str(root), item_id,
-                              directorsession.turn_prompt("hello", item_id), "")
+    _chat(root, "hello")
     live = directorsession.status(str(root))
     assert live["live"] is True
+    assert live["running"] is False
     assert live["current_item"] == 0
     assert live["cli_session_id"] == "fake-session-1"
     assert live["spent_usd"] > 0
 
 
 def test_stop_and_clear_semantics(root, fake_claude):
-    item_id = _turn_item(root, "hello")
-    directorsession._run_turn(str(root), item_id,
-                              directorsession.turn_prompt("hello", item_id), "")
+    _chat(root, "hello")
     assert directorsession.stop(str(root))["stopped"] is True
     # Idempotent, and the transcript survives: only the process ended.
     assert directorsession.stop(str(root))["stopped"] is False
     time.sleep(0.1)
-    assert queue.get(root, item_id)["status"] == "done"
+    assert directorsession.history(root)["messages"]
+
+
+def test_a_new_session_archives_the_transcript_rather_than_deleting_it(
+        root, fake_claude):
+    _chat(root, "one")
+    assert directorsession.history(root)["messages"]
+    directorsession.reset(root)
+    assert directorsession.history(root)["messages"] == []
+    kept = list((root / ".bgate" / "console").glob("chat-*.jsonl"))
+    assert kept, "the old conversation was deleted rather than archived"
+
+
+def test_tool_calls_are_recorded_as_their_own_lines(root):
+    directorsession._post(root, "user", "go")
+    block = {"type": "tool_use", "name": "Read",
+             "input": {"file_path": "game/scenes/hub.tscn"}}
+    directorsession._post(root, "tool", directorsession._tool_note(block),
+                          tool=block["name"])
+    msgs = directorsession.history(root)["messages"]
+    assert [m["role"] for m in msgs] == ["user", "tool"]
+    assert msgs[-1]["tool"] == "Read"
+    assert msgs[-1]["text"] == "game/scenes/hub.tscn"
