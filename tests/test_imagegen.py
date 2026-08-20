@@ -54,14 +54,21 @@ class TestEnvFile:
         assert envfile.load_project_env(tmp_path) == []
         assert envfile.load_project_env(tmp_path / "nowhere") == []
 
-    def test_loads_once_per_root(self, tmp_path, monkeypatch):
+    def test_a_rotated_key_takes_effect_without_a_restart(self, tmp_path,
+                                                          monkeypatch):
+        # This pinned the OPPOSITE ("cached - no reload") until the
+        # cross-project key-bleed fix: envfile now tracks the vars it set
+        # and refreshes its own from the same project's file, so rotating a
+        # key in .env applies on the next load instead of after a process
+        # restart. A var the SHELL exported still wins forever - that case
+        # is test_envfile.py's.
         monkeypatch.delenv("BGATE_TEST_SECRET", raising=False)
         env = tmp_path / ".env"
         env.write_text("BGATE_TEST_SECRET=v1", encoding="utf-8")
         envfile.load_project_env(tmp_path)
         env.write_text("BGATE_TEST_SECRET=v2", encoding="utf-8")
-        envfile.load_project_env(tmp_path)  # cached — no reload
-        assert os.environ["BGATE_TEST_SECRET"] == "v1"
+        envfile.load_project_env(tmp_path)
+        assert os.environ["BGATE_TEST_SECRET"] == "v2"
         os.environ.pop("BGATE_TEST_SECRET", None)
 
 

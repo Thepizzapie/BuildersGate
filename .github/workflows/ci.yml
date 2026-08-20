@@ -104,6 +104,31 @@ jobs:
           # does not.
           git add --intent-to-add bgate_ui/static/dist
           if ! git diff --stat --exit-code -- bgate_ui/static/dist; then
+            # SAY WHAT DIFFERS, bounded. These are single-line minified files,
+            # so `git diff` is useless and a red X with no delta forced a
+            # guessing game the first time this fired (a one-line bgate.js
+            # divergence between a Windows and a Linux build). Print a small
+            # window around the first and last differing bytes per file - a
+            # localized delta means an environment-dependent build input; a
+            # wholesale delta means genuinely stale.
+            python3 - <<'EOF'
+          import subprocess
+          out = subprocess.run(
+              ["git", "diff", "--name-only", "--", "bgate_ui/static/dist"],
+              capture_output=True, text=True).stdout.split()
+          for name in out:
+              built = open(name, "rb").read()
+              head = subprocess.run(["git", "show", f"HEAD:{name}"],
+                                    capture_output=True).stdout
+              lo = next((i for i, (a, b) in enumerate(zip(head, built))
+                         if a != b), min(len(head), len(built)))
+              hi = next((i for i, (a, b) in
+                         enumerate(zip(head[::-1], built[::-1])) if a != b), 0)
+              print(f"== {name}: committed {len(head)}B, built {len(built)}B, "
+                    f"first delta at {lo}, last at -{hi}")
+              print("  committed:", head[max(0, lo - 60):lo + 200])
+              print("  built:    ", built[max(0, lo - 60):lo + 200])
+          EOF
             echo "::error::bgate_ui/static/dist is stale: it is not what frontend/ builds."
             echo "::error::Fix locally: cd frontend && npm run build, then commit bgate_ui/static/dist."
             exit 1

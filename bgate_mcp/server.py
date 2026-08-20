@@ -7972,6 +7972,15 @@ from bgate_mcp.tools_blender import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_brainstorm import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_cinematic import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_level import *  # noqa: E402,F401,F403
+# THE TEST SEAMS THE STAR IMPORTS SKIP. A pile of tests stub the blender
+# adapter by mutating the MODULE OBJECT through this namespace
+# (`setattr(server._blender, "combine", ...)`) - that works from any module
+# that shares the object, so the alias is re-exposed here rather than every
+# patch site rewritten; same for the private diagnostics they call directly.
+# ruff sees these as unused, which is exactly how the aliases got dropped
+# and 23 tests broke on CI - hence the explicit noqa.
+from bgate_adapters import blender as _blender  # noqa: E402,F401
+from bgate_mcp.tools_blender import _imageto3d_summary  # noqa: E402,F401
 
 def main() -> None:
     mcp.run()
