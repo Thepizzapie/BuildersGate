@@ -84,6 +84,23 @@ def _no_provider_keys(monkeypatch):
 
 
 @pytest.fixture()
+def routable_gateway(monkeypatch):
+    """The provider gateway reports one routable provider.
+
+    For tests that stub the paid adapters themselves: the fixture above
+    strips every key (the billing guard), which honestly makes the board
+    unroutable - and the paid tools' provider preflight would then refuse
+    before the stubbed adapter was ever consulted, testing the gate instead
+    of the subject. Tests OF the gate must not use this.
+    """
+    from bgate_core import gateway
+
+    monkeypatch.setattr(gateway, "pick", lambda root, cap: {
+        "provider": "stub", "alternatives": [], "why": "test stub"})
+    return gateway
+
+
+@pytest.fixture()
 def anyio_backend():
     return "asyncio"
 
