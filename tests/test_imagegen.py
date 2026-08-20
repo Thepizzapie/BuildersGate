@@ -67,6 +67,11 @@ class TestEnvFile:
         env.write_text("BGATE_TEST_SECRET=v1", encoding="utf-8")
         envfile.load_project_env(tmp_path)
         env.write_text("BGATE_TEST_SECRET=v2", encoding="utf-8")
+        # Same length, so the (mtime_ns, size) stamp only moves if the clock
+        # does — and both writes can land inside one filesystem timer tick on
+        # a loaded CI runner. A real rotation never does; make the tick pass.
+        st = env.stat()
+        os.utime(env, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
         envfile.load_project_env(tmp_path)
         assert os.environ["BGATE_TEST_SECRET"] == "v2"
         os.environ.pop("BGATE_TEST_SECRET", None)
