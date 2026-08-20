@@ -15,8 +15,8 @@ answers 202 with a job id and the caller polls /api/jobs/{id}.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -46,25 +46,40 @@ QUALITIES = ("low", "medium", "high")
 ART_DIR = Path(".bgate_out") / "art"
 
 
+# ONE NAME, NOT A PATH. A caller-supplied filename is joined onto a directory
+# and written to, so anything that can express a separator or a parent can
+# express somewhere else on the disk. Rather than resolve a path and argue
+# about whether it escaped, the name is reduced to its last segment and must
+# then match this: letters, digits, dot, dash, underscore, and nothing else.
+# "../../.ssh/authorized_keys" survives neither step.
+SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
+
+
 def _out_path(root_dir, filename: str) -> Path:
     """Resolve a caller-supplied filename under the project's art directory.
 
     CONTAINMENT, not convenience. `filename` arrives from a browser or a panel,
-    so `../../` in it would write outside the project entirely. The resolved
-    path must still be inside .bgate_out/art or this refuses — the same rule
-    the MCP tool's _art_out applies, restated here because this route is
-    reachable without a seat.
+    and this route is reachable without a seat, so the MCP tool's rule is
+    restated here — except stricter: the MCP side resolves and contains,
+    this side never lets a path exist in the first place.
     """
-    name = (filename or "").strip().replace("\\", "/")
+    name = (filename or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
     if not name:
         raise HTTPException(400, "filename is required (e.g. 'tommy.png')")
     if not name.lower().endswith(".png"):
         name = f"{name}.png"
+    if not SAFE_NAME.fullmatch(name):
+        raise HTTPException(
+            400, f"filename must be a plain name — letters, digits, dot, dash "
+                 f"and underscore, at most 120 characters — refusing "
+                 f"{filename!r}")
     base = (Path(root_dir) / ART_DIR).resolve()
-    out = (base / name).resolve()
-    if base != out.parent and base not in out.parents:
-        raise HTTPException(400, f"filename escapes {ART_DIR.as_posix()}: {filename!r}")
-    out.parent.mkdir(parents=True, exist_ok=True)
+    out = base / name
+    # Belt and braces: the regex already forbids a separator, so this can only
+    # fire if the rule above is ever loosened without thinking it through.
+    if out.parent != base:
+        raise HTTPException(400, f"filename escapes {ART_DIR.as_posix()}")
+    base.mkdir(parents=True, exist_ok=True)
     return out
 
 
