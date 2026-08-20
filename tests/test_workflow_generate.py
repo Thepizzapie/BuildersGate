@@ -39,6 +39,21 @@ class Provider:
         self.calls: list[dict] = []
         self.spans: list[tuple[float, float]] = []
         self._lock = threading.Lock()
+        self._barrier: threading.Barrier | None = None
+        self._barrier_timeout = 8.0
+        self.parallel = False
+
+    def expect_parallel(self, n: int, timeout: float = 8.0) -> None:
+        """Arm the STALL-PROOF concurrency proof: every call rendezvouses at
+        a barrier, so if the engine runs them in parallel they all meet and
+        `parallel` flips true however slowly the machine schedules threads -
+        while serial execution can never trip it (each call waits alone and
+        the barrier breaks). The spans/overlapped() check kept failing on
+        stalled CI runners for the same reason the timing tests in
+        test_mcp_adjust did: 0.15s windows are shorter than a busy box's
+        thread spin-up stagger, so real concurrency read as serial."""
+        self._barrier = threading.Barrier(n)
+        self._barrier_timeout = timeout
 
     def __call__(self, provider, model, prompt, out_path, **kw):
         started = time.monotonic()
@@ -47,6 +62,12 @@ class Provider:
                                "prompt": prompt, "out_path": out_path,
                                "style_refs": list(kw.get("style_refs") or ()),
                                "size": kw.get("size"), "seed": kw.get("seed")})
+        if self._barrier is not None:
+            try:
+                self._barrier.wait(self._barrier_timeout)
+                self.parallel = True
+            except threading.BrokenBarrierError:
+                pass          # serial arrival: the proof simply never fires
         if self.delay:
             time.sleep(self.delay)
         with self._lock:
@@ -220,6 +241,7 @@ class TestKinds:
 
 class TestParallelism:
     def test_sibling_generate_nodes_overlap(self, root, provider):
+        provider.expect_parallel(3)
         run = start(root, fanout_graph())
         # all three claimed on the first tick, none of them queued as work
         assert [node(run, n)["status"] for n in ("a", "b", "c")] == \
@@ -230,7 +252,7 @@ class TestParallelism:
         assert [node(run, n)["status"] for n in ("a", "b", "c")] == \
             ["passed", "passed", "passed"]
         assert len(provider.calls) == 3
-        assert provider.overlapped(), (
+        assert provider.parallel, (
             "the three models ran one after another — a comparison you have to "
             "wait through is one nobody runs")
         # three different models were actually asked
