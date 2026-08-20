@@ -1638,11 +1638,21 @@ def _budget_block(root) -> str:
             "no daily ceiling set"
         enforced = "enforced" if budget.get("enforced") else \
             "NOT enforced — the numbers are a report, not a limit"
+        # Charges kie made in credits under no configured dollar rate. They are
+        # NOT in the dollar figures above, and a report that hides them reads
+        # low exactly when kie is the main provider.
+        unpriced = totals.get("unaccounted") or {}
+        extra = ""
+        if int(unpriced.get("rows") or 0):
+            extra = (f" Plus {unpriced['rows']} unpriced kie row(s)"
+                     + (f" ({unpriced['credits']:g} credits)"
+                        if unpriced.get("credits") else "")
+                     + " not counted in these totals.")
         return (f"BUDGET\n  ${today:.2f} spent today"
                 + (f" of ${day_cap:.2f}" if day_cap else "")
                 + f" ({left}); ${life:.2f} on this project"
                 + (f" of ${project_cap:.2f}" if project_cap else "")
-                + f". Ceilings are {enforced}.\n")
+                + f". Ceilings are {enforced}.{extra}\n")
     except Exception:
         return ""
 
@@ -1809,6 +1819,16 @@ def tick(root: str | os.PathLike[str]) -> dict:
         # The failed side of the same gap — see sweep_failed.
         try:
             sweep_failed(root, settings)
+        except Exception:
+            pass
+        # Workflow runs are driven by the canvas's poll, and the poll dies with
+        # the tab — a step's queue item could finish with nothing left to read
+        # it back onto its node, leaving the run 'running' forever. The sweep is
+        # bounded, idempotent, and starts nothing a poll would not start.
+        try:
+            from bgate_core import workflows as _workflows
+
+            _workflows.sweep(root)
         except Exception:
             pass
         # THE SLICE CHECK — the only thing in the harness that reviews the GAME.

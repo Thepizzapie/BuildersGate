@@ -14,6 +14,11 @@
 #                file and by job name, as the place the build-install-import
 #                loop lives. It did not live anywhere.
 #
+# frontend-drift came later, after the committed React bundle went stale twice
+# in one week: bgate_ui/static/dist is build output that lives in git (see
+# frontend/vite.config.ts), and nothing compared it to the source it claims to
+# be built from.
+#
 # Windows is first among the test jobs because it is the supported platform and
 # much of this code is about Windows specifically — process trees,
 # CREATE_NO_WINDOW, WebView2, the path handling around .bgate. A green run on
@@ -59,6 +64,75 @@ jobs:
 
       - name: ruff
         run: ruff check --output-format=github .
+
+  frontend-drift:
+    # bgate_ui/static/dist/ is BUILD OUTPUT THAT IS COMMITTED — see the header
+    # comment in frontend/vite.config.ts for why (wheel and exe installs have
+    # no node, so the repo carries the bundle). Committed output drifts: a fix
+    # lands in frontend/src while the committed bundle stays stale, and nothing
+    # notices until a user runs the old UI. This job rebuilds from source and
+    # fails if the committed bundle is not what the source produces.
+    #
+    # This gate is only honest because the build is deterministic: fixed output
+    # filenames (no content hashes), no sourcemaps, no embedded timestamps, and
+    # the whole toolchain pinned by package-lock.json — two consecutive builds
+    # hash identically. If a future vite upgrade breaks that, this job goes red
+    # on every PR at once and the fix is one rebuild-and-commit.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the front end
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Committed dist must match a fresh build
+        run: |
+          # --intent-to-add so a file the build newly emits (a chunk that has
+          # no committed counterpart) shows up in git diff instead of hiding as
+          # untracked. --stat because these are minified single-line files; the
+          # full diff would be megabytes of noise and says nothing the stat
+          # does not.
+          git add --intent-to-add bgate_ui/static/dist
+          if ! git diff --stat --exit-code -- bgate_ui/static/dist; then
+            # SAY WHAT DIFFERS, bounded. These are single-line minified files,
+            # so `git diff` is useless and a red X with no delta forced a
+            # guessing game the first time this fired (a one-line bgate.js
+            # divergence between a Windows and a Linux build). Print a small
+            # window around the first and last differing bytes per file - a
+            # localized delta means an environment-dependent build input; a
+            # wholesale delta means genuinely stale.
+            python3 - <<'EOF'
+          import subprocess
+          out = subprocess.run(
+              ["git", "diff", "--name-only", "--", "bgate_ui/static/dist"],
+              capture_output=True, text=True).stdout.split()
+          for name in out:
+              built = open(name, "rb").read()
+              head = subprocess.run(["git", "show", f"HEAD:{name}"],
+                                    capture_output=True).stdout
+              lo = next((i for i, (a, b) in enumerate(zip(head, built))
+                         if a != b), min(len(head), len(built)))
+              hi = next((i for i, (a, b) in
+                         enumerate(zip(head[::-1], built[::-1])) if a != b), 0)
+              print(f"== {name}: committed {len(head)}B, built {len(built)}B, "
+                    f"first delta at {lo}, last at -{hi}")
+              print("  committed:", head[max(0, lo - 60):lo + 200])
+              print("  built:    ", built[max(0, lo - 60):lo + 200])
+          EOF
+            echo "::error::bgate_ui/static/dist is stale: it is not what frontend/ builds."
+            echo "::error::Fix locally: cd frontend && npm run build, then commit bgate_ui/static/dist."
+            exit 1
+          fi
 
   test:
     name: pytest (windows, py${{ matrix.python }})

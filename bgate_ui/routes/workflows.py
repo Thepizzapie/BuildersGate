@@ -195,6 +195,28 @@ def reconcile_all() -> dict:
     return api.ok(_workflows.reconcile(root()))
 
 
+@router.post("/runs/{run_id}/nodes/{node_id}/reopen")
+def reopen_node(run_id: int, node_id: str, request: Request) -> dict:
+    """Put one stuck-'running' worker node back to 'pending' — the retry verb.
+
+    Reconcile fails every dead-worker node and the run with them; this is the
+    per-node version for a person standing at one card that never came back.
+    Human-only at both layers, like the gate and the pick: a reopened paid node
+    on a dispatching run is a retry that bills.
+    """
+    r = root()
+    actor = api.current_actor(request)
+    api.require_human(actor, "reopening a workflow step")
+    try:
+        return api.ok(_workflows.reopen(r, run_id, node_id, actor=actor))
+    except LookupError as exc:
+        raise api.not_found(str(exc), run_id=run_id, node_id=node_id)
+    except PermissionError as exc:
+        raise api.ApiError(403, str(exc), code="forbidden")
+    except ValueError as exc:
+        raise api.conflict(str(exc), run_id=run_id, node_id=node_id)
+
+
 @router.get("/runs/{run_id}/nodes/{node_id}/candidates")
 def node_candidates(run_id: int, node_id: str) -> dict:
     """What a pick node is choosing between — a picker with nothing to look at

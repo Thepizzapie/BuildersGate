@@ -2212,11 +2212,13 @@ def _account(result: dict, root: Any, *, kind: str, logical_name: str = "",
     Best effort by construction — losing a ledger row must never lose the file
     that was paid for; that is imagegen._account's rule and it holds here.
 
-    THE HONEST GAP IS STATED ON THE RESULT. spend.record ignores a zero, so with
-    no credit rate configured there is no row to write and the ledger silently
-    under-counts a real charge. Rather than invent a dollar figure, the result
-    says `accounted: false` and carries the credit count, so the number is
-    recoverable and the omission is visible.
+    THE HONEST GAP IS STATED ON THE RESULT — AND NOW ON THE LEDGER. With no
+    credit rate configured there is no dollar figure to write, and this used to
+    mean no row at all: the totals silently under-counted a real charge, which
+    with budgets off by default is the whole report reading low. Rather than
+    invent a dollar figure, the result says `accounted: false` and carries the
+    credit count, AND spend.record_unpriced writes a zero-dollar marker row so
+    spend.totals can report "+ N unpriced kie rows" instead of nothing.
     """
     result["credits_consumed"] = result.get("credits_consumed")
     usd = result.get("estimated_usd")
@@ -2224,6 +2226,19 @@ def _account(result: dict, root: Any, *, kind: str, logical_name: str = "",
         result["accounted"] = False
         if result.get("ok") and not usd:
             result["cost_note"] = PRICE_NOTE
+            if root:
+                try:
+                    from bgate_core import spend
+
+                    spend.record_unpriced(
+                        root, result.get("credits_consumed"), kind=kind,
+                        work_item_id=work_item_id,
+                        logical_name=logical_name or "",
+                        detail=detail or f"kie {kind}",
+                        model=str(result.get("model") or ""))
+                    result["unpriced_recorded"] = True
+                except Exception:                                # noqa: BLE001
+                    result["unpriced_recorded"] = False
         return result
     try:
         from bgate_core import spend

@@ -117,8 +117,15 @@ def _items(root) -> list[dict]:
 
 def _tool_body(name: str) -> ast.FunctionDef:
     """The tool's own source, as parsed — for the assertions about what it
-    cannot reach, which are about the code and not about one call of it."""
-    tree = ast.parse(inspect.getsource(server))
+    cannot reach, which are about the code and not about one call of it.
+
+    The brainstorm tools were carved out of server.py into
+    bgate_mcp.tools_brainstorm (server star-imports it back), so the source
+    is read from the module that actually DEFINES each name — inspect can
+    say which, and a reader pinned to one file would silently pass on a
+    tool it could no longer see."""
+    fn = getattr(server, name)
+    tree = ast.parse(inspect.getsource(inspect.getmodule(fn)))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
@@ -543,7 +550,18 @@ class TestParity:
         assert public, f"{core_name} exposes no public functions to compare"
 
         web = _called_through(route, alias, public)
-        tools = _called_through(server, alias, public)
+        # The tool surface is server.py plus the carved-out domain modules
+        # (server star-imports them back); a reader pinned to one file would
+        # report a moved-not-missing verb as a hole in the tool list.
+        import pkgutil
+
+        import bgate_mcp
+        tool_modules = [server] + [
+            importlib.import_module(f"bgate_mcp.{m.name}")
+            for m in pkgutil.iter_modules(bgate_mcp.__path__)
+            if m.name.startswith("tools_")]
+        tools = set().union(*(_called_through(mod, alias, public)
+                              for mod in tool_modules))
         # Neither side may be silently empty: a renamed alias would otherwise
         # turn this whole test into a pair of empty sets that always agree.
         assert web, (f"{route_name} does not reach {core_name} as {alias!r} — "
