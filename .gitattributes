@@ -1,0 +1,17 @@
+# WHY THIS FILE EXISTS: the committed React bundle differed by ONE LINE
+# between a Windows build and the CI (Linux) build, and the frontend-drift
+# gate caught it. The byte window named the mechanism: a template literal
+# spanning source lines - esbuild preserves the literal newline INSIDE the
+# backtick string, so a source file checked out CRLF (Windows autocrlf)
+# bakes \r\n into the bundle where a Linux checkout bakes \n. Build inputs
+# must therefore check out with ONE line ending everywhere, or the drift
+# gate measures the contributor's OS instead of the bundle's freshness.
+#
+# Scoped to the frontend on purpose: nothing else compiles its own bytes
+# into a committed artifact, and a repo-wide renormalization would churn
+# every file for no property gained.
+frontend/** text=auto eol=lf
+
+# The bundle itself is an artifact, compared byte-for-byte by CI - no
+# checkout smudging, no commit normalization, ever.
+bgate_ui/static/dist/** -text
