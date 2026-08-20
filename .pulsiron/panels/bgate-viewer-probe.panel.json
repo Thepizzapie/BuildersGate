@@ -1,0 +1,74 @@
+{
+  "controls": [
+    {
+      "id": "n0",
+      "text": "Which of these shows a BIG picture? Panes 1 and 5 are the real candidates — a grid sizes its tiles to fit, so a folder holding ONE image should fill the pane.",
+      "type": "note"
+    },
+    {
+      "id": "n5",
+      "text": "5 — a folder containing EXACTLY ONE image (1280x720 screenshot)",
+      "type": "note"
+    },
+    {
+      "id": "p5",
+      "label": "5 one-image folder",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\.bgate_out\\viewer",
+      "type": "image-grid"
+    },
+    {
+      "id": "n1",
+      "text": "1 — image-grid pointed straight at a single FILE",
+      "type": "note"
+    },
+    {
+      "id": "p1",
+      "label": "1 single file",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\.bgate_out\\shots\\verify\\plate.png",
+      "type": "image-grid"
+    },
+    {
+      "id": "n2",
+      "text": "2 — 'image' control with source (validator says unsupported; testing it anyway)",
+      "type": "note"
+    },
+    {
+      "id": "p2",
+      "label": "2 image+source",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\.bgate_out\\shots\\verify\\plate.png",
+      "type": "image"
+    },
+    {
+      "id": "n3",
+      "text": "3 — 'image' control with src",
+      "type": "note"
+    },
+    {
+      "id": "p3",
+      "label": "3 image+src",
+      "src": "C:\\Users\\adria\\Desktop\\downsizing\\.bgate_out\\shots\\verify\\plate.png",
+      "type": "image"
+    },
+    {
+      "id": "n4",
+      "text": "4 — file-picker, then grid on the picked file",
+      "type": "note"
+    },
+    {
+      "default": "C:\\Users\\adria\\Desktop\\downsizing\\.bgate_out\\shots\\verify\\plate.png",
+      "id": "p4a",
+      "label": "4 pick",
+      "type": "file-picker"
+    },
+    {
+      "id": "p4b",
+      "label": "4 shown",
+      "source": "$p4a",
+      "type": "image-grid"
+    }
+  ],
+  "description": "Five ways to show ONE image big. Tell Claude which pane actually fills the width.",
+  "name": "bgate-viewer-probe",
+  "schema": "pulsiron-panel/1",
+  "title": "Builders Gate · Viewer Probe"
+}

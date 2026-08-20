@@ -1,0 +1,19 @@
+name = 'bgate-steer'
+description = 'Send one sentence to a running agent — one item picked from the board, or every agent at once when no item is chosen.'
+agents = 'yes'
+keywords = ['steer', 'interrupt', 'agent', 'broadcast']
+
+[[input]]
+name = 'message'
+description = 'What they need to hear'
+required = true
+
+[[input]]
+name = 'item'
+description = 'A board label, or blank for all'
+default = ''
+
+[[step]]
+name = 'steer'
+run = 'python {repo}/tools/panel_api.py steer --message "{message}" --item "{item}"'
+timeout_secs = 120

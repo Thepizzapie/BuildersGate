@@ -1,0 +1,14 @@
+name = 'bgate-music-candidates'
+description = 'List the music candidates waiting to be auditioned, with the artifact id you need to keep one.'
+agents = 'yes'
+keywords = ['music', 'candidates', 'audition', 'takes']
+
+[[input]]
+name = 'name'
+description = 'Logical name to filter by'
+default = ''
+
+[[step]]
+name = 'list'
+run = 'python {repo}/tools/panel_api.py candidates --name "{name}"'
+timeout_secs = 60

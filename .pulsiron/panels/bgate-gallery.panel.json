@@ -1,0 +1,151 @@
+{
+  "controls": [
+    {
+      "id": "n1",
+      "text": "FULL SIZE — whatever is in .bgate_out/viewer (one image = renders large)",
+      "type": "note"
+    },
+    {
+      "id": "g0",
+      "label": "Full size",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\.bgate_out\\viewer",
+      "type": "image-grid"
+    },
+    {
+      "id": "n2",
+      "text": "SCREENSHOTS (29)",
+      "type": "note"
+    },
+    {
+      "id": "g1",
+      "label": "Screenshots",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\.bgate_out\\shots\\verify",
+      "type": "image-grid"
+    },
+    {
+      "id": "n3",
+      "text": "PM PALADIN (6)",
+      "type": "note"
+    },
+    {
+      "id": "g2",
+      "label": "PM Paladin",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\characters\\pm_paladin",
+      "type": "image-grid"
+    },
+    {
+      "id": "n4",
+      "text": "IT ROGUE (6)",
+      "type": "note"
+    },
+    {
+      "id": "g3",
+      "label": "IT Rogue",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\characters\\it_rogue",
+      "type": "image-grid"
+    },
+    {
+      "id": "n5",
+      "text": "ACCOUNTING WIZARD (6)",
+      "type": "note"
+    },
+    {
+      "id": "g4",
+      "label": "Accounting Wizard",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\characters\\accounting_wizard",
+      "type": "image-grid"
+    },
+    {
+      "id": "n6",
+      "text": "HR BARD (6)",
+      "type": "note"
+    },
+    {
+      "id": "g5",
+      "label": "HR Bard",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\characters\\hr_bard",
+      "type": "image-grid"
+    },
+    {
+      "id": "n7",
+      "text": "COMPLIANCE DRONE (6)",
+      "type": "note"
+    },
+    {
+      "id": "g6",
+      "label": "Compliance Drone",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\enemies\\compliance_drone",
+      "type": "image-grid"
+    },
+    {
+      "id": "n8",
+      "text": "MIDDLE-MANAGER BOT",
+      "type": "note"
+    },
+    {
+      "id": "g7",
+      "label": "Middle-Manager Bot",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\enemies\\middle_manager_bot",
+      "type": "image-grid"
+    },
+    {
+      "id": "n9",
+      "text": "COPIER MIMIC",
+      "type": "note"
+    },
+    {
+      "id": "g8",
+      "label": "Copier Mimic",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\enemies\\copier_mimic",
+      "type": "image-grid"
+    },
+    {
+      "id": "n10",
+      "text": "WALL ATLASES (20)",
+      "type": "note"
+    },
+    {
+      "id": "g9",
+      "label": "Wall atlases",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\tiles\\atlas",
+      "type": "image-grid"
+    },
+    {
+      "id": "n11",
+      "text": "FLOOR TILES (42)",
+      "type": "note"
+    },
+    {
+      "id": "g10",
+      "label": "Floor tiles",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\tiles\\derived",
+      "type": "image-grid"
+    },
+    {
+      "id": "n12",
+      "text": "PROPS (221)",
+      "type": "note"
+    },
+    {
+      "id": "g11",
+      "label": "Props",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\game\\assets\\props\\derived",
+      "type": "image-grid"
+    },
+    {
+      "id": "n13",
+      "text": "GENERATED ART (183)",
+      "type": "note"
+    },
+    {
+      "id": "g12",
+      "label": "Generated art",
+      "source": "C:\\Users\\adria\\Desktop\\downsizing\\.bgate_out\\art",
+      "type": "image-grid"
+    }
+  ],
+  "description": "Assets as previews. No controls of any kind.",
+  "name": "bgate-gallery",
+  "schema": "pulsiron-panel/1",
+  "title": "Builders Gate · Gallery"
+}

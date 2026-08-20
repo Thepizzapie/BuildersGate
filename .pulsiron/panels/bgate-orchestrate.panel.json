@@ -1,0 +1,140 @@
+{
+  "controls": [
+    {
+      "id": "note",
+      "text": "Load reads the live board: the seats are the ones actually working, and the item list is what you can steer. A queued item on a dead board looks exactly like delegated work.",
+      "type": "note"
+    },
+    {
+      "action": {
+        "inputs": {},
+        "routine": "bgate-board-load"
+      },
+      "id": "load",
+      "label": "Load board",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "action": {
+        "inputs": {
+          "limit": "20"
+        },
+        "routine": "bgate-board"
+      },
+      "id": "board",
+      "label": "Show board",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "for": "board",
+      "id": "state",
+      "type": "run-output"
+    },
+    {
+      "id": "seat",
+      "label": "Seat",
+      "options_from": "load",
+      "options_path": "seats",
+      "type": "select"
+    },
+    {
+      "id": "title",
+      "label": "Title",
+      "placeholder": "Draw the break-room prop set",
+      "type": "text"
+    },
+    {
+      "id": "brief",
+      "label": "Brief",
+      "placeholder": "What the agent needs to act without asking you anything",
+      "type": "text"
+    },
+    {
+      "default": 5,
+      "id": "priority",
+      "label": "Priority",
+      "max": 10,
+      "min": 0,
+      "type": "number"
+    },
+    {
+      "default": false,
+      "id": "deploy",
+      "label": "Dispatch immediately",
+      "type": "checkbox"
+    },
+    {
+      "action": {
+        "inputs": {
+          "brief": "$brief",
+          "deploy": "$deploy",
+          "priority": "$priority",
+          "seat": "$seat",
+          "title": "$title"
+        },
+        "routine": "bgate-queue-add"
+      },
+      "id": "file",
+      "label": "File it",
+      "type": "button",
+      "variant": "primary"
+    },
+    {
+      "for": "file",
+      "id": "filed",
+      "type": "run-output"
+    },
+    {
+      "id": "item",
+      "label": "Pick an item",
+      "options_from": "load",
+      "options_path": "items",
+      "type": "select"
+    },
+    {
+      "id": "message",
+      "label": "Say something to it",
+      "placeholder": "the palette changed — pull from refs/palette.png",
+      "type": "text"
+    },
+    {
+      "action": {
+        "inputs": {
+          "item": "$item",
+          "message": "$message"
+        },
+        "routine": "bgate-steer"
+      },
+      "id": "steer",
+      "label": "Steer",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "for": "steer",
+      "id": "steered",
+      "type": "run-output"
+    },
+    {
+      "action": {
+        "inputs": {},
+        "routine": "bgate-deploy-all"
+      },
+      "id": "deployall",
+      "label": "Deploy everything ready",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "for": "deployall",
+      "id": "deployed",
+      "type": "run-output"
+    }
+  ],
+  "description": "File work for a seat, watch the board, deploy it, steer it.",
+  "name": "bgate-orchestrate",
+  "schema": "pulsiron-panel/1",
+  "title": "Builders Gate · Orchestrate"
+}

@@ -1,0 +1,14 @@
+name = 'bgate-board'
+description = 'What the Builders Gate board is doing right now: open items, running agents, whether auto-deploy is on, and anything waiting on a human.'
+agents = 'yes'
+keywords = ['board', 'status', 'queue', 'agents', 'running']
+
+[[input]]
+name = 'limit'
+description = 'How many open items to list'
+default = '20'
+
+[[step]]
+name = 'read'
+run = 'python {repo}/tools/panel_api.py board --limit {limit}'
+timeout_secs = 60

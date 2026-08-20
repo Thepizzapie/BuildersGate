@@ -1,0 +1,9 @@
+name = 'bgate-deploy-all'
+description = 'Dispatch every queued item that is ready, one at a time, stopping at the first refusal.'
+agents = 'yes'
+keywords = ['deploy', 'dispatch', 'queue', 'board']
+
+[[step]]
+name = 'deploy'
+run = 'python {repo}/tools/panel_api.py deploy'
+timeout_secs = 300

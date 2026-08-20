@@ -100,7 +100,23 @@ bgate_shot_*.png
 
 # Pulsiron work-tracking agent scratch state. Machine-local, and it carries
 # workspace ids that mean nothing in anyone else's checkout.
-.pulsiron/
+#
+# NOT THE WHOLE DIRECTORY, though it was until the panels arrived. Two kinds of
+# thing live under .pulsiron/ and they belong on opposite sides of this file:
+# panels/ and routines/ are the Builders Gate control surface for anyone
+# running Pulsiron — declarative UI and named commands, identical in every
+# checkout, so they SHIP. Everything else is per-machine state. Ignore the
+# directory, then unignore the two that are ours.
+# `.pulsiron/*` AND NOT `.pulsiron/` — the star is load-bearing. Git never
+# descends into an excluded DIRECTORY, so a later `!` cannot re-include
+# anything beneath one; written as the bare directory, the two unignores below
+# are dead lines and the panels silently do not ship.
+.pulsiron/*
+!.pulsiron/panels/
+!.pulsiron/routines/
+# The feed files a panel's Load button writes: a cache of what the dashboard
+# said thirty seconds ago, rewritten on every press. Never reviewable.
+.pulsiron/feeds/
 
 # ── frontend: one source tree, one generated tree ──────────────────────────
 # SOURCE is frontend/. Everything a human edits lives there — frontend/src for
