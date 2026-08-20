@@ -2320,6 +2320,32 @@ def generate_image(prompt: str, out_path: str | os.PathLike[str], *,
                            spec.get("enums", {}).get("aspect_ratio", ()))
     if ratio and "aspect_ratio" in spec["supports"]:
         fields["aspect_ratio"] = ratio
+    elif size and "image_size" in spec["supports"]:
+        # SEEDREAM SPEAKS NAMED SHAPES, NOT RATIOS. Without this branch a
+        # caller's size was silently dropped for any model whose supports
+        # carry image_size/image_resolution instead of aspect_ratio — the
+        # request went out prompt-only at the provider's default, and
+        # tileset_generate's square resize then squashed whatever came back.
+        try:
+            w, h = (int(v) for v in str(size).lower().split("x", 1))
+        except (ValueError, TypeError):
+            w = h = 0
+        if w and h:
+            shapes = spec.get("enums", {}).get("image_size", ())
+            if w == h:
+                shape = "square_hd" if "square_hd" in shapes else "square"
+            elif w < h:
+                shape = ("portrait_16_9" if h >= w * 1.6 else "portrait_4_3")
+            else:
+                shape = ("landscape_16_9" if w >= h * 1.6
+                         else "landscape_4_3")
+            if shape in shapes:
+                fields["image_size"] = shape
+            if "image_resolution" in spec["supports"]:
+                res = ("1K" if max(w, h) <= 1024
+                       else "2K" if max(w, h) <= 2048 else "4K")
+                if res in spec.get("enums", {}).get("image_resolution", ()):
+                    fields["image_resolution"] = res
     if seed is not None and "seed" in spec["supports"]:
         fields["seed"] = int(seed)
     if image_urls:

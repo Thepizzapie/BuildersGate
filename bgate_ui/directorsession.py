@@ -320,6 +320,22 @@ def reset(root) -> dict:
     return {"ok": True}
 
 
+def _chat_reseed(root, limit: int = 12, cap: int = 4000) -> str:
+    """The transcript tail, as the context a NON-resumable restart is seeded
+    with. The old work-item path rebuilt this from the console rows; the chat
+    path passed "" — so a stale CLI session id meant a fresh session answering
+    'do the second option' mid-conversation with zero memory of the options
+    and no disclosure. chat.jsonl holds exactly the words that fix that."""
+    try:
+        msgs = [m for m in _read_chat(root)
+                if m.get("role") in ("user", "assistant")][-limit:]
+        text = "\n".join(f"{m['role']}: {str(m.get('text') or '')[:400]}"
+                         for m in msgs)
+        return text[-cap:]
+    except Exception:
+        return ""      # a reseed we cannot build must not block the turn
+
+
 def _run_chat_turn(root, text: str) -> None:
     def settle(reply: str, failed: bool) -> None:
         # A successful turn has already streamed its prose into the transcript
@@ -328,7 +344,7 @@ def _run_chat_turn(root, text: str) -> None:
             _post(root, "error", reply)
 
     try:
-        _turn(root, text, "", settle, record=True)
+        _turn(root, text, _chat_reseed(root), settle, record=True)
     except Unavailable as exc:
         _post(root, "error", str(exc))
     except Exception as exc:
@@ -720,9 +736,17 @@ def _turn(root, prompt: str, reseed_context: str, settle,
                 # Delivered as the REPLY, not as a failure: "I am out of
                 # budget" is an answer the human can act on, and a failed chat
                 # turn reads as the product breaking.
-                settle(f"This session has spent ${spent:.2f} of its "
+                msg = (f"This session has spent ${spent:.2f} of its "
                        f"${ceiling:.2f} ceiling (console.max_usd). Raise it "
-                       "in Settings, or start a new session.", False)
+                       "in Settings, or start a new session.")
+                settle(msg, False)
+                if record:
+                    # The chat settle posts only FAILURES, on the theory that
+                    # a successful turn already streamed — but this branch
+                    # returns before anything streams, so without this line
+                    # the ceiling answer vanished: user line rendered, no
+                    # reply, no error, no running indicator, forever.
+                    _post(root, "assistant", msg)
                 return
             entry["current_item"] = int(item_id)
             entry["busy"] = True

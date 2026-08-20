@@ -65,6 +65,11 @@ export type ConsoleState = {
     running?: number; queued?: number; dispatched?: number; review?: number;
     done?: number; failed?: number;
   };
+  /** Whether the director session is mid-reply. Chat turns stopped being
+   *  work items, so floor.running no longer covers a streaming answer — and
+   *  floorIsQuiet's whole contract ("one source of words on screen") needs
+   *  this shared signal rather than the chat pane's private running flag. */
+  director?: { running?: boolean };
 };
 
 export const EMPTY_CONSOLE: ConsoleState = {

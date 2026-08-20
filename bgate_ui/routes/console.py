@@ -53,6 +53,15 @@ SIGNOFF_KEY = "signoffs"
 SIGNOFF_HOURS = 8
 
 
+def _director_running(root_dir) -> dict:
+    """{running: bool} - is the director session mid-reply right now."""
+    try:
+        from bgate_ui import directorsession as _ds
+        return {"running": bool(_ds.status(str(root_dir)).get("running"))}
+    except Exception:
+        return {"running": False}
+
+
 def _signoff_hours(root_dir) -> float:
     """The sign-off window, from the registry (``signoff.hours``).
 
@@ -587,6 +596,14 @@ def console_state(steps: bool = True) -> dict:
         "collab": _collab(r, conn, active),
         "autopilot": _autodeploy.state(r),
         "gate": _gatemode.state(r),
+        # WHETHER THE DIRECTOR IS MID-REPLY. Chat turns stopped being work
+        # items, so floor.running no longer covers a streaming director
+        # answer - and floorIsQuiet's whole job is 'one source of words on
+        # screen'. This is the shared signal both the chat pane and the
+        # lounge read, so they cannot disagree about whether the director is
+        # talking. Best-effort: the lounge must not die if the session
+        # module cannot answer.
+        "director": _director_running(r),
         "floor": {
             "running": len(live_ids),
             "queued": counts.get("queued", 0),

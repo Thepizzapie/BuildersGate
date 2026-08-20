@@ -3086,9 +3086,28 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             # chance to refuse a texture it already painted once. The raw
             # generation is kept beside the atlas precisely so it can be
             # re-cut; `reuse=False` forces a fresh roll.
+            #
+            # ONLY IF THE PROMPT STILL MATCHES. The cache used to key on the
+            # filename alone, so calling again with a NEW prompt under the
+            # same name returned the old art at spend 0 with nothing saying
+            # the new words never reached a model. The painting's prompt is
+            # stamped beside it and a mismatch is a fresh roll, not a hit.
+            stamp = raw.with_name(raw.stem + ".prompt.txt")
             if reuse and raw.is_file():
-                base, extra = _cut(_Img.open(raw).convert("RGBA"), variants)
-                return base, extra, 0.0
+                try:
+                    same = stamp.read_text(encoding="utf-8") == what
+                except OSError:
+                    # A pre-stamp cache cannot prove its prompt; honour it
+                    # once (the old behaviour) and stamp it on the way out.
+                    same = True
+                if same:
+                    base, extra = _cut(_Img.open(raw).convert("RGBA"),
+                                       variants)
+                    try:
+                        stamp.write_text(what, encoding="utf-8")
+                    except OSError:
+                        pass
+                    return base, extra, 0.0
             # SAY WHAT YOU WANT, NOT WHAT YOU DO NOT. This asked for a
             # texture with "no border, no vignette, no objects", and a pile
             # of negations reads as an attempt to suppress rather than to
@@ -3127,6 +3146,10 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                        "re-running usually is the fix."
                        if "filter" in why or "Prohibited" in why else ""))
             cost = float(got.get("estimated_usd") or 0.02)
+            try:
+                stamp.write_text(what, encoding="utf-8")
+            except OSError:
+                pass          # an unstamped cache degrades to the old reuse
             base, extra = _cut(_Img.open(raw).convert("RGBA"), variants)
             return base, extra, cost
 
@@ -3486,16 +3509,19 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         # fifty points per tile. Verified by physics rather than by the file:
         # without it a body stood in the void on 223 of 280 sampled frames,
         # with it on 0.
-        # An ISOMETRIC floor's walkable region is the diamond itself, so its
-        # collider is four points rather than edge bands — and it is the same
-        # for every mask, because what stops the player is the tile's own
-        # outline, not which neighbours happen to be floor.
+        # An ISOMETRIC floor gets NO colliders at all — walkable-by-omission,
+        # the same rule the square path applies to interior tiles. The first
+        # cut here put the full diamond on every mask, reasoning "the outline
+        # is what stops the player"; but a TileSet physics polygon is a SOLID
+        # OBSTACLE (see collision_polygons: the collider is the VOID), so
+        # that made the entire floor collision and a CharacterBody2D spawned
+        # embedded in it, unable to move. What stops an iso walker at the
+        # floor's edge is the wall/void tiles beside it, which carry their
+        # own solidity.
         if not collide:
             collision = {}
         elif iso:
-            diamond = _tilemask.diamond_polygon(
-                (tw, th), inset=_tilemask.COLLIDER_INSET)
-            collision = {m: [diamond] for m in sorted(table)}
+            collision = {}
         else:
             collision = _tilemask.collision_polygons(
                 sorted(table), tile_size=(tw, th),
@@ -7531,7 +7557,15 @@ def tileset_synth(name: str, floors: str, walls: str = "",
                 "materials": meta_floor, "wall_sets": meta_wall,
                 "lift": lift}
         if meta_wall:
-            side["blocks"] = next(iter(meta_wall.values()))["blocks"]
+            first_wall = next(iter(meta_wall.values()))
+            side["blocks"] = first_wall["blocks"]
+            # THE BLOCKS NAME THEIR OWN SOURCE. Sources here are sequential,
+            # floors first, so a two-floor set puts its wall panels at
+            # source 2 — and level_generate/level_reskin read
+            # side["wall_source"] with a default of 1, which silently painted
+            # walls and terraces from the second floor material at panel
+            # coordinates that happened to exist there.
+            side["wall_source"] = int(first_wall["source"])
         side_path = out_dir / f"{name}.tiles.json"
         side_path.write_text(_json.dumps(side, indent=1), encoding="utf-8")
 
@@ -7823,13 +7857,17 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                     "cannot be drawn")}
             # every floored cell that is not the hole draws raised, walls
             # included: a wall standing on the high ground has to sit on it.
+            # The sidecar names the blocks' source; hardcoded 1 painted the
+            # terraces from whatever source 1 is (downsizing: carpet).
+            blk_src = int((side or {}).get("wall_source", 1))
             raised = []
             for cell in sorted({c: 1 for c in floor_cells if c not in low}):
                 face = ramps.get(cell)
                 at = (side_blocks.get(f"ramp_{face}") if face
                       else side_blocks.get("terrace"))
                 if at:
-                    raised.append({"x": cell[0], "y": cell[1], "source": 1,
+                    raised.append({"x": cell[0], "y": cell[1],
+                                   "source": blk_src,
                                    "ax": int(at[0]), "ay": int(at[1]),
                                    "alt": 0})
             if raised:
@@ -7844,10 +7882,14 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
 
         wall_at, wall_src = None, None
         if wall_cells:
-            if side and side["blocks"].get("wall") and 1 in parsed_set["sources"]:
-                wall_at, wall_src = tuple(side["blocks"]["wall"]), 1
-            elif 1 in parsed_set["sources"]:
-                wall_at, wall_src = (0, 0), 1
+            # The sidecar names the blocks' source; 1 is only the fallback
+            # for a set whose sidecar predates the key.
+            blk_src = int((side or {}).get("wall_source", 1))
+            if side and side["blocks"].get("wall") \
+                    and blk_src in parsed_set["sources"]:
+                wall_at, wall_src = tuple(side["blocks"]["wall"]), blk_src
+            elif blk_src in parsed_set["sources"]:
+                wall_at, wall_src = (0, 0), blk_src
             if wall_at is not None:
                 blocks = (side or {}).get("blocks") or {}
                 # PER-AREA WALLS, the same way the floors work. A partition,
@@ -8471,6 +8513,25 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                     "levels>1 cannot be drawn. tileset_generate writes them "
                     "for an isometric project; a hand-built set needs a "
                     "<name>.tiles.json naming its terrace and ramp tiles.")}
+            # THE BLOCKS MUST INCLUDE TERRACE TILES, and a set without them
+            # refuses HERE rather than drawing a flat level that reports its
+            # elevation as shipped. tileset_synth sidecars carry only
+            # panel0..15, so every lookup below would miss, `continue`, and
+            # leave no Terrace layer while the result still claimed
+            # raised_cells and reachable=true — level_reskin's sunken path
+            # already refuses on exactly these keys; the generator must too.
+            if not side["blocks"].get("terrace"):
+                return {"ok": False, "error": (
+                    "this tileset's blocks carry no 'terrace' tile, so "
+                    "levels>1 cannot be drawn honestly (tileset_synth sets "
+                    "carry wall panels only). Regenerate with "
+                    "tileset_generate, add terrace/ramp_* entries to the "
+                    ".tiles.json, or pass levels=1.")}
+            # The blocks' own source, the same key the wall path reads: a
+            # hardcoded 1 painted terraces from whatever source 1 happens to
+            # be — in a two-floor synth set, a floor material; in
+            # downsizing's hand-built set, carpet.
+            terr_src = int(side.get("wall_source", 1))
             heights = {tuple(int(v) for v in k.split(",")): h
                        for k, h in terraced["heights"].items()}
             ramps = {tuple(int(v) for v in k.split(",")): d
@@ -8485,7 +8546,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 if not at:
                     continue
                 raised_cells.append({"x": cell[0], "y": cell[1],
-                                     "source": 1, "ax": int(at[0]),
+                                     "source": terr_src, "ax": int(at[0]),
                                      "ay": int(at[1]), "alt": 0})
             if raised_cells:
                 # ITS OWN LAYER, above the floor and y-sorted: a terrace
