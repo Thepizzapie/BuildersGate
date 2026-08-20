@@ -824,3 +824,565 @@ def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
                 bands.append(rect(x0, y0, x1, y1))
         out[mask] = bands
     return out
+
+
+# ---------------------------------------------------------------------------
+# Isometric — the diamond
+# ---------------------------------------------------------------------------
+# A SQUARE CARVE CANNOT SERVE A DIAMOND, which is why `tileset_generate`
+# refused isometric projects rather than shipping a plausible-looking set. In
+# an isometric tilemap the tile's art is a diamond inscribed in the tile rect,
+# its corners transparent by construction, and the four EDGES of that diamond
+# are the four cell neighbours — not the four sides of the rect. Carving square
+# bands would put the shadow on the rect's edges, i.e. across the diamond's
+# corners, and every room outline would read as a grid of notches.
+#
+# Which edge is which neighbour comes from the projection this module's own
+# `tilemap.cell_center` implements, not from a guess. In DIAMOND_DOWN,
+# screen = ((x - y) * w/2, (x + y) * h/2), so from any cell:
+#
+#     -y (N) renders UP-RIGHT      +x (E) renders DOWN-RIGHT
+#     -x (W) renders UP-LEFT       +y (S) renders DOWN-LEFT
+#
+# and the diamond's four edges take those four names in that order.
+#
+# In normalised tile coordinates — u across, v down, both -1..1 from the tile's
+# centre — the diamond is |u| + |v| <= 1. That single expression carries
+# everything: |u| + |v| > 1 is outside the tile's art entirely, the value runs
+# 0 at the centre to 1 at the edge so a band is a threshold on it, and the
+# SIGNS of u and v name which edge a pixel belongs to. No trigonometry, no
+# per-edge line equations, and it is exact at any tile size or aspect.
+
+#: The diamond's edge band, which is DEEPER than the square set's EDGE_INSET
+#: and has to be. A square tile's lip is read against the wall layer filling
+#: the cell beside it; an isometric floor tile has nothing behind it but the
+#: background, so its own rim is the only thing that says where the floor
+#: stops. At 0.1 a generated level rendered as flat cut-out slabs with no
+#: edge at all — compared side by side at 0.1 / 0.18 / 0.26, this is where the
+#: edge reads without the band starting to eat the tile.
+ISO_EDGE_INSET = 0.18
+
+#: How far the band is darkened from the floor's own material, as a multiplier.
+#: Not a separate generation: see the derivation note in `tileset_generate`.
+ISO_BAND_LEVEL = 0.55
+
+#: (bit, sign of u, sign of v) for each diamond edge. `0` in a sign slot means
+#: "either", which only the vertices hit.
+_DIAMOND_EDGES = (
+    (BIT_N, +1, -1),      # up-right
+    (BIT_E, +1, +1),      # down-right
+    (BIT_S, -1, +1),      # down-left
+    (BIT_W, -1, -1),      # up-left
+)
+
+
+def diamond_edge_for(u: float, v: float) -> int:
+    """Which neighbour's edge a point in the tile belongs to."""
+    su = 1 if u >= 0 else -1
+    sv = 1 if v >= 0 else -1
+    for bit, want_u, want_v in _DIAMOND_EDGES:
+        if su == want_u and sv == want_v:
+            return bit
+    return BIT_N                                     # unreachable in practice
+
+
+def diamond_polygon(tile_size: tuple[int, int], *,
+                    inset: float = 0.0) -> list[tuple[float, float]]:
+    """The diamond as a Godot collision polygon, centred on the tile.
+
+    The walkable region of an isometric floor tile IS the diamond, so this is
+    four points rather than the square path's edge bands. Centred, because
+    that is the space Godot's tile collision uses.
+    """
+    tw, th = float(tile_size[0]), float(tile_size[1])
+    k = max(0.0, 1.0 - float(inset))
+    hw, hh = tw / 2.0 * k, th / 2.0 * k
+    return [(0.0, -hh), (hw, 0.0), (0.0, hh), (-hw, 0.0)]
+
+
+def diamond_tiles(floor_tile, void_tile, wanted: Sequence[int], *,
+                  tile_size: tuple[int, int], inset: float = ISO_EDGE_INSET,
+                  clear: bool = False) -> dict:
+    """Build every isometric mask tile from a floor and a void texture.
+
+    The counterpart of :func:`normalise_edges` for the diamond, and like it
+    the geometry is IMPOSED rather than detected: coverage cannot be partial
+    because every tile is constructed, and neighbours cannot disagree about
+    where the floor stops because one number decides it for all of them.
+
+    ``clear`` carves the band to transparent instead of painting the void
+    texture into it — the same question the square path documents, with the
+    same answer: opaque when a wall layer fills behind it, carved over a bare
+    canvas. Outside the diamond is ALWAYS transparent, which is not a choice;
+    it is what makes the tile a diamond.
+
+    Returns ``{ok, image, table, inset}`` — the sheet packed four to a row in
+    canonical mask order, so it is a tileset any consumer can read.
+    """
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    if tw < 2 or th < 2:
+        return {"ok": False, "reason": f"a {tw}x{th} tile has no diamond in it"}
+    floor = floor_tile.convert("RGBA").resize((tw, th), Image.NEAREST)
+    void = void_tile.convert("RGBA").resize((tw, th), Image.NEAREST)
+    fpx, vpx = floor.load(), void.load()
+
+    masks = list(wanted)
+    tiles: dict[int, "Image.Image"] = {}
+    for mask in masks:
+        tile = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        tpx = tile.load()
+        for py in range(th):
+            # sample at the pixel's CENTRE: a pixel is a square of area, and
+            # testing its top-left corner biases every edge half a pixel up
+            # and left, which at a 32px tile is a visible stair.
+            v = ((py + 0.5) - th / 2.0) / (th / 2.0)
+            for px in range(tw):
+                u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+                s = abs(u) + abs(v)
+                if s > 1.0:
+                    continue                    # outside the diamond
+                if s > 1.0 - inset and not mask & diamond_edge_for(u, v):
+                    if clear:
+                        continue
+                    tpx[px, py] = vpx[px, py]
+                else:
+                    tpx[px, py] = fpx[px, py]
+        tiles[mask] = tile
+
+    cols = 4
+    rows = (len(masks) + cols - 1) // cols
+    sheet = Image.new("RGBA", (cols * tw, rows * th), (0, 0, 0, 0))
+    table: dict[int, tuple[int, int]] = {}
+    for i, mask in enumerate(masks):
+        tx, ty = i % cols, i // cols
+        sheet.paste(tiles[mask], (tx * tw, ty * th))
+        table[mask] = (tx, ty)
+    return {"ok": True, "image": sheet, "table": table, "inset": inset}
+
+
+#: How the two visible side faces of a block are lit, as multipliers on the
+#: material. Light comes from the upper LEFT, which is the convention the
+#: floor band already implies and the one nearly every isometric game uses:
+#: the face turned south-west catches some of it, the face turned south-east
+#: catches least. Equal faces read as a flat hexagon rather than a cube — the
+#: whole illusion is that two planes at different angles are different values.
+ISO_FACE_LEFT = 0.72
+ISO_FACE_RIGHT = 0.48
+
+
+def iso_block(top, material, *, tile_size: tuple[int, int], lift: int,
+              faces: tuple[float, float] = (ISO_FACE_LEFT, ISO_FACE_RIGHT)
+              ) -> dict:
+    """A raised isometric cell: a diamond top with two side faces below it.
+
+    THE ONE PRIMITIVE BEHIND BOTH WALLS AND ELEVATION, because in an
+    isometric world they are the same object seen twice: a wall is a cell
+    raised by `lift` that you may not enter, and a terrace is a cell raised by
+    `lift` that you may. Building them from one function is not tidiness — it
+    is why a wall and the ledge beside it cannot end up drawn with different
+    geometry or lit from different directions.
+
+    The art is ``(tw, th + lift)``: the top diamond occupies the first ``th``
+    rows and the faces hang below it, each column falling from the diamond's
+    own lower boundary so the silhouette is exact at any tile aspect. The
+    faces are the material again rather than flat colour, sampled wrapped so
+    the stone continues down the wall instead of stretching.
+
+    Returns ``{image, origin, size}``. ``origin`` is the ``texture_origin``
+    Godot needs — ``(0, lift // 2)`` — which puts the art's BOTTOM EDGE on the
+    diamond's bottom vertex and therefore the block's TOP face exactly `lift`
+    above the cell's floor plane. That rule is `tilemap.tile_rect`'s, stated
+    from the other end; get its sign wrong and every wall sinks into the floor.
+    """
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    lift = int(lift)
+    if lift < 1:
+        return {"ok": False, "reason": f"a {lift}px lift is not a block"}
+    top = top.convert("RGBA").resize((tw, th), Image.NEAREST)
+    mat = material.convert("RGBA").resize((tw, th), Image.NEAREST)
+    left_k, right_k = faces
+
+    out = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
+    out.paste(top, (0, 0))
+    opx, mpx = out.load(), mat.load()
+    for px in range(tw):
+        u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+        if abs(u) > 1.0:
+            continue
+        # the diamond's lower boundary in this column: |u| + |v| = 1
+        y_low = (th / 2.0) * (2.0 - abs(u))
+        k = left_k if u < 0 else right_k
+        # SAME CENTRE-SAMPLING RULE AS THE DIAMOND, and it has to be: taking
+        # int(y_low) as the first row truncated the fractional boundary, and
+        # at the centre column — where the diamond's bottom vertex sits — that
+        # left the block's lowest pixel row empty. A one-pixel notch at the
+        # tip of every wall, which tiles into a dotted line along every ledge.
+        for py in range(int(y_low), th + lift):
+            if not (y_low <= py + 0.5 <= y_low + lift):
+                continue
+            r, g, b, a = mpx[px, py % th]
+            if a:
+                opx[px, py] = (int(r * k), int(g * k), int(b * k), 255)
+    return {"ok": True, "image": out, "origin": (0, lift // 2),
+            "size": (tw, th + lift)}
+
+
+def crop_tile(sheet, at: Sequence[int], tile_size: tuple[int, int]):
+    """One tile out of a packed sheet, by its (tx, ty) atlas coordinate."""
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    tx, ty = int(at[0]), int(at[1])
+    return sheet.crop((tx * tw, ty * th, tx * tw + tw, ty * th + th))
+
+
+def iso_ramp(material, facing: str, *, tile_size: tuple[int, int], lift: int,
+             faces: tuple[float, float] = (ISO_FACE_LEFT, ISO_FACE_RIGHT)
+             ) -> dict:
+    """A raised cell whose top face SLOPES down toward one neighbour.
+
+    The piece that turns elevation from scenery into terrain: a block is a
+    step nothing can climb, and this is the same cell with its top tilted so
+    a walker arrives at the height of the neighbour it faces.
+
+    The tilt is computed in CELL space, not screen space, which is the only
+    way it can line up with the neighbour it serves. Screen u and v carry the
+    cell axes as ``a = (u + v) / 2`` along +x (east) and ``b = (v - u) / 2``
+    along +y (south) — read straight off the DIAMOND_DOWN projection this
+    module already carves edges with — so a ramp facing east falls with `a`
+    and one facing south falls with `b`, exactly and at any tile aspect.
+
+    ``facing`` is the direction the ramp descends: the neighbour that way sits
+    one level lower, which is the same field `levelgen.step_ok` reads when it
+    decides whether a walker may cross. The art and the walk rule cannot
+    disagree because they are the same number.
+    """
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    lift = int(lift)
+    facing = str(facing or "").strip().lower()
+    if facing not in ("n", "e", "s", "w"):
+        return {"ok": False, "reason": f"{facing!r} is not a ramp direction"}
+    if lift < 1:
+        return {"ok": False, "reason": f"a {lift}px lift is not a ramp"}
+    mat = material.convert("RGBA").resize((tw, th), Image.NEAREST)
+    mpx = mat.load()
+    left_k, right_k = faces
+
+    out = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
+    opx = out.load()
+    # SUPERSAMPLED DOWN THE COLUMN, because this maps source pixels FORWARD
+    # to shifted destinations and neighbouring rows do not shift by the same
+    # whole number. Stepping one source row at a time left a destination row
+    # untouched wherever the shift jumped — a checkerboard of holes across
+    # every sloped face, which is a dither pattern at a glance and a leaking
+    # surface in the game.
+    SUB = 4
+    for px in range(tw):
+        u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+        for step in range(th * SUB):
+            fy = (step + 0.5) / SUB
+            v = (fy - th / 2.0) / (th / 2.0)
+            if abs(u) + abs(v) > 1.0:
+                continue
+            # cell-space position within the tile, both -0.5..0.5
+            a, b = (u + v) / 2.0, (v - u) / 2.0
+            drop = {"e": 0.5 + a, "w": 0.5 - a,
+                    "s": 0.5 + b, "n": 0.5 - b}[facing]
+            # drop is 1.0 at the edge FACING the lower neighbour, so that is
+            # the edge that descends the full lift. This was inverted
+            # (lift * (1.0 - drop)) and measured wrong on facing="e": the
+            # east column sat ~3px down and the west ~15px — a cliff toward
+            # the very neighbour step_ok lets the walker cross.
+            dest = int(fy + lift * drop)
+            if not (0 <= dest < th + lift):
+                continue
+            r, g, b_, al = mpx[px, min(th - 1, int(fy))]
+            if al:
+                opx[px, dest] = (r, g, b_, 255)
+    # the skirt: everything under the sloped top, so the ramp is solid rather
+    # than a floating ribbon. Walk each column down from its lowest opaque
+    # pixel to the block's base.
+    for px in range(tw):
+        u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+        if abs(u) > 1.0:
+            continue
+        low = max((py for py in range(th + lift) if opx[px, py][3]), default=-1)
+        if low < 0:
+            continue
+        base = int((th / 2.0) * (2.0 - abs(u))) + lift
+        k = left_k if u < 0 else right_k
+        for py in range(low + 1, min(base, th + lift)):
+            r, g, b_, al = mpx[px, py % th]
+            if al:
+                opx[px, py] = (int(r * k), int(g * k), int(b_ * k), 255)
+    return {"ok": True, "image": out, "origin": (0, lift // 2),
+            "size": (tw, th + lift), "facing": facing}
+
+
+#: How deep a wall PANEL is, as a fraction of the cell. A wall in a building
+#: is a plane, not a cube: it stands ON the boundary between two cells and the
+#: floor runs up to both of its faces. Drawing one cell of wall as a full
+#: block eats the whole cell, which is why a floor with one-cell partitions
+#: renders as a maze of corridors instead of rooms with walls between them.
+PANEL_DEPTH = 0.34
+
+
+def iso_panel(material, mask, *, tile_size: tuple[int, int], lift: int,
+              depth: float = PANEL_DEPTH,
+              faces: tuple[float, float] = (ISO_FACE_LEFT, ISO_FACE_RIGHT)
+              ) -> dict:
+    """A thin wall standing along the directions its neighbours actually run.
+
+    ``mask`` is a 4-bit neighbour mask (BIT_N/E/S/W) — or "x"/"y" for a plain
+    straight run — and the footprint is a stub from the cell's CENTRE toward
+    each direction the mask sets, plus the centre itself. That is the whole
+    fix for the nubs: a junction tile that always extended all four ways put
+    a stub out into open floor at every corner and T, because an L-corner is
+    two directions and the tile drew four. Sixteen tiles is not a lot of art
+    when every one of them is the same wall with a different footprint.
+
+    The footprint is computed in CELL space for the same reason the ramp's
+    slope is: `a = (u + v) / 2` runs along +x and `b = (v - u) / 2` along +y,
+    so a stub is a half-open interval on one of them at any tile aspect.
+    """
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    lift = int(lift)
+    if isinstance(mask, str):
+        named = {"x": BIT_E | BIT_W, "y": BIT_N | BIT_S,
+                 "cross": BIT_N | BIT_E | BIT_S | BIT_W, "post": 0}
+        if mask.strip().lower() not in named:
+            return {"ok": False, "reason": f"{mask!r} is not a wall mask"}
+        mask = named[mask.strip().lower()]
+    mask = int(mask)
+    if lift < 1:
+        return {"ok": False, "reason": f"a {lift}px lift is not a wall"}
+    mat = material.convert("RGBA").resize((tw, th), Image.NEAREST)
+    mpx = mat.load()
+    left_k, right_k = faces
+    half = max(0.02, float(depth)) / 2.0
+
+    def inside(u, v):
+        if abs(u) + abs(v) > 1.0:
+            return False
+        a, b = (u + v) / 2.0, (v - u) / 2.0
+        if abs(a) <= half and abs(b) <= half:
+            return True                       # the centre is always there
+        if mask & BIT_E and a >= 0 and abs(b) <= half:
+            return True
+        if mask & BIT_W and a <= 0 and abs(b) <= half:
+            return True
+        if mask & BIT_S and b >= 0 and abs(a) <= half:
+            return True
+        if mask & BIT_N and b <= 0 and abs(a) <= half:
+            return True
+        return False
+
+    out = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
+    opx = out.load()
+    for py in range(th):
+        v = ((py + 0.5) - th / 2.0) / (th / 2.0)
+        for px in range(tw):
+            u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+            if inside(u, v):
+                r, g, b_, al = mpx[px, py]
+                if al:
+                    opx[px, py] = (r, g, b_, 255)
+    # ONE FACE, NOT TWO — the difference between a partition and a cube, and
+    # the reason a wall run came out looking like a barcode. A block shows the
+    # camera both of its lower faces, so shading them differently is what
+    # makes it read as solid. A thin panel shows only the face turned toward
+    # the camera; splitting its side at the tile's centre column gave every
+    # tile a light half and a dark half, and a row of them alternated
+    # light-dark-light-dark down the whole wall.
+    k = (left_k + right_k) / 2.0
+    for px in range(tw):
+        rows = [py for py in range(th) if opx[px, py][3]]
+        if not rows:
+            continue
+        for py in range(max(rows) + 1, min(max(rows) + 1 + lift, th + lift)):
+            r, g, b_, al = mpx[px, py % th]
+            if al:
+                opx[px, py] = (int(r * k), int(g * k), int(b_ * k), 255)
+    return {"ok": True, "image": out, "origin": (0, lift // 2),
+            "size": (tw, th + lift), "mask": mask}
+
+
+def mirror_tile(patch):
+    """A texture that is continuous under ANY offset, by mirror-quadding it.
+
+    THE LATTICE. Isometric diamonds do not meet edge-to-edge like squares:
+    the neighbour at +x sits half a tile right and half a tile down, so a
+    texture only has to be seamless at the FULL tile period to still show a
+    hard join along every diagonal — which reads as a quilt of diamond
+    outlines over the whole floor, and no amount of asking the model for a
+    "seamless" texture fixes it, because the model is answering the wrong
+    question.
+
+    Mirroring answers the right one. A tile built as a patch and its three
+    reflections matches itself across every edge AND across the half-offset
+    lines where the mirror falls, so neighbours agree at any alignment. The
+    cost is symmetry, which on a fine-grained material — carpet, stone,
+    concrete, the things floors are made of — is invisible at tile size and
+    is the trade every hand-made tileset makes.
+    """
+    from PIL import Image
+
+    w, h = patch.size
+    out = Image.new("RGBA", (w * 2, h * 2), (0, 0, 0, 0))
+    flip_h = patch.transpose(Image.FLIP_LEFT_RIGHT)
+    flip_v = patch.transpose(Image.FLIP_TOP_BOTTOM)
+    out.paste(patch, (0, 0))
+    out.paste(flip_h, (w, 0))
+    out.paste(flip_v, (0, h))
+    out.paste(flip_h.transpose(Image.FLIP_TOP_BOTTOM), (w, h))
+    return out
+
+
+def synth_material(base, *, tile_size: tuple[int, int], palette=None,
+                   grain: float = 0.35, seam: float = 0.0, seed: int = 0,
+                   speck: float = 0.0):
+    """A floor material built pixel by pixel instead of cropped from a painting.
+
+    WHY NOT GENERATE IT. A generated texture carries structure at roughly
+    tile scale, so cropping one onto a diamond grid lays a regular lattice of
+    motifs across the floor, and mirroring to hide the seams only trades the
+    lattice for symmetry. The tiles this is written to match are nearly
+    featureless — near-black, a faint grain, at most one soft quadrant seam —
+    and that is a thing arithmetic makes better than a model does: the grain
+    is per-pixel noise, so it cannot repeat, and every value is a palette
+    entry by construction rather than by conform.
+
+    ``base`` is an (r, g, b) or "#rrggbb"; ``palette`` snaps every pixel to
+    the project's own colours. ``grain`` is how often a pixel steps to a
+    neighbouring value, ``speck`` how often it takes a much lighter one (wear,
+    flecks, litter), ``seam`` how dark the cross through the tile's middle is
+    — which is what reads as floor PANELS rather than broadloom.
+    """
+    import random as _random
+
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    if isinstance(base, str):
+        s = base.lstrip("#")
+        base = tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+    base = tuple(int(v) for v in base[:3])
+    pal = [tuple(int(c) for c in p[:3]) for p in (palette or [])] or None
+    rng = _random.Random(seed)
+
+    def snap(rgb):
+        if not pal:
+            return tuple(max(0, min(255, int(v))) for v in rgb)
+        return min(pal, key=lambda p: sum((p[i] - rgb[i]) ** 2
+                                          for i in range(3)))
+
+    img = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+    px = img.load()
+    for y in range(th):
+        for x in range(tw):
+            v = list(base)
+            if rng.random() < grain:
+                step = rng.choice((-10, -6, -3, 3, 6, 10))
+                v = [c + step for c in v]
+            if speck and rng.random() < speck:
+                v = [c + rng.randint(14, 30) for c in v]
+            if seam:
+                # the panel cross: a darker line down the tile's own middle,
+                # in CELL space so it reads as a square panel seen in
+                # projection rather than a screen-aligned plus.
+                u = ((x + 0.5) - tw / 2.0) / (tw / 2.0)
+                w = ((y + 0.5) - th / 2.0) / (th / 2.0)
+                a, b = (u + w) / 2.0, (w - u) / 2.0
+                if abs(a) < 0.04 or abs(b) < 0.04:
+                    v = [c * (1.0 - seam) for c in v]
+            px[x, y] = (*snap(v), 255)
+    return img
+
+
+#: The most a drift wave may move a pixel. Past this the variant stops being
+#: the same material lit differently and starts being a different material,
+#: which is the patchwork it exists to cure.
+DRIFT_CAP = 0.075
+
+
+def drift_variant(tile, *, phase: int, drift: float = 0.7, lift: float = 0.0,
+                  flatten: float = 0.0, palette=None):
+    """A second copy of the SAME material, not a second material.
+
+    Variants were cut from elsewhere in the source painting — a different
+    crop, so on anything with structure at tile scale the two swatches were
+    visibly different carpets, and laying them alternately across a room read
+    as a quilt. The fix is not a smaller step; there is no step small enough,
+    because the defect is that the tiles' EDGE PIXELS no longer agree and the
+    material's own grid breaks at every join between a variant and its
+    neighbour.
+
+    So modulate instead of re-cut. The tile keeps its grid, its alpha and its
+    edge pixels exactly where they are, and what varies is three
+    low-frequency waves that WRAP on the cell — so the modulation itself is
+    continuous across a join — plus a reroll of the high-frequency flecks.
+    The waves give each variant a distinct overall cast; the flecks give
+    difference that can never accumulate into a shape. Total amplitude is
+    capped at ``DRIFT_CAP``.
+
+    The operators are chosen. ``drift`` is MULTIPLICATIVE: a grid line is a
+    dark pixel and multiplying it keeps it a grid line, where subtracting a
+    constant would saturate it toward black and pull the grid forward.
+    ``lift`` is the uniform version of the same thing (wear lifts a pile),
+    and ``flatten`` pulls flecks toward the tile's own mean, which is what
+    trodden carpet actually does.
+
+    This is downsizing's floor_variant, generalised — their comment is the
+    reasoning above and their DRIFT_CAP is the number.
+    """
+    import math
+
+    im = tile.copy().convert("RGBA")
+    px = im.load()
+    w, h = im.size
+    pal = [tuple(int(c) for c in p[:3]) for p in (palette or [])] or None
+
+    vals = [px[x, y] for y in range(h) for x in range(w) if px[x, y][3]]
+    if not vals:
+        return im
+    mean = [sum(c[i] for c in vals) / len(vals) for i in range(3)]
+    p = int(phase)
+
+    for y in range(h):
+        for x in range(w):
+            c = px[x, y]
+            if not c[3]:
+                continue
+            r, g, b = float(c[0]), float(c[1]), float(c[2])
+            if drift:
+                u = 2 * math.pi * x / w
+                v = 2 * math.pi * y / h
+                s = (0.55 * math.sin(u + p * 1.7)
+                     + 0.40 * math.sin(v + p * 2.9)
+                     + 0.32 * math.sin(u + v + p * 0.8))
+                k = 1.0 + max(-DRIFT_CAP, min(DRIFT_CAP, drift * s))
+                r, g, b = r * k, g * k, b * k
+            if lift:
+                r, g, b = r * (1 + lift), g * (1 + lift), b * (1 + lift)
+            if flatten:
+                r += (mean[0] - r) * flatten
+                g += (mean[1] - g) * flatten
+                b += (mean[2] - b) * flatten
+            if p:
+                hv = (hash((x, y, p)) >> 3) % 32
+                if hv < 10:
+                    r, g, b = r * 1.16, g * 1.16, b * 1.14
+                elif hv < 21:
+                    r, g, b = r * 0.87, g * 0.88, b * 0.90
+            out = [max(0, min(255, int(round(t)))) for t in (r, g, b)]
+            if pal:
+                out = list(min(pal, key=lambda q: sum((q[i] - out[i]) ** 2
+                                                      for i in range(3))))
+            px[x, y] = (out[0], out[1], out[2], c[3])
+    return im

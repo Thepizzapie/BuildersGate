@@ -5,7 +5,6 @@ import { AgentMade } from "./AgentMade";
 import { SEAT_COLOR } from "./nav";
 import { setSelection, useSelection } from "./selection";
 import { askText, lightbox, mutate, readJSON, toast, watchAgent } from "../bridge";
-import { say } from "./agents/api";
 import { usePoll } from "../hooks";
 
 
@@ -267,11 +266,9 @@ export function Inspector() {
   /* GIVING AN IDLE SEAT SOMETHING TO DO. The floor's lounge is where a seat
      with no work stands, and the only useful thing to say about one is what it
      should do next - there is no log to read and no run to steer. So the panel
-     for that selection is a box, and it posts to the SAME endpoint the
-     composer's "send it straight to a seat" does. Deliberately not a second
-     door: /api/console/say with a seat files the item for that seat and
-     dispatches it, and a second route would be a second set of rules about
-     what a human typing at a seat is allowed to start.
+     for that selection is a box, and it files a work item for that seat over
+     POST /api/queue - the same row a queue_add makes, so auto-deploy and the
+     QA gate treat it exactly like any other.
      ABOVE THE EARLY RETURN with everything else - see the note on `opened`. */
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
@@ -314,7 +311,12 @@ export function Inspector() {
     const said = draft.trim();
     if (!said || posting || !seat) return;
     setPosting(true);
-    const r = await say(said, seat);
+    /* FILED AS A WORK ITEM FOR THAT SEAT, in the human's own words. It used to
+       go through /api/console/say, which wrapped it in a chat turn; the chat is
+       a Claude session now and a message to it is not a board row. */
+    const r = await mutate("/api/queue", {
+      body: { seat, title: said.split("\n")[0].slice(0, 80), brief: said,
+              source: "manual" }, quiet: true });
     setPosting(false);
     /* mutate() already raises the toast on a failure, and the draft is left in
        the box on purpose when one happens - the sentence is the only copy. */

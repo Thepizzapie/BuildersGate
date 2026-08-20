@@ -353,6 +353,11 @@ export function floorIsQuiet(
      do NOT know is whether anything is running. Joking through a backend outage
      is the loudest possible version of this file's original mistake. */
   if (state.__error) return false;
+  /* THE DIRECTOR MID-REPLY IS NOT SILENCE. Chat turns are no longer work
+     items, so nothing below counts a streaming answer — this flag is the
+     server-shared replacement for the old `turns.some(reply.running)`
+     check, and losing it let the lounge tell jokes over the director. */
+  if (state.director?.running) return false;
   if (notesOnDesk > 0) return false;
   for (const p of people) if (p.state !== "idle") return false;
   if ((state.questions || []).length) return false;
@@ -361,9 +366,6 @@ export function floorIsQuiet(
      door test is about who is needed; this one is about whether the building is
      empty. */
   if ((state.gates || []).length) return false;
-  /* The director mid-sentence. The transcript is where words go, and two
-     sources of words on one screen is the failure this file is built around. */
-  if ((state.turns || []).some((t) => t.reply?.running)) return false;
   const f = state.floor || {};
   return !(f.running || f.queued || f.dispatched || f.review);
 }

@@ -1659,10 +1659,30 @@ def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> 
 
 
 
+_TEXTURE_STYLE = (
+    "16-bit SNES-era pixel art floor tile texture, {what}. "
+    "Top-down orthographic flat view, perfectly flat with no perspective and "
+    "no vanishing point, even ambient light with no highlight or shadow "
+    "gradient across the frame. Hand-placed pixels with visible dithering, "
+    "limited palette of roughly twelve flat colours, crisp single-pixel "
+    "detail and hard edges, no photographic blur, no anti-aliased gradients. "
+    "The whole frame is the material, repeating edge to edge, seamless."
+)
+
+
+#: How much of the painting one tile holds, as a multiple of the tile. Small
+#: means fine grain: the whole generation squeezed into roughly one tile, so a
+#: floor is a texture rather than a pattern of motifs. Raise it for a material
+#: whose features are meant to be legible individually — a brick wall, a plank
+#: floor — where reading one brick matters more than hiding the repeat.
+_TEXTURE_ZOOM = 1.5
+
+
 @_tool
 def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                      bits: int = 8, void_prompt: str = "",
-                     wall_prompt: str = "",
+                     wall_prompt: str = "", wall_lift: int = 0,
+                     reuse: bool = True, materials: str = "",
                      godot_project: str = "", res_dir: str = "assets/tiles",
                      install: bool = False,
                      collide: bool = True,
@@ -1699,6 +1719,13 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
     `install=False` lands everything in .bgate_out/tiles/ for review; True also
     writes into the Godot project and LOADS IT IN THE ENGINE to prove it.
 
+    ISOMETRIC PROJECTS GET BLOCKS. The view's tiles are diamonds, its walls
+    are raised cells showing two camera-facing sides, and both come from one
+    primitive — a wall is a cell you may not enter and a terrace is one you
+    may. `wall_lift` is that height in pixels (0 = one tile height); the
+    resource carries the taller region and the texture_origin that lands the
+    block's top face exactly that far above the floor plane.
+
     The atlas is also written as an Aseprite master — every AI-generated
     sheet goes through the Aseprite cleanup, tilesets included.
     """
@@ -1710,15 +1737,15 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         from bgate_core import autotile as _autotile
 
         view = _gameview.load(_root())
-        if view == "isometric":
-            return {"ok": False, "error": (
-                "this project's view is 'isometric' and this generator "
-                "cannot honestly serve it yet: the mask tiles are carved as "
-                "square edge bands, and a diamond tile's edges run on the "
-                "diagonal — the square carve would ship as confident "
-                "garbage. Until a diamond-aware compositor exists, author "
-                "or import an isometric TileSet in the Godot editor — "
-                "level_generate accepts it and checks its shape.")}
+        iso = view == "isometric"
+        if iso and bits != 4:
+            # FOUR IS NOT A COMPROMISE HERE, it is the shape of the thing. A
+            # diamond has four edges and each one IS a cell neighbour, so the
+            # 16-mask set is complete for an isometric floor. The 47-tile blob
+            # exists because a square tile's corners are a shape its four
+            # sides cannot describe; the diamond's corners are its vertices,
+            # where two edges already meet.
+            bits = 4
         from bgate_core import tilemap as _tilemap
         from bgate_core import tilemask as _tilemask
 
@@ -1744,6 +1771,12 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         out_dir = root / ".bgate_out" / "tiles"
         out_dir.mkdir(parents=True, exist_ok=True)
         spent = 0.0
+        # AN ISOMETRIC TILE IS 2:1. `tile_px` names the tile's WIDTH, which is
+        # the number everything else in the pipeline already means by it; the
+        # height follows the projection rather than being asked for, because a
+        # diamond whose height is not half its width is not the diamond the
+        # engine will draw with these cells.
+        tw, th = (tile_px, tile_px // 2) if iso else (tile_px, tile_px)
 
         def _texture(what: str, tag: str, variants: int = 0):
             """One tile of material, painted by kie at canvas size.
@@ -1751,55 +1784,169 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             The tile is CUT from a 4x-tile downscale of the painting rather
             than the whole frame squeezed into one tile — squeezing turns a
             wall of bricks into noise; cutting keeps the material at a scale
-            where a brick is still a brick. ``variants`` cuts that many MORE
-            tiles from other corners of the same painting: one interior tile
-            repeated is wallpaper, and the repeat is broken with crops the
-            generation already paid for.
+            where a brick is still a brick. ``variants`` returns that many
+            MORE tiles, which are the same tile modulated rather than other
+            crops of the painting — see `_cut`.
             """
             raw = out_dir / f"{name}_{tag}_raw.png"
-            got = _kie.generate_image(
-                f"seamless repeating flat texture of {what}, viewed straight "
-                "on, even lighting, no border, no vignette, no objects, "
-                "fills the whole frame edge to edge",
-                str(raw), model="nano-banana-2", size="1024x1024",
-                task_kind="tile", tileable=True, root=str(root))
+            # REUSE THE PAINTING IF IT IS ALREADY HERE. Every geometry change
+            # in this tool — the diamond carve, the panel masks, the sampling
+            # scale — was iterated by regenerating art that had not changed,
+            # which costs money, burns time and hands the provider another
+            # chance to refuse a texture it already painted once. The raw
+            # generation is kept beside the atlas precisely so it can be
+            # re-cut; `reuse=False` forces a fresh roll.
+            #
+            # ONLY IF THE PROMPT STILL MATCHES. The cache used to key on the
+            # filename alone, so calling again with a NEW prompt under the
+            # same name returned the old art at spend 0 with nothing saying
+            # the new words never reached a model. The painting's prompt is
+            # stamped beside it and a mismatch is a fresh roll, not a hit.
+            stamp = raw.with_name(raw.stem + ".prompt.txt")
+            if reuse and raw.is_file():
+                try:
+                    same = stamp.read_text(encoding="utf-8") == what
+                except OSError:
+                    # A pre-stamp cache cannot prove its prompt; honour it
+                    # once (the old behaviour) and stamp it on the way out.
+                    same = True
+                if same:
+                    base, extra = _cut(_Img.open(raw).convert("RGBA"),
+                                       variants)
+                    try:
+                        stamp.write_text(what, encoding="utf-8")
+                    except OSError:
+                        pass
+                    return base, extra, 0.0
+            # SAY WHAT YOU WANT, NOT WHAT YOU DO NOT. This asked for a
+            # texture with "no border, no vignette, no objects", and a pile
+            # of negations reads as an attempt to suppress rather than to
+            # describe.
+            prompt_text = _TEXTURE_STYLE.format(what=what)
+            # AND RETRY, because the refusals are a COIN TOSS rather than a
+            # verdict on the words. Measured here: "dark navy blue office
+            # partition panel, matte painted surface" was refused by the
+            # provider's safety filter on one call and generated on the very
+            # next, unchanged; an office carpet did the same. A pipeline that
+            # dies on a false positive makes the human rewrite a prompt that
+            # was never the problem, so the retry happens here and the error
+            # only surfaces once the provider has said no repeatedly.
+            got = {}
+            for attempt in range(3):
+                # SEEDREAM FIRST, and the fallback is the interesting part.
+                # The nano-banana family shares Google's safety filter, which
+                # refuses plain material descriptions at random — the same
+                # office carpet three times running, in words that had worked
+                # minutes before. A texture pipeline cannot rest on that, so
+                # the non-Google model leads and Google's is the second try.
+                model = "seedream-4-t2i" if attempt == 0 else "nano-banana-2"
+                got = _kie.generate_image(
+                    prompt_text, str(raw), model=model,
+                    size="1024x1024", task_kind="tile", tileable=True,
+                    root=str(root))
+                if got.get("ok"):
+                    break
             if not got.get("ok"):
-                raise ValueError(f"the {tag} texture failed to generate: "
-                                 f"{str(got.get('error'))[:200]}")
+                why = str(got.get("error"))[:200]
+                raise ValueError(
+                    f"the {tag} texture failed three times: {why}"
+                    + (" — that is the provider's safety filter refusing a "
+                       "plain material description, which it does "
+                       "intermittently; the prompt is not the problem and "
+                       "re-running usually is the fix."
+                       if "filter" in why or "Prohibited" in why else ""))
             cost = float(got.get("estimated_usd") or 0.02)
-            img = _Img.open(raw).convert("RGBA")
-            zoom = img.resize((4 * tile_px, 4 * tile_px), _Img.LANCZOS)
-            off = (4 * tile_px - tile_px) // 2
-            corners = ((0, 0), (3 * tile_px, 0), (0, 3 * tile_px),
-                       (3 * tile_px, 3 * tile_px))
-            extra = [zoom.crop((ox, oy, ox + tile_px, oy + tile_px))
-                     for ox, oy in corners[:variants]]
-            return (zoom.crop((off, off, off + tile_px, off + tile_px)),
-                    extra, cost)
+            try:
+                stamp.write_text(what, encoding="utf-8")
+            except OSError:
+                pass          # an unstamped cache degrades to the old reuse
+            base, extra = _cut(_Img.open(raw).convert("RGBA"), variants)
+            return base, extra, cost
+
+        def _cut(img, variants: int):
+            """One painting to one tile plus its variants.
+
+            Both the fresh roll and the `reuse` path went through their own
+            copy of this, which is how the two drifted apart while the
+            sampling rules were being iterated.
+            """
+            # SAMPLE THE PAINTING FINE, NOT BIG. At 4x the tile the crop held
+            # a few large features, so the floor read as a handful of motifs
+            # repeating — and mirroring them to kill the diamond seams only
+            # turned the motifs into butterflies. A floor material wants many
+            # small features per tile: that is what carpet, concrete and
+            # stone actually look like at a metre away, and it is what makes
+            # the repeat stop being legible at all.
+            span = max(2, int(tile_px * _TEXTURE_ZOOM))
+            zoom = img.resize((span, span), _Img.LANCZOS)
+            # CROP the tile's real proportions out of the painting rather than
+            # resizing a square into them. An isometric tile is 2:1, and
+            # squashing a square crop to fit would halve the material's
+            # vertical scale — the brick would still be a brick, drawn by a
+            # bricklayer who had been stood on.
+            ox0, oy0 = max(0, (span - tw) // 2), max(0, (span - th) // 2)
+            # MIRROR-QUAD A HALF TILE, so the material is continuous across
+            # the diagonals where diamonds actually meet — see
+            # tilemask.mirror_tile for why "seamless" from the model is not
+            # the same question.
+            patch = zoom.crop((ox0, oy0, ox0 + tw // 2, oy0 + th // 2))
+            base = _tilemask.mirror_tile(patch).resize((tw, th),
+                                                       _Img.NEAREST)
+            # VARIANTS ARE THE SAME TILE MODULATED, NOT A SECOND CROP. Cutting
+            # them from elsewhere in the painting gave visibly different
+            # swatches whose edge pixels no longer agreed, so alternating them
+            # across a room broke the material's own grid at every join and
+            # read as a patchwork quilt. drift_variant keeps the tile — grid,
+            # alpha and edges untouched — and moves only a wrapped
+            # low-frequency cast plus the flecks. See its docstring.
+            extra = [_tilemask.drift_variant(
+                base, phase=ph, drift=dr, lift=lf)
+                for ph, dr, lf in ((5, 0.75, 0.0), (13, -0.62, 0.03),
+                                   (29, 0.40, 0.07))[:variants]]
+            return base, extra
 
         floor_tile, floor_variants, usd = _texture(prompt, "floor",
                                                    variants=3)
         spent += usd
-        void_tile, _unused, usd = _texture(
-            void_prompt or "deep darkness with the faintest rock texture, "
-                           "near black", "void")
-        spent += usd
+        if iso and not void_prompt:
+            # AN ISOMETRIC TILE'S BAND IS ITS OWN EDGE, NOT A NEIGHBOUR. In a
+            # top-down level the void is a second terrain you genuinely see
+            # between rooms, so it is worth painting. On a diamond the band is
+            # the lip where this tile falls away — the floor's own material in
+            # shadow — so deriving it costs nothing, cannot drift in hue from
+            # the surface it edges, and removes a whole generation.
+            #
+            # It also removes a failure: asking a provider for "deep darkness,
+            # near black" was refused by its safety filter twice here, because
+            # an image request describing nothing visible reads as an attempt
+            # to get nothing back. There is now nothing to refuse.
+            void_tile = _Img.eval(
+                floor_tile.convert("RGBA"),
+                lambda c: int(c * _tilemask.ISO_BAND_LEVEL))
+            void_tile.putalpha(floor_tile.convert("RGBA").getchannel("A"))
+        else:
+            void_tile, _unused, usd = _texture(
+                void_prompt or "very dark charcoal grey stone in deep shadow, "
+                               "faint rough texture, matte", "void")
+            spent += usd
 
         # The working sheet is two tiles: the floor material and the void
         # material. Everything else is geometry.
-        sheet = _Img.new("RGBA", (2 * tile_px, tile_px), (0, 0, 0, 0))
+        sheet = _Img.new("RGBA", (2 * tw, th), (0, 0, 0, 0))
         sheet.paste(floor_tile, (0, 0))
-        sheet.paste(void_tile, (tile_px, 0))
+        sheet.paste(void_tile, (tw, 0))
         pinned = _artdirection.palette_pinned(str(root))
         raw_png = out_dir / f"{name}_raw.png"
         sheet.save(raw_png)
         if pinned:
             _spritekit.lock_palette(str(raw_png), pinned)
             sheet = _Img.open(raw_png).convert("RGBA")
+            floor_tile = sheet.crop((0, 0, tw, th))
+            void_tile = sheet.crop((tw, 0, 2 * tw, th))
 
         def _tile_mean(tx):
             return _tilemask._mean(list(
-                sheet.crop((tx * tile_px, 0, (tx + 1) * tile_px, tile_px))
+                sheet.crop((tx * tw, 0, (tx + 1) * tw, th))
                 .convert("RGB").getdata()))
 
         colours = [_tile_mean(0), _tile_mean(1)]
@@ -1811,9 +1958,18 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         # to repair its sheets — here it is not a repair, it is the whole
         # construction: full-floor donor at (0,0), void donor at (1,0), and
         # every wanted mask carved between them. Coverage cannot be partial.
-        norm = _tilemask.normalise_edges(
-            sheet, {full: (0, 0), 0: (1, 0)}, wanted,
-            tile_size=(tile_px, tile_px), colours=colours)
+        #
+        # The isometric branch is the SAME idea against a different geometry:
+        # four diamond edges instead of four rect sides, and everything
+        # outside the diamond transparent because that is what makes the tile
+        # a diamond at all.
+        if iso:
+            norm = _tilemask.diamond_tiles(floor_tile, void_tile, wanted,
+                                           tile_size=(tw, th))
+        else:
+            norm = _tilemask.normalise_edges(
+                sheet, {full: (0, 0), 0: (1, 0)}, wanted,
+                tile_size=(tw, th), colours=colours)
         if not norm.get("ok"):
             return {"ok": False, "stage": "compose",
                     "error": norm.get("reason"), "raw": str(raw_png),
@@ -1827,18 +1983,27 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         # generators scatter them over interior cells. The sidecar is how
         # they learn which tiles those are — a .tres cannot say it.
         interior_at = table[15 if bits == 4 else 255]
-        cols = max(1, sheet.width // tile_px)
+        cols = max(1, sheet.width // tw)
         n0 = len(wanted)
         rows_need = (n0 + len(floor_variants) + cols - 1) // cols
-        if rows_need * tile_px > sheet.height:
-            grown = _Img.new("RGBA", (sheet.width, rows_need * tile_px),
+        if rows_need * th > sheet.height:
+            grown = _Img.new("RGBA", (sheet.width, rows_need * th),
                              (0, 0, 0, 0))
             grown.paste(sheet, (0, 0))
             sheet = grown
+        # An isometric variant is the interior DIAMOND cut from another part
+        # of the painting, not a rectangle: pasted square it would overdraw
+        # its neighbours' corners and the level would grow opaque seams
+        # exactly where the diamonds are meant to interlock.
+        if iso:
+            floor_variants = [
+                _tilemask.diamond_tiles(v, v, [full],
+                                        tile_size=(tw, th))["image"]
+                for v in floor_variants]
         variant_coords = []
         for j, vt in enumerate(floor_variants):
             tx, ty = (n0 + j) % cols, (n0 + j) // cols
-            sheet.paste(vt, (tx * tile_px, ty * tile_px))
+            sheet.paste(vt, (tx * tw, ty * th))
             variant_coords.append((tx, ty))
 
         atlas_png = out_dir / f"{name}.png"
@@ -1855,7 +2020,9 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         # handoff now: level_generate and sidescroll_generate read it off
         # disk beside the .tres and the parameters collapse to nothing.
         # `interior`/`variants` stay at top level for the older reader
-        # (_scatter_variants) - same file, superset schema.
+        # (_scatter_variants) - same file, superset schema. Built here,
+        # WRITTEN ONCE after the walls exist, so the manifest can say what
+        # the .tres actually defines.
         sidecar = {"kind": "bgate-tileset", "version": 1,
                    "tile_px": tile_px, "bits": bits,
                    "floor": {"source": 0,
@@ -1866,9 +2033,20 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                    "interior": list(interior_at),
                    "variants": [list(v) for v in variant_coords]}
         sidecar_path = out_dir / f"{name}.tiles.json"
-        seams = _tilemask.seam_report(sheet, table,
-                                      tile_size=(tile_px, tile_px),
-                                      colours=colours)
+        # THE SEAM CHECK IS SQUARE-ONLY, and saying so beats reporting a
+        # number that means nothing. It samples the tile RECT's edges and asks
+        # whether neighbouring tiles agree there; on a diamond those edges are
+        # the transparent corners, so every comparison would be one empty band
+        # against another and every set would score perfect.
+        seams = ({"checked": 0, "findings": [],
+                  "skipped": "isometric: the tile rect's edges are the "
+                             "diamond's transparent corners, so edge "
+                             "continuity is not what holds an iso set "
+                             "together — the shared diamond outline is, and "
+                             "that is constructed rather than measured"}
+                 if iso else
+                 _tilemask.seam_report(sheet, table, tile_size=(tw, th),
+                                       colours=colours))
 
         # WALLS, when asked for. A wall is a solid MASS whose shape comes
         # from the level's wall ring, not a 16-mask terrain — so this needs
@@ -1878,9 +2056,99 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         # wall art came back brighter than the floor, which reads as lit
         # paths around dark pits rather than as rooms with walls.
         wall_source = None
-        if wall_prompt:
+        if iso:
+            # AN ISOMETRIC LEVEL NEEDS ITS WALLS AS BLOCKS, always — there is
+            # no flat wall tile that reads as a wall in this projection, only
+            # a raised cell with its two camera-facing sides showing. So this
+            # is built whether or not a wall material was asked for: without
+            # `wall_prompt` the block is the floor's own stone, and the face
+            # shading alone is what separates a wall from the ground it
+            # stands on (it is enough — the two planes are at different
+            # angles to the light, which is the entire isometric illusion).
+            lift = int(wall_lift) or th
             try:
-                wtile, usd = _texture(wall_prompt, "wall")
+                if wall_prompt:
+                    wmat, _unused, usd = _texture(wall_prompt, "wall")
+                    spent += usd
+                else:
+                    # THE WALL MASS IS ROCK, NOT FLOOR. Built from the floor's
+                    # own tile the block came back with a top face identical
+                    # to the ground, so a filled wall region rendered as a
+                    # plateau of flagstone and the rooms were legible only by
+                    # the shadow lines between them. The darkened material —
+                    # the same one the floor's edge band is cut from — makes
+                    # the raised mass read as stone and the walkable floor
+                    # read as floor, which is the distinction the square path
+                    # already makes by toning its wall to 0.62 of the floor.
+                    wmat = void_tile
+                def _diamond_of(mat):
+                    return _tilemask.crop_tile(
+                        _tilemask.diamond_tiles(mat, mat, [full],
+                                                tile_size=(tw, th))["image"],
+                        (0, 0), (tw, th))
+
+                # THREE KINDS OF RAISED CELL, and the difference is what its
+                # top is made of. A WALL's top is rock, because nothing stands
+                # on it. A TERRACE's top is the floor, because something does.
+                # A RAMP is a terrace with its top tilted toward the neighbour
+                # one level down. Drawing them from one primitive is why a
+                # ledge and the ramp leading onto it cannot disagree.
+                # A WALL AND A STEP ARE NOT THE SAME HEIGHT, and drawing
+                # them so is what turned the first terraced render into
+                # noise: a terrace top and a wall top at one altitude give
+                # the eye no profile to read, just two colours interleaved.
+                # A barrier is full height; something you walk up is half of
+                # it — which is also what makes the ramp a ramp rather than
+                # a cliff with a slope painted on.
+                step = max(2, lift // 2)
+                parts = [("wall", _tilemask.iso_block(
+                    _diamond_of(wmat), wmat, tile_size=(tw, th), lift=lift))]
+                parts.append(("terrace", _tilemask.iso_block(
+                    _diamond_of(floor_tile), wmat, tile_size=(tw, th),
+                    lift=step)))
+                for face in ("n", "e", "s", "w"):
+                    parts.append((f"ramp_{face}", _tilemask.iso_ramp(
+                        floor_tile, face, tile_size=(tw, th), lift=step)))
+                # A WALL IN A BUILDING IS A PLANE, NOT A CUBE. The block
+                # above is right for terrain — a plateau, a ledge — and wrong
+                # for architecture: it eats the whole cell, so a floor built
+                # from one-cell partitions renders as a maze of corridors
+                # instead of rooms with walls between them. These are the
+                # same wall at the same height with a narrow footprint.
+                for mk in range(16):
+                    parts.append((f"panel{mk}", _tilemask.iso_panel(
+                        wmat, mk, tile_size=(tw, th), lift=lift)))
+                for _kind, part in parts:
+                    if not part.get("ok"):
+                        raise ValueError(part.get("reason"))
+                # ONE REGION AND ONE ORIGIN for the whole source, because an
+                # atlas source has exactly one texture_region_size. A shorter
+                # tile is pasted at the BOTTOM of the tall cell, so its own
+                # top face lands `step` above the floor while the resource
+                # still describes one rectangle.
+                bw, bh = tw, th + lift
+                strip = _Img.new("RGBA", (bw * len(parts), bh), (0, 0, 0, 0))
+                blocks = {}
+                for i, (kind, part) in enumerate(parts):
+                    strip.paste(part["image"],
+                                (i * bw, bh - part["size"][1]))
+                    blocks[kind] = [i, 0]
+                wall_png = out_dir / f"{name}_wall.png"
+                strip.save(wall_png)
+                if pinned:
+                    _spritekit.lock_palette(str(wall_png), pinned)
+                wall_source = {"ok": True, "path": str(wall_png),
+                               "lift": lift,
+                               "origin": list(parts[0][1]["origin"]),
+                               "size": [bw, bh], "step": step,
+                               "tiles": [tuple(v) for v in blocks.values()],
+                               "blocks": blocks}
+            except Exception as exc:                            # noqa: BLE001
+                wall_source = {"ok": False,
+                               "error": f"{type(exc).__name__}: {exc}"}
+        elif wall_prompt:
+            try:
+                wtile, _unused, usd = _texture(wall_prompt, "wall")
                 spent += usd
                 wall_source = _wall_tile_from(wtile, sheet, tile_px, out_dir,
                                               name)
@@ -1888,15 +2156,110 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                 wall_source = {"ok": False,
                                "error": f"{type(exc).__name__}: {exc}"}
 
+        # EXTRA FLOOR MATERIALS, one atlas source each. A floor with one
+        # surface everywhere is the single loudest thing about a generated
+        # level: real buildings change underfoot at every threshold — carpet
+        # to walkway to lino to the cold vinyl of a server room — and the
+        # layout that is being dressed already knows where those lines are,
+        # because it drew them with different tiles. This is what lets a
+        # re-skin keep them.
+        extra_sources, extra_meta = [], {}
+        for spec in [s for s in str(materials).split(";") if s.strip()]:
+            mat_name, _, mat_prompt = spec.partition("=")
+            mat_name = mat_name.strip() or f"mat{len(extra_sources) + 2}"
+            mat_prompt = mat_prompt.strip() or mat_name
+            try:
+                mtile, mvars, usd = _texture(mat_prompt, mat_name, variants=3)
+                spent += usd
+                mnorm = _tilemask.diamond_tiles(mtile, mtile, wanted,
+                                                tile_size=(tw, th))
+                if not mnorm.get("ok"):
+                    raise ValueError(mnorm.get("reason"))
+                msheet, mtable = mnorm["image"], mnorm["table"]
+                mcols = max(1, msheet.width // tw)
+                n0m = len(wanted)
+                need = (n0m + len(mvars) + mcols - 1) // mcols
+                if need * th > msheet.height:
+                    grown = _Img.new("RGBA", (msheet.width, need * th),
+                                     (0, 0, 0, 0))
+                    grown.paste(msheet, (0, 0))
+                    msheet = grown
+                mvar_at = []
+                for j, vt in enumerate(mvars):
+                    vt = _tilemask.diamond_tiles(vt, vt, [full],
+                                                 tile_size=(tw, th))["image"]
+                    txm, tym = (n0m + j) % mcols, (n0m + j) // mcols
+                    msheet.paste(vt, (txm * tw, tym * th))
+                    mvar_at.append([txm, tym])
+                mpath = out_dir / f"{name}_{mat_name}.png"
+                msheet.save(mpath)
+                if pinned:
+                    _spritekit.lock_palette(str(mpath), pinned)
+                sid = 2 + len(extra_sources)
+                extra_sources.append({
+                    "id": sid,
+                    "texture": f"res://{res_dir.strip('/')}/"
+                               f"{name}_{mat_name}.png",
+                    "tiles": sorted({(tx, ty) for ty in
+                                     range(msheet.height // th)
+                                     for tx in range(msheet.width // tw)
+                                     if msheet.crop((tx * tw, ty * th,
+                                                     (tx + 1) * tw,
+                                                     (ty + 1) * th))
+                                     .getbbox() is not None}),
+                    "path": str(mpath)})
+                extra_meta[mat_name] = {
+                    "source": sid,
+                    "interior": list(mtable[15 if bits == 4 else 255]),
+                    "variants": mvar_at}
+            except Exception as exc:                        # noqa: BLE001
+                # ONE MATERIAL FAILING IS NOT THE SET FAILING. The provider
+                # refuses plain descriptions at random, and losing a whole
+                # tileset because the third of five textures was unlucky is
+                # a worse answer than shipping four and naming the fifth.
+                extra_meta[mat_name] = {"ok": False,
+                                        "error": f"{type(exc).__name__}: {exc}"}
+
+        # UPDATED, not rebuilt: the manifest keys (kind/floor/table) were
+        # stamped where the table was minted, and rebuilding the dict here
+        # silently dropped them once already in a bad merge.
+        if extra_meta:
+            sidecar["materials"] = extra_meta
+        if iso and wall_source and wall_source.get("ok"):
+            # WHERE THE RAISED TILES ARE, for the generator that places them.
+            # A .tres can say a tile exists; it cannot say which one is a ramp
+            # facing east, and that is the field level_generate needs to turn
+            # a height map into cells. Written AFTER the blocks are built,
+            # which is the kind of ordering a NameError is good at finding.
+            sidecar["blocks"] = wall_source["blocks"]
+            sidecar["lift"] = wall_source["lift"]
+            # The blocks' own source, the contract the level tools read —
+            # sources here are always floor 0 / wall strip 1.
+            sidecar["wall_source"] = 1
+
         # COLLISION, derived from the inset the tiles were rebuilt with —
         # not traced from pixels, because the walkable region is a rectangle
         # we chose and tracing would rediscover it with jitter and hand Godot
         # fifty points per tile. Verified by physics rather than by the file:
         # without it a body stood in the void on 223 of 280 sampled frames,
         # with it on 0.
-        collision = _tilemask.collision_polygons(
-            sorted(table), tile_size=(tile_px, tile_px),
-            inset=result_inset or _tilemask.EDGE_INSET) if collide else {}
+        # An ISOMETRIC floor gets NO colliders at all — walkable-by-omission,
+        # the same rule the square path applies to interior tiles. The first
+        # cut here put the full diamond on every mask, reasoning "the outline
+        # is what stops the player"; but a TileSet physics polygon is a SOLID
+        # OBSTACLE (see collision_polygons: the collider is the VOID), so
+        # that made the entire floor collision and a CharacterBody2D spawned
+        # embedded in it, unable to move. What stops an iso walker at the
+        # floor's edge is the wall/void tiles beside it, which carry their
+        # own solidity.
+        if not collide:
+            collision = {}
+        elif iso:
+            collision = {}
+        else:
+            collision = _tilemask.collision_polygons(
+                sorted(table), tile_size=(tw, th),
+                inset=result_inset or _tilemask.EDGE_INSET)
 
         res_texture = f"res://{res_dir.strip('/')}/{name}.png"
         # EVERY TILE IN THE ATLAS, not just the chosen terrain's table. The
@@ -1907,10 +2270,9 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         # atlas the whole time.
         all_tiles = sorted({
             (tx, ty)
-            for ty in range(sheet.height // tile_px)
-            for tx in range(sheet.width // tile_px)
-            if sheet.crop((tx * tile_px, ty * tile_px,
-                           (tx + 1) * tile_px, (ty + 1) * tile_px))
+            for ty in range(sheet.height // th)
+            for tx in range(sheet.width // tw)
+            if sheet.crop((tx * tw, ty * th, (tx + 1) * tw, (ty + 1) * th))
             .getbbox() is not None})
         sources = [{"id": 0, "texture": res_texture, "tiles": all_tiles,
                     "collision": {table[m]: polys
@@ -1920,16 +2282,40 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             sources.append({
                 "id": 1,
                 "texture": f"res://{res_dir.strip('/')}/{name}_wall.png",
-                "tiles": [(0, 0)],
+                "tiles": wall_source.get("tiles") or [(0, 0)],
+                # A BLOCK IS TALLER THAN ITS CELL, and the resource has to say
+                # so twice: the region is the art's real size, and the origin
+                # puts the art's bottom edge on the diamond's bottom vertex so
+                # the top face lands exactly `lift` above the floor plane.
+                # ORIGINS, PLURAL — texture_origin is TileData, not source
+                # data. Written at the source level Godot accepts the file,
+                # ignores the key and reports origin (0, 0), which drew every
+                # wall at half the height it was built with: plausible enough
+                # in a screenshot, wrong by lift/2 everywhere. The engine
+                # probe is what said so.
+                **({"region": tuple(wall_source["size"]),
+                    "origins": {tuple(at): tuple(wall_source["origin"])
+                                for at in wall_source["tiles"]}}
+                   if iso else {}),
                 # The wall is solid all the way through, so its collider is
                 # the whole cell rather than an edge band.
-                "collision": {(0, 0): [[(-tile_px / 2, -tile_px / 2),
-                                        (tile_px / 2, -tile_px / 2),
-                                        (tile_px / 2, tile_px / 2),
-                                        (-tile_px / 2, tile_px / 2)]]}
+                "collision": ({at: [_tilemask.diamond_polygon((tw, th))]
+                               for at in map(tuple,
+                                             wall_source.get("tiles")
+                                             or [(0, 0)])}
+                              if iso else
+                              {(0, 0): [[(-tw / 2, -th / 2),
+                                         (tw / 2, -th / 2),
+                                         (tw / 2, th / 2),
+                                         (-tw / 2, th / 2)]]})
                 if collide else {}})
+        for src in extra_sources:
+            sources.append({k: v for k, v in src.items() if k != "path"})
+        shape, layout = ((_tilemap.ISOMETRIC, _tilemap.DIAMOND_DOWN) if iso
+                         else (_tilemap.SQUARE, _tilemap.DIAMOND_RIGHT))
         tres_text = _tilemap.write_tileset(
-            sources, tile_size=(tile_px, tile_px), physics=bool(collide))
+            sources, tile_size=(tw, th), shape=shape, layout=layout,
+            physics=bool(collide))
         tres_path = out_dir / f"{name}.tres"
         tres_path.write_text(tres_text, encoding="utf-8")
 
@@ -1948,7 +2334,8 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                   # sidescroll_generate ONLY the tileset path - they read
                   # this file beside it and no atlas coordinate needs typing.
                   "manifest": str(sidecar_path),
-                  "tile_px": tile_px, "bits": bits,
+                  "tile_px": tile_px, "tile_size": [tw, th], "bits": bits,
+                  "view": view, "shape": "isometric" if iso else "square",
                   "colours": {"floor": [round(c) for c in colours[0]],
                               "void": [round(c) for c in colours[1]]},
                   # Coverage is total BY CONSTRUCTION — every mask is carved
@@ -1964,6 +2351,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                   # tile and paints a level entirely out of seams.
                   "solid": list(interior_at),
                   "interior_variants": [list(v) for v in variant_coords],
+                  **({"materials": extra_meta} if extra_meta else {}),
                   "seams": seams, "edge_inset": result_inset,
                   **({"wall": wall_source} if wall_source else {}),
                   "collision": {"tiles": len([m for m, v in collision.items()
@@ -1973,7 +2361,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                   "spend": {"usd": round(spent, 4), "provider": "kie"}}
 
         master = _tileset_master_for(str(atlas_png), out_dir / f"{name}.aseprite",
-                                     (tile_px, tile_px))
+                                     (tw, th))
         if master is not None:
             result["aseprite"] = master
 
@@ -1985,6 +2373,9 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             import shutil as _sh
             _sh.copyfile(atlas_png, dest_dir / f"{name}.png")
             _sh.copyfile(sidecar_path, dest_dir / f"{name}.tiles.json")
+            for src in extra_sources:
+                _sh.copyfile(src["path"],
+                             dest_dir / _Path(src["path"]).name)
             if wall_source and wall_source.get("ok"):
                 _sh.copyfile(wall_source["path"], dest_dir / f"{name}_wall.png")
             (dest_dir / f"{name}.tres").write_text(tres_text, encoding="utf-8")

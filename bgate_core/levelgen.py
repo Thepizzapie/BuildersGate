@@ -357,3 +357,359 @@ def layers(level: dict, *, floor: autotile.Terrain,
                                           outside=True),
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# Elevation
+# ---------------------------------------------------------------------------
+# A RAISED CELL IS SCENERY UNTIL SOMETHING CAN WALK ONTO IT. The isometric
+# block gave levels height and gave the player nothing: `connected` asks
+# whether the floor is one region four-directionally, which is exactly the
+# question that stops meaning anything the moment two adjacent cells sit at
+# different heights. A terrace nobody can reach and a wall are the same object.
+#
+# So height comes with its own reachability, and with the thing that makes the
+# height crossable: a RAMP. A ramp is a floor cell at height h that also
+# connects to the neighbour in ONE direction at h-1 — the tile art slopes that
+# way, and the walk rule and the drawing agree because both read this field.
+#
+# Corridors stay on the base plane and rooms are what rise. That is a design
+# choice and worth stating: it means every raised room is entered through its
+# own doorways, so a ramp goes where a corridor already meets it, and no
+# corridor ever needs a slope running along its length.
+
+#: (dx, dy) per ramp direction name. These are CELL directions, which the
+#: isometric projection renders as the four diagonals — the same mapping
+#: `tilemask` carves the diamond's edges with.
+RAMP_DIRS = {"n": (0, -1), "e": (1, 0), "s": (0, 1), "w": (-1, 0)}
+
+
+def _height_of(heights: dict, cell) -> int:
+    return int(heights.get(tuple(cell), 0))
+
+
+def step_ok(a, b, heights: dict, ramps: dict) -> bool:
+    """May a walker move between these two adjacent cells?
+
+    Same height is always fine. A height change is fine ONLY across a ramp
+    facing that way — which is what stops a generator from calling a level
+    connected because two rooms happen to touch at different altitudes.
+    """
+    a, b = tuple(a), tuple(b)
+    ha, hb = _height_of(heights, a), _height_of(heights, b)
+    if ha == hb:
+        return True
+    high, low = (a, b) if ha > hb else (b, a)
+    if abs(ha - hb) != 1:
+        return False
+    facing = ramps.get(high)
+    if not facing:
+        return False
+    dx, dy = RAMP_DIRS[facing]
+    return (high[0] + dx, high[1] + dy) == low
+
+
+def reachable(floor, heights: dict, ramps: dict, start=None) -> set:
+    """Every cell a walker can get to, obeying height and ramps."""
+    floor = {tuple(c) for c in floor}
+    if not floor:
+        return set()
+    start = tuple(start) if start is not None else next(iter(sorted(floor)))
+    if start not in floor:
+        return set()
+    seen, stack = {start}, [start]
+    while stack:
+        x, y = stack.pop()
+        for p in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if p in floor and p not in seen and step_ok((x, y), p, heights,
+                                                        ramps):
+                seen.add(p)
+                stack.append(p)
+    return seen
+
+
+def terrace(level: dict, *, seed: int = 0, levels: int = 2,
+            raised: float = 0.35) -> dict:
+    """Give a flat plan its heights and the ramps that make them walkable.
+
+    Rooms rise, corridors stay on the base plane, and every cell where a
+    raised room meets the corridor that serves it becomes a ramp facing down
+    into it. Built that way the level is reachable BY CONSTRUCTION rather than
+    checked afterwards and re-rolled — the same discipline the side-scroller's
+    segments follow.
+
+    Returns the level with ``heights``, ``ramps`` and a height-aware
+    ``connected``; the flat ``floor`` set is untouched, so every consumer that
+    does not care about elevation keeps working.
+    """
+    if levels < 1:
+        raise LevelError(f"{levels} levels is not a level")
+    rng = random.Random(seed ^ 0x5EED)
+    floor = {tuple(c) for c in level["floor"]}
+    rooms = level.get("rooms") or []
+
+    room_cells: list[set] = []
+    for room in rooms:
+        x, y, w, h = room["x"], room["y"], room["w"], room["h"]
+        room_cells.append({(cx, cy) for cx in range(x, x + w)
+                           for cy in range(y, y + h)} & floor)
+
+    heights: dict = {}
+    if levels > 1:
+        for cells in room_cells:
+            if not cells or rng.random() > raised:
+                continue
+            # LIFT IS 1, NOT randint(1, levels - 1). Ramps only place where
+            # a neighbour sits at exactly h-1, BSP rooms never touch, and
+            # corridors stay at height 0 — so a lift-2 room has no h-1
+            # neighbour anywhere and is unreachable BY CONSTRUCTION (measured:
+            # levels=3, seed 0 → lifts {2}, ramps {}, connected False, and
+            # level_generate refuses the whole layout). Multi-step terraces
+            # need stepped intermediate cells before higher lifts are honest;
+            # until then every raised room is one step up and reachable.
+            lift = 1
+            for c in cells:
+                heights[c] = lift
+
+    # A RAMP WHERE THE GROUND CHANGES, facing DOWN the step. Every raised cell
+    # with a lower neighbour is a candidate; taking them all would terrace the
+    # whole rim into a slope, so one per lower neighbour DIRECTION per room is
+    # enough to enter by and keeps the room's outline reading as a ledge.
+    ramps: dict = {}
+    for cells in room_cells:
+        chosen: set = set()
+        for cell in sorted(cells):
+            h = _height_of(heights, cell)
+            if not h:
+                continue
+            for name, (dx, dy) in RAMP_DIRS.items():
+                below = (cell[0] + dx, cell[1] + dy)
+                if below in floor and _height_of(heights, below) == h - 1:
+                    if name in chosen:
+                        continue
+                    ramps[cell] = name
+                    chosen.add(name)
+                    break
+
+    out = dict(level)
+    out["heights"] = {f"{x},{y}": h for (x, y), h in sorted(heights.items())}
+    out["ramps"] = {f"{x},{y}": d for (x, y), d in sorted(ramps.items())}
+    out["levels"] = levels
+    spawn = tuple(level["spawn"]) if level.get("spawn") else None
+    got = reachable(floor, heights, ramps, start=spawn)
+    out["connected"] = len(got) == len(floor)
+    out["unreachable"] = sorted(c for c in floor if c not in got)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# A route, not a partition
+# ---------------------------------------------------------------------------
+# BSP ANSWERS THE WRONG QUESTION FOR A DESIGNED FLOOR. Splitting a rectangle
+# until the pieces are room-sized gives rooms that are all the same KIND of
+# thing: every one is a box off a corridor, none is first or last, and nothing
+# says which way a player is going. Shown a real tutorial floor, the designer
+# described it as five main rooms with a side room and drew the route through
+# them — which is a sequence with branches, and no partition of a rectangle
+# has a sequence in it.
+#
+# So this lays a CHAIN: rooms in order from entrance to exit, each connected to
+# the next, with side rooms hung off the chain as optional stops. Spawn is the
+# first room and exit the last, by construction rather than by picking the two
+# farthest apart afterwards.
+
+
+def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
+              side_rooms: int = 1, room_w: int = 11, room_h: int = 11,
+              corridor_width: int = 3, margin: int = 2,
+              jitter: float = 0.45) -> dict:
+    """A level as a ROUTE through rooms, with optional side rooms off it.
+
+    ``rooms`` is how many the critical path visits; ``side_rooms`` how many
+    hang off it. The result has the same shape `plan` returns, plus
+    ``main_path`` (the room indices in walking order) and ``side`` (the ones
+    that are optional), so a caller can dress the route differently from the
+    detour — which is the distinction a floor plan is actually made of.
+    """
+    if rooms < 2:
+        raise LevelError(f"{rooms} rooms is not a route")
+    rng = random.Random(seed)
+    span = width - 2 * margin
+    if span < rooms * 6:
+        raise LevelError(
+            f"a {width}-wide level cannot hold {rooms} rooms in a row — it "
+            f"needs about {rooms * 6 + 2 * margin}")
+
+    # ROOMS PACK THE PLATE. A chain of rooms strung across the middle leaves
+    # the rest of the floor as dead grey, and a building does not have dead
+    # space in it — an office floor is rooms wall to wall, and the route is
+    # which ones you pass through, not where they sit. So the plate is cut
+    # into a grid of rooms that FILL it, sharing their walls the way rooms
+    # in a building do, and the route is a walk over that grid.
+    cols = max(2, min(rooms, (width - 2 * margin) // 9))
+    rows = max(1, -(-(rooms + max(0, side_rooms)) // cols))
+    cw = (width - 2 * margin) // cols
+    chh = (height - 2 * margin) // rows
+    if cw < 6 or chh < 6:
+        raise LevelError(
+            f"a {width}x{height} plate cannot hold {rooms} rooms plus "
+            f"{side_rooms} side — each needs about 6x6 with its walls")
+    grid: list[Rect] = []
+    for r in range(rows):
+        for c in range(cols):
+            x = margin + c * cw
+            y = margin + r * chh
+            # one cell of the gap belongs to the shared wall between rooms
+            grid.append(Rect(x, y, cw - 1, chh - 1))
+
+    # THE ROUTE IS A SPINE, AND A SIDE ROOM IS OFF IT. Walking the grid
+    # serpentine made every room a link in one snake: eight rooms in a J,
+    # each one on the way to the next, and "side" was a label with no
+    # geometry behind it. A side room is a room you can DECLINE to enter —
+    # a dead end hanging off the route — so the route is a straight run of
+    # `rooms` along the first band, and everything else is a leaf.
+    band = list(range(0, min(cols, len(grid))))
+    if len(band) < rooms:                       # a short plate wraps the spine
+        band += list(range(cols, min(len(grid), cols + (rooms - len(band)))))
+    order = band[:rooms]
+    # A BRANCH GOES OFF THE MIDDLE. Taking the leftover cells in grid order
+    # put every side room under the FIRST room of the spine, so the route
+    # bent into it and the whole floor read as one connected L — a detour
+    # you meet at the entrance is just the way in. Prefer the cells under
+    # the middle of the spine, so the player walks past the branch with the
+    # route continuing visibly onward.
+    mid_col = (len(order) - 1) / 2.0
+    rest = sorted((i for i in range(len(grid)) if i not in order),
+                  key=lambda i: abs((i % cols) - mid_col))
+    placed = [grid[i] for i in order + rest[:max(0, side_rooms)]]
+
+    main = list(range(min(rooms, len(placed))))
+    # SIDE ROOMS HANG OFF THE CHAIN, never between two links of it: a detour
+    # you must pass through is not a detour, it is the route. With a packed
+    # grid they are simply the rooms the walk does not need.
+    side: list[int] = list(range(len(main), len(placed)))
+    for _ in range(0):
+        host = rng.randrange(1, rooms - 1) if rooms > 2 else 0
+        base = placed[host]
+        # A SIDE ROOM THAT DOES NOT FIT IS NOT A SIDE ROOM, and silently
+        # dropping it left the floor a bare chain — the author asked for five
+        # main rooms AND a side room. Try above, then below, shrinking to
+        # whatever the band actually has room for rather than giving up on
+        # the first miss.
+        rw = max(5, min(room_w - 3, width - 2 * margin))
+        spot = None
+        for gap in (3, 2):
+            over = base.y - gap - margin
+            under = height - margin - (base.y + base.h + gap)
+            if over >= 5:
+                spot = (min(room_h - 3, over), base.y - gap - min(room_h - 3, over))
+                break
+            if under >= 5:
+                spot = (min(room_h - 3, under), base.y + base.h + gap)
+                break
+        if spot is None:
+            continue
+        rh, y = spot
+        x = max(margin, min(width - margin - rw, base.x))
+        side.append(len(placed))
+        placed.append(Rect(x, y, rw, rh))
+
+    floor: set = set()
+    for r in placed:
+        floor |= r.cells()
+    corridors = []
+
+    def join(a: Rect, b: Rect):
+        # A DOORWAY, NOT A TREK. Two rooms that already share a wall are
+        # joined by cutting an opening in it; running a corridor between
+        # their centres instead carved a channel straight through both, which
+        # is how a packed floor turned back into a chain with holes in it.
+        gap_x = (a.x + a.w < b.x) or (b.x + b.w < a.x)
+        gap_y = (a.y + a.h < b.y) or (b.y + b.h < a.y)
+        left, right = (a, b) if a.x <= b.x else (b, a)
+        top, bottom = (a, b) if a.y <= b.y else (b, a)
+        # A DOOR IS A DOOR, NOT A MISSING WALL. At full corridor width and
+        # always centred, every opening landed on the same line and the row
+        # of them merged into one continuous channel — the packed floor read
+        # as open plan with pillars. Two cells, placed anywhere along the
+        # shared edge, is an opening you walk through.
+        w = max(1, min(2, corridor_width))
+        if not gap_y and abs((left.x + left.w) - right.x) <= 2:
+            lo = max(left.y, right.y)
+            hi = min(left.y + left.h, right.y + right.h)
+            if hi - lo >= w + 2:
+                mid = rng.randint(lo + 1, hi - w - 1)
+                cells = {(x, y)
+                         for x in range(left.x + left.w - 1, right.x + 1)
+                         for y in range(mid, mid + w)}
+                corridors.append({"from": list(a.center), "to": list(b.center),
+                                  "kind": "door", "cells": len(cells)})
+                return cells
+        if not gap_x and abs((top.y + top.h) - bottom.y) <= 2:
+            lo = max(top.x, bottom.x)
+            hi = min(top.x + top.w, bottom.x + bottom.w)
+            if hi - lo >= w + 2:
+                mid = rng.randint(lo + 1, hi - w - 1)
+                cells = {(x, y)
+                         for y in range(top.y + top.h - 1, bottom.y + 1)
+                         for x in range(mid, mid + w)}
+                corridors.append({"from": list(a.center), "to": list(b.center),
+                                  "kind": "door", "cells": len(cells)})
+                return cells
+        pa, pb = a.center, b.center
+        cells, path = _elbow(pa, pb, rng, width=corridor_width)
+        corridors.append({"from": list(pa), "to": list(pb), "kind": "corridor",
+                          "path": path, "cells": len(cells)})
+        return cells
+
+    for i in range(len(main) - 1):
+        floor |= join(placed[i], placed[i + 1])
+    # SIDE ROOMS CHAIN. A detour that leads to another detour is the shape a
+    # floor plan actually has — a store room off the break room, the server
+    # closet behind IT — and hanging every side room directly off the route
+    # gives a comb instead. Each one attaches to the nearest room already
+    # reachable, main or side, so depth appears where the geometry allows it.
+    # each leaf attaches to ONE room already reachable — a main room, or
+    # another leaf, which is how a store room ends up behind a break room.
+    # One join means one way in and out: a dead end, not a shortcut.
+    # WHERE EACH BRANCH GOES IS A DESIGN DECISION, not a nearest-neighbour
+    # search. Left to distance alone every leaf clustered on whichever room
+    # happened to be closest, which gives a floor one fat lump on its side.
+    # The order is deliberate: the first branch hangs off the MIDDLE of the
+    # route, the second off the room before the exit — the last beat before
+    # the door, where a player is most likely to want one more look around —
+    # and anything after that hangs off THAT branch, so it forks instead of
+    # crowding the spine.
+    inner = [h for h in main if h not in (main[0], main[-1])] or list(main)
+    mid_host = inner[len(inner) // 2]
+    pre_exit = main[-2] if len(main) >= 2 else main[0]
+    hub = None
+    for n, idx in enumerate(side):
+        if n == 0:
+            host = mid_host
+        elif n == 1:
+            host = pre_exit
+            hub = idx
+        else:
+            host = hub if hub is not None else pre_exit
+        floor |= join(placed[idx], placed[host])
+
+    floor = {c for c in floor
+             if 0 <= c[0] < width and 0 <= c[1] < height}
+    walls = wall_ring(floor)
+    solid = {(x, y) for y in range(height) for x in range(width)} - floor
+    ordered = placed
+    return {
+        "seed": seed, "width": width, "height": height,
+        "region": [0, 0, width, height],
+        "rooms": [r.as_dict() for r in ordered],
+        "corridors": corridors,
+        "floor": sorted(floor, key=lambda c: (c[1], c[0])),
+        "walls": sorted(walls, key=lambda c: (c[1], c[0])),
+        "solid": sorted(solid, key=lambda c: (c[1], c[0])),
+        "connected": connected(floor),
+        "spawn": list(ordered[0].center),
+        "exit": list(ordered[len(main) - 1].center),
+        "main_path": main,
+        "side": side,
+    }

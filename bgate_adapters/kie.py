@@ -355,6 +355,39 @@ MODELS: dict[str, dict] = {
                 "reference images. The one to reach for when a cast has to stay "
                 "consistent across many generations.",
     },
+    # READ OFF ITS OWN DOC PAGE, and the id is why every guess failed: the
+    # family name is not the model, "bytedance/seedream-v4-text-to-image" is,
+    # with the task spelled out in the id. Probing "seedream-4.5",
+    # "bytedance/seedream-4.5" and friends returned 422 "model name not
+    # supported" for all of them, which reads like a shape complaint and is
+    # not one.
+    #
+    # WHY IT IS HERE: it is the text-to-image model that is NOT Google's. The
+    # nano-banana family shares one safety filter, and that filter refuses
+    # plain material descriptions at random — an office carpet three times in
+    # a row, the same words that had generated minutes earlier. A texture
+    # pipeline cannot be built on a coin toss, so tileset_generate reaches
+    # for this first.
+    "seedream-4-t2i": {
+        "model": "bytedance/seedream-v4-text-to-image",
+        "kind": "image",
+        "label": "ByteDance Seedream 4.0 (text to image)",
+        "required": ("prompt",),
+        "supports": {"prompt", "image_size", "image_resolution", "max_images",
+                     "seed", "nsfw_checker"},
+        "enums": {
+            "image_size": ("square_hd", "square", "portrait_4_3",
+                           "portrait_16_9", "landscape_4_3",
+                           "landscape_16_9"),
+            "image_resolution": ("1K", "2K", "4K"),
+        },
+        "ranges": {"max_images": (1, 6)},
+        "caps": {},
+        "images": "",
+        "credits": None,
+        "note": "Text-to-image, prompt only. The non-Google option, which is "
+                "what makes it the default for material and texture work.",
+    },
     "nano-banana-pro": {
         "model": "nano-banana-pro",
         "kind": "image",
@@ -2302,6 +2335,32 @@ def generate_image(prompt: str, out_path: str | os.PathLike[str], *,
                            spec.get("enums", {}).get("aspect_ratio", ()))
     if ratio and "aspect_ratio" in spec["supports"]:
         fields["aspect_ratio"] = ratio
+    elif size and "image_size" in spec["supports"]:
+        # SEEDREAM SPEAKS NAMED SHAPES, NOT RATIOS. Without this branch a
+        # caller's size was silently dropped for any model whose supports
+        # carry image_size/image_resolution instead of aspect_ratio — the
+        # request went out prompt-only at the provider's default, and
+        # tileset_generate's square resize then squashed whatever came back.
+        try:
+            w, h = (int(v) for v in str(size).lower().split("x", 1))
+        except (ValueError, TypeError):
+            w = h = 0
+        if w and h:
+            shapes = spec.get("enums", {}).get("image_size", ())
+            if w == h:
+                shape = "square_hd" if "square_hd" in shapes else "square"
+            elif w < h:
+                shape = ("portrait_16_9" if h >= w * 1.6 else "portrait_4_3")
+            else:
+                shape = ("landscape_16_9" if w >= h * 1.6
+                         else "landscape_4_3")
+            if shape in shapes:
+                fields["image_size"] = shape
+            if "image_resolution" in spec["supports"]:
+                res = ("1K" if max(w, h) <= 1024
+                       else "2K" if max(w, h) <= 2048 else "4K")
+                if res in spec.get("enums", {}).get("image_resolution", ()):
+                    fields["image_resolution"] = res
     if seed is not None and "seed" in spec["supports"]:
         fields["seed"] = int(seed)
     if image_urls:

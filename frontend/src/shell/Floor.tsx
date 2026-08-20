@@ -41,12 +41,12 @@ export function Floor() {
     const said = text.trim();
     if (!said) return;
     setSending(true);
-    // The same endpoint the console's talk box posts to: this files a work item
-    // and spawns the director on it. Deliberately NOT a second way to dispatch —
-    // one door, two places to knock on it.
-    const r = await mutate("/api/console/say", { body: { text: said } });
+    // The same session the director's screen talks to — one conversation, two
+    // places to say something into it. It answers there, and files what it
+    // decides to file.
+    const r = await mutate("/api/director/say", { body: { text: said } });
     setSending(false);
-    if (r.ok) { setText(""); toast("dispatched", "ok"); }
+    if (r.ok) { setText(""); toast("sent to the director", "ok"); }
   }
 
   return (
