@@ -1,0 +1,14 @@
+name = 'bgate-music-keep'
+description = "Keep one music take: installs it under the engine project and approves the revision. Takes the label from the panel's list, not an id you looked up."
+agents = 'yes'
+keywords = ['music', 'keep', 'install', 'approve']
+
+[[input]]
+name = 'take'
+description = "A label like '#385 office-night rev2'"
+required = true
+
+[[step]]
+name = 'keep'
+run = 'python {repo}/tools/panel_api.py keep --take "{take}"'
+timeout_secs = 120

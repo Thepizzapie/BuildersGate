@@ -1,0 +1,12 @@
+name = 'bgate-board-load'
+description = 'The open board as pickable labels, plus the seats that actually appear on it.'
+agents = 'yes'
+keywords = ['board', 'items', 'seats', 'panel']
+
+[[step]]
+name = 'load'
+run = 'python {repo}/tools/panel_api.py board-items --out ".pulsiron/feeds/board-load.json"'
+timeout_secs = 30
+
+[outputs]
+summary_file = '.pulsiron/feeds/board-load.json'

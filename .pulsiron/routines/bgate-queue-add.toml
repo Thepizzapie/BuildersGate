@@ -1,0 +1,34 @@
+name = 'bgate-queue-add'
+description = 'File a work item on the Builders Gate board for one seat, optionally dispatching it immediately. Delegation without going through the director.'
+agents = 'yes'
+keywords = ['queue', 'delegate', 'seat', 'board', 'dispatch', 'agent']
+
+[[input]]
+name = 'seat'
+description = 'director | narrative | gameplay | tech | art | audio | cinematic | qa'
+required = true
+
+[[input]]
+name = 'title'
+description = 'Short imperative title'
+required = true
+
+[[input]]
+name = 'brief'
+description = 'The self-contained brief the agent acts on'
+default = ''
+
+[[input]]
+name = 'priority'
+description = 'Higher goes first'
+default = '5'
+
+[[input]]
+name = 'deploy'
+description = 'true dispatches it now instead of queuing'
+default = 'false'
+
+[[step]]
+name = 'file'
+run = 'python {repo}/tools/panel_api.py queue --seat "{seat}" --title "{title}" --brief "{brief}" --priority {priority} --deploy "{deploy}"'
+timeout_secs = 120

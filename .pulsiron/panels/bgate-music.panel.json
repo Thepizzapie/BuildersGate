@@ -1,0 +1,118 @@
+{
+  "controls": [
+    {
+      "id": "note",
+      "text": "One request returns SEVERAL takes. Press Load to pull the models and whatever is already waiting; nothing reaches the game until you keep a take.",
+      "type": "note"
+    },
+    {
+      "action": {
+        "inputs": {},
+        "routine": "bgate-music-load"
+      },
+      "id": "load",
+      "label": "Load models + takes",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "id": "prompt",
+      "label": "Describe the track",
+      "placeholder": "tense corporate ambience, muted synth pads, 90bpm",
+      "type": "text"
+    },
+    {
+      "id": "name",
+      "label": "Name it",
+      "placeholder": "tension_loop",
+      "type": "text"
+    },
+    {
+      "id": "model",
+      "label": "Model",
+      "options_from": "load",
+      "options_path": "models",
+      "type": "select"
+    },
+    {
+      "default": 0,
+      "id": "duration",
+      "label": "Seconds (0 = default)",
+      "max": 360,
+      "min": 0,
+      "type": "number"
+    },
+    {
+      "default": true,
+      "id": "instrumental",
+      "label": "Instrumental",
+      "type": "checkbox"
+    },
+    {
+      "action": {
+        "inputs": {
+          "duration": "$duration",
+          "instrumental": "$instrumental",
+          "model": "$model",
+          "name": "$name",
+          "prompt": "$prompt"
+        },
+        "routine": "bgate-music-generate"
+      },
+      "id": "go",
+      "label": "Generate",
+      "type": "button",
+      "variant": "primary"
+    },
+    {
+      "for": "go",
+      "id": "out",
+      "type": "run-output"
+    },
+    {
+      "id": "take",
+      "label": "Take",
+      "options_from": "load",
+      "options_path": "takes",
+      "type": "select"
+    },
+    {
+      "action": {
+        "inputs": {
+          "take": "$take"
+        },
+        "routine": "bgate-music-play"
+      },
+      "id": "play",
+      "label": "Play it",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "for": "play",
+      "id": "played",
+      "type": "run-output"
+    },
+    {
+      "action": {
+        "inputs": {
+          "take": "$take"
+        },
+        "routine": "bgate-music-keep"
+      },
+      "id": "keep",
+      "label": "Keep + install",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "for": "keep",
+      "id": "kept",
+      "type": "run-output"
+    }
+  ],
+  "description": "Generate Suno takes through bgate, audition them, keep one.",
+  "name": "bgate-music",
+  "schema": "pulsiron-panel/1",
+  "title": "Builders Gate · Music"
+}

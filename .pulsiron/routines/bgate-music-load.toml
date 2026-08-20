@@ -1,0 +1,12 @@
+name = 'bgate-music-load'
+description = "The music panel's choices: the Suno models available and the takes waiting to be auditioned."
+agents = 'yes'
+keywords = ['music', 'options', 'models', 'candidates', 'panel']
+
+[[step]]
+name = 'load'
+run = 'python {repo}/tools/panel_api.py music-options --want all --out ".pulsiron/feeds/music-load.json"'
+timeout_secs = 30
+
+[outputs]
+summary_file = '.pulsiron/feeds/music-load.json'

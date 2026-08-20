@@ -1,0 +1,39 @@
+name = 'bgate-music-generate'
+description = 'Generate a batch of music candidates with Suno through the Builders Gate dashboard. Returns several takes; audition them and keep one. Costs real credits.'
+agents = 'yes'
+keywords = ['music', 'suno', 'audio', 'soundtrack', 'score', 'loop']
+
+[[input]]
+name = 'prompt'
+description = 'Describe the track.'
+required = true
+
+[[input]]
+name = 'name'
+description = 'Logical name the takes are filed under'
+default = ''
+
+[[input]]
+name = 'style'
+description = 'Style tags (custom mode only)'
+default = ''
+
+[[input]]
+name = 'model'
+description = 'Suno model; blank takes the default'
+default = ''
+
+[[input]]
+name = 'duration'
+description = 'Seconds — V5_5 ONLY (10-360); 0 = model default'
+default = '0'
+
+[[input]]
+name = 'instrumental'
+description = 'true = no vocals (the right default for BGM)'
+default = 'true'
+
+[[step]]
+name = 'generate'
+run = 'python {repo}/tools/panel_api.py music --prompt "{prompt}" --name "{name}" --style "{style}" --model "{model}" --duration "{duration}" --instrumental "{instrumental}"'
+timeout_secs = 1200

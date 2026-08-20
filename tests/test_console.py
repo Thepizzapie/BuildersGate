@@ -114,56 +114,13 @@ class TestTheStateShowsWhatJustClosed:
         assert done and done[0]["title"] == "the thing that actually landed"
 
 
-class TestTheMessageSurvives:
-    LONG = ("the hub screen feels dead — give it parallax, a day/night tint, and "
-            "make the door hum when you can afford to open it, which is the bit "
-            "that actually matters and is also well past eighty characters")
-
-    def test_the_brief_fences_the_message(self, client, root, spawned):
-        got = client.post("/api/console/say", json={"text": self.LONG}).json()
-        item = _queue.get(root, got["turn_id"])
-        assert _console.SAID_OPEN in item["brief"]
-        assert _console.said(item["brief"]) == self.LONG
-
-    def test_the_transcript_returns_it_whole(self, client, spawned):
-        client.post("/api/console/say", json={"text": self.LONG})
-        turn = client.get("/api/console/state").json()["turns"][-1]
-        assert turn["said"] == self.LONG
-        assert len(turn["title"]) <= 80        # the title really was cut
-        assert turn["title"] != turn["said"]
-
-    def test_a_turn_with_no_fence_falls_back_to_its_title(self, root, client):
-        _queue.add(root, "director", "typed before the fence existed",
-                   brief="no fence here", source=_console.CHAT_SOURCE)
-        turn = client.get("/api/console/state").json()["turns"][-1]
-        assert turn["said"] == "typed before the fence existed"
-
-    def test_the_director_is_told_to_stamp_the_lineage_line(self, client, root, spawned):
-        got = client.post("/api/console/say", json={"text": "make a thing"}).json()
-        # The instruction rides the SESSION PROMPT now, not the brief: the
-        # brief is the transcript's copy, the prompt is what the director
-        # hears. The stamp format must be the one the console graph parses.
-        from bgate_ui.routes.orchestrator import DELEGATED_FROM
-
-        prompt = spawned.prompts[got["turn_id"]]
-        assert f"{DELEGATED_FROM}{got['turn_id']}" in prompt.replace("`", "")
-        # and the human's words arrive verbatim, first
-        assert prompt.startswith("make a thing")
-
-    def test_an_empty_message_is_refused_before_anything_is_created(self, client, root):
-        assert client.post("/api/console/say", json={"text": "   "}).status_code == 400
-        rows = db.connect(root).execute(
-            "SELECT count(*) FROM work_item WHERE source = 'chat'").fetchone()
-        assert rows[0] == 0
-
-
 # ---------------------------------------------------------------------------
 # One request paints the whole cockpit
 # ---------------------------------------------------------------------------
 class TestOnePayload:
     def test_every_key_the_view_paints_is_present(self, client):
         body = client.get("/api/console/state").json()
-        for key in ("turns", "items", "agents", "lineage", "gates", "steps",
+        for key in ("items", "agents", "lineage", "gates", "steps",
                     "autopilot", "floor"):
             assert key in body, f"the console cannot paint without {key}"
 
@@ -174,12 +131,11 @@ class TestOnePayload:
         assert floor["queued"] == 2
         assert floor["running"] == 0
 
-    def test_chat_turns_are_not_repeated_as_board_items(self, client, spawned):
-        client.post("/api/console/say", json={"text": "hello"})
+    def test_every_item_names_where_it_came_from(self, client, root):
+        # The graph groups by source, so a row without one is a row it cannot
+        # place.
+        _queue.add(root, "art", "draw the thing")
         body = client.get("/api/console/state").json()
-        assert body["turns"], "the turn is missing from the conversation"
-        # The graph filters source='chat' itself, but the payload must make that
-        # possible — a turn drawn twice is a turn that looks like two tasks.
         assert all("source" in i for i in body["items"])
 
     def test_an_open_qa_gate_is_a_gate(self, client, root):
@@ -258,14 +214,14 @@ class TestOnePayload:
         assert not [g for g in client.get("/api/console/state").json()["gates"]
                     if g["kind"] == "art"]
 
-    def test_delegated_children_are_reachable_through_lineage(self, client, root, spawned):
+    def test_delegated_children_are_reachable_through_lineage(self, client, root):
         from bgate_ui.routes.orchestrator import DELEGATED_FROM
 
-        turn = client.post("/api/console/say", json={"text": "split this"}).json()
+        parent = _queue.add(root, "director", "split this")
         child = _queue.add(root, "art", "the piece",
-                           brief=f"{DELEGATED_FROM}{turn['turn_id']}\n\ndo it")
+                           brief=f"{DELEGATED_FROM}{parent['id']}\n\ndo it")
         parents = client.get("/api/console/state").json()["lineage"]["parents"]
-        assert parents[str(child["id"])] == turn["turn_id"]
+        assert parents[str(child["id"])] == parent["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -467,21 +423,39 @@ class TestSteerBox:
 
 
 # ---------------------------------------------------------------------------
-# A refused turn is still a turn
+# The director chat — a session's transcript, not a board row
 # ---------------------------------------------------------------------------
-class TestARefusedTurnSurvives:
-    def test_the_item_stays_on_the_board_with_the_reason(self, client, root, monkeypatch):
-        # The dispatch-refusal path belongs to ADDRESSED turns now — a
-        # director turn goes to the persistent session instead. The contract
-        # under test is unchanged: a refused turn is still a turn.
-        monkeypatch.setattr(
-            "bgate_ui.dispatch.dispatch",
-            lambda *a, **k: {"ok": False, "code": "dirty_tree",
-                             "error": "2 uncommitted change(s) in the tree"})
-        got = client.post("/api/console/say",
-                          json={"text": "do a thing", "seat": "art"}).json()
-        assert got["dispatched"] is False
-        assert got["refusal"]["code"] == "dirty_tree"
-        assert _queue.get(root, got["turn_id"])["status"] == "queued"
-        # and it is still in the conversation, not swallowed
-        assert client.get("/api/console/state").json()["turns"][-1]["id"] == got["turn_id"]
+class TestTheDirectorChat:
+    """A MESSAGE IS A MESSAGE. It used to be a work item with a fenced brief,
+    a reserved row and a lineage stamp, which is why the board filled up with
+    rows nobody filed and the transcript had costs on it."""
+
+    def test_a_message_files_nothing_on_the_board(self, client, root, monkeypatch):
+        said = []
+        monkeypatch.setattr("bgate_ui.directorsession.send",
+                            lambda r, text: said.append(text) or {"ok": True, "n": 1})
+        assert client.post("/api/director/say", json={"text": "hello"}).json()["ok"]
+        assert said == ["hello"]
+        rows = db.connect(root).execute("SELECT count(*) FROM work_item").fetchone()
+        assert rows[0] == 0
+
+    def test_an_empty_message_is_refused(self, client):
+        assert client.post("/api/director/say", json={"text": "  "}).status_code == 400
+
+    def test_the_transcript_reads_back_what_was_said(self, client, root):
+        from bgate_ui import directorsession
+
+        directorsession._post(root, "user", "make the hub hum")
+        directorsession._post(root, "assistant", "filed it for art")
+        body = client.get("/api/director/chat").json()
+        assert [m["text"] for m in body["messages"]] == [
+            "make the hub hum", "filed it for art"]
+        assert body["running"] is False
+
+    def test_after_returns_only_what_is_new(self, client, root):
+        from bgate_ui import directorsession
+
+        first = directorsession._post(root, "user", "one")["n"]
+        directorsession._post(root, "assistant", "two")
+        body = client.get(f"/api/director/chat?after={first}").json()
+        assert [m["text"] for m in body["messages"]] == ["two"]

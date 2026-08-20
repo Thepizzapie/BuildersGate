@@ -1,0 +1,137 @@
+{
+  "controls": [
+    {
+      "id": "note",
+      "text": "Press Load first — the kinds, sizes, providers and pinned refs come from the project itself. Needs `bgate serve` up. Generate costs money; Load and Recent do not.",
+      "type": "note"
+    },
+    {
+      "action": {
+        "inputs": {},
+        "routine": "bgate-art-load"
+      },
+      "id": "load",
+      "label": "Load choices",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "placeholder": "a chipped enamel office mug, top-down, flat albedo",
+      "type": "text"
+    },
+    {
+      "default": "prop",
+      "id": "kind",
+      "label": "What is it",
+      "options_from": "load",
+      "options_path": "task_kinds",
+      "type": "select"
+    },
+    {
+      "default": "(none)",
+      "id": "ref",
+      "label": "Match a pinned ref",
+      "options_from": "load",
+      "options_path": "refs",
+      "type": "select"
+    },
+    {
+      "default": "1024x1024",
+      "id": "size",
+      "label": "Size",
+      "options_from": "load",
+      "options_path": "sizes",
+      "type": "select"
+    },
+    {
+      "default": "medium",
+      "id": "quality",
+      "label": "Quality",
+      "options_from": "load",
+      "options_path": "qualities",
+      "type": "select"
+    },
+    {
+      "default": "auto",
+      "id": "provider",
+      "label": "Provider",
+      "options_from": "load",
+      "options_path": "providers",
+      "type": "select"
+    },
+    {
+      "default": false,
+      "id": "transparent",
+      "label": "Cut to alpha",
+      "type": "checkbox"
+    },
+    {
+      "default": false,
+      "id": "tileable",
+      "label": "Tileable (textures)",
+      "type": "checkbox"
+    },
+    {
+      "id": "filename",
+      "label": "File name (optional)",
+      "placeholder": "blank = named from the prompt",
+      "type": "text"
+    },
+    {
+      "action": {
+        "inputs": {
+          "filename": "$filename",
+          "kind": "$kind",
+          "prompt": "$prompt",
+          "provider": "$provider",
+          "quality": "$quality",
+          "ref": "$ref",
+          "size": "$size",
+          "tileable": "$tileable",
+          "transparent": "$transparent"
+        },
+        "routine": "bgate-art-generate"
+      },
+      "id": "go",
+      "label": "Generate",
+      "type": "button",
+      "variant": "primary"
+    },
+    {
+      "for": "go",
+      "id": "out",
+      "type": "run-output"
+    },
+    {
+      "action": {
+        "inputs": {
+          "limit": "12"
+        },
+        "routine": "bgate-art-recent"
+      },
+      "id": "recent",
+      "label": "Show folders",
+      "type": "button",
+      "variant": "secondary"
+    },
+    {
+      "id": "files",
+      "label": "Where the art is",
+      "tree_from": "recent",
+      "tree_path": "nodes",
+      "type": "asset-browser"
+    },
+    {
+      "id": "grid",
+      "label": "In this folder",
+      "source": "$files",
+      "type": "image-grid"
+    }
+  ],
+  "description": "Paint an image through the running dashboard, see it, and file it as a reviewable artifact.",
+  "name": "bgate-art",
+  "schema": "pulsiron-panel/1",
+  "title": "Builders Gate · Art"
+}

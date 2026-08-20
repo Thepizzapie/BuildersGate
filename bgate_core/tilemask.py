@@ -1298,3 +1298,86 @@ def synth_material(base, *, tile_size: tuple[int, int], palette=None,
                     v = [c * (1.0 - seam) for c in v]
             px[x, y] = (*snap(v), 255)
     return img
+
+
+#: The most a drift wave may move a pixel. Past this the variant stops being
+#: the same material lit differently and starts being a different material,
+#: which is the patchwork it exists to cure.
+DRIFT_CAP = 0.075
+
+
+def drift_variant(tile, *, phase: int, drift: float = 0.7, lift: float = 0.0,
+                  flatten: float = 0.0, palette=None):
+    """A second copy of the SAME material, not a second material.
+
+    Variants were cut from elsewhere in the source painting — a different
+    crop, so on anything with structure at tile scale the two swatches were
+    visibly different carpets, and laying them alternately across a room read
+    as a quilt. The fix is not a smaller step; there is no step small enough,
+    because the defect is that the tiles' EDGE PIXELS no longer agree and the
+    material's own grid breaks at every join between a variant and its
+    neighbour.
+
+    So modulate instead of re-cut. The tile keeps its grid, its alpha and its
+    edge pixels exactly where they are, and what varies is three
+    low-frequency waves that WRAP on the cell — so the modulation itself is
+    continuous across a join — plus a reroll of the high-frequency flecks.
+    The waves give each variant a distinct overall cast; the flecks give
+    difference that can never accumulate into a shape. Total amplitude is
+    capped at ``DRIFT_CAP``.
+
+    The operators are chosen. ``drift`` is MULTIPLICATIVE: a grid line is a
+    dark pixel and multiplying it keeps it a grid line, where subtracting a
+    constant would saturate it toward black and pull the grid forward.
+    ``lift`` is the uniform version of the same thing (wear lifts a pile),
+    and ``flatten`` pulls flecks toward the tile's own mean, which is what
+    trodden carpet actually does.
+
+    This is downsizing's floor_variant, generalised — their comment is the
+    reasoning above and their DRIFT_CAP is the number.
+    """
+    import math
+
+    im = tile.copy().convert("RGBA")
+    px = im.load()
+    w, h = im.size
+    pal = [tuple(int(c) for c in p[:3]) for p in (palette or [])] or None
+
+    vals = [px[x, y] for y in range(h) for x in range(w) if px[x, y][3]]
+    if not vals:
+        return im
+    mean = [sum(c[i] for c in vals) / len(vals) for i in range(3)]
+    p = int(phase)
+
+    for y in range(h):
+        for x in range(w):
+            c = px[x, y]
+            if not c[3]:
+                continue
+            r, g, b = float(c[0]), float(c[1]), float(c[2])
+            if drift:
+                u = 2 * math.pi * x / w
+                v = 2 * math.pi * y / h
+                s = (0.55 * math.sin(u + p * 1.7)
+                     + 0.40 * math.sin(v + p * 2.9)
+                     + 0.32 * math.sin(u + v + p * 0.8))
+                k = 1.0 + max(-DRIFT_CAP, min(DRIFT_CAP, drift * s))
+                r, g, b = r * k, g * k, b * k
+            if lift:
+                r, g, b = r * (1 + lift), g * (1 + lift), b * (1 + lift)
+            if flatten:
+                r += (mean[0] - r) * flatten
+                g += (mean[1] - g) * flatten
+                b += (mean[2] - b) * flatten
+            if p:
+                hv = (hash((x, y, p)) >> 3) % 32
+                if hv < 10:
+                    r, g, b = r * 1.16, g * 1.16, b * 1.14
+                elif hv < 21:
+                    r, g, b = r * 0.87, g * 0.88, b * 0.90
+            out = [max(0, min(255, int(round(t)))) for t in (r, g, b)]
+            if pal:
+                out = list(min(pal, key=lambda q: sum((q[i] - out[i]) ** 2
+                                                      for i in range(3))))
+            px[x, y] = (out[0], out[1], out[2], c[3])
+    return im
