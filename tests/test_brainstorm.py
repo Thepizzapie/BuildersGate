@@ -372,6 +372,13 @@ class TestAMessageCannotDispatch:
         session = _new(client)
         sid = session["id"]
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "one"})
+        # WAIT FOR ROUND ONE. A second message into a room mid-round is a 409
+        # by design (two rounds over one transcript would interleave), so
+        # posting both back to back races the answering thread: on a slower
+        # runner "two" was refused and this asserted [1] == [1, 1]. The human
+        # cannot type into a room that is thinking either — waiting here is
+        # what the product does, not a workaround for it.
+        _quiet()
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "two"})
         _quiet()
         assert [a.get("session_id") for a in answers["asked"]] == [sid, sid]
