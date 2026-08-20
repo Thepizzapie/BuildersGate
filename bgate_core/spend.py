@@ -135,6 +135,81 @@ def record(root: str | os.PathLike[str], usd: float, *, kind: str = "agent",
         pass
 
 
+def record_unpriced(root: str | os.PathLike[str], credits, *, kind: str = "other",
+                    work_item_id: Optional[int] = None, logical_name: str = "",
+                    detail: str = "", model: str = "", seat: str = "") -> None:
+    """A REAL charge whose dollar figure cannot be known. Never raises.
+
+    kie bills in credits and publishes no credit-to-dollar rate; unless the
+    human sets BGATE_KIE_USD_PER_CREDIT there is no honest USD number to
+    record. Before this, such a call wrote NOTHING — the provider's biggest
+    spender left no ledger row, and with budgets off by default the report is
+    the whole product, so the totals read low exactly when kie was the main
+    provider.
+
+    The row lands with ``usd = 0`` and a machine-readable ``detail`` prefix
+    (:data:`_UNPRICED_PREFIX` + the credit count, or ``?`` when even the
+    credits are unknown). Zero is safe here BECAUSE the marker exists:
+    :func:`totals` reports these rows apart as ``unaccounted`` rather than
+    letting them read as free, which is the failure a bare $0.00 row causes.
+    No dollar figure is invented — the rate is the human's to declare.
+    """
+    if kind not in KINDS:
+        kind = "other"
+    try:
+        amount = float(credits)
+        if amount < 0:
+            raise ValueError
+        stamp = f"{amount:g}"
+    except (TypeError, ValueError):
+        stamp = "?"
+    text = _UNPRICED_PREFIX + stamp + (f" — {detail}" if detail else "")
+    seat = (seat or os.environ.get("BGATE_SEAT", "") or "").strip()[:32]
+    try:
+        with db.tx(root) as conn:
+            conn.execute(
+                "INSERT INTO spend_event (kind, billing, work_item_id, "
+                "logical_name, usd, detail, model, seat) "
+                "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+                (kind, API, work_item_id, logical_name, text[:500],
+                 model[:80], seat))
+    except Exception:
+        pass
+
+
+# The marker an unpriced row carries in `detail`. The credits ride in the
+# detail column because they are provenance, not money — a numeric column for
+# a unit only one provider uses would be schema spent on a footnote.
+_UNPRICED_PREFIX = "unpriced credits="
+
+
+def _unaccounted(conn) -> dict:
+    """The rows :func:`record_unpriced` wrote, summarised for :func:`totals`."""
+    rows = conn.execute(
+        "SELECT detail, (created_at >= date('now')) AS today FROM spend_event "
+        "WHERE billing = 'api' AND usd <= 0 AND detail LIKE ?",
+        (_UNPRICED_PREFIX + "%",)).fetchall()
+    credits, unknown, today_rows = 0.0, 0, 0
+    for row in rows:
+        stamp = str(row["detail"])[len(_UNPRICED_PREFIX):].split(" ", 1)[0]
+        try:
+            credits += float(stamp)
+        except ValueError:
+            unknown += 1
+        if row["today"]:
+            today_rows += 1
+    return {
+        "rows": len(rows),
+        "credits": round(credits, 4),
+        "credits_unknown_rows": unknown,
+        "today_rows": today_rows,
+        "note": (f"{len(rows)} kie call(s) were charged in credits with no "
+                 "dollar rate configured — they are NOT in project_usd or "
+                 "today_usd. Set BGATE_KIE_USD_PER_CREDIT to your account's "
+                 "rate to price future calls." if rows else ""),
+    }
+
+
 def totals(root: str | os.PathLike[str]) -> dict:
     """What has been spent, at the granularities the budget cares about.
 
@@ -147,6 +222,15 @@ def totals(root: str | os.PathLike[str]) -> dict:
     The subscription side is reported alongside rather than dropped: it is the
     honest way to size a night's agent work, and its tokens are the only thing
     that tracks the limit that actually bites.
+
+    ``unaccounted`` is the third bucket and it is REAL MONEY WITH NO NUMBER:
+    kie calls charged in credits under no configured dollar rate (see
+    :func:`record_unpriced`). They are deliberately not summed into
+    ``project_usd``/``today_usd`` — inventing a rate would be worse than the
+    gap — but with budgets off by default the report IS the product, so a
+    total that silently omits them reads low exactly when kie is the main
+    provider. Every consumer that prints a total should say
+    "+ N unpriced kie rows" when ``unaccounted.rows`` is nonzero.
     """
     conn = db.connect(root)
     # THE WINDOWS USED TO BE LIFETIME AND TODAY, AND NOTHING ELSE — so anyone
@@ -202,6 +286,7 @@ def totals(root: str | os.PathLike[str]) -> dict:
                       for r in by_seat}
     out["project_usd"] = round(out["project_usd"], 4)
     out["today_usd"] = round(out["today_usd"], 4)
+    out["unaccounted"] = _unaccounted(conn)
     out["subscription"] = subscription_totals(root)
     out["budget"] = budget(root)
     return out
@@ -286,11 +371,22 @@ def check(root: str | os.PathLike[str], *, projected_usd: float = 0.0) -> dict:
 
 
 def item_ceiling(root: str | os.PathLike[str], item: dict) -> float:
-    """The per-run cost ceiling for one item: its own override, else the default."""
+    """The per-run cost ceiling for one item. 0 means uncapped.
+
+    An item's OWN max_cost_usd always acts - a human (or the brief) set that
+    number on that item deliberately. The budget row's per_item_usd default
+    acts only when the budget is ENFORCED: with enforcement off (the
+    default), the numbers are reports, and a default ceiling that kept
+    killing runs nobody asked it to bound was exactly the "budget gate on by
+    default" complaint that flipped budget.enforced off.
+    """
     override = (item or {}).get("max_cost_usd")
     if override:
         return float(override)
-    return float(budget(root).get("per_item_usd") or 0)
+    b = budget(root)
+    if not b.get("enforced"):
+        return 0.0
+    return float(b.get("per_item_usd") or 0)
 
 
 def runtime_ceiling(root: str | os.PathLike[str], item: dict) -> int:

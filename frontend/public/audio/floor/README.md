@@ -15,7 +15,7 @@ soundtrack, and the radio in the lounge stays scenery rather than becoming a
 switch that does nothing.
 
 **These are harness UI audio, not game assets.** That is why they live here
-beside the floor's sprites rather than going through `kie_music_generate` ->
+beside the floor's sprites rather than going through `music_generate` ->
 `music_keep` -> `music_install`, which files takes as artifact revisions and
 installs the kept one into the **engine project's** music library. A game
 shipping the dashboard's background music in its own audio folder is the bug

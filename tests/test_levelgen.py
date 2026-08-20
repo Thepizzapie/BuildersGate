@@ -580,6 +580,12 @@ class TestTheViewRoutesTheGeometry:
             return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
 
         monkeypatch.setattr(kie, "generate_image", fake_generate)
+        # The paid gate asks the gateway before spending; a keyless test env
+        # is honestly unroutable, so the stubbed provider must look keyed the
+        # same way it looks generative.
+        from bgate_core import gateway
+        monkeypatch.setattr(gateway, "pick", lambda root, cap: {
+            "provider": "kie", "alternatives": [], "why": "stubbed"})
         out = await call("tileset_generate", name="kietiles",
                          prompt="warm sandstone floor", bits=4)
         assert out["ok"], out.get("error")
@@ -596,6 +602,62 @@ class TestTheViewRoutesTheGeometry:
         import pathlib
         side = pathlib.Path(out["tileset"]).with_name("kietiles.tiles.json")
         assert json.loads(side.read_text(encoding="utf-8"))["variants"]
+
+    async def test_a_generated_tileset_needs_no_layout_arguments(
+            self, game, monkeypatch):
+        """THE HANDOFF, CLOSED. The art seat's tileset carries its own mask
+        table in the .tiles.json manifest, so the level call is project,
+        scene, tileset - nothing else. Before this, the ten floor_*/wall_*
+        parameters were re-typed from the art seat's tool result into the
+        gameplay seat's call, and a typo drew a complete, confident, wrong
+        level."""
+        import pathlib
+        import shutil
+
+        from PIL import Image
+
+        from bgate_adapters import kie
+        from bgate_core import gateway
+
+        def fake_generate(prompt, out_path, **kw):
+            Image.new("RGBA", (1024, 1024), (200, 180, 140, 255)).save(out_path)
+            return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
+
+        monkeypatch.setattr(kie, "generate_image", fake_generate)
+        monkeypatch.setattr(gateway, "pick", lambda root, cap: {
+            "provider": "kie", "alternatives": [], "why": "stubbed"})
+        made = await call("tileset_generate", name="handoff", bits=4,
+                          prompt="mossy flagstones")
+        assert made["ok"], made.get("error")
+        assert made["manifest"].endswith("handoff.tiles.json")
+
+        tiles = game / "tiles"
+        tiles.mkdir(exist_ok=True)
+        for suffix in (".tres", ".png", ".tiles.json"):
+            src = pathlib.Path(made["tileset"]).with_suffix("") \
+                .with_name("handoff" + suffix)
+            shutil.copyfile(pathlib.Path(made["tileset"]).parent / src.name,
+                            tiles / src.name)
+
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn", tileset="tiles/handoff.tres",
+                         seed=3, create=True)
+        assert out["ok"], out.get("error")
+        assert out["manifest_used"] is True
+        # A masked floor, not a solid fill: the drawn level uses several
+        # distinct atlas coordinates, which only the manifest's table knows.
+        text = (game / "scenes" / "level.tscn").read_text(encoding="utf-8")
+        assert '[node name="Floor"' in text
+
+        # An explicit layout argument switches the manifest OFF - an override
+        # half-applied would be worse than either authority whole.
+        out2 = await call("level_generate", godot_project=str(game),
+                          scene="scenes/level2.tscn",
+                          tileset="tiles/handoff.tres",
+                          floor_layout="solid", floor_atlas_x=1,
+                          wall_layout="none", seed=3, create=True)
+        assert out2["ok"], out2.get("error")
+        assert out2["manifest_used"] is False
 
     async def test_an_isometric_project_gets_an_isometric_tileset(
             self, root, game, monkeypatch):

@@ -3,7 +3,7 @@
  *
  * WHERE THE TRACKS LIVE, WHICH THE PLAN LEFT OPEN AND THIS SETTLES. They are
  * HARNESS UI AUDIO, not game assets, so they must not go through
- * kie_music_generate -> music_keep -> music_install: that pipeline installs
+ * music_generate -> music_keep -> music_install: that pipeline installs
  * under the ENGINE PROJECT, and a game would ship the dashboard's background
  * music in its own music library, where the next person to audit that folder
  * would find eight lofi tracks nobody wrote a cue for. They live beside the

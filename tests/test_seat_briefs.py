@@ -34,6 +34,11 @@ import pytest
 from bgate_core import project, seats
 
 SERVER_PY = Path(__file__).resolve().parents[1] / "bgate_mcp" / "server.py"
+# The surface is server.py PLUS the carved-out domain modules (tools_*.py) -
+# server star-imports them at its bottom, so a tool defined there is exactly
+# as registered as one defined in server itself.
+SURFACE_FILES = [SERVER_PY, *sorted(
+    SERVER_PY.parent.glob("tools_*.py"))]
 
 
 # ---------------------------------------------------------------------------
@@ -51,10 +56,11 @@ def _is_tool_call(node: ast.AST) -> bool:
 
 
 def _tool_surface() -> dict[str, set[str]]:
-    tree = ast.parse(SERVER_PY.read_text(encoding="utf-8"))
     defs: dict[str, set[str]] = {}
     registered: set[str] = set()
-    for node in tree.body:
+    body = [node for path in SURFACE_FILES
+            for node in ast.parse(path.read_text(encoding="utf-8")).body]
+    for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = node.args
             defs[node.name] = {
@@ -127,7 +133,7 @@ NOT_TOOLS = {
     "first_frame", "last_frame", "max_cost_usd", "ref_image", "ref_images",
     "ref_strength", "source_ref", "style_note", "style_refs", "task_kind",
     "tileable", "transition_s", "unweighted_verts", "use_pinned",
-    "work_item_id",
+    "work_item_id", "item_id",
     # spritekit.row_report finding kinds, quoted by name in the art brief
     "size_ramp", "sheet_size_ramp",
     # not ours
@@ -440,7 +446,12 @@ class TestTheBriefRoutesToTheStrongerTool:
         assert "image_sprites" in opening, (
             "the 3D block has to name the painted path it is routing away to, "
             "or 'not a hero character' is a complaint rather than a route")
-        assert "krea" in opening
+        # The route stays provider-shy on purpose - naming one hard-fails a
+        # project keyed elsewhere - but the model doctrine is pinned: this
+        # said "krea's nano-banana-2" for a while, contradicting the house
+        # rules' kie-mints division on the one fact stated as a HARD rule.
+        assert "nano-banana-2" in opening
+        assert "kie" in opening
 
     def test_the_two_dimensional_note_routes_the_same_way(self):
         note = seats._kind_note("art", "2d")

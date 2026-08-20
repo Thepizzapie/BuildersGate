@@ -11,9 +11,10 @@ WHAT IS ACTUALLY BEING PINNED, since most of this is one call deep:
   * the four Suno facts that cost money to get wrong — the per-model character
     ceilings, duration being V5_5-only, style/title being custom-mode-only, and
     CALLBACK_EXCEPTION not meaning the audio failed;
-  * that an UNPRICED run reports as unpriced and writes NO ledger row, rather
-    than landing as $0.00, which every budget check in this product reads as
-    permission;
+  * that an UNPRICED run reports as unpriced and never lands in the dollar
+    totals as $0.00 — it writes a zero-dollar MARKER row that spend.totals
+    reports apart as `unaccounted`, so the report names the gap instead of
+    silently under-counting the main provider;
   * that a generated take is a CANDIDATE and only a human's keep() puts it
     where the game can load it.
 """
@@ -232,7 +233,7 @@ class TestTheUrlIsNeverTheAsset:
 # Money — the thing that must never read as free
 # ---------------------------------------------------------------------------
 class TestUnpricedSaysSo:
-    def test_no_rate_configured_means_no_ledger_row_and_a_note(self, root, fake):
+    def test_no_rate_configured_means_no_dollars_and_a_named_gap(self, root, fake):
         result = music.generate(root, "a tense loop", name="tense")
         assert result["ok"]
         # The credits ARE known (balance delta); the dollars are not.
@@ -241,7 +242,15 @@ class TestUnpricedSaysSo:
         assert result["estimated_usd"] is None
         assert result["accounted"] is False
         assert result["cost_note"]                     # says why, in words
-        assert spend.totals(root)["by_kind"].get("audio") in (None, 0)
+        totals = spend.totals(root)
+        # No invented dollars anywhere...
+        assert totals["by_kind"].get("audio") in (None, 0)
+        assert totals["project_usd"] == 0
+        # ...but the charge is NOT silently dropped from the report: with
+        # budgets off by default the totals ARE the product, and a kie-heavy
+        # project must not read as free.
+        assert totals["unaccounted"]["rows"] == 1
+        assert totals["unaccounted"]["credits"] == pytest.approx(24.0)
 
     def test_a_configured_rate_lands_in_the_ledger(self, root, fake, monkeypatch):
         monkeypatch.setenv("BGATE_KIE_USD_PER_CREDIT", "0.002")
@@ -257,6 +266,10 @@ class TestUnpricedSaysSo:
         assert result["credits_consumed"] is None
         assert result["credits_source"] == "unavailable"
         assert result["estimated_usd"] is None
+        # Even with no credit count, the CHARGE is real: it still lands as an
+        # unaccounted row, with the credits marked unknown rather than zero.
+        un = spend.totals(root)["unaccounted"]
+        assert un["rows"] == 1 and un["credits_unknown_rows"] == 1
 
     def test_a_topup_mid_run_is_not_reported_as_free(self, root, fake):
         # Negative delta = the balance went UP. That is not a price of zero.
@@ -766,6 +779,28 @@ class TestStuckAndPaidFor:
         self._stranded(root, age_s=60)
         assert music.stuck_tracks(root, poll=False)["stale"] == 0
 
+    def test_a_crash_mid_download_is_found_and_recovered(self, root, fake,
+                                                          monkeypatch):
+        """The window the prior review named: charged at submit, dead DURING the
+        download — after the poll succeeded, before anything reached disk. The
+        ticket was stamped at submit time, so the sweep still has the handle."""
+        with _killed_at("download"), pytest.raises(Killed):
+            music.generate(root, "night chase", name="chase")
+        assert _tickets(root)[0]["task_id"] == "task-1", \
+            "the on-submit stamp is what survives a mid-download death"
+        _age_tickets(root, 3600)
+
+        got = music.stuck_tracks(root)
+        assert got["recoverable"] == 1
+        one = got["tracks"][0]
+        assert one["state"] == "recoverable" and one["task_id"] == "task-1"
+        assert one["logical_name"] == "chase"
+
+        # ...and the handle is worth money: recover() collects without repaying.
+        collected = music.recover(root, "task-1")
+        assert collected["ok"] and collected["count"] == 2
+        assert music.stuck_tracks(root)["stale"] == 0
+
     def test_a_finished_batch_nobody_collected_is_found(self, root, fake,
                                                          monkeypatch):
         self._stranded(root)
@@ -1015,7 +1050,7 @@ class TestBothDoorsExist:
     tool a seat actually calls is still a broken feature."""
 
     @pytest.mark.parametrize("name", [
-        "kie_music_options", "kie_music_generate", "kie_music_status",
+        "music_options", "music_generate", "music_status",
         "music_candidates", "music_keep", "music_discard",
     ])
     def test_the_tool_is_registered(self, name):
@@ -1033,6 +1068,6 @@ class TestBothDoorsExist:
 
         from bgate_mcp import server
 
-        source = inspect.getsource(server.kie_music_generate)
+        source = inspect.getsource(server.music_generate)
         assert "_music.generate" in source
         assert "kie.generate_music" not in source

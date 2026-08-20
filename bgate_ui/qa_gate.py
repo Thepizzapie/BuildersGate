@@ -154,10 +154,31 @@ def _open_gate_exists(root: str, ref: str) -> bool:
 
 
 def _latest_gate_created(root: str, ref: str) -> str:
+    """When the last CONCLUDED review round for this item was filed.
+
+    Concluded means the reviewer actually delivered: status 'done' AND a
+    VERDICT marker in the result. It used to be max(created_at) over every
+    gate row, which made a DEAD reviewer count as a review — a QA agent that
+    crashed (reaped 'failed', or banked 'done' off a bare exit with no
+    verdict text) closed the round, the original item's updated_at was then
+    <= that timestamp, and the item passed the gate WITHOUT ANYONE EVER
+    LOOKING AT IT. Silence is the one verdict a gate must not accept: a
+    round with no verdict now simply does not count, so the sweep files a
+    fresh reviewer (bounded below — see _scan_once's runaway guard)."""
     row = db.connect(root).execute(
         "SELECT max(created_at) AS c FROM work_item "
-        "WHERE source = 'qa-gate' AND source_ref = ?", (ref,)).fetchone()
+        "WHERE source = 'qa-gate' AND source_ref = ? AND status = 'done' "
+        "AND (result LIKE '%VERDICT: PASS%' OR result LIKE '%VERDICT: FAIL%')",
+        (ref,)).fetchone()
     return (row["c"] if row and row["c"] else "")
+
+
+def _gate_rows_filed(root: str, ref: str) -> int:
+    """Every QA round ever filed for this item, delivered or not."""
+    row = db.connect(root).execute(
+        "SELECT count(*) AS n FROM work_item "
+        "WHERE source = 'qa-gate' AND source_ref = ?", (ref,)).fetchone()
+    return int(row["n"] if row else 0)
 
 
 def escalated(root: str | os.PathLike[str], ref: str) -> bool:
@@ -289,6 +310,15 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
         rounds = int(item.get("attempts") or 0) + 1
         if rounds > cap:
             _escalate(root, item, ref, rounds - 1)
+            continue
+        # RUNAWAY GUARD for the no-verdict re-review path. A round whose
+        # reviewer died no longer counts as a review (_latest_gate_created),
+        # which means this sweep will file another - and a reviewer that dies
+        # EVERY time (broken CLI, poisoned brief) must not buy an agent per
+        # sweep forever. Twice the round cap in total filings is generous for
+        # honest crashes and cheap as a ceiling; past it, a human decides.
+        if _gate_rows_filed(root, ref) >= cap * 2:
+            _escalate(root, item, ref, rounds)
             continue
         # A closed gate exists and the original hasn't moved since -> already
         # reviewed this round. (updated_at bumps on the re-done fix round.)

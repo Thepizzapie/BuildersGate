@@ -28,11 +28,13 @@ from pathlib import Path
 from typing import Optional
 
 from bgate_core import aegis as _aegis
+from bgate_core import agentlog as _agentlog
 from bgate_core import agentreg as _agentreg
 from bgate_core import assets as _assets
 from bgate_core import gates as _gates
 from bgate_core import gitwork as _git
 from bgate_core import queue as _queue
+from bgate_core import seats as _seatmod
 from bgate_core import settings as _settings
 from bgate_core import spend as _spend
 from bgate_ui import runners as _runners
@@ -76,8 +78,22 @@ MAX_FEEDS = 200      # parsed feeds held at once
 HARD_RUNTIME_S = int(os.environ.get("BGATE_MAX_RUNTIME_S") or 2 * 60 * 60)
 STALL_S = int(os.environ.get("BGATE_STALL_S") or 25 * 60)
 
-# Projects whose stranded-item reconciliation has already run this process.
-_reconciled: set[str] = set()
+# When each project's stranded-item reconciliation last ran (monotonic). It
+# used to be a once-per-process set, which meant an item stranded 'dispatched'
+# AFTER the first sweep stayed stranded until the next server restart - and its
+# whole chain parked behind it, because 'dispatched' never satisfies a
+# dependency. Age-gated instead: reconcile() re-runs per project once the last
+# pass is RECONCILE_EVERY_S old. The original guard's purpose survives on its
+# own merits - reconcile skips anything in _live or _starting (this process's
+# runs) and anything the pid ledger shows recent progress for (adopted runs),
+# so a rerun cannot fight a run the same process just spawned.
+_reconciled: dict[str, float] = {}
+RECONCILE_EVERY_S = int(os.environ.get("BGATE_RECONCILE_EVERY_S") or 10 * 60)
+
+
+def _reconcile_due(project: str) -> bool:
+    last = _reconciled.get(project)
+    return last is None or (time.monotonic() - last) >= RECONCILE_EVERY_S
 
 
 def _pkey(root) -> str:
@@ -236,272 +252,14 @@ def _native_images(root: str, runner: "_runners.Runner") -> bool:
         return False
 
 
-# Seat-specific house rules injected UNCONDITIONALLY into the dispatch prompt - # the one channel every agent sees even if it skips seat_brief (item 56 did:
-# it hand-rolled 8 loose image_edit frames for an animation task and never
-# stitched a sheet). Keep these short, imperative, and PROJECT-AGNOSTIC: this
-# dict ships with the tool and is read by every project on the machine, so
-# anything naming a specific game's assets, characters or test scenes belongs
-# in that project's own seat_rules.json (see :func:`seat_rules`), not here.
-_LEVEL_RULE = (
-    "LEVEL GENERATION HOUSE RULE - THE ART IS A DEPENDENCY, NOT A DETAIL:\n"
-    "THE ORDER IS: game_view_get -> (art seat: tileset_generate, "
-    "prop_generate) -> then BY VIEW: top_down/isometric take "
-    "level_plan -> level_generate; side_scroller takes "
-    "sidescroll_generate.\n"
-    "\u2022 game_view_get FIRST, always. It says whether this game is "
-    "top_down, side_scroller or isometric, which decides the tile "
-    "geometry, which prop mounts exist, and how playability is even "
-    "checked. A level built against the wrong view is not a level with a "
-    "style problem, it is the wrong geometry - and both generators "
-    "refuse the wrong view rather than drawing it.\n"
-    "\u2022 SIDE-SCROLLERS: sidescroll_generate, and THE JUMP IS AN "
-    "INPUT. Pass player_scene=<the player's .tscn> and the tunables are "
-    "read from the scene itself, converted to cells by the tileset's "
-    "tile size, and the player is instanced at spawn - do NOT copy "
-    "run/jump_speed/gravity by hand, because a level built for one "
-    "jump and played with another is the failure this parameter "
-    "closes. It refuses an unplayable level (reachable, clearance, "
-    "softlock, stranded); a finding is a bug to report, not a "
-    "difficulty dial. It takes the same prop_manifest.\n"
-    "\u2022 You hold level_plan, level_generate and sidescroll_generate. "
-    "You do NOT hold the "
-    "generators: tilesets and prop sheets are the ART seat's craft. If "
-    "the tileset or prop atlas you need does not exist, QUEUE IT - do "
-    "not point level_generate at a placeholder and call the level done. "
-    "The art seat makes them with tileset_generate and prop_generate; "
-    "prop_generate writes a MANIFEST and level_generate takes it as "
-    "prop_manifest=<path>, so you never type an atlas coordinate. "
-    "A level wired to art that is not there loads clean and draws nothing.\n"
-    "\u2022 READ THE PROP CONTRACT, do not invent one. bgate_core.props "
-    "declares every type's mount, its size in cells, which room "
-    "purposes it belongs in, and whether it loops or has states. "
-    "prop_atlas maps TYPE to atlas cell - 'torch.e=0,0 torch.w=1,0' "
-    "when a wall mount needs one tile per facing, because the engine's "
-    "flip bit does not carry texture_origin.\n"
-    "\u2022 DECALS ARE THEIR OWN LAYER. A TileMapLayer holds ONE tile "
-    "per coordinate, so a crack in the floor and the barrel standing on "
-    "it can only coexist as two layers. level_generate emits them; do "
-    "not flatten them back together.\n"
-    "\u2022 THE CONNECTIVITY GATE IS NOT ADVISORY. Every solid prop is "
-    "checked by flood filling the walkable set. If still_connected comes "
-    "back false that is a BUG to report, not a density dial to turn "
-    "down - a level that has lost a room looks completely fine in a "
-    "screenshot.\n"
-    "\u2022 READ THE `skipped` COUNTS before deciding a level is "
-    "under-dressed. back_wall, corner, no_side and wrong_purpose are the "
-    "placer REFUSING on purpose. Dark north walls mean the type set has "
-    "no front-facing sprite - the fix is a sconce, not a looser rule.\n"
-    "\u2022 LOOK AT THE RESULT IN THE ENGINE: godot_check_project then "
-    "godot_screenshot. Every level defect found so far - protrusions, "
-    "black corridor cracks, gaps in the wall shadow, props floating in "
-    "stone - was invisible in the numbers and obvious in one frame."
-)
-
-SEAT_RULES = {
-    # gameplay and tech both hold the `level` craft, so both can run
-    # level_generate - and both can spend an afternoon on a level whose
-    # art does not exist yet. The rule is identical for each seat, so it
-    # is written once and shared.
-    "gameplay": _LEVEL_RULE,
-    "tech": _LEVEL_RULE,
-    "narrative": (
-        "NARRATIVE HOUSE RULE - NO FIRST-THOUGHT JOKES:\n"
-        "• Before landing ANY name/line/bark, generate 5 candidates and kill "
-        "every one that is the FIRST joke anyone would make on the premise "
-        "(the obvious pun, the meme format, the joke every parody of this "
-        "subject already made). Ship the one that surprises.\n"
-        "• Obey the project's OWN tone tests (read the tone guide / bible "
-        "before writing; if you wrote one this session, your content must "
-        "pass it - self-contradiction is an automatic fail). No winks, no "
-        "lampshading, no decade-old meme formats.\n"
-        "• Specificity beats snark: a line should only make sense in THIS "
-        "world. If it could be pasted into any generic parody of the genre, "
-        "cut it.\n"
-        "• Read every deliverable back OUT LOUD (to yourself) against the "
-        "tone tests before landing. Land fewer, better lines."
-    ),
-    "audio": (
-        "AUDIO HOUSE RULE - EVERY SYNTHESIZED ASSET SHIPS ITS RECIPE:\n"
-        "• Alongside each .wav/.ogg you synthesize, write a `<name>.synth.json` "
-        "sidecar capturing the FULL parametric recipe: wave type(s), ADSR, "
-        "pitch/glide, noise mix, filter, duration, sample rate - and for music "
-        "beds the complete note/step pattern per channel + tempo/key. Another "
-        "process must be able to re-render the identical asset from the recipe "
-        "alone (the upcoming Audio Studio edits these knobs and re-renders - "
-        "a .wav without its recipe is a dead end).\n"
-        "• Keep the synthesis code you used in the project's .bgate/ scratch "
-        "so the recipe->render path is reproducible."
-    ),
-    "art": (
-        "ART HOUSE RULE - THE CONTRACT DECIDES THE SHEET, THE PIPELINE MAKES "
-        "IT, THE BATTERY REFEREES IT:\n"
-        "\u2022 WHICH GENERATOR DOES WHICH JOB - THEY ARE NOT "
-        "INTERCHANGEABLE. SPRITES AND STILLS ARE MINTED WITH KIE "
-        "(nano-banana-2); MOTION IS RETRO DIFFUSION, off a start frame "
-        "the sprite step produced. RD REDRAWS whatever it is handed, "
-        "which is exactly right for animating a frame you already own "
-        "and exactly wrong as a way to ORIGINATE a design: asked for a "
-        "prop cold it returns a different object every call and will not "
-        "hold a set's look. Never mint with RD, never animate with kie. "
-        "animation_generate already routes this correctly.\n"
-        "• FIRST, ALWAYS: sprite_contract_get(character, action) - the "
-        "declared view, direction set, cell size and frame counts. No "
-        "contract set = raise it with the director (sprite_contract_set has "
-        "presets), do NOT invent a layout. And palette_pin BEFORE any art if "
-        "none is pinned (>=32 colours, derived across SEVERAL sheets/refs - "
-        "a 24-colour single-sheet derivation silently recoloured a blouse).\n"
-        "• CHARACTER ANIMATION CYCLES = animation_generate. It reads the "
-        "contract, takes start frames from the character's OWN sheets, runs "
-        "the purpose-trained animation model per drawn direction (~$0.14), "
-        "conforms to the pinned palette, grades everything, and emits the "
-        "contract-shaped sheet + .tres + .aseprite master. Do NOT hand-build "
-        "cycles out of image_edit calls - that is the path that shipped ten "
-        "of twenty facings backwards.\n"
-        "• A MISSING or OFF-STYLE direction start frame is minted with a "
-        "TWO-REF edit (nano-banana-2): style authority = a good frame of the "
-        "character, angle authority = any frame at the wanted camera angle, "
-        "prompt names both jobs. One ref alone gives pure-N instead of "
-        "back-3/4. Filmstrip single-gen (whole cycle as ONE image, "
-        "from_painted_sheet to slice) remains the way to mint a NEW "
-        "character's first sheet - identity by construction.\n"
-        "• ACT ON THE FINDINGS. facing_flip / wrong_direction / height_split "
-        "/ yaw_drift / set_drift on a strip = re-roll THAT strip, do not "
-        "land it. The one eyeball override: pose-legitimate height (a raised "
-        "arm, a collapse taper) - look at the GIF preview and say so in the "
-        "seat note. LOOK at every animation preview before landing; motion "
-        "defects are obvious in two seconds of playback and invisible in a "
-        "grid.\n"
-        "• HAND FIXES go through the master: open the .aseprite, fix the "
-        "frame, aseprite_export - never pixel-edit the shipped PNG (the "
-        "export re-grades; a raw edit dodges every check).\n"
-        "• Before landing: consistency_check per frame AND clear alpha flags "
-        "(no white halo, no feathered fringe, no background bleed, no hollow "
-        "interior). Any alpha flag = do not land.\n"
-        "\n"
-        "\u2022 THE ORDER IS: game_view_get -> palette_pin -> "
-        "tileset_generate -> prop_generate -> hand the manifest to "
-        "whoever holds the level generator (level_generate top-down, "
-        "sidescroll_generate side-scroller).\n"
-        "\u2022 PROPS ARE prop_generate, ONE CALL. It reads the view for "
-        "the camera, art_spec for the canvas and ground anchor, draws "
-        "with kie, keys the background, fits the contract box, hardens "
-        "the alpha, conforms to the pinned palette, packs the atlas and "
-        "writes the manifest. Do NOT hand-roll that chain with "
-        "image_generate: the first prop set was made that way and it "
-        "silently skipped the conform and the defringe - 32px sprites "
-        "with 600 colours, two thirds off-palette, feathered edges. The "
-        "steps were not refused, they were forgotten.\n"
-        "LEVEL ART IS A CONTRACT AND A HANDOFF - YOU MAKE IT, GAMEPLAY "
-        "AND TECH SPEND IT:\n"
-        "\u2022 TILESETS: tileset_generate, and leave bits=8. A 16-mask "
-        "set cannot say 'floor north and east, void at the north-east "
-        "corner', so the shadow band along every wall BREAKS at each "
-        "step in a room's outline. The corner tiles are pure geometry, "
-        "so eight bits costs no extra call and no extra money. It draws "
-        "TWO MATERIALS with kie (prompt=floor, void_prompt=behind) and "
-        "carves every mask tile between them - same provider rule as "
-        "sprites: kie generates, RD only ever animates.\n"
-        "\u2022 PROPS: props.art_spec(type) IS the spec - exact canvas "
-        "in pixels, the ground anchor, how many DRAWINGS (a wall mount "
-        "needs one per facing; the engine mirrors a sprite but NOT its "
-        "texture_origin, measured), and whether the type LOOPS (a torch "
-        "flickers, a portal turns) or has STATES (a chest is shut, "
-        "opening, open). Loop and state are two different engine "
-        "mechanisms and a type declares one, never both. A prop drawn at "
-        "the wrong proportion is not a style difference, it is a sprite "
-        "hanging off its cell, and no placement rule fixes it.\n"
-        "\u2022 A WALL MOUNT IS THE OBJECT ONLY - no wall behind it, no "
-        "floor under it, no scene. A torch prompted 'flat against a "
-        "wall' comes back with a slab of masonry attached and pastes a "
-        "stone rectangle over the level. Same for a floor prop: no "
-        "ground, no cast shadow.\n"
-        "\u2022 DO NOT NAIVELY DOWNSCALE a 1024px generation into a "
-        "32px cell. It survives for a simple silhouette (a barrel) and "
-        "turns a detailed subject (a chest) into mush. Conform through "
-        "the palette and the Aseprite master, and re-roll whatever does "
-        "not read at 1x on a dark background - where you must LOOK.\n"
-        "\n"
-        "HUD / UI CHROME SHIPS AS SEPARATE LAYERED PARTS, NEVER ONE BAKED "
-        "COMPOSITE:\n"
-        "• A UI element with dynamic or independently-driven sub-parts - a meter = "
-        "frame + segmented FILL + icon + counter badge; a health bar = frame + "
-        "FILL; a card = frame + portrait + label plate - MUST ship as SEPARATE "
-        "transparent PNGs, one per layer, NOT fused into a single image. The "
-        "scene/designer stacks and drives each independently: the fill depletes in "
-        "code BEHIND a hollow frame, segments light one by one, the icon/badge are "
-        "their own nodes. Gening the whole element in one go leaves nothing the "
-        "designer can wire - it is not shippable.\n"
-        "• Frames are HOLLOW: a fully transparent window where the code-driven fill "
-        "shows through. NEVER bake a colored fill into a frame. For every frame, "
-        "post the exact fill-window rect (x,y,w,h) in your seat note.\n"
-        "• Keep the parts on a consistent pixel grid / shared registration so they "
-        "stack cleanly at the target rect. A single composed PREVIEW mock is fine "
-        "FOR REVIEW, but the SHIPPED assets are the separate layers.\n"
-        "• Match the pinned concept: crop the target element out of the concept "
-        "ref, condition generation on that crop, and build your own "
-        "concept-vs-output comparison - iterate until it matches, don't ship "
-        "isolated bare bars.\n"
-        "\n"
-        "WORLD / ENVIRONMENT ASSETS ARE INDIVIDUAL GENS, NEVER A SLICED SCENE:\n"
-        "• Concept mocks are COMPOSITES - inspiration, not assets. A shippable "
-        "world asset is generated ON ITS OWN: one prop (desk, plant, vending "
-        "machine, printer shrine), one tile, one unit sprite per gen, "
-        "transparent background, consistent scale against the project's grid "
-        "(e.g. a 32px-tile world: props sized in tile multiples, characters to "
-        "their tile footprint). NEVER generate a full scene and cut pieces out "
-        "of it - sliced fragments have baked lighting/overlap and never "
-        "composite cleanly.\n"
-        "• Tilesets: gen each tile type separately (or a strict uniform grid "
-        "sheet where every cell is one clean tile), then assemble the atlas "
-        "with code - cells must be seamlessly tileable with their neighbors.\n"
-        "• Scale/registration discipline: every asset in a batch states its "
-        "intended pixel size; verify against the grid before landing so the "
-        "engine drops it in without per-asset fudging.\n"
-        "• UNITS SHIP THE FULL FACING MATRIX THE SPRITE CONTRACT DECLARES: "
-        "drawn directions generated, mirrored directions flipped in-engine "
-        "(flip_h), never generated - the contract's drawn/mirror map is the "
-        "authority, per character and per action (sprite_contract_get). A "
-        "partial facing x anim matrix is an automatic fail.\n"
-        "• ISO PROPS DECLARE A ROTATION CLASS (see the project bible's "
-        "prop-rotation contract): SYMMETRIC = 1 gen reused; MIRRORABLE = 2 "
-        "gens + flip_h (NO text/logos/handedness); FULL = 4 gens (anything "
-        "with readable text/signage - mirrored text is an automatic fail). "
-        "All views of one prop conditioned on the SAME prop ref so it reads "
-        "as one object rotated; state the tile footprint per prop.\n"
-        "\n"
-        "DELIVERY FIDELITY - WHAT WAS APPROVED IS WHAT SHIPS:\n"
-        "• The engine-ready file you deliver must be a MECHANICAL derivation "
-        "of the approved artifact revision: trim, downscale, alpha-clean - "
-        "NOTHING ELSE. Never redraw, re-generate, or 'improve' an asset at "
-        "the delivery step; a delivered file whose content differs from its "
-        "approved source is an automatic reject (observed failure: floors "
-        "shipped with an invented X-bevel that existed in no approved rev).\n"
-        "• Name the source in your seat note per delivered file "
-        "(delivered X <- approved revision N) so the trail is auditable."
-    ),
-}
-
-
-SEAT_RULES_FILENAME = "seat_rules.json"
-
-
-def seat_rules(root: str, seat: str) -> str:
-    """The house rules injected into THIS project's prompt for this seat.
-
-    ``<root>/.bgate/seat_rules.json`` ({"art": "...", "narrative": ""}) is the
-    project's override and wins outright - including an empty string, which is
-    how a project turns a built-in off. Rules are prompt text, not schema, so
-    they live in a file the project edits and diffs rather than in the seat
-    table. Absent an override, the shipped built-in applies.
-    """
-    try:
-        data = json.loads((Path(root) / ".bgate" / SEAT_RULES_FILENAME)
-                          .read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
-    if isinstance(data, dict) and seat in data:
-        return str(data[seat] or "").strip()
-    return SEAT_RULES.get(seat, "")
+# SEAT HOUSE RULES LIVE IN bgate_core.seats (DISPATCH_RULES / dispatch_rules)
+# as of 2026-08-19 - every statement of what a seat is told has ONE home, so
+# the dispatch rules and the seat workflows cannot drift apart unseen (they
+# did: the art rules and the art workflow disagreed about the sheet default).
+# Re-exported here because callers and tests address them through this module.
+SEAT_RULES = _seatmod.DISPATCH_RULES
+SEAT_RULES_FILENAME = _seatmod.DISPATCH_RULES_FILENAME
+seat_rules = _seatmod.dispatch_rules
 
 
 def _verify_rule(root: str) -> str:
@@ -522,11 +280,24 @@ def _verify_rule(root: str) -> str:
     except Exception:
         pass
     godot = engine == "godot" or (root_path / "game" / "project.godot").is_file()
+    # THE EYES RULE, verbatim in both branches because it is the check agents
+    # skip. Observed on a real board: an agent measured a level's geometry
+    # (walkable cells, connectivity, flood-fill - all green), declared the
+    # doorways fine, and the render had black holes where the doors should
+    # be. Every number was true and the scene was broken. Stats, tree dumps,
+    # byte inspection and passing checks are ONE check; for anything a player
+    # sees, the check that counts is a RENDER IN FRONT OF YOUR EYES.
+    eyes = ("IF THE DELIVERABLE IS VISIBLE, LOOK AT IT: render it "
+            "(godot_screenshot for a scene, the produced image file for art - "
+            "the Read tool shows you images) and judge the PICTURE, before "
+            "you claim done. Geometry stats, node counts, file sizes and "
+            "green checks are supporting evidence, never the verdict; an "
+            "agent that reports numbers about an image it never opened is "
+            "the single most common way broken work gets marked done")
     if not godot:
         return ("run the narrowest real check that proves the change does "
                 "what the item asked - a build, the affected script, opening "
-                "the produced file - and LOOK at what you produce before you "
-                "land it.")
+                f"the produced file. {eyes}.")
     parts = ["godot_check_project after structural changes"]
     try:
         tests = sorted(p for p in (root_path / "game" / "tests").glob("*.gd"))
@@ -537,8 +308,7 @@ def _verify_rule(root: str) -> str:
         parts.append("run this project's own test scripts via godot_run when the "
                      f"code they cover moved ({named}) - fail=0 or report exactly "
                      "why")
-    parts.append("godot_screenshot when the change is visible")
-    parts.append("LOOK at what you produce")
+    parts.append(eyes)
     return "; ".join(parts) + "."
 
 
@@ -703,18 +473,21 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         "for or working on right now. Read the board before touching a file a "
         "dispatched peer owns or duplicating queued work; a second brief call "
         "returns the same payload and costs what the first one did.\n"
-        "2. Do the work inside your lanes. The PreToolUse hook enforces them, "
-        "so write and let it refuse - seat_can_write is for when you need to "
-        "know BEFORE a long generation, not a checkpoint before every edit. "
-        "Lock binaries before editing.\n"
-        "   OUT-OF-LANE WORK IS ROUTED, NEVER DROPPED. If this task needs a "
-        "write another seat owns, queue_add(<that seat>, title, brief) files "
-        "it for an agent that CAN write it - pass depends_on="
+        "2. Do the work. Your hard boundary is the PROJECT you were "
+        "dispatched for - writes outside it are refused. Inside it, your "
+        "lanes are the map of what is yours, not a wall: prefer them, and "
+        "when this item plainly needs a write outside them, make it (it is "
+        "logged and reviewed like everything else). Lock binaries before "
+        "editing.\n"
+        "   FINISHING THE ITEM OUTRANKS STAYING IN LANE. A 'failed' result "
+        "because a path was not yours is the worst outcome available - "
+        "worse than the cross-lane write, which a human can see and undo. "
+        "Route SUBSTANTIAL cross-seat work instead of doing it badly: "
+        "queue_add(<that seat>, title, brief) files it for an agent with "
+        "the right toolset - pass depends_on="
         f"{item['id']} when it needs this item's output - then keep working "
         "on what is yours. A seat note, a LEFTOVERS block or a 'blocked' "
-        "result dispatches NOBODY; only a queue row does. Handing work on IS "
-        "part of finishing yours, and a result paragraph that names the items "
-        "you filed is a finished handoff.\n"
+        "result dispatches NOBODY; only a queue row does.\n"
         "   ROUTE ONLY WHAT THIS ITEM NEEDS. The test for filing work is "
         "'does my item need this done to be finished' - not 'did I notice "
         "something'. An improvement you merely noticed is one line in your "
@@ -1172,6 +945,10 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         # server enforces another. aegis.mode() maps anything unrecognised to
         # the default, and it maps it the same way for everybody here.
         "BGATE_AEGIS": _aegis.mode(),
+        # The lane dial, normalised for the same reason as BGATE_AEGIS above:
+        # one policy for hook and server. Default is "warn" - a seat is a
+        # toolset plus the aegis boundary; its lane table is advisory.
+        "BGATE_LANES": _seatmod.lane_mode(),
         "BGATE_WORK_ITEM": str(item_id),
         "BGATE_LOCK_OWNER": f"item-{item_id}",
         # Who this session is, for anything that asks whether a human is
@@ -1217,6 +994,14 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                         f"{runner.name} would be given `{escape}`, which grants "
                         f"the agent a directory outside {root}")
 
+    # BUILT BEFORE THE PROCESS EXISTS, deliberately. _prompt_for reads seat
+    # rules, gate descriptions and project rows, any of which can raise - and a
+    # raise between the Popen and the _live insertion used to leave a live
+    # claude tree that nothing owned: dispatch()'s conditional release saw no
+    # _live entry, put the item back to 'queued', and the orphan sat on its
+    # stdin until the pid sweep found it. Everything that can fail without a
+    # process is done while there is no process to strand.
+    prompt = _prompt_for(root, item, native_images=native_images)
     try:
         log_handle = open(log_path, "ab")
     except OSError as exc:
@@ -1226,26 +1011,31 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # first-run result being shown as current, and old echoes falsely marking
     # fresh steers consumed, were real observed bugs. Marker + byte offset.
     import time as _time
-    log_handle.write((json.dumps({"type": "bgate_run_start",
-                                  "item_id": item_id,
-                                  "base_commit": base_commit,
-                                  "ts": _time.time()}) + "\n").encode("utf-8"))
-    log_handle.flush()
-    run_start_pos = log_handle.tell()
     try:
+        log_handle.write((json.dumps({"type": "bgate_run_start",
+                                      "item_id": item_id,
+                                      "base_commit": base_commit,
+                                      "ts": _time.time()})
+                          + "\n").encode("utf-8"))
+        log_handle.flush()
+        run_start_pos = log_handle.tell()
         proc = subprocess.Popen(args, cwd=cwd, env=env,
                                 stdin=subprocess.PIPE, stdout=log_handle,
                                 stderr=log_handle, creationflags=_NO_WINDOW)
     except OSError as exc:
         log_handle.close()
         return _refused("spawn_failed", f"could not start the agent CLI: {exc}")
+    except Exception:
+        # An unanticipated raise with no process yet: close the handle and let
+        # dispatch()'s conditional release put the reservation back.
+        log_handle.close()
+        raise
     # Deliver the task. A streaming runner takes it as the first user message
     # and keeps the pipe open as a steer channel; `codex exec` reads stdin ONCE
     # and acts on what it got, so the pipe has to be closed or the run never
     # starts - the difference between "waiting for more input" and "hung" is
     # invisible from out here, which is why prompt_via is declared rather than
     # inferred.
-    prompt = _prompt_for(root, item, native_images=native_images)
     try:
         if runner.prompt_via == "stream":
             proc.stdin.write(_user_msg(prompt).encode("utf-8"))
@@ -1254,9 +1044,18 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
             proc.stdin.write(prompt.encode("utf-8"))
             proc.stdin.flush()
             proc.stdin.close()
-    except OSError as exc:
-        proc.kill()
+    except Exception as exc:
+        # THE INVARIANT: a process that exists but never reaches _live must not
+        # outlive this frame. The TREE, not proc.kill() - the CLI can already
+        # have MCP children holding the pipe - and the log handle goes with it.
+        _kill_tree(proc.pid)
+        try:
+            log_handle.close()
+        except OSError:
+            pass
         _queue.release(root, item_id)
+        if not isinstance(exc, (OSError, ValueError)):
+            raise  # already released; dispatch()'s release is a no-op CAS
         return {"ok": False, "error": f"could not send prompt to agent: {exc}"}
     with _lock:
         _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle,
@@ -1287,17 +1086,29 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # Status is already 'dispatched' - the reservation above wrote it before any
     # of the slow work, which is what makes two dispatchers safe against each
     # other. Writing it again here would wipe the item's result note for nothing.
-    _queue.set_run_fields(root, item_id, base_commit=base_commit, branch=branch,
-                          worktree=worktree, actor=actor or None,
-                          max_cost_usd=ceiling_usd or None,
-                          max_runtime_s=ceiling_s or None)
+    #
+    # GUARDED, because the process is live and in _live now: from here to the
+    # watchdog thread start, nothing may raise. A locked DB losing the run
+    # fields costs metadata; a raise here used to skip the watchdog entirely,
+    # leaving a live run with no ceilings and no reaper until the next sweep.
+    try:
+        _queue.set_run_fields(root, item_id, base_commit=base_commit,
+                              branch=branch, worktree=worktree,
+                              actor=actor or None,
+                              max_cost_usd=ceiling_usd or None,
+                              max_runtime_s=ceiling_s or None)
+    except Exception:
+        pass
     _record_pid(root, proc.pid, item_id)
     # And in the MACHINE-WIDE registry, which is the one that survives this
     # process. pids.json above is per project and is read by the orphan sweep;
     # this entry is what lets a restarted dashboard - or a second one, or one
     # opened on a different project entirely - see and stop this agent at all.
-    _agentreg.record(proc.pid, item_id=item_id, seat=item.get("seat") or "",
-                     root=str(root), runner=runner.name, log=str(log_path))
+    try:
+        _agentreg.record(proc.pid, item_id=item_id, seat=item.get("seat") or "",
+                         root=str(root), runner=runner.name, log=str(log_path))
+    except Exception:
+        pass
     # The streamed session waits on stdin forever; close it once the agent
     # self-reports so it exits even when no dashboard is polling /api/agents.
     threading.Thread(target=_watch_completion, args=(root, item_id),
@@ -1934,8 +1745,8 @@ def sweep(root: str) -> dict:
     """
     root = str(root)
     project = _pkey(root)
-    if project not in _reconciled:
-        _reconciled.add(project)
+    if _reconcile_due(project):
+        _reconciled[project] = time.monotonic()
         reconcile(root)
     with _lock:
         entries = [(i, e) for i, e in _live.items()
@@ -1977,7 +1788,11 @@ def reconcile(root: str) -> dict:
     for item in stranded:
         item_id = int(item["id"])
         with _lock:
-            if item_id in _live:
+            # _starting matters now that reconcile re-runs: an item between
+            # queue.reserve() and its Popen is 'dispatched' with no _live entry,
+            # no pid and no log yet - exactly what a stranded item looks like,
+            # except it is seconds old and this process is mid-spawn on it.
+            if item_id in _live or item_id in _starting:
                 continue  # this server run owns it
         # STILL WORKING IS NOT STRANDED. reap_orphans now ADOPTS an inherited
         # agent that is making progress instead of killing it - but this pass
@@ -2347,13 +2162,14 @@ def reap_orphans(root: str) -> dict:
 
 
 def _reconcile_quietly(root: str) -> None:
-    """Reconcile once per project, never raising - reap_orphans runs at server
-    startup and its return shape is a contract, so this cannot add keys or
-    blow up on a directory that has no project in it."""
+    """Reconcile at most once per RECONCILE_EVERY_S per project, never raising
+    - reap_orphans runs at server startup and its return shape is a contract,
+    so this cannot add keys or blow up on a directory that has no project in
+    it."""
     project = _pkey(root)
-    if project in _reconciled:
+    if not _reconcile_due(project):
         return
-    _reconciled.add(project)
+    _reconciled[project] = time.monotonic()
     try:
         reconcile(root)
     except Exception:
@@ -2383,7 +2199,7 @@ def steer(root: str, item_id: int, text: str) -> dict:
         if entry.get("stdin_closed"):
             return {"ok": False, "error": "agent is finishing; steer channel closed"}
         try:
-            entry["stdin"].write(_user_msg(f"STEER FROM THE DIRECTOR (act on this now): {text}").encode("utf-8"))
+            entry["stdin"].write(_user_msg(f"{STEER_MARKER}{text}").encode("utf-8"))
             entry["stdin"].flush()
         except OSError as exc:
             return {"ok": False, "error": f"agent not accepting input: {exc}"}
@@ -2648,298 +2464,25 @@ def status(root: str) -> list[dict]:
     return out
 
 
-STEER_MARKER = "STEER FROM THE DIRECTOR (act on this now): "
+# THE PARSER LIVES IN bgate_core.agentlog NOW (2026-08-19). Three readers of
+# the same stream-json - this feed, routes/history, and the MCP server's
+# agent_activity - each carried their own folding rules, and the third copy
+# shipped with a misquoted STEER_MARKER that silently dropped every steer.
+# One vocabulary, one home; this module keeps only what is genuinely its own:
+# the byte-cursor cache, the Popen liveness, and the per-run retention.
+STEER_MARKER = _agentlog.STEER_MARKER
+_tool_subject = _agentlog.tool_subject
+_final_tokens = _agentlog.final_tokens
+_final_model = _agentlog.final_model
 
 
 def _add_step(state: dict, step: dict) -> None:
-    """Append one step to the ring. What falls off the front is counted, not
-    forgotten - see the ``dropped``/``truncated`` fields read_activity returns.
-
-    Every step is stamped with when it was PARSED. That is a few milliseconds
-    after the CLI wrote it and is the only clock the log offers, but it is what
-    lets a phase say which renders and which sound files came out of it: an
-    artifact row carries created_at, a step did not carry anything to compare it
-    to, so the work an agent produced could not be attributed to the part of the
-    run that produced it. Rounded to the second, which is the resolution the
-    artifact table stores anyway.
-    """
-    step.setdefault("ts", time.time())
-    state["steps"].append(step)
-    state["step_count"] += 1
-    if len(state["steps"]) > MAX_STEPS:
-        del state["steps"][:len(state["steps"]) - MAX_STEPS]
-
-
-def _tool_subject(name: str, inp: dict) -> str:
-    """WHAT a call was about, not merely which tool it was.
-
-    The inspector drew a run as a row of verbs — Read, Grep, Grep, Read, Bash —
-    so a forty-step run was thirty-five interchangeable words. The subject was
-    always in the payload; this is the one place that decides which key carries
-    it, because the answer is per-tool: Grep's subject is its PATTERN and the
-    path is context, while Read's subject is the path itself.
-
-    Pattern-first for the searches is the specific fix. ``path`` came first in
-    the old flat or-chain, so every Grep in a run that searched one file printed
-    that same path and said nothing about what was being looked for — and Glob,
-    which has no ``path`` and no ``query``, printed nothing at all. The path
-    still rides along on the end, because phases.look() mines this string for
-    the files a step touched and dropping it would empty the file rail.
-    """
-    def val(key: str) -> str:
-        got = inp.get(key)
-        return " ".join(str(got).split()) if isinstance(got, (str, int)) else ""
-
-    if name in ("Grep", "Glob"):
-        return " · ".join(x for x in (val("pattern"), val("path")) if x)
-    if name == "Bash":
-        return val("command")
-    if name in ("Read", "Write", "Edit", "MultiEdit"):
-        return val("file_path") or val("path")
-    if name == "NotebookEdit":
-        return val("notebook_path")
-    if name in ("WebFetch", "WebSearch"):
-        return val("url") or val("query")
-    if name in ("Task", "Agent"):
-        return val("description") or val("subagent_type")
-    if name == "TodoWrite":
-        # Its input is the whole list; any one item of it is a misleading label.
-        return ""
-    return (val("path") or val("file_path") or val("name") or val("title")
-            or val("role") or val("query") or val("pattern")
-            or val("description") or val("command") or val("prompt"))
-
-
-def _blocks(ev: dict) -> list:
-    """Content blocks of a stream-json message. Some CLI builds send ``content``
-    as a bare string; iterating that yields characters and explodes on .get."""
-    content = (ev.get("message") or {}).get("content")
-    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+    _agentlog.add_step(state, step, MAX_STEPS)
 
 
 def _absorb(state: dict, raw: bytes) -> None:
-    """Fold one log line into the parsed feed."""
-    line = raw.strip()
-    if not line:
-        return
-    try:
-        ev = json.loads(line)
-    except (ValueError, TypeError):
-        return
-    if not isinstance(ev, dict):
-        return
-    # THE CLAUDE SESSION THIS RUN IS, which is what makes it resumable.
-    #
-    # Every line the CLI writes carries the same `session_id`, and Claude Code
-    # keeps that session's transcript under ~/.claude/projects - so the id is
-    # the handle for `claude --resume`, and somebody who would rather read a run
-    # in a terminal than in this dashboard can pick it up exactly where the
-    # agent left it, with its whole context.
-    #
-    # TAKEN FROM THE FIRST LINE THAT HAS ONE AND THEN LEFT ALONE. Measured: one
-    # id per run across a whole log. A later line overwriting it would matter if
-    # that ever stopped being true, and the first is the one that names the
-    # session that was started.
-    if not state.get("session_id"):
-        sid = ev.get("session_id")
-        if isinstance(sid, str) and sid:
-            state["session_id"] = sid
-
-    etype = ev.get("type")
-    if etype == "bgate_run_start":
-        # A RE-DISPATCH. The log appends across runs and showing run 1's result
-        # as run 2's current state was a real observed bug - everything before
-        # this marker belongs to a run that is over.
-        state["steps"].clear()
-        state["step_count"] = 0
-        state["final"] = None
-        # A re-dispatch is a DIFFERENT Claude session, so the old id must go
-        # with the old steps. Resuming run 1 while looking at run 2 would open
-        # a transcript that has nothing to do with what is on screen.
-        state["session_id"] = ""
-    elif etype == "assistant":
-        for block in _blocks(ev):
-            if block.get("type") == "text" and str(block.get("text", "")).strip():
-                _add_step(state, {"kind": "say",
-                                  "text": str(block["text"]).strip()[:1000]})
-            elif block.get("type") == "tool_use":
-                name = str(block.get("name", "?"))
-                inp = block.get("input") if isinstance(block.get("input"), dict) else {}
-                short = name.replace("mcp__builders-gate__", "")
-                # 200, not 120: a Bash hint is a command line, and the old cap
-                # cut most of them off inside the `cd "<long path>" &&` prefix
-                # every dispatched agent opens with — the chip said what
-                # directory it was standing in and never what it ran there.
-                _add_step(state, {"kind": "tool", "name": short,
-                                  "hint": _tool_subject(short, inp)[:200]})
-    elif etype == "user":
-        for block in _blocks(ev):
-            if block.get("type") == "tool_result":
-                c = block.get("content")
-                txt = c if isinstance(c, str) else (
-                    c[0].get("text", "") if isinstance(c, list) and c
-                    and isinstance(c[0], dict) else "")
-                txt = str(txt).strip()
-                if txt:
-                    _add_step(state, {"kind": "result", "text": txt[:600],
-                                      "truncated": len(txt) > 600})
-            elif block.get("type") == "text":
-                # Replayed user turns - and the FIRST of them is the dispatch
-                # prompt, which carries the seat-identity preamble and the whole
-                # house-rules block. That is internal plumbing, not something to
-                # show a human reading their agent's activity: only turns
-                # carrying the director marker (live steers) are surfaced.
-                txt = str(block.get("text", ""))
-                if STEER_MARKER in txt:
-                    _add_step(state, {"kind": "steer",
-                                      "text": txt.split(STEER_MARKER, 1)[1].strip()[:600]})
-    elif etype == "result":
-        # The agent's actual answer. NOT truncated to a preview length - this is
-        # the deliverable sentence the user opened the panel to read; the cap is
-        # only here so a runaway result cannot pin the process's memory.
-        state["final"] = {"subtype": ev.get("subtype"),
-                          "text": str(ev.get("result", ""))[:20000],
-                          "cost": ev.get("total_cost_usd"),
-                          "turns": ev.get("num_turns"),
-                          # The tokens, and which model spent them. `cost` on a
-                          # subscription is what this WOULD have cost on the
-                          # API; these are what the rolling usage window
-                          # actually meters, and cache_read dominates them by
-                          # four orders of magnitude over output.
-                          "model": _final_model(ev),
-                          "tokens": _final_tokens(ev)}
-    elif etype and etype.startswith(("thread.", "turn.", "item.")):
-        _absorb_codex(state, etype, ev)
-
-
-def _final_tokens(ev: dict) -> dict:
-    """The run's token usage, in this module's four names.
-
-    Read off `usage` rather than summed from the per-turn assistant events:
-    the CLI already totals it there, and re-adding 8,000 assistant messages to
-    reach a number the result event carries is the kind of work this feed's
-    byte cursor exists to avoid.
-    """
-    usage = ev.get("usage")
-    if not isinstance(usage, dict):
-        return {}
-    def n(key: str) -> int:
-        try:
-            return max(0, int(usage.get(key) or 0))
-        except (TypeError, ValueError):
-            return 0
-    return {"input": n("input_tokens"), "output": n("output_tokens"),
-            "cache_read": n("cache_read_input_tokens"),
-            "cache_write": n("cache_creation_input_tokens")}
-
-
-def _final_model(ev: dict) -> str:
-    """Which model actually ran, as the CLI names it.
-
-    Recorded because nothing else in this system knew. Every dispatch left
-    --model unset, so the answer was whatever the CLI defaulted to that day - unlogged, unqueryable, and discovered only by reading a raw session log
-    after the bill looked wrong. `modelUsage` is keyed by the resolved name
-    including its context-window suffix, which is the distinction that matters:
-    an opus-5[1m] run and an opus-5 run meter differently.
-    """
-    usage = ev.get("modelUsage")
-    if isinstance(usage, dict) and usage:
-        return max(usage, key=lambda k: (usage[k] or {}).get("cacheReadInputTokens", 0)
-                   if isinstance(usage[k], dict) else 0)
-    return str(ev.get("model") or "")
-
-
-# ---------------------------------------------------------------------------
-# The other vocabulary
-# ---------------------------------------------------------------------------
-# `codex exec --json` speaks a different, smaller event language than claude's
-# stream-json. The two do not collide - dotted names against bare ones - so one
-# reader handles a log of either kind without being told which runner wrote it,
-# which matters because the log is per ITEM and a re-dispatch may switch runners
-# under an existing file.
-#
-# The mapping is deliberately lossy in one direction: codex reports a shell
-# command and its whole aggregated output, where claude reports a tool name and
-# a structured result. Both land as the same {kind: tool} / {kind: result} steps
-# the feed already renders, because the person reading the panel wants to know
-# what the agent DID, not which vendor's noun it used.
-_CODEX_QUIET_ITEMS = {"reasoning", "todo_list"}
-
-
-def _absorb_codex(state: dict, etype: str, ev: dict) -> None:
-    if etype == "thread.started":
-        # Same job as bgate_run_start: a resumed or re-dispatched thread must
-        # not show the previous run's steps as current.
-        state["steps"].clear()
-        state["step_count"] = 0
-        state["final"] = None
-        # A re-dispatch is a DIFFERENT Claude session, so the old id must go
-        # with the old steps. Resuming run 1 while looking at run 2 would open
-        # a transcript that has nothing to do with what is on screen.
-        state["session_id"] = ""
-        return
-    if etype == "turn.completed":
-        # NO PRICE HERE, ON PURPOSE - see runners.Runner.cost_tracked. Tokens
-        # are recorded so the run is not a black box, but nothing downstream may
-        # read them as dollars.
-        usage = ev.get("usage") if isinstance(ev.get("usage"), dict) else {}
-        state["usage"] = {
-            "input_tokens": usage.get("input_tokens"),
-            "cached_input_tokens": usage.get("cached_input_tokens"),
-            "output_tokens": usage.get("output_tokens"),
-            "reasoning_output_tokens": usage.get("reasoning_output_tokens"),
-        }
-        return
-    if etype != "item.completed":
-        # item.started is the same item arriving twice; taking only the
-        # completion keeps one step per action instead of a doubled feed.
-        return
-
-    item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
-    kind = str(item.get("type") or "")
-    if kind in _CODEX_QUIET_ITEMS:
-        return
-    if kind == "agent_message":
-        text = str(item.get("text") or "").strip()
-        if text:
-            _add_step(state, {"kind": "say", "text": text[:1000]})
-            # The LAST message of the run is the deliverable, and codex has no
-            # separate result event to carry it. Overwritten each time, so
-            # whatever it said last stands.
-            state["final"] = {"subtype": "success", "text": text[:20000],
-                              "cost": None, "turns": None}
-        return
-    if kind == "command_execution":
-        command = str(item.get("command") or "")
-        _add_step(state, {"kind": "tool", "name": "Bash",
-                          "hint": command[:120]})
-        output = str(item.get("aggregated_output") or "").strip()
-        code = item.get("exit_code")
-        if output or code:
-            _add_step(state, {"kind": "result",
-                              "text": (f"exit {code}\n" if code else "")
-                                      + output[:600],
-                              "truncated": len(output) > 600})
-        return
-    if kind in ("mcp_tool_call", "tool_call"):
-        name = str(item.get("tool") or item.get("name") or "?")
-        args = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
-        short = name.replace(f"mcp__{_runners.MCP_SERVER_NAME}__", "")
-        # Same subject rules as the claude path — a codex run drawn as a column
-        # of bare verbs is exactly as unreadable.
-        _add_step(state, {"kind": "tool", "name": short,
-                          "hint": (_tool_subject(short, args)
-                                   or str(args.get("seat") or ""))[:200]})
-        return
-    if kind in ("file_change", "patch_apply"):
-        changes = item.get("changes") if isinstance(item.get("changes"), list) else []
-        paths = ", ".join(str((c or {}).get("path") or "") for c in changes[:4])
-        _add_step(state, {"kind": "tool", "name": "Edit",
-                          "hint": (paths or str(item.get("path") or ""))[:120]})
-        return
-    # An item type this version has never seen still belongs in the feed - # silence would make a new codex capability look like an agent doing nothing.
-    label = str(item.get("text") or item.get("command") or kind)
-    _add_step(state, {"kind": "tool", "name": kind or "item", "hint": label[:120]})
+    """Fold one log line into the parsed feed. The rules are agentlog's."""
+    _agentlog.fold_line(state, raw, MAX_STEPS)
 
 
 def _is_running(item_id: int) -> bool:

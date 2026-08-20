@@ -124,6 +124,7 @@ LABELS: dict[str, str] = {
     "dispatch.max_turns": "Stop an agent after this many turns",
     # Gates
     "gate.mode": "Who signs off finished work",
+    "qa.require_evidence": "Scene work must show a render before it counts as done",
     "qa.max_rounds": "How many times work may bounce back for fixes",
     "qa.gated_seats": "Seats whose work gets checked automatically",
     "signoff.hours": "How long finished work waits for your sign-off",
@@ -295,13 +296,17 @@ class Setting:
 SETTINGS: tuple[Setting, ...] = (
     # -- Dispatch -----------------------------------------------------------
     Setting(
-        key="autopilot.on", group="Dispatch", kind=BOOL, default=False,
+        key="autopilot.on", group="Dispatch", kind=BOOL, default=True,
         store=("workspace", "director", "autopilot", "on"),
         env_coerce=("BGATE_AUTODEPLOY", lambda raw: False if _falsey(raw) else None),
         env_note="BGATE_AUTODEPLOY=0 stops the loop from starting at all, so the "
                  "stored switch cannot take effect until the server restarts",
         help="Dispatch queued work automatically as slots free up, instead of "
-             "waiting for somebody to press deploy on each item."),
+             "waiting for somebody to press deploy on each item. ON by "
+             "default since 2026-08-19: shipped off, a filed chain looked "
+             "exactly like a running one and sat still until somebody found "
+             "the toggle - 'my chains never auto-deploy' was this default. "
+             "Turn it off for a board you want to hand-dispatch."),
     Setting(
         key="dispatch.allow_dirty", group="Dispatch", kind=BOOL, default=False,
         store=("registry", "dispatch.allow_dirty"), scope=MACHINE,
@@ -378,6 +383,16 @@ SETTINGS: tuple[Setting, ...] = (
         help="Who signs off before an agent's work counts as done: nobody, the "
              "QA seat, or you. An agent cannot change this: switching off your "
              "own reviewer is the same act as granting yourself the repo."),
+    Setting(
+        key="qa.require_evidence", group="Gates", kind=BOOL, default=True,
+        store=("registry", "qa.require_evidence"),
+        help="A run that wrote scenes may not report 'done' without a render "
+             "to show for it - a fresh godot_screenshot from the run, or an "
+             "evidence path on queue_complete. Exists because agents kept "
+             "judging levels by geometry stats over a picture with holes in "
+             "it; the numbers were all true and the scene was broken. The "
+             "refusal names the screenshot call, so it redirects rather than "
+             "blocks; failed reports never need evidence."),
     Setting(
         key="qa.max_rounds", group="Gates", kind=INT, default=3,
         minimum=1, maximum=10, store=("registry", "qa.max_rounds"),
@@ -629,11 +644,13 @@ SETTINGS: tuple[Setting, ...] = (
              "breaks the promise the rest of the tool makes. https only, no "
              "private or link-local addresses, one attempt."),
     Setting(
-        key="notify.stall_hours", group="Notifications", kind=FLOAT, default=2.0,
+        key="notify.stall_hours", group="Notifications", kind=FLOAT, default=0.5,
         minimum=0.25, maximum=168.0, store=("registry", "notify.stall_hours"),
         help="How long a chain's head may sit in review or blocked before it "
              "is called stalled. The bus is transition-driven, so without this "
-             "the quiet failure — nothing happening — emits nothing."),
+             "the quiet failure — nothing happening — emits nothing. Half an "
+             "hour by default: at the old two hours, a chain parked behind a "
+             "dead predecessor was invisible for a whole working session."),
     Setting(
         key="notify.question_stale_h", group="Notifications", kind=FLOAT,
         default=12.0, minimum=0.25, maximum=168.0,
@@ -650,10 +667,15 @@ SETTINGS: tuple[Setting, ...] = (
 
     # -- Budget (the spend_budget row; described here, not copied) ----------
     Setting(
-        key="budget.enforced", group="Budget", kind=BOOL, default=True,
+        key="budget.enforced", group="Budget", kind=BOOL, default=False,
         store=("budget", "enforced"), human_only=True,
-        help="Refuse a dispatch that would breach a ceiling. Off turns every "
-             "number below into a report rather than a limit."),
+        help="Refuse a dispatch that would breach a ceiling. OFF by default "
+             "since 2026-08-19, and deliberately: shipped on, every project "
+             "silently enforced a $5/item, $25/day ceiling nobody chose, and "
+             "the observed agent response to a mid-task budget refusal is to "
+             "hand-roll a substitute asset - worse than either spending or "
+             "asking. Off, every number below is a report; the ledger still "
+             "records everything. Turn it on when YOU want hard ceilings."),
     Setting(
         key="budget.per_item_usd", group="Budget", kind=FLOAT, default=5.0,
         minimum=0.0, maximum=10000.0, store=("budget", "per_item_usd"),
@@ -1075,11 +1097,31 @@ def client(root: str | os.PathLike[str]) -> dict:
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
+def _doc_for_write(root, seat: str, doc_key: str) -> dict:
+    # NOT _registry_doc, and NOT a bare default. These saves are read-modify-
+    # REPLACE, so the read must be the real document: _ws.get returns its
+    # default both for a doc that does not exist (fine — first write starts
+    # empty) and for one whose stored JSON will not parse, and writing the
+    # default back in the second case silently resets every other field the doc
+    # carries. A store that will not READ (a transient "database is locked")
+    # already raises out of _ws.get; this closes the unparseable case the same
+    # way. The caller retries or repairs; nothing is lost. A doc that parsed
+    # carries _version (workspace.get stamps it), which is how the two defaults
+    # are told apart from a real read.
+    doc = _ws.get(root, seat, doc_key, {})
+    if _ws.VERSION_KEY not in doc and _ws.version(root, seat, doc_key):
+        raise SettingError(
+            f"the stored {seat}/{doc_key} document exists but cannot be read — "
+            "refusing to overwrite it with defaults; repair or remove the "
+            "stored document, then save again")
+    return doc
+
+
 def _write(root, s: Setting, value: Any) -> None:
     kind = s.store[0]
     if kind == "workspace":
         _, seat, doc_key, field_name = s.store
-        doc = _ws.get(root, seat, doc_key, {})
+        doc = _doc_for_write(root, seat, doc_key)
         doc[field_name] = value
         # since/by are what both existing docs (director/gate, director/autopilot)
         # already carry, and the console renders them. Stamping them here keeps
@@ -1091,13 +1133,9 @@ def _write(root, s: Setting, value: Any) -> None:
         _ws.set(root, seat, doc_key, doc)
         return
     if kind == "registry":
-        # NOT _registry_doc. That helper swallows a failed read into {} so a
-        # PANEL can render defaults, and this is a read-modify-REPLACE: writing
-        # that {} back would silently reset every other registry-stored setting
-        # to its default because one transient "database is locked" happened at
-        # read time. A save that cannot read what it is about to rewrite must
-        # fail loudly instead — the caller retries; nothing is lost.
-        doc = _ws.get(root, REGISTRY_SEAT, REGISTRY_KEY, {})
+        # _registry_doc swallows a failed read into {} so a PANEL can render
+        # defaults; a save must never take that shortcut — see _doc_for_write.
+        doc = _doc_for_write(root, REGISTRY_SEAT, REGISTRY_KEY)
         doc[s.store[1]] = value
         doc["updated_at"] = _now()
         doc["by"] = _actor()

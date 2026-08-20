@@ -201,16 +201,22 @@ class TestApplying:
         assert "402" in filed["brief"] and "art" in filed["brief"]
         assert "STRUCTURAL" in filed["brief"]
 
-    def test_the_escalation_is_never_picked_up_by_an_auto_dispatcher(self, root):
-        """It is queued for a HUMAN to read. An auto-dispatcher grabbing it
-        would be the harness paying to rediscover the blocker the cap just
-        stopped paying for."""
+    def test_the_escalation_is_dispatchable_to_a_director_agent(self, root):
+        """Inverted on 2026-08-19. Held-for-a-human was the board's deepest
+        dead end: with no console session open, every escalation sat queued
+        forever and the failed item stayed failed until a person cleared and
+        re-dispatched by hand. It is now an ordinary director-seat row - an
+        auto-dispatcher may spawn an agent to diagnose and ACT on it - and
+        the spend bound lives where it always did: one escalation per item,
+        ever. Only qa-gate-escalation and chat stay human-held."""
         item = self._failed(root)
         followup.apply_action(root, {
             "kind": "fail_escalate", "item": int(item["id"]), "event": 1,
             "guard": "", "why": "", "reason": "capped", "auto_cap": 1})
-        assert queue.FAILURE_ESCALATION_SOURCE in queue.HELD_SOURCES
-        assert queue.claim_next(root, "director", actor="agent:test") is None
+        assert queue.FAILURE_ESCALATION_SOURCE not in queue.HELD_SOURCES
+        claimed = queue.claim_next(root, "director", actor="agent:test")
+        assert claimed is not None
+        assert claimed["source"] == queue.FAILURE_ESCALATION_SOURCE
 
     def test_filing_twice_files_one(self, root):
         """Delivery is at-least-once: the batch that decided this is replayed
@@ -304,13 +310,13 @@ class TestTheWholeLoopTerminates:
 
 
 class TestTheEscalationReachesTheSession:
-    """The held card becomes a decision that gets MADE.
+    """The filed card becomes a decision that gets MADE.
 
-    An escalation is still held from every auto-dispatcher — that promise is
-    untouched — but a project whose human uses the console's director session
-    hands it to THAT session, which can investigate and act. A project where
-    that session has never existed keeps the shipped behaviour: held for the
-    dashboard.
+    A project whose human uses the console's director session hands a fresh
+    escalation to THAT session first (it reserves the row, so no other
+    dispatcher can race it). A project without one no longer parks the card:
+    the row is an ordinary director-seat item and autodeploy may spawn an
+    agent for it.
     """
 
     def _fail_and_escalate(self, root):

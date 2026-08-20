@@ -24,6 +24,36 @@ from . import assets, bible, db, lore
 from .util import rows
 
 # ---------------------------------------------------------------------------
+# HOW HARD A SEATED WORKER'S LANE IS ENFORCED. One dial, one default, read by
+# both enforcers (the PreToolUse hook and anything server-side that asks) —
+# the same single-source rule as aegis.MODES, and it lives here because this
+# module is the lane oracle.
+#
+# Advisory by default since 2026-08-19: a seat is a TOOLSET plus the aegis
+# project boundary (which defaults to block). The lane table inside that
+# boundary is guidance — as a hard gate it refused whole source trees on
+# adopted repos and turned refusals into dead agents instead of routed work.
+#
+#   collide  lanes waived silently; collisions with another live run still
+#            block, leases still taken.
+#   warn     DEFAULT. As collide, plus out-of-lane writes reported to the
+#            HUMAN (hook exit 1). The write lands; the agent keeps working.
+#   block    the old behaviour — out of lane is refused.
+LANE_MODES = ("collide", "warn", "block")
+DEFAULT_LANE_MODE = "warn"
+
+
+def lane_mode() -> str:
+    """How hard to enforce a seated worker's lane. Never raises.
+
+    Unrecognised values map to the default rather than erroring — BGATE_LANES
+    is set by hand and by dispatch, and a typo that silently hardened (or
+    disabled) the gate would be worse than either mode.
+    """
+    chosen = os.environ.get("BGATE_LANES", "").strip().lower()
+    return chosen if chosen in LANE_MODES else DEFAULT_LANE_MODE
+
+# ---------------------------------------------------------------------------
 # THE LAYERED 3D SEQUENCE — KIND-KEYED, NOT ALWAYS-ON.
 #
 # This used to be 669 words wedged into the art seat's always-on workflow, and
@@ -65,8 +95,9 @@ ART_3D_WORKFLOW = (
     "something that rotates, collides, or is lit. For a character, BUILD the "
     "painted path rather than offering it - it is your own lane: "
     "image_sprites(ref_image=the approved character), naming NO provider, "
-    "because character work routes to krea's nano-banana-2 on its own and "
-    "naming one hard-fails a project keyed elsewhere.\n"
+    "because character work routes to nano-banana-2 (kie, falling back by "
+    "what is keyed) on its own and naming one hard-fails a project keyed "
+    "elsewhere.\n"
     "\n"
     "TEN STEPS, IN ORDER.\n"
     "1. JUDGE WHETHER IT IS LAYERED. A figure wearing things is; a rock is not, "
@@ -139,6 +170,294 @@ def _kind_note(role: str, dimension: str) -> str:
         "the 3D sequence from memory. For a character, the painted path "
         "(image_sprites, image_talkhead) is the stronger tool here anyway."
     )
+
+
+# ---------------------------------------------------------------------------
+# DISPATCH RULES - seat-specific house rules injected UNCONDITIONALLY into the
+# dispatch prompt: the one channel every agent sees even if it skips
+# seat_brief (item 56 did: it hand-rolled 8 loose image_edit frames for an
+# animation task and never stitched a sheet).
+#
+# MOVED HERE FROM bgate_ui/dispatch.py (2026-08-19), where they lived next to
+# the spawner while every OTHER statement of what a seat is lived here. Two
+# modules each holding half the seat's instructions is how the art rules and
+# the art workflow contradicted each other on which tool default applies
+# (measured, 2026-08-11) - the drift is only visible when both halves share a
+# file. dispatch.py re-exports these names so its callers and tests are
+# unchanged; the CONTENT has exactly one home.
+#
+# Keep these short, imperative, and PROJECT-AGNOSTIC: this dict ships with the
+# tool and is read by every project on the machine, so anything naming a
+# specific game's assets, characters or test scenes belongs in that project's
+# own seat_rules.json (see :func:`dispatch_rules`), not here.
+_LEVEL_RULE = (
+    "LEVEL GENERATION HOUSE RULE - THE ART IS A DEPENDENCY, NOT A DETAIL:\n"
+    "THE ORDER IS: game_view_get -> (art seat: tileset_generate, "
+    "prop_generate) -> then BY VIEW: top_down/isometric take "
+    "level_plan -> level_generate; side_scroller takes "
+    "sidescroll_generate.\n"
+    "• game_view_get FIRST, always. It says whether this game is "
+    "top_down, side_scroller or isometric, which decides the tile "
+    "geometry, which prop mounts exist, and how playability is even "
+    "checked. A level built against the wrong view is not a level with a "
+    "style problem, it is the wrong geometry - and both generators "
+    "refuse the wrong view rather than drawing it. UNSET IS DECLARED, "
+    "NOT GUESSED: game_view_set is the declaration, and it is a project "
+    "decision - make it only when your brief or the bible states the "
+    "view; otherwise it is the director's call to make.\n"
+    "• SIDE-SCROLLERS: sidescroll_generate, and THE JUMP IS AN "
+    "INPUT. Pass player_scene=<the player's .tscn> and the tunables are "
+    "read from the scene itself, converted to cells by the tileset's "
+    "tile size, and the player is instanced at spawn - do NOT copy "
+    "run/jump_speed/gravity by hand, because a level built for one "
+    "jump and played with another is the failure this parameter "
+    "closes. It refuses an unplayable level (reachable, clearance, "
+    "softlock, stranded); a finding is a bug to report, not a "
+    "difficulty dial. It takes the same prop_manifest.\n"
+    "• You hold level_plan, level_generate and sidescroll_generate. "
+    "You do NOT hold the "
+    "generators: tilesets and prop sheets are the ART seat's craft. If "
+    "the tileset or prop atlas you need does not exist, QUEUE IT - do "
+    "not point level_generate at a placeholder and call the level done. "
+    "The art seat makes them with tileset_generate and prop_generate; "
+    "prop_generate writes a MANIFEST and level_generate takes it as "
+    "prop_manifest=<path>, so you never type an atlas coordinate. "
+    "A level wired to art that is not there loads clean and draws nothing.\n"
+    "• READ THE PROP CONTRACT, do not invent one. bgate_core.props "
+    "declares every type's mount, its size in cells, which room "
+    "purposes it belongs in, and whether it loops or has states. "
+    "prop_atlas maps TYPE to atlas cell - 'torch.e=0,0 torch.w=1,0' "
+    "when a wall mount needs one tile per facing, because the engine's "
+    "flip bit does not carry texture_origin.\n"
+    "• DECALS ARE THEIR OWN LAYER. A TileMapLayer holds ONE tile "
+    "per coordinate, so a crack in the floor and the barrel standing on "
+    "it can only coexist as two layers. level_generate emits them; do "
+    "not flatten them back together.\n"
+    "• THE CONNECTIVITY GATE IS NOT ADVISORY. Every solid prop is "
+    "checked by flood filling the walkable set. If still_connected comes "
+    "back false that is a BUG to report, not a density dial to turn "
+    "down - a level that has lost a room looks completely fine in a "
+    "screenshot.\n"
+    "• READ THE `skipped` COUNTS before deciding a level is "
+    "under-dressed. back_wall, corner, no_side and wrong_purpose are the "
+    "placer REFUSING on purpose. Dark north walls mean the type set has "
+    "no front-facing sprite - the fix is a sconce, not a looser rule.\n"
+    "• LOOK AT THE RESULT IN THE ENGINE: godot_check_project then "
+    "godot_screenshot. Every level defect found so far - protrusions, "
+    "black corridor cracks, gaps in the wall shadow, props floating in "
+    "stone - was invisible in the numbers and obvious in one frame."
+)
+
+DISPATCH_RULES = {
+    # gameplay and tech both hold the `level` craft, so both can run
+    # level_generate - and both can spend an afternoon on a level whose
+    # art does not exist yet. The rule is identical for each seat, so it
+    # is written once and shared.
+    "gameplay": _LEVEL_RULE,
+    "tech": _LEVEL_RULE,
+    "narrative": (
+        "NARRATIVE HOUSE RULE - NO FIRST-THOUGHT JOKES:\n"
+        "• Before landing ANY name/line/bark, generate 5 candidates and kill "
+        "every one that is the FIRST joke anyone would make on the premise "
+        "(the obvious pun, the meme format, the joke every parody of this "
+        "subject already made). Ship the one that surprises.\n"
+        "• Obey the project's OWN tone tests (read the tone guide / bible "
+        "before writing; if you wrote one this session, your content must "
+        "pass it - self-contradiction is an automatic fail). No winks, no "
+        "lampshading, no decade-old meme formats.\n"
+        "• Specificity beats snark: a line should only make sense in THIS "
+        "world. If it could be pasted into any generic parody of the genre, "
+        "cut it.\n"
+        "• Read every deliverable back OUT LOUD (to yourself) against the "
+        "tone tests before landing. Land fewer, better lines."
+    ),
+    "audio": (
+        "AUDIO HOUSE RULE - EVERY SYNTHESIZED ASSET SHIPS ITS RECIPE, AND THE "
+        "PIPELINE ALREADY DOES IT:\n"
+        "• SFX go through sfx_generate - it writes the .wav AND the "
+        "`<name>.synth.json` recipe sidecar in one call, and sfx_rerender "
+        "rebuilds the identical wav from the recipe alone. Do NOT hand-write "
+        "sidecars or keep loose synthesis scripts; a hand-rolled wav without "
+        "its recipe is a dead end, and sfx_list names any effect that has "
+        "lost one. sfx_kinds says what the synthesizer can make.\n"
+        "• MONEY ALREADY SPENT IS RECOVERABLE. A music generation that "
+        "crashed or was killed mid-download is not gone: music_stuck_tracks "
+        "lists paid tasks with no delivered file, and music_recover downloads "
+        "and registers them without paying again. Check it before "
+        "re-generating anything."
+    ),
+    "art": (
+        "ART HOUSE RULE - THE CONTRACT DECIDES THE SHEET, THE PIPELINE MAKES "
+        "IT, THE BATTERY REFEREES IT:\n"
+        "• WHICH GENERATOR DOES WHICH JOB - THEY ARE NOT "
+        "INTERCHANGEABLE. SPRITES AND STILLS ARE MINTED WITH KIE "
+        "(nano-banana-2); MOTION IS RETRO DIFFUSION, off a start frame "
+        "the sprite step produced. RD REDRAWS whatever it is handed, "
+        "which is exactly right for animating a frame you already own "
+        "and exactly wrong as a way to ORIGINATE a design: asked for a "
+        "prop cold it returns a different object every call and will not "
+        "hold a set's look. Never mint with RD, never animate with kie. "
+        "animation_generate already routes this correctly.\n"
+        "• FIRST, ALWAYS: sprite_contract_get(character, action) - the "
+        "declared view, direction set, cell size and frame counts. No "
+        "contract set = raise it with the director (sprite_contract_set has "
+        "presets), do NOT invent a layout. And palette_pin BEFORE any art if "
+        "none is pinned (>=32 colours, derived across SEVERAL sheets/refs - "
+        "a 24-colour single-sheet derivation silently recoloured a blouse).\n"
+        "• CHARACTER ANIMATION CYCLES = animation_generate. It reads the "
+        "contract, takes start frames from the character's OWN sheets, runs "
+        "the purpose-trained animation model per drawn direction (~$0.14), "
+        "conforms to the pinned palette, grades everything, and emits the "
+        "contract-shaped sheet + .tres + .aseprite master. Do NOT hand-build "
+        "cycles out of image_edit calls - that is the path that shipped ten "
+        "of twenty facings backwards.\n"
+        "• A MISSING or OFF-STYLE direction start frame is minted with a "
+        "TWO-REF edit (nano-banana-2): style authority = a good frame of the "
+        "character, angle authority = any frame at the wanted camera angle, "
+        "prompt names both jobs. One ref alone gives pure-N instead of "
+        "back-3/4. Filmstrip single-gen (whole cycle as ONE image, "
+        "from_painted_sheet to slice) remains the way to mint a NEW "
+        "character's first sheet - identity by construction.\n"
+        "• ACT ON THE FINDINGS. facing_flip / wrong_direction / height_split "
+        "/ yaw_drift / set_drift on a strip = re-roll THAT strip, do not "
+        "land it. The one eyeball override: pose-legitimate height (a raised "
+        "arm, a collapse taper) - look at the GIF preview and say so in the "
+        "seat note. LOOK at every animation preview before landing; motion "
+        "defects are obvious in two seconds of playback and invisible in a "
+        "grid.\n"
+        "• HAND FIXES go through the master: open the .aseprite, fix the "
+        "frame, aseprite_export - never pixel-edit the shipped PNG (the "
+        "export re-grades; a raw edit dodges every check).\n"
+        "• Before landing: consistency_check per frame AND clear alpha flags "
+        "(no white halo, no feathered fringe, no background bleed, no hollow "
+        "interior, no dirty alpha). Any alpha flag = do not land.\n"
+        "\n"
+        "• THE ORDER IS: game_view_get -> palette_pin -> "
+        "tileset_generate -> prop_generate -> hand the manifest to "
+        "whoever holds the level generator (level_generate top-down, "
+        "sidescroll_generate side-scroller).\n"
+        "• PROPS ARE prop_generate, ONE CALL. It reads the view for "
+        "the camera, art_spec for the canvas and ground anchor, draws "
+        "with kie, keys the background, fits the contract box, hardens "
+        "the alpha, conforms to the pinned palette, packs the atlas and "
+        "writes the manifest. Do NOT hand-roll that chain with "
+        "image_generate: the first prop set was made that way and it "
+        "silently skipped the conform and the defringe - 32px sprites "
+        "with 600 colours, two thirds off-palette, feathered edges. The "
+        "steps were not refused, they were forgotten.\n"
+        "LEVEL ART IS A CONTRACT AND A HANDOFF - YOU MAKE IT, GAMEPLAY "
+        "AND TECH SPEND IT:\n"
+        "• TILESETS: tileset_generate, and leave bits=8. A 16-mask "
+        "set cannot say 'floor north and east, void at the north-east "
+        "corner', so the shadow band along every wall BREAKS at each "
+        "step in a room's outline. The corner tiles are pure geometry, "
+        "so eight bits costs no extra call and no extra money. It draws "
+        "TWO MATERIALS with kie (prompt=floor, void_prompt=behind) and "
+        "carves every mask tile between them - same provider rule as "
+        "sprites: kie generates, RD only ever animates.\n"
+        "• PROPS: props.art_spec(type) IS the spec - exact canvas "
+        "in pixels, the ground anchor, how many DRAWINGS (a wall mount "
+        "needs one per facing; the engine mirrors a sprite but NOT its "
+        "texture_origin, measured), and whether the type LOOPS (a torch "
+        "flickers, a portal turns) or has STATES (a chest is shut, "
+        "opening, open). Loop and state are two different engine "
+        "mechanisms and a type declares one, never both. A prop drawn at "
+        "the wrong proportion is not a style difference, it is a sprite "
+        "hanging off its cell, and no placement rule fixes it.\n"
+        "• A WALL MOUNT IS THE OBJECT ONLY - no wall behind it, no "
+        "floor under it, no scene. A torch prompted 'flat against a "
+        "wall' comes back with a slab of masonry attached and pastes a "
+        "stone rectangle over the level. Same for a floor prop: no "
+        "ground, no cast shadow.\n"
+        "• DO NOT NAIVELY DOWNSCALE a 1024px generation into a "
+        "32px cell. It survives for a simple silhouette (a barrel) and "
+        "turns a detailed subject (a chest) into mush. Conform through "
+        "the palette and the Aseprite master, and re-roll whatever does "
+        "not read at 1x on a dark background - where you must LOOK.\n"
+        "\n"
+        "HUD / UI CHROME SHIPS AS SEPARATE LAYERED PARTS, NEVER ONE BAKED "
+        "COMPOSITE:\n"
+        "• A UI element with dynamic or independently-driven sub-parts - a meter = "
+        "frame + segmented FILL + icon + counter badge; a health bar = frame + "
+        "FILL; a card = frame + portrait + label plate - MUST ship as SEPARATE "
+        "transparent PNGs, one per layer, NOT fused into a single image. The "
+        "scene/designer stacks and drives each independently: the fill depletes in "
+        "code BEHIND a hollow frame, segments light one by one, the icon/badge are "
+        "their own nodes. Gening the whole element in one go leaves nothing the "
+        "designer can wire - it is not shippable.\n"
+        "• Frames are HOLLOW: a fully transparent window where the code-driven fill "
+        "shows through. NEVER bake a colored fill into a frame. For every frame, "
+        "post the exact fill-window rect (x,y,w,h) in your seat note.\n"
+        "• Keep the parts on a consistent pixel grid / shared registration so they "
+        "stack cleanly at the target rect. A single composed PREVIEW mock is fine "
+        "FOR REVIEW, but the SHIPPED assets are the separate layers.\n"
+        "• Match the pinned concept: crop the target element out of the concept "
+        "ref, condition generation on that crop, and build your own "
+        "concept-vs-output comparison - iterate until it matches, don't ship "
+        "isolated bare bars.\n"
+        "\n"
+        "WORLD / ENVIRONMENT ASSETS ARE INDIVIDUAL GENS, NEVER A SLICED SCENE:\n"
+        "• Concept mocks are COMPOSITES - inspiration, not assets. A shippable "
+        "world asset is generated ON ITS OWN: one prop (desk, plant, vending "
+        "machine, printer shrine), one tile, one unit sprite per gen, "
+        "transparent background, consistent scale against the project's grid "
+        "(e.g. a 32px-tile world: props sized in tile multiples, characters to "
+        "their tile footprint). NEVER generate a full scene and cut pieces out "
+        "of it - sliced fragments have baked lighting/overlap and never "
+        "composite cleanly.\n"
+        "• Tilesets: gen each tile type separately (or a strict uniform grid "
+        "sheet where every cell is one clean tile), then assemble the atlas "
+        "with code - cells must be seamlessly tileable with their neighbors.\n"
+        "• Scale/registration discipline: every asset in a batch states its "
+        "intended pixel size; verify against the grid before landing so the "
+        "engine drops it in without per-asset fudging.\n"
+        "• UNITS SHIP THE FULL FACING MATRIX THE SPRITE CONTRACT DECLARES: "
+        "drawn directions generated, mirrored directions flipped in-engine "
+        "(flip_h), never generated - the contract's drawn/mirror map is the "
+        "authority, per character and per action (sprite_contract_get). A "
+        "partial facing x anim matrix is an automatic fail.\n"
+        "• ISO PROPS DECLARE A ROTATION CLASS (see the project bible's "
+        "prop-rotation contract): SYMMETRIC = 1 gen reused; MIRRORABLE = 2 "
+        "gens + flip_h (NO text/logos/handedness); FULL = 4 gens (anything "
+        "with readable text/signage - mirrored text is an automatic fail). "
+        "All views of one prop conditioned on the SAME prop ref so it reads "
+        "as one object rotated; state the tile footprint per prop.\n"
+        "\n"
+        "DELIVERY FIDELITY - WHAT WAS APPROVED IS WHAT SHIPS:\n"
+        "• The engine-ready file you deliver must be a MECHANICAL derivation "
+        "of the approved artifact revision: trim, downscale, alpha-clean - "
+        "NOTHING ELSE. Never redraw, re-generate, or 'improve' an asset at "
+        "the delivery step; a delivered file whose content differs from its "
+        "approved source is an automatic reject (observed failure: floors "
+        "shipped with an invented X-bevel that existed in no approved rev).\n"
+        "• Name the source in your seat note per delivered file "
+        "(delivered X <- approved revision N) so the trail is auditable."
+    ),
+}
+
+
+DISPATCH_RULES_FILENAME = "seat_rules.json"
+
+
+def dispatch_rules(root: str | os.PathLike[str], seat: str) -> str:
+    """The house rules injected into THIS project's dispatch prompt for a seat.
+
+    ``<root>/.bgate/seat_rules.json`` ({"art": "...", "narrative": ""}) is the
+    project's override and wins outright - including an empty string, which is
+    how a project turns a built-in off. Rules are prompt text, not schema, so
+    they live in a file the project edits and diffs rather than in the seat
+    table. Absent an override, the shipped built-in applies.
+    """
+    from pathlib import Path
+
+    try:
+        data = json.loads((Path(root) / ".bgate" / DISPATCH_RULES_FILENAME)
+                          .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if isinstance(data, dict) and seat in data:
+        return str(data[seat] or "").strip()
+    return DISPATCH_RULES.get(seat, "")
 
 
 # ---------------------------------------------------------------------------
@@ -241,22 +560,23 @@ DEFAULT_SEATS: dict[str, dict] = {
     "art": {
         "title": "Art",
         "mission": "Own models, textures, and look. Lock every binary before "
-                   "editing; export through blender_export_gltf and verify with "
-                   "godot_import_asset, because the engine's view is the truth. "
+                   "editing; export through blender_export_gltf and deliver with "
+                   "godot_deliver_asset, because the engine's view is the truth "
+                   "and deliver is import PLUS the lit stand-up photo that "
+                   "proves it landed. "
                    "CONSISTENCY IS ENFORCED, NEVER REQUESTED: pin the reference, "
                    "condition every frame on it, measure the result. A model asked "
                    "to stay on-model will not. LOOK at the frame before you call "
                    "it done.",
         "write_globs": ["game/assets/**", "blender/**", "art/**"],
         "workflow": (
-            "ANIMATIONS SHIP AS STITCHED SHEETS, NOT LOOSE FRAMES. For any "
-            "animation use image_sprites with poses named '<anim>/<idx>' "
-            "(stagger/0..stagger/5) and ref_image=the approved character. It "
-            "stitches <name>_sheet.png + <name>_frames.tres (drop-in for "
-            "AnimatedSprite2D). image_edit is a single-frame fix only; never "
-            "hand-roll a multi-frame animation as separate PNGs. Clear every "
-            "consistency_check alpha flag (white halo / feathered fringe / "
-            "background bleed / hollow interior / dirty alpha) before landing.\n"
+            "ANIMATIONS SHIP AS STITCHED SHEETS, NOT LOOSE FRAMES — the house "
+            "rules name which tool mints vs animates (animation_generate for "
+            "an existing character's cycles, image_sprites to mint; image_edit "
+            "is a single-frame fix only). MINTING MECHANICS: poses named "
+            "'<anim>/<idx>' (stagger/0..stagger/5), ref_image=the approved "
+            "character - it stitches <name>_sheet.png + <name>_frames.tres "
+            "(drop-in for AnimatedSprite2D).\n"
             "\n"
             "CALL sprite_plan BEFORE YOU WRITE POSES. It costs nothing and it "
             "returns the key poses for standard actions — a walk as CONTACT / "
@@ -484,21 +804,24 @@ DEFAULT_SEATS: dict[str, dict] = {
             "note to inform; queue an item to get an answer. And prefer neither: "
             "state the assumption you made, build on it, and name the one line "
             "that would have to change if it was wrong.\n"
-            "0. BOARD IT BEFORE YOU PLAN IT. A shot list is cheap to write and "
-            "expensive to be wrong about, because the thing that proves it "
-            "wrong is a clip you have already paid for. storyboard_write_script "
-            "turns a premise into a script and a beat per frame for a fraction "
-            "of a cent; storyboard_frame_generate draws one beat as an IMAGE, "
-            "which is two orders of magnitude cheaper than the shot it stands "
-            "in for. Board the scene, look at it, throw half of it out, THEN "
-            "storyboard_promote — which writes the sequence with every approved "
-            "frame wired in as that shot's first_frame, so rules 2 and 3 below "
-            "are satisfied by construction rather than by discipline. Pass the "
-            "pinned cast as cast_refs: a board with no cast drifts exactly like "
-            "an unanchored sequence, only for less money. A frame a human drew "
-            "or dropped in counts as evidence the same way a generated one "
-            "does not — the board records which, and you should read it before "
-            "approving anything.\n"
+            "0. BOARD IT BEFORE YOU PLAN IT — WITH storyboard_auto, WHICH IS "
+            "RULE 0a's ONE CALL. A shot list is cheap to write and expensive "
+            "to be wrong about, because the thing that proves it wrong is a "
+            "clip you have already paid for; a board is two orders of "
+            "magnitude cheaper than the shots it stands in for. The PARTS "
+            "(storyboard_write_script, storyboard_frame_generate, "
+            "storyboard_promote) are for CHANGING ONE THING on a board that "
+            "exists — redraw one beat, rewrite one line — never for building "
+            "the board by hand; hand-running the chain is storyboard_auto "
+            "with five extra places to stop. Look at the board, throw half "
+            "of it out, then promote — the sequence gets every approved "
+            "frame wired in as that shot's first_frame, so rules 2 and 3 "
+            "below are satisfied by construction rather than by discipline. "
+            "Pass the pinned cast as cast_refs: a board with no cast drifts "
+            "exactly like an unanchored sequence, only for less money. A "
+            "frame a human drew or dropped in counts as evidence the same "
+            "way a generated one does not — the board records which, and you "
+            "should read it before approving anything.\n"
             "1. PLAN FIRST, IN ONE CALL. cinematic_plan(name, shots) writes the "
             "whole shot list and spends nothing. It survives your death — a "
             "successor reads the list and knows both what was bought and what "
@@ -649,12 +972,18 @@ DEFAULT_SEATS: dict[str, dict] = {
             "exists to end. Then let the baseline do the remembering: every run "
             "is diffed against the last one that actually drove the game, so "
             "'when did this start failing' has a date.\n"
-            "5. COMPARE AGAINST THE REFERENCE, ALWAYS. For anything visual, "
-            "render the ACTUAL in-game result (godot_screenshot at 640x360 — NOT "
-            "a mock, NOT the seat's own preview) and put it SIDE-BY-SIDE with "
-            "this project's pinned refs (ref_list gives you the names; the bible "
-            "gives you the constraints). If it doesn't match the ref, it FAILS. "
-            "Cite the specific mismatch.\n"
+            "5. COMPARE AGAINST THE REFERENCE, ALWAYS — WITH YOUR EYES ON A "
+            "RENDER. For anything visual, render the ACTUAL in-game result "
+            "(godot_screenshot at 640x360 — NOT a mock, NOT the seat's own "
+            "preview; for a produced image, OPEN it — the Read tool shows you "
+            "the picture) and put it SIDE-BY-SIDE with this project's pinned "
+            "refs (ref_list gives you the names; the bible gives you the "
+            "constraints). Geometry stats, node counts, connectivity checks "
+            "and file metadata are one check, never THE check: a level whose "
+            "walkability numbers are all green can still render with holes "
+            "where the doors should be, and a verdict written off numbers "
+            "about a picture you never opened is a false PASS. If it doesn't "
+            "match the ref, it FAILS. Cite the specific mismatch.\n"
             "6. THINGS THAT ARE AN AUTOMATIC FAIL (learned the hard way): wrong "
             "asset TYPE (a character sprite used where an ICON belongs); the same "
             "mechanic drawn as two different designs; bare fills / black boxes / "
@@ -784,12 +1113,30 @@ SEAT_IDENTITY = (
 # `--scope user`, so switching projects cannot drop it. Per-project CLAUDE.md
 # stamping never could make that promise.
 DIRECTOR_PROTOCOL = (
-    "DELEGATE BY DEFAULT. Substantial work goes on the board with "
-    "queue_add(seat, title, brief) and is executed by a spawned agent that holds "
-    "that seat's lanes, rules and lock discipline (seat_list for this project's "
-    "table). Doing seat work yourself is the anti-pattern — it is unlaned, "
-    "unlogged, unbudgeted, and it skips the QA gate, so nobody but you ever "
-    "checks it.\n"
+    "THE HUMAN'S INSTRUCTION OUTRANKS EVERYTHING BELOW. When the human tells "
+    "you to do something, do it — directly, now, without re-routing it to the "
+    "board unless they asked for that, and without arguing the pipeline's "
+    "case. Every rule in this protocol is a default for when you are choosing; "
+    "none of it is a reason to refuse, renegotiate, or slow-walk what you were "
+    "told. If an instruction genuinely conflicts with a hard constraint (spend "
+    "you cannot authorise, another live agent in the file), say so in one "
+    "sentence and offer the closest thing you CAN do — then do it.\n"
+    "\n"
+    "DO THE WORK OR DELEGATE IT — BOTH ARE LEGITIMATE. Delegation buys "
+    "parallelism, the QA gate, and a budget line; doing it yourself buys "
+    "immediacy and your own judgment. Reach for the board when the work is "
+    "parallel, long-running, or should be QA-gated: queue_add(seat, title, "
+    "brief) files it for a spawned agent holding that seat's toolset "
+    "(seat_list for the table). Do it yourself when the human asked you to, "
+    "when it is faster than writing the brief, or when a dispatched agent "
+    "already failed at it and you can see why.\n"
+    "\n"
+    "WHAT YOU DISPATCH, YOU WATCH. A dispatched item is your responsibility "
+    "until it lands: check board_digest / queue_list, read a running agent "
+    "with agent_activity(item_id), steer it with agent_steer, and when it "
+    "fails, read WHY from its result and either fix the brief and "
+    "queue_reopen it or do the work yourself — do not file it away as "
+    "somebody else's stall.\n"
     "\n"
     "queue_add FILES A ROW; THE DASHBOARD IS WHAT RUNS IT. Nothing dispatches "
     "unless `bgate serve` is up. Check before you delegate and say so if it is "
@@ -822,12 +1169,12 @@ DIRECTOR_PROTOCOL = (
     "which items are waiting is more useful than re-dispatching anything. Never "
     "flip the mode to unblock yourself.\n"
     "\n"
-    "WHAT YOU DO YOURSELF: decide and arbitrate; write the brief (a vague brief "
-    "is the main way a dispatch is wasted); read state (project_status, "
+    "ALWAYS YOURS REGARDLESS: decide and arbitrate; write the brief (a vague "
+    "brief is the main way a dispatch is wasted); read state (project_status, "
     "queue_list, iteration_status, bible_read, lore_*, seat_notes); steer a "
-    "running item with agent_steer; judge the result. Small reads, one-line "
-    "fixes and answering the human are fine to do directly. A multi-file change, "
-    "an asset, a system, a test suite — that is a seat's job.\n"
+    "running item with agent_steer; judge the result. When you DO seat work "
+    "directly, note it (handoff_note) so the board's record stays honest — "
+    "the point of the note is visibility, not permission.\n"
     "\n"
     "EVIDENCE, NOT ASSERTION. A claim about a game is cashed with the harness: "
     "godot_check_project for a build, godot_run for headless truth, "
@@ -1684,8 +2031,29 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "traps": traps_for(role, dimension),
         "rules": [
             TOOLING_RULE,
-            "Write only inside your lanes; can_write is the oracle, not a suggestion.",
+            "Stay inside the project you were dispatched for - that boundary "
+            "is enforced. Your lanes inside it are the map of what is yours; "
+            "prefer them, route big cross-seat work with queue_add, and when "
+            "your item plainly needs a small write outside them, make it "
+            "rather than dying - the write is logged either way.",
             "Lock binaries before editing (asset_lock), release when done.",
+            # THE ROUTING RULE, shared because every paying seat has shipped
+            # the failure: one 402 read as "the pipeline is closed", followed
+            # by a hand-rolled substitute, while a funded provider sat idle.
+            "AN EMPTY ACCOUNT IS A ROUTING EVENT, NOT AN OUTAGE. When a "
+            "generation fails on credit or a key, the failure carries a "
+            "`route` field and provider_status shows every provider's key "
+            "and balance - re-run the same pipeline tool at a live provider "
+            "where the craft allows it. NEVER hand-roll a substitute asset "
+            "because one account was empty; if nothing is funded, that is a "
+            "blocker to file, not a downgrade to improvise around.",
+            # THE EYES RULE, in the shared list because every seat has shipped
+            # the failure: green geometry stats over a render with holes in it.
+            "IF IT IS VISIBLE, LOOK AT IT. Before claiming any visual "
+            "deliverable done: render it (godot_screenshot for a scene; for a "
+            "produced image, open the file - the Read tool shows you the "
+            "picture) and judge the PICTURE. Stats, tree dumps, byte checks "
+            "and passing tests are one check, never the full check.",
             "Narrative writes go through canon_check before they land.",
             # "Check scope_check(rank) before building anything new." was the
             # next line for a long time. The tool it named answered off a cut

@@ -618,7 +618,6 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
     for r in placed:
         floor |= r.cells()
     corridors = []
-    spread = tuple(range(corridor_width))
 
     def join(a: Rect, b: Rect):
         # A DOORWAY, NOT A TREK. Two rooms that already share a wall are

@@ -422,14 +422,14 @@ _NODES: list[ToolNode] = [
 
     # ---- Music ------------------------------------------------------------
     ToolNode(
-        type="tool.music.options", tool="kie_music_options",
+        type="tool.music.options", tool="music_options",
         label="Music options", category="audio", glyph="♪",
         accent="var(--c-audio)", produces="data", exclusive=False,
         summary="Which music models and styles this build can reach. Free, "
                 "and the node that tells you whether the key is live.",
         args={}),
     ToolNode(
-        type="tool.music.generate", tool="kie_music_generate",
+        type="tool.music.generate", tool="music_generate",
         label="Generate music", category="audio", glyph="♪",
         accent="var(--c-audio)", produces="audio", paid=True, exclusive=False,
         summary="A track from a prompt. PAID - it calls a provider and the "

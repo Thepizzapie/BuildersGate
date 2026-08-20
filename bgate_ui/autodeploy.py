@@ -46,7 +46,7 @@ import threading
 import time
 from typing import Optional
 
-from bgate_core import activity, db, settings as _settings, workspace as _ws
+from bgate_core import activity, settings as _settings, workspace as _ws
 from bgate_ui.pump import Pump
 
 SEAT = "director"
@@ -65,7 +65,7 @@ POLL_S = 4.0
 # automatic dispatcher in a second process and must hold the same items back;
 # two copies of this tuple is how one of them grabs an escalation. The names
 # stay importable from here — this module is where the policy is explained.
-from bgate_core.queue import HELD_SOURCES, PLACEHOLDER_BRIEF  # noqa: E402
+from bgate_core.queue import HELD_SOURCES, PLACEHOLDER_BRIEF  # noqa: E402,F401
 
 # A row created in two statements — INSERT with a placeholder, then UPDATE with
 # the real text — is briefly dispatchable with nothing in it. Both the console
@@ -215,21 +215,14 @@ def _candidates(root: str) -> list[dict]:
     working exactly as designed, the link is simply next rather than ready. The
     tick that follows its predecessor's completion picks it up on its own.
     """
-    marks = ", ".join("?" * len(HELD_SOURCES))
-    rows = db.connect(root).execute(
-        f"SELECT i.id, i.seat, i.title, i.source FROM work_item i "
-        f"LEFT JOIN work_item d ON d.id = i.depends_on "
-        f"WHERE i.status = 'queued' "
-        f"AND i.source NOT IN ({marks}) AND i.brief NOT LIKE ? "
-        "AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
-        "ORDER BY i.priority DESC, i.id LIMIT 40",
-        (*HELD_SOURCES, PLACEHOLDER_BRIEF)).fetchall()
-    # The join sees only the single-column parent. An item with EXTRA parents
-    # (work_item_dep) is filtered here for the same reason the chained ones are:
-    # a refusal costs the item a cooldown and fills the "last refusal" slot with
-    # a non-event when the board is simply working as designed.
+    # THE READINESS RULE IS queue.ready(), shared verbatim with a worker's
+    # claim_next - two dispatchers, one definition of "may start". The limit
+    # is 120, raised from 40: chain links default to priority 0 and QA /
+    # escalation rows run 7-9, so on a busy board forty higher-priority rows
+    # pushed every chain successor past the window and the chain simply never
+    # advanced — starvation with no refusal recorded anywhere.
     from bgate_core import queue as _q
-    return [dict(r) for r in rows if _q.blocker(root, int(r["id"])) is None]
+    return _q.ready(root, limit=120)
 
 
 def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:

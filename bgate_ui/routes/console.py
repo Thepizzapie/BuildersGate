@@ -163,29 +163,62 @@ def _phases_for(root, item_id: int, feed: dict, all_steps: list,
 
 
 def _chain_state(conn, items: list[dict]) -> None:
-    """Stamp readiness onto the cards, in ONE query for the whole board.
+    """Stamp readiness onto the cards, in TWO queries for the whole board.
 
-    A chained item that is not ready is indistinguishable from a plain queued one
-    on the wire, so the console offered a deploy button whose only possible
-    outcome was a refusal. Resolved here rather than per row because the console
-    payload is already the expensive call on this page.
+    A chained item that is not ready is indistinguishable from a plain queued
+    one on the wire, so the console offered a deploy button whose only possible
+    outcome was a refusal. Resolved here rather than per row because the
+    console payload is already the expensive call on this page.
+
+    THREE TRUTHS THE FIRST VERSION MISSED, each of which drew a dispatchable-
+    looking card over an item nothing was ever going to run:
+      * EXTRA PARENTS. Fan-in deps live in work_item_dep, and reading only the
+        depends_on column rendered those cards `ready` with a deploy button
+        whose one outcome was `blocked_on_dependency`.
+      * `held`. A queued row whose source is in HELD_SOURCES (qa-gate
+        escalations, chat) is skipped by every auto-dispatcher on purpose - a
+        human takes it. On the wire it looked like any queued item.
+      * `stuck`. A predecessor in `failed`/`cancelled` will never reach 'done'
+        on its own, so the successor is not "waiting", it is parked until
+        someone reopens the predecessor or cuts the dependency - and the card
+        should say which act frees it.
     """
+    from bgate_core.queue import HELD_SOURCES, SATISFIED
+
+    ids = [int(it["id"]) for it in items]
+    extra: dict[int, list[int]] = {}
+    if ids:
+        marks = ", ".join("?" * len(ids))
+        for row in conn.execute(
+                f"SELECT item_id, depends_on FROM work_item_dep "
+                f"WHERE cut_at IS NULL AND item_id IN ({marks})",
+                tuple(ids)):
+            extra.setdefault(int(row["item_id"]), []).append(
+                int(row["depends_on"]))
     need = {int(it["depends_on"]) for it in items if it.get("depends_on")}
-    if not need:
-        for it in items:
-            it["ready"] = True
-        return
-    marks = ", ".join("?" * len(need))
-    deps = {int(row["id"]): dict(row) for row in conn.execute(
-        f"SELECT id, seat, title, status FROM work_item WHERE id IN ({marks})",
-        tuple(sorted(need)))}
+    need.update(d for deps in extra.values() for d in deps)
+    deps: dict[int, dict] = {}
+    if need:
+        marks = ", ".join("?" * len(need))
+        deps = {int(row["id"]): dict(row) for row in conn.execute(
+            f"SELECT id, seat, title, status FROM work_item "
+            f"WHERE id IN ({marks})", tuple(sorted(need)))}
     for it in items:
-        dep = deps.get(int(it["depends_on"] or 0))
-        # A missing predecessor (deleted) unblocks rather than strands: an item
-        # nobody can release is worse than one that ran a step early.
-        it["ready"] = not dep or dep["status"] == "done"
-        if not it["ready"]:
-            it["waiting_on"] = dep
+        parents = ([int(it["depends_on"])] if it.get("depends_on") else []) \
+            + extra.get(int(it["id"]), [])
+        # A missing predecessor (deleted) unblocks rather than strands: an
+        # item nobody can release is worse than one that ran a step early.
+        unsatisfied = [deps[p] for p in parents
+                       if p in deps and deps[p]["status"] not in SATISFIED]
+        it["ready"] = not unsatisfied
+        it["held"] = (it.get("status") == "queued"
+                      and str(it.get("source") or "") in HELD_SOURCES)
+        if unsatisfied:
+            it["waiting_on"] = unsatisfied[0]
+            if len(unsatisfied) > 1:
+                it["waiting_count"] = len(unsatisfied)
+            it["stuck"] = any(d["status"] in ("failed", "cancelled")
+                              for d in unsatisfied)
 
 
 def _ws_update(root_dir, key: str, change) -> dict:
@@ -260,20 +293,29 @@ def _gates(root_dir, conn, active: set[int]) -> list[dict]:
         # behaviour that shipped before the setting existed.
         mode = _gatemode.DEFAULT
     out: list[dict] = []
+    # failure-escalation rows are in this list since 2026-08-19 - before
+    # that they appeared on NO rail at all: held from every dispatcher AND
+    # absent from the one view that lists what waits on a person, so a
+    # failed-past-its-cap item simply vanished until somebody went digging.
+    # They are auto-dispatchable now (a director agent may take one), so a
+    # QUEUED one is awaiting a ruling and a DISPATCHED one is being handled -
+    # `blocking` says which, and only 'qa-gate' rows are never a human's.
     for row in conn.execute(
             "SELECT id, seat, title, status, source, source_ref, created_at "
-            "FROM work_item WHERE source IN ('qa-gate', 'qa-gate-escalation') "
+            "FROM work_item WHERE source IN ('qa-gate', 'qa-gate-escalation', "
+            "'failure-escalation') "
             "AND status IN ('queued', 'dispatched') ORDER BY id DESC LIMIT 20"):
         ref = (row["source_ref"] or "").strip()
         out.append({
-            "kind": "escalation" if row["source"] == "qa-gate-escalation" else "qa",
+            "kind": "qa" if row["source"] == "qa-gate" else "escalation",
             "id": f"gate_item_{row['id']}",
             "item_id": int(row["id"]),
             "over_item_id": int(ref) if ref.isdigit() else None,
             "title": row["title"],
             "seat": row["seat"],
             "status": row["status"],
-            "blocking": row["source"] == "qa-gate-escalation",
+            "blocking": (row["source"] != "qa-gate"
+                         and row["status"] == "queued"),
             "created_at": row["created_at"],
         })
     # Sign-off: an agent says a thing is done, and until a human agrees it is

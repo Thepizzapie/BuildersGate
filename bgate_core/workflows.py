@@ -969,6 +969,25 @@ def _node_spends(spec: dict) -> bool:
     return kind == "tool" and _tool_paid(spec)
 
 
+def _autopilot_on(root: str | os.PathLike[str]) -> bool:
+    """Is the project's autopilot switch on right now?
+
+    The run's dispatch option is consent frozen at start; autopilot is the LIVE
+    consent to unattended work, and the user can withdraw it while a run is
+    still open. Both are required before a tick starts a paid node. Lazy import
+    for the same reason _queue_step's dispatch is: core must not need the UI.
+    A core-only consumer (the CLI, this module's own tests) has no autopilot to
+    consult — the switch defaults on, so absence reads as the default, not as
+    a veto that nothing could ever lift.
+    """
+    try:
+        from bgate_ui import autodeploy as _autodeploy
+
+        return bool(_autodeploy.enabled(root))
+    except Exception:
+        return True
+
+
 def spends_money(root: str | os.PathLike[str], run_id: int, node_id: str) -> bool:
     """Would pressing ▶ on this node bill the user? For the route's human gate.
 
@@ -1209,6 +1228,10 @@ def advance(root: str | os.PathLike[str], run_id: int,
     # starting. Generate nodes ignore it — they are not on that line.
     line_held = False
     slots = max(0, _concurrency(root) - _live_generate_count(node_rows, specs))
+    # Whether this tick may start paid nodes. Resolved once, and only when a
+    # paid node is actually pending — the autopilot read costs a settings
+    # lookup and most ticks have nothing paid to ask about.
+    paid_auto: Optional[bool] = None
 
     for position, node_id in enumerate(order, start=1):
         row = node_rows.get(node_id)
@@ -1257,20 +1280,38 @@ def advance(root: str | os.PathLike[str], run_id: int,
         # video shot, a music track, a variant grid, the other two arms of a
         # model comparison — none of which the user asked for and all of which
         # are real money. So a paid node waits for a person to press ▶ on IT,
-        # unless the whole workflow was started with Run (dispatch on), which is
-        # the explicit "yes, do all of this" act.
+        # unless ALL of the consent holds:
+        #
+        #   * the run was started with Run (dispatch on) — the explicit "yes,
+        #     do all of this" act;
+        #   * by a HUMAN — an agent that POSTs a graph with dispatch on has
+        #     manufactured that yes, and the same agent is refused at the ▶
+        #     and at the gate beside it;
+        #   * and the project's autopilot is on, read LIVE — the run's dispatch
+        #     option is frozen at start, so a graph left open would otherwise
+        #     keep billing after the user turned unattended work off.
+        #
+        # The gate is about WHO may trigger a paid node, never about amounts:
+        # spend ceilings are user-set and off by default, and no dollar check
+        # belongs here.
         #
         # This used to guard tool nodes only, which left the kind that is paid
         # BY DEFINITION — generate — starting itself on every poll.
-        if _node_spends(spec) and not dispatch:
-            waiting = True
-            if not _info(row).get("awaiting_human"):
-                node_rows[node_id] = _set_node(
-                    root, run_id, node_id, "pending",
-                    message="this step spends money — press run on this "
-                            "card when you want it, or use Run workflow",
-                    info={"awaiting_human": True})
-            continue
+        if _node_spends(spec):
+            if paid_auto is None:
+                paid_auto = (dispatch
+                             and not is_agent_actor(str(run.get("actor") or ""))
+                             and _autopilot_on(root))
+            if not paid_auto:
+                waiting = True
+                if not _info(row).get("awaiting_human"):
+                    node_rows[node_id] = _set_node(
+                        root, run_id, node_id, "pending",
+                        message="this step spends money — press run on this "
+                                "card when you want it, or use Run workflow "
+                                "with autopilot on",
+                        info={"awaiting_human": True})
+                continue
 
         if kind == "generate":
             if slots <= 0:
@@ -1718,6 +1759,173 @@ def reconcile(root: str | os.PathLike[str],
 
     touched = ids if run_id is not None else sorted({r["run_id"] for r in released})
     return {"released": released, "runs": [get(root, i) for i in touched]}
+
+
+def reopen(root: str | os.PathLike[str], run_id: int, node_id: str, *,
+           actor: str = "") -> dict:
+    """Put ONE stuck-'running' worker node back to 'pending'. Humans only.
+
+    :func:`reconcile` is the sweep for "the process restarted": it fails every
+    dead-worker node and the run with them, and retrying means starting the
+    workflow over. This is the per-node verb that was missing — a person is
+    standing at one card that never came back and wants to run IT again without
+    losing the four steps that already passed.
+
+    Only worker-owned kinds, for the same reasons reconcile touches only those:
+    a gate or a pick is 'running' BECAUSE it is waiting for a human, and an
+    agent or consistency step's status belongs to its queue item — reopening
+    the node under a live item would fork the truth in two stores. A future
+    this process still holds and has not finished is refused: that node is
+    slow, not stuck.
+
+    Human-only exactly like approve/pick/run_node-on-a-paid-card: the route
+    calls ``api.require_human`` and the engine refuses an agent actor itself,
+    because a reopened paid node on a dispatching run is a retry that bills.
+    """
+    if is_agent_actor(actor):
+        raise PermissionError(
+            f"a stuck step can only be reopened by a human — {actor} is an agent")
+    run = _run_row(root, run_id)
+    if run["status"] != "running":
+        raise ValueError(f"workflow run {run_id} is {run['status']}, not running")
+    _, specs, _, _ = _graph_of(root, run_id)
+    row = _node_rows(root, run_id).get(node_id)
+    if row is None:
+        raise LookupError(f"run {run_id} has no node {node_id!r}")
+    spec = specs.get(node_id) or {}
+    label = f"'{spec.get('label') or row['label'] or node_id}'"
+    kind = str(spec.get("kind") or row["kind"])
+    if kind in ("gate", "pick"):
+        raise ValueError(
+            f"{label} is a {kind} — it is 'running' because it is waiting for "
+            f"a human, not because a worker died. Resolve it instead.")
+    if row.get("work_item_id"):
+        raise ValueError(
+            f"{label} belongs to work item #{row['work_item_id']} — its status "
+            "follows the item's. Reopen the item (queue_reopen) and the node "
+            "follows it on the next tick.")
+    if kind not in ("generate", "tool"):
+        raise ValueError(f"{label} is a {kind} step and has no worker to reopen")
+    if row["status"] != "running":
+        raise ValueError(
+            f"{label} is {row['status']}, not stuck at running — reopen exists "
+            "for a step whose worker died without reporting back")
+    with _INFLIGHT_LOCK:
+        future = _INFLIGHT.get((int(run_id), node_id))
+    if future is not None and not future.done():
+        raise ValueError(
+            f"{label} is still working in this process — that is slow, not "
+            "stuck. Wait for it, or cancel the run.")
+    who = actor or "unknown"
+    # The half-written output of the dead attempt must not ride a wire into
+    # the retry's downstream nodes.
+    _set_output(root, run_id, node_id, {})
+    _set_node(root, run_id, node_id, "pending",
+              message=f"reopened by {who} — the previous attempt never "
+                      "reported back",
+              info={"reopened_by": who}, merge=False)
+    activity.log(root, "workflow",
+                 f"run {run_id} node {node_id} reopened by {who}", ref=str(run_id))
+    # advance is the retry: a free node restarts on the spot, a paid one waits
+    # on the same dispatch/autopilot consent every paid node waits on.
+    return advance(root, run_id)
+
+
+# The sweep's bounds: how many live runs one pass will look at, and how long a
+# worker node's claim must sit unchanged before it is called stalled rather
+# than slow. Ten minutes is past every generation timeout in bgate_core.generate.
+SWEEP_RUN_LIMIT = 20
+STALL_MINUTES = 10
+
+
+def sweep(root: str | os.PathLike[str], *, limit: int = SWEEP_RUN_LIMIT,
+          stall_minutes: int = STALL_MINUTES) -> dict:
+    """Advance live runs whose queue items finished while nobody was polling.
+
+    :func:`advance` is driven by the canvas's poll, and the poll dies with the
+    tab. A workflow step's queue_complete then updates the ITEM and nothing
+    ever reads it back onto the node — the run sat 'running' forever on a step
+    that was already done, and ``for_work_item`` had no production caller to
+    say otherwise. The followup tick calls this, so a closed canvas is no
+    longer a stalled run.
+
+    Bounded and idempotent like qa_gate.sweep: at most ``limit`` live runs per
+    pass, advance on a run with nothing to absorb changes nothing, and finding
+    nothing costs one query per live run. It never raises — the tick it runs
+    inside must survive it.
+
+    It starts NOTHING a poll would not start: paid nodes wait on the same
+    dispatch/autopilot consent, agent steps queue exactly as a poll would queue
+    them. And it never fails a node itself. A worker node claimed by a process
+    that never reported back is STAMPED with the way out (:func:`reopen`,
+    :func:`reconcile`) rather than failed, because this process cannot tell a
+    dead worker from a second live dashboard's — the same honesty guard that
+    keeps reconcile caller-driven.
+    """
+    out: dict = {"advanced": [], "stalled": []}
+    try:
+        run_ids = [int(r["id"]) for r in rows(db.connect(root).execute(
+            "SELECT id FROM workflow_run WHERE status = 'running' "
+            "ORDER BY updated_at DESC LIMIT ?", (max(1, int(limit)),)))]
+    except Exception:
+        return out
+    for rid in run_ids:
+        try:
+            due = False
+            for node_id, row in _node_rows(root, rid).items():
+                if row["status"] not in ("queued", "running"):
+                    continue
+                if not row.get("work_item_id"):
+                    # An agent/consistency step in flight ALWAYS has an item —
+                    # unless the item was deleted, because the schema says
+                    # ON DELETE SET NULL and the deletion erased the pointer
+                    # _sync_items would have needed to notice. The job is gone,
+                    # so the result can never arrive; failing it is what lets
+                    # the run end instead of running forever. Worker kinds and
+                    # gates/picks legitimately hold no item and are not touched.
+                    if str(row["kind"]) in ("agent", "consistency"):
+                        _set_node(root, rid, node_id, "failed",
+                                  message="this step's work item was deleted, "
+                                          "so its result can never arrive — "
+                                          "start the workflow again to retry it")
+                        due = True
+                    continue
+                try:
+                    item = _queue.get(root, int(row["work_item_id"]))
+                except LookupError:
+                    due = True      # item gone; _sync_items fails the node honestly
+                    break
+                if item["status"] in ("done", "failed", "cancelled"):
+                    due = True
+                    break
+            if due:
+                advance(root, rid)
+                out["advanced"].append(rid)
+        except Exception:
+            continue
+        try:
+            stale = rows(db.connect(root).execute(
+                "SELECT node_id, detail FROM workflow_run_node "
+                "WHERE run_id = ? AND status = 'running' "
+                "AND work_item_id IS NULL AND kind IN ('generate', 'tool') "
+                "AND updated_at < datetime('now', ?)",
+                (rid, f"-{max(1, int(stall_minutes))} minutes")))
+            for row in stale:
+                with _INFLIGHT_LOCK:
+                    future = _INFLIGHT.get((rid, row["node_id"]))
+                if future is not None and not future.done():
+                    continue        # this process still owns it: slow, not stalled
+                if not _info(dict(row)).get("stalled"):
+                    _set_node(root, rid, row["node_id"], "running",
+                              message="no result has arrived for this step — if "
+                                      "Builders Gate restarted while it worked, "
+                                      "reopen this step to retry it, or "
+                                      "reconcile the run",
+                              info={"stalled": True})
+                out["stalled"].append({"run_id": rid, "node_id": row["node_id"]})
+        except Exception:
+            continue
+    return out
 
 
 def cancel(root: str | os.PathLike[str], run_id: int, *, actor: str = "") -> dict:

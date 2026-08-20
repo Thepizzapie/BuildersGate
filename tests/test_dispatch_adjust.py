@@ -49,6 +49,7 @@ def clean_module_tables():
         dispatch._done.clear()
         dispatch._activity.clear()
         dispatch._reconciled.clear()
+        dispatch._starting.clear()
 
     reset()
     yield
@@ -198,6 +199,34 @@ class TestRestartReconciliation:
         queue.set_status(root, item["id"], "queued")
         queue.set_status(root, item["id"], "dispatched")
         dispatch.sweep(str(root))
+        assert queue.get(root, item["id"])["status"] == "dispatched"
+
+    def test_an_item_stranded_after_the_first_sweep_is_eventually_settled(
+            self, root):
+        """The once-per-process guard is an age gate now: an item stranded
+        AFTER the startup sweep used to stay 'dispatched' until the next
+        server restart, parking its whole chain behind it."""
+        dispatch.sweep(str(root))                     # the startup pass
+        item = _dispatched(root, title="stranded after the first sweep")
+        dispatch.sweep(str(root))                     # inside the gate window
+        assert queue.get(root, item["id"])["status"] == "dispatched"
+
+        project = dispatch._pkey(str(root))
+        dispatch._reconciled[project] -= dispatch.RECONCILE_EVERY_S + 1
+        dispatch.sweep(str(root))                     # the gate has aged out
+        assert queue.get(root, item["id"])["status"] == "failed"
+
+    def test_reconcile_leaves_a_dispatch_in_flight_alone(self, root):
+        """Between queue.reserve() and the Popen an item is 'dispatched' with
+        no _live entry — which is what stranded looks like, except this
+        process is mid-spawn on it. A re-runnable reconcile must not fail it."""
+        item = _dispatched(root)
+        dispatch._starting.add(item["id"])
+        try:
+            got = dispatch.reconcile(str(root))
+        finally:
+            dispatch._starting.discard(item["id"])
+        assert got["settled"] == []
         assert queue.get(root, item["id"])["status"] == "dispatched"
 
 
@@ -426,7 +455,9 @@ class TestSeatRulesAreProjectScoped:
         item = queue.add(root, "narrative", "write a bark")
         prompt = dispatch._prompt_for(str(root), item)
         assert "godot_check_project" not in prompt
-        assert "LOOK at what you produce" in prompt
+        # The eyes rule survives in the engine-less branch: no godot tools,
+        # but the agent is still told the render is the check.
+        assert "LOOK AT IT" in prompt
 
     def test_a_seat_rule_can_be_overridden_and_turned_off(self, root):
         (Path(root) / ".bgate").mkdir(parents=True, exist_ok=True)
@@ -495,6 +526,44 @@ def test_dispatching_a_missing_item_is_a_clean_refusal(root, monkeypatch):
     assert got["code"] == "not_found"
     assert "9999" in got["error"]
     assert got["detail"]["item_id"] == 9999
+
+
+# --- 9b. every reservation is released or becomes a live process ------------
+class TestReservationNeverStrands:
+    def test_a_raise_after_the_reservation_releases_the_item(
+            self, root, monkeypatch):
+        """queue.reserve() happens first; an unanticipated raise anywhere
+        after it (here: _git.dirty blowing up) must put the item back to
+        'queued' rather than stranding it 'dispatched' with no process."""
+        item = queue.add(root, "art", "strand me not")
+
+        def boom(_root):
+            raise RuntimeError("git blew up")
+
+        monkeypatch.setattr(dispatch._git, "dirty", boom)
+        with pytest.raises(RuntimeError):
+            dispatch.dispatch(str(root), item["id"])
+        assert queue.get(root, item["id"])["status"] == "queued"
+        assert item["id"] not in dispatch._live
+        assert item["id"] not in dispatch._starting
+
+    def test_a_prompt_failure_spawns_nothing_and_releases(
+            self, root, fake_claude, monkeypatch):
+        """The prompt is built BEFORE the Popen: a prompt builder that raises
+        used to leave a live claude tree that _live never heard of, while the
+        conditional release put the item back on the board under it."""
+        item = queue.add(root, "art", "no prompt for you")
+
+        def boom(*a, **kw):
+            raise RuntimeError("prompt builder blew up")
+
+        monkeypatch.setattr(dispatch, "_prompt_for", boom)
+        with pytest.raises(RuntimeError):
+            dispatch.dispatch(str(root), item["id"])
+        assert queue.get(root, item["id"])["status"] == "queued"
+        assert item["id"] not in dispatch._live
+        # No process was created, so the pid ledger holds nothing for it.
+        assert dispatch._read_pids(str(root)) == {}
 
 
 # --- 10. never kill a process we cannot identify ----------------------------
