@@ -39,6 +39,20 @@ bound INSIDE a copied context in that thread, so the isolation survives the hop.
 """
 from __future__ import annotations
 
+import sys as _sys
+
+# `python -m bgate_mcp.server` - the command every MCP registration runs -
+# executes this file as `__main__`, NOT as `bgate_mcp.server`. The domain
+# modules at the bottom then `from bgate_mcp.server import ...`, which starts
+# a SECOND execution of this file under its package name; that copy reaches
+# the star imports while tools_blender is still half-initialized and the whole
+# boot dies on a circular ImportError. Registering the running module under
+# its package name first means the domain modules find THIS instance, exactly
+# as they do under a plain `import bgate_mcp.server`. This must precede every
+# bgate import below.
+if __name__ == "__main__":  # pragma: no cover - the subprocess boot test
+    _sys.modules.setdefault("bgate_mcp.server", _sys.modules[__name__])
+
 import contextvars
 import functools
 import inspect
