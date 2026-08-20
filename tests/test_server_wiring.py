@@ -45,6 +45,13 @@ def wired(root, monkeypatch):
     monkeypatch.setenv("BGATE_ROOT", str(root))
     for var in ("BGATE_ACTOR", "BGATE_SEAT", "BGATE_WORK_ITEM"):
         monkeypatch.delenv(var, raising=False)
+    # The paid tools now ask the provider gateway before touching an adapter,
+    # and a keyless test environment is HONESTLY unroutable — but this file's
+    # charter is the arguments that cross the chroma boundary, not the gate
+    # in front of it (test_gateway owns that). Wave every call through.
+    from bgate_core import gateway
+    monkeypatch.setattr(gateway, "pick", lambda root_, cap: {
+        "provider": "kie", "alternatives": [], "why": "stubbed for wiring"})
     return root
 
 

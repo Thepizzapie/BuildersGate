@@ -459,7 +459,15 @@ def terrace(level: dict, *, seed: int = 0, levels: int = 2,
         for cells in room_cells:
             if not cells or rng.random() > raised:
                 continue
-            lift = rng.randint(1, levels - 1)
+            # LIFT IS 1, NOT randint(1, levels - 1). Ramps only place where
+            # a neighbour sits at exactly h-1, BSP rooms never touch, and
+            # corridors stay at height 0 — so a lift-2 room has no h-1
+            # neighbour anywhere and is unreachable BY CONSTRUCTION (measured:
+            # levels=3, seed 0 → lifts {2}, ramps {}, connected False, and
+            # level_generate refuses the whole layout). Multi-step terraces
+            # need stepped intermediate cells before higher lifts are honest;
+            # until then every raised room is one step up and reachable.
+            lift = 1
             for c in cells:
                 heights[c] = lift
 
@@ -610,7 +618,6 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
     for r in placed:
         floor |= r.cells()
     corridors = []
-    spread = tuple(range(corridor_width))
 
     def join(a: Rect, b: Rect):
         # A DOORWAY, NOT A TREK. Two rooms that already share a wall are

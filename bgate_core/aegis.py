@@ -51,14 +51,14 @@ ALLOW, DENY, OUTSIDE = "allow", "deny", "outside"
 # callers.
 #
 #   off    the boundary is not checked at all.
-#   warn   DEFAULT FOR THIS RELEASE. The call lands and the crossing is logged.
-#          The gate's job right now is to produce the evidence that proves
-#          `block` would deny nothing legitimate; flipping straight to block
-#          would have every false positive land as a dead agent on somebody's
-#          board, discovered hours later.
-#   block  a seated agent touching another tree is refused.
+#   warn   the call lands and the crossing is logged - the evidence-gathering
+#          mode this gate shipped at while lanes were the hard boundary.
+#   block  DEFAULT. A seated agent touching another tree is refused. This
+#          became the default when the seat model was inverted (2026-08-19):
+#          a seat is a toolset plus THIS boundary, and lanes inside it are
+#          advisory. If the boundary only warns, a seat enforces nothing.
 MODES = ("off", "warn", "block")
-DEFAULT_MODE = "warn"
+DEFAULT_MODE = "block"
 
 # What marks a directory as a Builders Gate project. Deliberately NOT imported
 # from bgate_core.db: this module is loaded on the hook's hot path and by a

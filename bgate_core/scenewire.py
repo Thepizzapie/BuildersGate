@@ -948,5 +948,31 @@ def apply(scene_file: str | os.PathLike[str], new_text: str, *,
     tmp = scene_file.with_suffix(".tscn.tmp")
     tmp.write_text(new_text, encoding="utf-8", newline="\n")
     os.replace(tmp, scene_file)
+    _note_write(root, scene_file)
     return {"written": True, "backup": str(backup.relative_to(Path(root))),
             "bytes": len(new_text)}
+
+
+def _note_write(root, path) -> None:
+    """A dispatched run's server-side scene write lands in its writelog.
+
+    The PreToolUse hook records only the writes the AGENT'S OWN tools make
+    (Write/Edit/Bash) - a scene written through an MCP tool went through this
+    function in the server process and the hook never saw it. That blinded
+    everything writelog feeds: the reopen brief's observed-writes block, the
+    escalation report, and the completion evidence gate, which could not see
+    that a level_generate run had written a scene at all. Best-effort by
+    writelog's own rule: a bookkeeping line must never fail the write it
+    describes.
+    """
+    try:
+        owner = os.environ.get("BGATE_WORK_ITEM", "").strip()
+        if not owner:
+            return
+        from . import writelog
+        rel = Path(path).resolve().relative_to(Path(root).resolve())
+        writelog.record(root, str(rel),
+                        os.environ.get("BGATE_SEAT", "").strip(),
+                        f"item-{owner}", tool="scenewire")
+    except Exception:
+        pass

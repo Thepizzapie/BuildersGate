@@ -81,11 +81,12 @@ class TestItIsInTheBrief:
         assert any("ROW-major" in t for t in after)
 
     def test_the_existing_rules_survived(self, root):
-        """The tooling rule is prepended, not substituted — the lane rule and the
-        work manifest are what stop an agent writing outside its lanes and dying
-        without a checkpoint trail."""
+        """The tooling rule is prepended, not substituted — the boundary rule
+        and the work manifest are what stop an agent leaving its project and
+        dying without a checkpoint trail. (The lane rule went advisory on
+        2026-08-19; the project boundary is the enforced line now.)"""
         rules = " ".join(_brief(root)["rules"])
-        assert "can_write is the oracle" in rules
+        assert "boundary is enforced" in rules
         assert "WORK MANIFEST" in rules
 
 

@@ -951,6 +951,10 @@ def qa_bots_contract() -> dict:
     ``source`` says which: ``declared`` (a human or an agent wrote it),
     ``derived`` (read off the real scene and persisted so it can be edited), or
     ``none`` (nothing could be worked out, and ``issues`` says what is missing).
+    A derived contract that cannot really watch anything — actors spawned at
+    runtime, or the pinned fighter shape on a game that is not the fighter —
+    carries ``derived_thin: true`` with the reason in ``issues``, so a thin
+    guess is never mistaken for a working probe.
     """
     contract = contract_for(root())
     contract["sample_keys"] = qaprobe.sample_keys(contract)

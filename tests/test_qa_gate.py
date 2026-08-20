@@ -151,6 +151,53 @@ class TestRounds:
         assert [g["source_ref"] for g in gates] == [str(item["id"])] * 2
         assert dispatched == [gates[0]["id"], gates[1]["id"]]
 
+    def test_a_dead_reviewer_does_not_count_as_a_review(self, root, dispatched):
+        """THE SILENT PASS, closed 2026-08-19. A QA agent that crashed was
+        reaped 'failed' with no verdict — and because any closed gate row used
+        to count as the last review, the original item then passed the gate
+        without anyone ever looking at it. A verdict-less round now counts for
+        nothing: the sweep files a fresh reviewer."""
+        item = _done(root, "art", "the unseen HUD")
+        qa_gate._scan_once(root, EPOCH)
+        gate = _gates(root)[0]
+        # The reviewer dies: the reaper banks it failed, no VERDICT anywhere.
+        queue.set_status(root, gate["id"], "failed",
+                         result="session exited 1 without reporting")
+        _bump(root, item["id"], "2000-01-01 00:00:00")
+        qa_gate._scan_once(root, EPOCH)
+        assert len(_gates(root)) == 2          # a fresh round was filed
+
+    def test_a_verdictless_done_round_does_not_count_either(self, root,
+                                                            dispatched):
+        """Exit 0 with no verdict text is the reap path's 'done' — the same
+        silence wearing a green status."""
+        item = _done(root, "art", "the unjudged HUD")
+        qa_gate._scan_once(root, EPOCH)
+        gate = _gates(root)[0]
+        queue.set_status(root, gate["id"], "done",
+                         result="reported success without calling queue_complete")
+        _bump(root, item["id"], "2000-01-01 00:00:00")
+        qa_gate._scan_once(root, EPOCH)
+        assert len(_gates(root)) == 2
+
+    def test_a_reviewer_that_always_dies_escalates_instead_of_burning(
+            self, root, dispatched):
+        """The runaway guard: re-reviewing is bounded at twice the round cap
+        in total filings, then the director decides."""
+        item = _done(root, "art", "the cursed HUD")
+        cap = qa_gate.max_rounds(root)
+        for n in range(cap * 2):
+            qa_gate._scan_once(root, EPOCH)
+            open_gates = [g for g in _gates(root)
+                          if g["status"] not in ("done", "failed")]
+            assert len(open_gates) == 1, f"round {n}: expected one open gate"
+            queue.set_status(root, open_gates[0]["id"], "failed",
+                             result="died again")
+            _bump(root, item["id"], "2000-01-01 00:00:00")
+        qa_gate._scan_once(root, EPOCH)
+        assert len(_gates(root)) == cap * 2    # no fresh round past the bound
+        assert qa_gate.escalated(root, str(item["id"]))
+
     def test_several_originals_each_get_their_own_gate(self, root, dispatched):
         ids = [_done(root, "art", f"asset {n}")["id"] for n in range(3)]
         qa_gate._scan_once(root, EPOCH)

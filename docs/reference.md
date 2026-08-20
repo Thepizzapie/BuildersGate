@@ -6,9 +6,11 @@ made, and [gotchas.md](gotchas.md) covers what went wrong on the way.
 
 Verified against the source on 2026-08-12.
 
-Three gates run throughout: a spend budget refuses an over-ceiling agent, a seat
-lane refuses an out-of-lane write, and watchdogs kill a wedged run. Approval is
-human-only. An agent records a verdict, it does not sign off.
+Three gates run throughout: a spend budget refuses an over-ceiling agent, the
+project boundary refuses a write into any other tree (lanes inside it are
+advisory by default — an out-of-lane write lands and is reported), and
+watchdogs kill a wedged run. Approval is human-only. An agent records a
+verdict, it does not sign off.
 
 ## The dashboard
 
@@ -538,7 +540,7 @@ the causal history.
 
 ## Tool index
 
-196 MCP tools are registered. The families, so you know what to look for:
+226 MCP tools are registered (the count is easy to let rot; tests/test_seat_briefs.py reads the real surface off the source). The families, so you know what to look for:
 
 | Family | Prefix | Covers |
 |---|---|---|
@@ -550,7 +552,7 @@ the causal history.
 | Scene | `scene_*`, `level_plan`, `level_generate` | Node surgery and level layout |
 | Images | `image_*`, `sprite_*`, `item_*`, `vfx_animate`, `ref_*`, `profile_*`, `consistency_check`, `art_qa_verdict`, `art_tournament_*` | Generation, sprite sheets, items, references, consistency, art review |
 | Cutout | `cutout_*` | 2D part-on-skeleton characters |
-| Audio | `voice_*`, `sfx_*`, `kie_music_*`, `music_*`, `dialogue_*` | Speech, sound effects, music generation and selection, dialogue trees |
+| Audio | `voice_*`, `sfx_*`, `music_*`, `dialogue_*` | Speech, sound effects, music generation and selection, dialogue trees |
 | Cinematic | `cinematic_*`, `storyboard_*`, `kie_video_generate` | Shot planning, generation, assembly, delivery, boards |
 | Assets | `asset_*`, `pending_decisions` | Locks, tracking, integrity audit |
 | Playtest | `playtest_*`, `iteration_*`, `causal_*` | Recording, briefs, promotion, iteration snapshots |
@@ -565,7 +567,7 @@ bgate_cli/        the `bgate` console script: init, adopt, use, projects, serve,
                   hook-status, un-adopt
 bgate_core/       db, project, bible, lore, canon, scope, spend, queue,
                   workflows, artifacts, playtest, iterations, git, search
-bgate_mcp/        FastMCP server (stdio), 196 registered tools
+bgate_mcp/        FastMCP server (stdio), 226 registered tools
 bgate_adapters/   blender, godot, imagegen, krea, kie, localgen, sprites,
                   recorder, transcribe
 bgate_ui/         dashboard backend + routes/, and static/, which is the built

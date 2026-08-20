@@ -23,10 +23,13 @@ identity, not a process: a session declares `BGATE_SEAT=art` and inherits art's
 mission, writable paths and brief (`bgate_core/seats.py`).
 
 **Lane**
-The file paths a seat may write, as glob patterns. Art's are `game/assets/**`,
-`blender/**`, `art/**`; gameplay's are `game/scripts/**`, `game/scenes/**`.
-`seat_can_write(role, path)` is the oracle and it fails **closed**: an unknown
-seat, a disabled seat, or a path matching nothing gets refused.
+The file paths a seat normally writes, as glob patterns. Art's are
+`game/assets/**`, `blender/**`, `art/**`; gameplay's are `game/scripts/**`,
+`game/scenes/**`. `seat_can_write(role, path)` is the oracle. Advisory by
+default (`BGATE_LANES`): an out-of-lane write lands and the
+human is warned; `block` restores hard refusal. The enforced boundary is the
+**project** — a dispatched agent may not touch files outside the game it was
+dispatched for (`BGATE_AEGIS`, default `block`).
 
 **Lock**
 A claim on one binary file, held by one seat, recorded in the database.

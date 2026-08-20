@@ -141,6 +141,40 @@ def director_mode() -> str:
 
 
 # ---------------------------------------------------------------------------
+# THE SEATED WORKER'S LANE - advisory by default since 2026-08-19.
+#
+# A seat is a TOOLSET plus a PROJECT BOUNDARY (aegis, which now defaults to
+# block). The lane table inside that boundary turned out to do more harm than
+# good as a hard gate: the default lanes assume the <root>/game + <root>/design
+# scaffold, so on an adopted repo every seat was refused on contact with the
+# real source tree, and the observed agent response to a refusal was not
+# routing but dying politely - "failed" with nothing done, cleared and
+# redispatched by a human. The refusal MESSAGE (which seat owns the path, the
+# queue_add call that hands work over) earned its keep; the exit code 2 did
+# not. So the message survives as a warning to the human and the write lands.
+#
+# Same ladder shape as DIRECTOR_MODES, different population. THE LADDER
+# ITSELF LIVES IN bgate_core.seats (LANE_MODES / lane_mode), single-sourced
+# for the same reason aegis's ladder is: two processes must answer alike.
+#
+#   collide  lanes waived silently; a collision with another live run still
+#            blocks and the lease is still taken.
+#   warn     DEFAULT. As collide, plus out-of-lane writes reported to the
+#            human on exit 1. The write lands; the agent is not interrupted.
+#   block    the old behaviour - out of lane is refused. For projects whose
+#            lane table is curated and trusted.
+def worker_lane_mode() -> str:
+    """How hard to enforce a SEATED worker's lane. Never raises.
+
+    Imported lazily like every bgate_core import here - the hook is a fresh
+    process on every tool call.
+    """
+    from bgate_core import seats
+
+    return seats.lane_mode()
+
+
+# ---------------------------------------------------------------------------
 # CONTAINMENT - the where-question, and its own ladder.
 #
 # Deliberately NOT folded into DIRECTOR_MODES even though it reads the same
@@ -157,12 +191,11 @@ def director_mode() -> str:
 # The names stay because callers and tests here use them.
 #
 #   off    the old behaviour: the boundary is not checked at all.
-#   warn   DEFAULT FOR THIS RELEASE. The call lands and the human is told on
-#          exit 1. This is not timidity: the gate's whole job right now is to
-#          produce the log that proves `block` would deny nothing legitimate.
-#          Turning it straight to block would have every false positive land as
-#          a dead agent in somebody's board, discovered hours later.
-#   block  a seated agent touching another tree is refused.
+#   warn   the call lands and the human is told on exit 1 - the
+#          evidence-gathering mode this gate shipped at.
+#   block  DEFAULT since 2026-08-19. A seated agent touching another tree is
+#          refused. The boundary hardened the same day the lane gate went
+#          advisory: a seat is a toolset plus THIS line.
 def aegis_mode() -> str:
     """How hard to enforce the project boundary. Never raises.
 
@@ -370,8 +403,20 @@ def _snippets(args: list[str]) -> list[str]:
     return out
 
 
-def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str], str]:
-    """One simple command -> (write targets, unanalysable reasons, program)."""
+def _scan_segment(tokens: list[str],
+                  embedded: bool = False) -> tuple[list[str], list[str], str]:
+    """One simple command -> (write targets, unanalysable reasons, program).
+
+    ``embedded`` means this command arrived INSIDE an ``eval`` or a shell's
+    ``-c`` string. There the program position must be readable, because the
+    whole payload is one opaque token to the outer command line: ``eval
+    "$CMD"`` used to come back clean - the inner pass saw a program named
+    ``$CMD``, matched it against no table, and reported nothing, which made a
+    two-line variable assignment a bypass of the entire gate. A top-level
+    ``$CMD`` is left alone (it is not a detected write, and the fail-open rule
+    holds); an embedded one fails closed because eval exists to run text as
+    commands and text we cannot read is exactly the unclear channel's job.
+    """
     writes: list[str] = []
     unclear: list[str] = []
     args: list[str] = []
@@ -404,6 +449,11 @@ def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str], str]:
 
     program, rest = _program(args)
     if not program:
+        return writes, unclear, program
+    if embedded and (program.startswith("$") or "`" in program):
+        unclear.append(
+            f"an eval/-c payload whose command is an unexpanded expansion "
+            f"({program}) - what it runs cannot be read here")
         return writes, unclear, program
 
     positional = _positional(rest)
@@ -443,14 +493,14 @@ def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str], str]:
         # token — re-analysed with the same rules. The module used to claim
         # eval'd snippets fail closed while eval was in no table at all: a
         # one-token bypass of the whole gate.
-        inner = analyse_bash(" ".join(rest))
+        inner = analyse_bash(" ".join(rest), _embedded=True)
         writes.extend(inner["writes"])
         unclear.extend(inner["unclear"])
     elif program in _SHELLS:
         # `bash -c "echo x > game/foo.gd"` is just another shell command - read
         # it with the same rules rather than guessing at it with a regex.
         for snippet in _snippets(rest):
-            inner = analyse_bash(snippet)
+            inner = analyse_bash(snippet, _embedded=True)
             writes.extend(inner["writes"])
             unclear.extend(inner["unclear"])
     # NOT an elif: perl sits in _INPLACE **and** _INTERPRETERS, and an elif
@@ -499,7 +549,7 @@ def _logical_lines(command: str) -> list[tuple[str, str]]:
     return [(line, "\n".join(body)) for line, body in out]
 
 
-def analyse_bash(command: str) -> dict:
+def analyse_bash(command: str, *, _embedded: bool = False) -> dict:
     """What a Bash command would write, as far as static reading can tell.
 
     Returns ``{"writes": [raw path strings], "unclear": [reasons]}``. ``unclear``
@@ -531,7 +581,7 @@ def analyse_bash(command: str) -> dict:
                                "quotes?) and it writes")
             continue
         for segment in _split_segments(_collapse_fd_dups(tokens)):
-            seg_writes, seg_unclear, program = _scan_segment(segment)
+            seg_writes, seg_unclear, program = _scan_segment(segment, _embedded)
             if program == "cd":
                 target = next((t for t in segment[1:]
                                if not t.startswith("-")), "")
@@ -552,6 +602,16 @@ def analyse_bash(command: str) -> dict:
                     "cannot tell which ones")
             for w in seg_writes:
                 if not w.strip() or w.strip().lower() in _NOT_A_FILE:
+                    continue
+                if "$" in w or "`" in w or w.startswith("~"):
+                    # An unexpanded target is not a path, it is a placeholder
+                    # for one. `sh -c 'echo x > $F'` used to record a write to
+                    # a literal in-project file named $F and pass containment
+                    # while the real target could be any tree at all - same
+                    # rule as an unresolvable cd: unclear, never guessed.
+                    seg_unclear.append(
+                        f"a write target ({w}) containing an expansion this "
+                        "hook cannot resolve")
                     continue
                 if os.path.isabs(w) or w[1:2] == ":":
                     writes.append(w)
@@ -574,10 +634,11 @@ def decide(payload: dict, seat: str, owner: str = "",
            mode: str = "block") -> tuple[int, str]:
     """Pure decision, separated from stdio so tests can hit it directly.
 
-    `mode` is "block" for a dispatched seat worker - its lane is the whole point
-    of dispatching it - and one of DIRECTOR_MODES for a session that adopted no
-    seat. It only ever softens the LANE gate; a lock or lease collision is a
-    second live writer in the same file and is refused in every mode but "off".
+    `mode` is one of WORKER_LANE_MODES for a dispatched seat worker (default
+    "warn" - the lane is advisory, the project boundary is what a seat
+    enforces) and one of DIRECTOR_MODES for a session that adopted no seat.
+    It only ever softens the LANE gate; a lock or lease collision is a second
+    live writer in the same file and is refused in every mode but "off".
     """
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
@@ -1278,7 +1339,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         seat = os.environ.get("BGATE_SEAT", "").strip()
         owner = os.environ.get("BGATE_LOCK_OWNER", "").strip()
-        mode = "block"
+        # A dispatched worker's lane is advisory by default (BGATE_LANES) -
+        # the project boundary (aegis) is what a seat enforces. See
+        # WORKER_LANE_MODES.
+        mode = worker_lane_mode()
         if not seat:
             # THIS LINE USED TO BE `return ALLOW`. It read as "no adopted
             # identity, nothing to enforce", and the first half was true - but a
@@ -1293,13 +1357,15 @@ def main(argv: list[str] | None = None) -> int:
         # hand-started session lives in the payload, not the environment.
         payload = json.loads(sys.stdin.read() or "{}")
         if mode != "block":
-            # Only the director path invents an owner, and only when it has to.
-            # A SEATED worker with no BGATE_LOCK_OWNER keeps the old semantics - # can_write treats an ownerless caller as unable to write over an
-            # owned lock, which is stricter than anything derived here, and
-            # loosening that to "no owner, no checks" would have quietly turned
-            # the gate off for exactly the agents it was written for.
+            # A dispatched worker already has BGATE_LOCK_OWNER=item-<id>;
+            # session_owner is the fallback for a hand-started session. A
+            # seated worker somehow lacking both keeps the old strict
+            # semantics via decide() - can_write treats an ownerless caller
+            # as unable to write over an owned lock - so only the DIRECTOR
+            # path may bail out on a missing identity.
             owner = owner or session_owner(payload)
-            if not owner:
+            if not owner and seat == DIRECTOR_SEAT \
+                    and not os.environ.get("BGATE_SEAT", "").strip():
                 # Nothing distinguishes this session from any other, so a lease
                 # would be meaningless and a collision unattributable. The
                 # director's lane is advisory anyway; do nothing rather than

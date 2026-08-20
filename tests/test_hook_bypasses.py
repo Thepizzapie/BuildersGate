@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from bgate_cli import hook
 
 
@@ -29,6 +31,25 @@ class TestMultilineCommands:
         got = hook.analyse_bash("echo a > one.txt\necho b > two.txt\nls")
         assert got["writes"] == ["one.txt", "two.txt"]
 
+    def test_cd_state_survives_a_newline(self):
+        # A newline separates statements exactly like `&&` - it must not reset
+        # the tracked directory, or line two's relative write is judged in the
+        # wrong tree.
+        got = hook.analyse_bash("cd ../other\necho x > game/foo.gd")
+        assert got["writes"] == [os.path.join("../other", "game/foo.gd")]
+
+    def test_commands_after_a_heredoc_are_still_read(self):
+        got = hook.analyse_bash(
+            "cat > a.txt <<EOF\nprose\nEOF\necho b > b.txt")
+        assert got["writes"] == ["a.txt", "b.txt"]
+        assert got["unclear"] == []
+
+    def test_a_trailing_line_continuation_fails_closed(self):
+        # `echo x > \` continued onto the next line: the split leaves line one
+        # with a dangling escape shlex refuses, and it visibly writes - so it
+        # lands in unclear rather than losing the target.
+        assert _unclear("echo x > \\\nfile.gd")
+
 
 class TestEval:
     def test_a_quoted_eval_payload_is_reanalysed(self):
@@ -37,6 +58,48 @@ class TestEval:
     def test_read_only_eval_stays_clean(self):
         got = hook.analyse_bash("eval 'ls -la'")
         assert got == {"writes": [], "unclear": []}
+
+    def test_an_opaque_variable_payload_fails_closed(self):
+        # CMD='rm -rf game'; eval "$CMD" - the inner pass sees a program named
+        # $CMD, matches no table, and used to report nothing at all.
+        assert _unclear("CMD='rm -rf game'\neval \"$CMD\"")
+        assert _unclear('eval "$CMD"')
+
+    def test_an_opaque_program_after_a_separator_fails_closed(self):
+        assert _unclear("eval 'ls; $CMD'")
+
+    def test_bash_dash_c_with_a_variable_payload_fails_closed(self):
+        assert _unclear('bash -c "$CMD"')
+        assert _unclear('sh -c "`cat cmds`"')
+
+    def test_expansions_in_arguments_alone_stay_clean(self):
+        # The program is readable and writes nothing; an expanded ARGUMENT to a
+        # read-only command is not a write shape and must not dam the session.
+        got = hook.analyse_bash("eval 'echo $HOME'")
+        assert got == {"writes": [], "unclear": []}
+
+
+class TestUnresolvableTargets:
+    def test_a_dollar_target_is_unclear_not_a_literal_write(self):
+        # `echo x > $F` was recorded as a write to an in-project file named $F
+        # and passed containment while the real target could be any tree.
+        got = hook.analyse_bash("echo x > $F")
+        assert got["writes"] == []
+        assert got["unclear"]
+
+    def test_a_backtick_target_is_unclear(self):
+        assert _writes("echo x > `mktemp`") == []
+        assert _unclear("echo x > `mktemp`")
+
+    def test_a_tilde_target_is_unclear(self):
+        # The hook resolves relative targets against the session cwd; a ~ is
+        # neither relative nor absolute to it, so guessing would misplace it.
+        assert _writes("echo x > ~/notes.txt") == []
+        assert _unclear("echo x > ~/notes.txt")
+
+    def test_inside_an_embedded_shell_too(self):
+        assert _writes("sh -c 'echo x > $F'") == []
+        assert _unclear("sh -c 'echo x > $F'")
 
 
 class TestCd:
@@ -58,6 +121,51 @@ class TestCd:
 
     def test_a_bare_cd_fails_closed_too(self):
         assert _unclear("cd && rm foo.gd")
+
+
+class TestCdEscapesAreContained:
+    """The parser's cd model has to reach the containment gate, not just the
+    analysis dict: ``cd ../other-game && echo x > game/foo.gd`` must be judged
+    where the shell would actually write, against the PINNED root."""
+
+    @pytest.fixture()
+    def other(self, tmp_path_factory):
+        from bgate_core import db, project
+        path = tmp_path_factory.mktemp("hollow")
+        project.init(path, "Hollow")
+        db.close_all()
+        return path
+
+    def test_a_cd_then_relative_write_is_refused_by_containment(
+            self, root, other, monkeypatch):
+        # The allowlist is emptied because pytest's tmp dirs live under the
+        # system temp directory, which the real allowlist permits.
+        from bgate_core import aegis
+        monkeypatch.setenv("BGATE_SEAT", "gameplay")
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+        monkeypatch.setenv("BGATE_AEGIS", "block")
+        monkeypatch.setattr(aegis, "allowlist_dirs", list)
+        rel = os.path.relpath(other, root).replace("\\", "/")
+        code, msg = hook.decide(
+            {"tool_name": "Bash", "cwd": str(root),
+             "tool_input": {"command":
+                            f"cd {rel} && echo x > game/scripts/player.gd"}},
+            "gameplay", "item-1", "block")
+        assert code == hook.BLOCK
+        assert "different Builders Gate project" in msg
+
+    def test_the_same_write_without_the_cd_is_in_lane(self, root, monkeypatch):
+        # The control: the refusal above is the cd resolution, not the path.
+        from bgate_core import aegis
+        monkeypatch.setenv("BGATE_SEAT", "gameplay")
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+        monkeypatch.setenv("BGATE_AEGIS", "block")
+        monkeypatch.setattr(aegis, "allowlist_dirs", list)
+        code, _ = hook.decide(
+            {"tool_name": "Bash", "cwd": str(root),
+             "tool_input": {"command": "echo x > game/scripts/player.gd"}},
+            "gameplay", "item-1", "block")
+        assert code == hook.ALLOW
 
 
 class TestInterpreterSnippets:

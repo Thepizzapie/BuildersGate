@@ -401,15 +401,68 @@ class TestSpend:
                           model="nano-banana", kind="image")
         assert got["credits_consumed"] == 40 and got["estimated_usd"] == 0.2
 
-    def test_an_unpriced_success_says_so_instead_of_writing_a_zero(self, root):
+    def test_an_unpriced_success_says_so_instead_of_writing_a_dollar(self, root):
         result = kie._account({"ok": True, "estimated_usd": None,
                                "credits_consumed": 30},
                               root, kind="image")
-        # A silent ledger row of $0 would under-count a real charge; the result
-        # states the gap and keeps the credit count so it stays recoverable.
+        # No dollar figure is invented; the result states the gap and keeps the
+        # credit count, and a zero-dollar MARKER row lands so totals() can say
+        # how much real spend is missing a price.
         assert result["accounted"] is False
         assert kie.USD_PER_CREDIT_ENV in result["cost_note"]
         assert result["credits_consumed"] == 30
+        assert result["unpriced_recorded"] is True
+
+    def test_unpriced_rows_are_surfaced_in_totals_not_dropped(self, root):
+        # THE REPORT IS THE PRODUCT (budgets are off by default), so a kie-heavy
+        # project must not read as cheap just because kie bills in credits.
+        from bgate_core import spend
+
+        kie._account({"ok": True, "estimated_usd": None, "credits_consumed": 30,
+                      "model": "seedance-2"},
+                     root, kind="video", logical_name="chase")
+        kie._account({"ok": True, "estimated_usd": None, "credits_consumed": 12},
+                     root, kind="image", logical_name="hero")
+        totals = spend.totals(root)
+        # No invented rate: the dollar totals stay honest at zero...
+        assert totals["project_usd"] == 0 and totals["today_usd"] == 0
+        # ...and the gap is named instead of silent.
+        un = totals["unaccounted"]
+        assert un["rows"] == 2 and un["today_rows"] == 2
+        assert un["credits"] == pytest.approx(42)
+        assert un["credits_unknown_rows"] == 0
+        assert "BGATE_KIE_USD_PER_CREDIT" in un["note"]
+
+    def test_unknown_credits_still_count_as_an_unaccounted_row(self, root):
+        # Suno's balance-delta path can fail to measure even the credits; the
+        # ROW still counts — a charge with no number at all is still a charge.
+        from bgate_core import spend
+
+        kie._account({"ok": True, "estimated_usd": None,
+                      "credits_consumed": None},
+                     root, kind="audio", logical_name="loop")
+        un = spend.totals(root)["unaccounted"]
+        assert un["rows"] == 1 and un["credits"] == 0
+        assert un["credits_unknown_rows"] == 1
+
+    def test_a_priced_success_writes_no_unaccounted_row(self, root, monkeypatch):
+        from bgate_core import spend
+
+        monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
+        kie._account({"ok": True, "estimated_usd": kie.cost_usd(200),
+                      "credits_consumed": 200},
+                     root, kind="video", logical_name="chase")
+        un = spend.totals(root)["unaccounted"]
+        assert un["rows"] == 0 and un["note"] == ""
+
+    def test_an_unpriced_failure_writes_no_row(self, root):
+        # A failed call may not have been charged; claiming spend for it would
+        # be inventing in the other direction.
+        from bgate_core import spend
+
+        kie._account({"ok": False, "estimated_usd": None,
+                      "credits_consumed": 30}, root, kind="image")
+        assert spend.totals(root)["unaccounted"]["rows"] == 0
 
     def test_a_priced_success_lands_in_the_ledger_under_its_own_kind(
             self, root, monkeypatch):
@@ -559,7 +612,7 @@ class TestWiring:
     def test_the_mcp_server_exposes_the_two_new_capabilities(self):
         from bgate_mcp import server
 
-        for name in ("kie_status", "kie_music_generate", "kie_video_generate"):
+        for name in ("kie_status", "music_generate", "kie_video_generate"):
             assert hasattr(server, name), f"{name} is not an MCP tool"
 
 

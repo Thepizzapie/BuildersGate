@@ -1092,7 +1092,12 @@ def iso_ramp(material, facing: str, *, tile_size: tuple[int, int], lift: int,
             a, b = (u + v) / 2.0, (v - u) / 2.0
             drop = {"e": 0.5 + a, "w": 0.5 - a,
                     "s": 0.5 + b, "n": 0.5 - b}[facing]
-            dest = int(fy + lift * (1.0 - drop))
+            # drop is 1.0 at the edge FACING the lower neighbour, so that is
+            # the edge that descends the full lift. This was inverted
+            # (lift * (1.0 - drop)) and measured wrong on facing="e": the
+            # east column sat ~3px down and the west ~15px — a cliff toward
+            # the very neighbour step_ok lets the walker cross.
+            dest = int(fy + lift * drop)
             if not (0 <= dest < th + lift):
                 continue
             r, g, b_, al = mpx[px, min(th - 1, int(fy))]

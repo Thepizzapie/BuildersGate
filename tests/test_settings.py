@@ -157,6 +157,63 @@ class TestStoresItDescribes:
         assert all("." in k for k, v in got.items() if isinstance(v, list))
 
 
+class TestWritesNeverWipe:
+    """The registry doc is a read-modify-REPLACE, so a save that cannot read the
+    stored document must refuse — writing the fallback {} back would silently
+    reset every other registry-stored setting to its default. Reads stay
+    fail-soft: a panel that cannot read reports defaults and stays up."""
+
+    def test_a_read_error_during_save_raises_and_keeps_other_keys(self, root, monkeypatch):
+        import sqlite3
+        from bgate_core import workspace
+
+        settings.set(root, "dispatch.auto_commit", False)
+        settings.set(root, "qa.max_rounds", 5)
+
+        real_get = workspace.get
+        broken = {"on": True}
+
+        def flaky(*args, **kwargs):
+            if broken["on"]:
+                raise sqlite3.OperationalError("database is locked")
+            return real_get(*args, **kwargs)
+
+        monkeypatch.setattr(workspace, "get", flaky)
+        # Reads fall back to defaults rather than crashing the panel...
+        assert settings.get(root, "qa.max_rounds") == settings.setting("qa.max_rounds").default
+        # ...but a save must fail loudly, not store a wiped document.
+        with pytest.raises(sqlite3.OperationalError):
+            settings.set(root, "dispatch.isolation", True)
+
+        broken["on"] = False
+        assert settings.get(root, "dispatch.auto_commit") is False
+        assert settings.get(root, "qa.max_rounds") == 5
+        assert settings.get(root, "dispatch.isolation") is False  # the failed save stored nothing
+
+    def test_an_unparseable_registry_doc_refuses_the_save(self, root):
+        """Corrupt stored JSON reads as the {} default through workspace.get —
+        indistinguishable, to a naive writer, from a doc that never existed.
+        The save must refuse rather than replace the document, so the payload
+        stays available for repair."""
+        from bgate_core import db
+
+        settings.set(root, "qa.max_rounds", 5)
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE workspace_doc SET data_json = ? WHERE seat = ? AND key = ?",
+                ("{not json", settings.REGISTRY_SEAT, settings.REGISTRY_KEY))
+        with pytest.raises(settings.SettingError):
+            settings.set(root, "dispatch.auto_commit", False)
+        row = db.connect(root).execute(
+            "SELECT data_json FROM workspace_doc WHERE seat = ? AND key = ?",
+            (settings.REGISTRY_SEAT, settings.REGISTRY_KEY)).fetchone()
+        assert row["data_json"] == "{not json"
+
+    def test_a_missing_doc_is_not_an_error_the_first_save_creates_it(self, root):
+        assert settings.set(root, "qa.max_rounds", 5)["ok"] is True
+        assert settings.get(root, "qa.max_rounds") == 5
+
+
 class TestGuardSwitches:
     """A switch that WIDENS a safety guard, rather than tuning behaviour.
 

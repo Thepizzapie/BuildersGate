@@ -364,7 +364,10 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
         "blocked": blocked,
         "spend": {"today_usd": money.get("today_usd"),
                   "week_usd": money.get("week_usd"),
-                  "agent_runs": money.get("agent_runs")},
+                  "agent_runs": money.get("agent_runs"),
+                  # Real charges with no dollar figure (unpriced kie credits).
+                  # NOT inside today_usd/week_usd — see spend.record_unpriced.
+                  "unaccounted": money.get("unaccounted")},
         "coverage": status(root)["slice"] if _has_plan(root) else None,
     }
 
