@@ -116,11 +116,36 @@ def art_generate(payload: dict, request: Request = None) -> dict:
     model = (payload.get("model") or "").strip()
     asked = (payload.get("provider") or "").strip()
 
+    # A PINNED NAME, NEVER A PATH. refs.resolve() lets an existing path pass
+    # through untouched, which is right for an MCP tool — an agent holds a
+    # seat and may legitimately name a file — and wrong here: this route is
+    # reachable without one, so a path would condition the generation on any
+    # file the server can read and echo it back in resolved_refs. So resolve()
+    # is not called at all. A caller's name selects an entry from the
+    # project's own pin table and the PIN'S name is what gets looked up; the
+    # only thing of the caller's that survives into a path is the choice of
+    # which pin, and (as an int) which revision of it.
     named = [str(x).strip() for x in (payload.get("refs") or []) if str(x).strip()]
-    try:
-        resolved = [_refs.resolve(r, name) for name in named]
-    except Exception as exc:
-        raise HTTPException(400, f"reference: {exc}") from exc
+    pins = {str(p.get("name") or ""): p for p in _refs.list_refs(r)}
+    pins.pop("", None)
+    resolved: list[str] = []
+    for asked_ref in named:
+        at = _refs._AT_REVISION.match(asked_ref)
+        base = at.group("name") if at else asked_ref
+        pin = pins.get(base) or pins.get(_refs.slugify(base))
+        if pin is None:
+            raise HTTPException(
+                400, f"not a pinned reference: {base!r} — pin it with ref_pin "
+                     f"first. Pinned: {', '.join(sorted(pins)) or '(none)'}")
+        try:
+            if at:
+                entry = _refs.get_revision(r, str(pin["name"]),
+                                           int(at.group("revision")))
+            else:
+                entry = _refs.get(r, str(pin["name"]))
+        except LookupError as exc:
+            raise HTTPException(400, f"reference: {exc}") from exc
+        resolved.append(str(entry["path"]))
 
     try:
         provider = _providers.provider_for(task_kind, asked=asked, root=r)
