@@ -158,6 +158,52 @@ the change lands in the activity ledger and on the bus.
 
 ## Design and story
 
+**Production stage**
+Which of four things this project is allowed to be doing: `thesis`, `graybox`,
+`production`, `release`. Stages hold whole **seats** — at `graybox`, art, audio
+and cinematic do not dispatch at all — and the hold is enforced in the readiness
+rule itself, not as advice (`bgate_core/greenlight.py`). A project that has
+never stored a stage is read from its board: one with work already dispatched is
+at `production`; a new one starts at `thesis`. `greenlight_status` is the read.
+
+**Mechanical thesis**
+The one sentence a project owes before anything is built: *what decision is the
+player repeatedly making that makes this game interesting?* Stored with the
+options being decided between, the stakes, the **tension** (why the answer is
+not the same every time), the **dominant strategy** that would collapse the
+decision, and the cadence. A premise is not a thesis and is refused as one —
+the sentence has to name an act of choosing. It travels in every seat brief,
+because a feature list is buildable and a decision structure is not derivable
+from one.
+
+**Graybox**
+One ugly test room in which gameplay proves the core loop, submitted with
+evidence a person can look at and ruled on by the director: *is the interaction
+actually interesting?* A fail here is a cheap no. The same no after the
+specialist fan-out costs every asset already made.
+
+**Commitment shape**
+What an objective takes away from the player for its duration, from a closed
+vocabulary: `dwell`, `carry`, `escort`, `defend`, `route`, `timing`, `disarm`,
+`restrict`, `manipulate`, `spend`, `gather`. The vocabulary is closed so
+sameness can be counted — a task list can be long, varied in fiction and
+completely uniform in mechanics, and prose review will not catch that
+(`bgate_core/encounter.py`).
+
+**Enemy interaction (`alters`)**
+How one enemy changes the player's read of another. Required design content
+alongside each enemy's own pressure, because "melee / ranged / support" is a
+category table: three enemies that never change each other's threat profile
+make fighting all three arithmetic on the same fight.
+
+**Presentation gate**
+What a release candidate owes before `--export-release` will run: every room
+reviewed as a **whole room**, every delivered image measured at **game scale**,
+every wired audio cue heard in a gameplay capture. It takes **no waiver** — the
+one gate in the product that does not — and it is called by the export path
+rather than consulted by a panel, because a gate somebody consults is a gate
+that gets routed around.
+
 **The bible**
 The design document, stored as structured sections rather than prose: pillars,
 core loop, constraints, art direction, references. Agents read it through
@@ -182,6 +228,36 @@ means nothing **mechanical** is wrong; it will not catch thematic drift
 (`bgate_core/canon.py`).
 
 ## Art
+
+**Scale contract**
+The reference size of everything, in one unit: pixels of the player's height.
+Five classes — `prop`, `furniture`, `door`, `ui`, `enemy` — each with a band,
+because "no expectation" is how a mug ends up chair-sized. `scale_check`
+measures the **opaque bounding box** of a file and divides by the declared
+player height, so a 512×512 sheet holding a 40px mug is graded as a 40px mug
+(`bgate_core/scalecontract.py`).
+
+**Game scale (vs contact sheet)**
+A contact sheet draws every asset in the same box, which is exactly the
+presentation that cannot show a scale error. "At game scale" means the
+measurement is relative to the player, and it is why the release gate refuses a
+delivered image that has only ever been reviewed on a sheet.
+
+**Room composition review**
+A verdict on a whole room against a **full-room screenshot**, alongside measured
+findings from the scene tree: empty floor, perimeter hugging, prop scale spread,
+whether any region holds the eye, and the lanes between obstacles. A cropped or
+mostly-transparent shot is refused rather than accepted with a caveat, and a
+pass cannot stand over a measured finding — each one is answered with
+`room_override` and a reason, per finding, never per project
+(`bgate_core/roomqa.py`).
+
+**In-game listening pass**
+An audio review over a gameplay **capture**, naming the cues actually heard
+firing. Peaks, RMS, wiring and duplicate detection all pass on a cue that is
+wrong for the moment it fires, buried under the music, or three frames late;
+this is the only check that catches those. Coverage is per capture, so
+re-recording after a mix change starts it over.
 
 **Pin / pinned reference**
 An approved image copied into `.bgate/refs/` under a name, via `ref_pin`. From
@@ -257,7 +333,10 @@ history.
 microphone, launches an engine, or spends money; the key check is presence only.
 It exits 1 if **anything** is missing, which is right for a CI step and alarming
 for a human, so read the rows and not the exit code. The `art_key` row asks the
-provider registry, so either `OPENAI_API_KEY` or `KREA_API_KEY` turns it green.
+provider registry and counts the providers that are USABLE — keyed with a
+working adapter — rather than the variables that are set. Any one of them
+turns it green. It is presence and capability, never a paid probe; the live
+picture (balances, and which provider a job routes to) is `provider_status`.
 
 ## Removed
 

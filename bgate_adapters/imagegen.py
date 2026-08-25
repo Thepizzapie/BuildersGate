@@ -173,7 +173,21 @@ def _model_for(transparent: bool) -> str:
 
 
 def available() -> dict:
-    """Is the painted-art leg usable? Reports presence, never the key itself."""
+    """Is the painted-art leg usable? Reports presence, never the key itself.
+
+    IT READ os.environ AND NOTHING ELSE, so a key in the project's .env or
+    in ~/.bgate/.env was invisible unless some other call had already loaded
+    that file as a side effect. providers.status() does; the generation
+    gateway does not - which is how one surface reported this provider
+    configured and the thing that actually routes generation reported it
+    unkeyed, on the same machine, in the same second.
+    """
+    try:
+        from bgate_core import envfile
+
+        envfile.load_env(None)
+    except Exception:                                            # noqa: BLE001
+        pass
     if not os.environ.get("OPENAI_API_KEY"):
         return {"available": False,
                 "reason": "OPENAI_API_KEY not set — put it in the project's .env "

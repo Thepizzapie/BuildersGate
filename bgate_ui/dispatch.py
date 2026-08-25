@@ -864,13 +864,34 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         allow_dirty = _flag(root, "dispatch.allow_dirty", "BGATE_ALLOW_DIRTY")
     state = _git.dirty(root)
     if state["available"] and state["dirty"] and not allow_dirty:
+        # ANNOUNCED, not merely returned. This is a FLOOR refusal: it stops the
+        # WHOLE board, not one item, and it was pull-only - board_digest.blocked
+        # reported it correctly to whoever thought to ask, and nobody did.
+        # Measured: an art seat and an audio seat idled for about an hour while
+        # the director wrote gameplay code and kept the tree dirty. The refusal
+        # now emits like budget.refused does, so the same notification path that
+        # already covers "the board stopped for money" covers "the board
+        # stopped for git".
+        _emit(root, "dispatch.blocked", ref=str(item_id),
+              payload={"code": "dirty_tree", "item": item_id,
+                       "seat": item.get("seat") or "",
+                       "title": str(item.get("title") or "")[:200],
+                       "paths": state["paths"][:20],
+                       "count": len(state["paths"]),
+                       "whole_board": True,
+                       "reason": f"{len(state['paths'])} uncommitted change(s) "
+                                 "in the tree - dispatch refuses a dirty tree, "
+                                 "and that refusal stops every queued item, "
+                                 "not just this one"})
         return _refused(
             "dirty_tree",
             f"{len(state['paths'])} uncommitted change(s) in the tree, so the "
-            "agent's edits could not be told from yours. Commit or stash them "
-            "and the board resumes on its own. (Finished runs commit their own "
-            "files when dispatch.auto_commit is on, which it is by default - so "
-            "what is dirty here is work the harness did not do.)",
+            "agent's edits could not be told from yours. THIS STOPS THE WHOLE "
+            "BOARD, not this item. Commit or stash them and the board resumes "
+            "on its own. (Finished runs commit their own files when "
+            "dispatch.auto_commit is on, which it is by default - so what is "
+            "dirty here is work the harness did not do, or work it left behind "
+            "on purpose because it could not attribute it to one run.)",
             paths=state["paths"][:50])
     base_commit = _git.head(root) if state["available"] else ""
     branch, worktree = "", ""
@@ -1011,10 +1032,44 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # first-run result being shown as current, and old echoes falsely marking
     # fresh steers consumed, were real observed bugs. Marker + byte offset.
     import time as _time
+    # DO NOT SPAWN INTO A HALF-WRITTEN PACKAGE. A Python module is not written
+    # atomically, so an agent starting mid-save imports whatever bytes are on
+    # disk at that instant and dies with a SyntaxError in a file it never
+    # touched. Observed while this pipeline was being worked on with its own
+    # agents running. Waits out the edit window (seconds); only REFUSES under
+    # BGATE_HARNESS_GUARD=block, because a board that will not dispatch
+    # because somebody saved a file is unusable exactly when a person is
+    # working on it.
+    try:
+        from bgate_core import harness as _harness
+
+        _guard = _harness.spawn_guard()
+        _harness_at = _harness.fingerprint()["digest"]
+    except Exception:                                             # noqa: BLE001
+        _guard, _harness_at = {"ok": True, "edited": [], "why": ""}, ""
+    if not _guard["ok"]:
+        log_handle.close()
+        return _refused("harness_editing", _guard["why"])
+    if _guard.get("why"):
+        try:
+            from bgate_core import activity as _act
+
+            _act.log(root, "dispatch",
+                     f"item {item_id}: {_guard['why'][:200]}", ref=str(item_id))
+        except Exception:
+            pass
     try:
         log_handle.write((json.dumps({"type": "bgate_run_start",
                                       "item_id": item_id,
                                       "base_commit": base_commit,
+                                      # WHICH HARNESS THIS RUN IS EXECUTING.
+                                      # Python caches modules per process, so a
+                                      # fix landing mid-run reaches the NEXT
+                                      # agent and not this one. Without this
+                                      # stamp there was no way to tell, and a
+                                      # bug reproducing after a fix read as the
+                                      # fix not working.
+                                      "harness": _harness_at,
                                       "ts": _time.time()})
                           + "\n").encode("utf-8"))
         log_handle.flush()
@@ -1076,6 +1131,11 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                           "run_start_pos": run_start_pos,
                           "cost_scan_pos": run_start_pos,
                           "started_at": _time.monotonic(),
+                          # WALL CLOCK, beside the monotonic one, because the
+                          # write log stamps local time and provenance has to
+                          # ask "was that write concurrent with this run".
+                          # monotonic answers no such question across processes.
+                          "started_wall": _time.strftime("%Y-%m-%d %H:%M:%S"),
                           "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd,
                           "base_commit": base_commit, "cwd": cwd,
                           # The project this run belongs to. status()/stop() and
@@ -1250,6 +1310,15 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
     """
     _kill_tree(entry["proc"].pid)
     entry["stop_reason"] = reason
+    # THE RUN'S OWN LAST WORDS. A kill replaced the result note wholesale, so
+    # an agent that had already diagnosed its own problem correctly — "the
+    # export template is missing, I cannot build" — had that sentence deleted
+    # and replaced with the harness's guess about why it stopped. The harness
+    # knows why IT intervened; only the agent knows what it was doing.
+    said = _last_words(root, item_id)
+    reason = reason + (f"\n\nTHE RUN'S OWN LAST WORDS, kept because the "
+                       f"harness's reason above is about the INTERVENTION and "
+                       f"this is about the WORK:\n\n{said}" if said else "")
     note = reason
     if recoverable:
         note = (reason + "\n\nSTOPPED, NOT FAILED. The ceiling ended this run; "
@@ -1274,6 +1343,24 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
         except Exception:
             pass
     _reap(root, item_id, entry, entry["proc"].poll())
+
+
+def _last_words(root: str, item_id: int, cap: int = 1200) -> str:
+    """The agent's own final text, for a note the harness is about to write.
+
+    Best-effort and deliberately quiet: this runs inside a kill path, and a
+    run whose log cannot be read must still be banked. "" is the honest answer
+    when there is nothing to quote.
+    """
+    try:
+        final = _final_event(root, item_id) or {}
+    except Exception:                                             # noqa: BLE001
+        return ""
+    for key in ("result", "text", "message", "summary"):
+        said = str(final.get(key) or "").strip()
+        if said:
+            return said[:cap]
+    return ""
 
 
 def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
@@ -1353,9 +1440,27 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                     except Exception:
                         pass
             else:
+                # HUNG AND EXITED ARE DIFFERENT DEATHS, and this branch used to
+                # assert the first without checking for the second. MEASURED: a
+                # session that exited cleanly after 20 SECONDS was banked as
+                # "no output of any kind for 25 minutes - the session was
+                # hung", because silence is measured against the log and a
+                # finished process writes nothing either. The run's own correct
+                # account of itself was overwritten by a diagnosis that was
+                # false in both halves.
+                #
+                # A dead process is reaped, not tripped: _reap banks the exit
+                # code and the agent's own final message. Only a process that
+                # is genuinely still alive and genuinely silent is a hang.
+                code = entry["proc"].poll()
+                if code is not None:
+                    _reap(root, item_id, entry, code)
+                    return
                 _trip(root, item_id, entry,
-                      f"killed: no output of any kind for {silent // 60} "
-                      "minutes - the session was hung, not working")
+                      f"killed: still running and silent for {silent // 60} "
+                      "minutes - no log line, no file written, and no MCP "
+                      "call in flight. This is a HANG (the process was alive "
+                      "when it was killed), not a crash and not a clean exit")
                 return
         # THE COST CEILING ONLY EXISTS WHERE COST IS REPORTED. A runner that
         # emits tokens and no price makes _observed_cost read 0.00 forever, so
@@ -1550,10 +1655,26 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
     with three done, twenty-six never started, and the autopilot toggle still
     green.
 
-    ONLY THIS RUN'S PATHS (gitwork.commit_paths, never `commit -a`), so a
-    human's unrelated uncommitted work is not swept into an agent's commit - and if THAT is what makes the tree dirty, it stays dirty and the next
-    dispatch is still refused, which is the rule working rather than being
-    bypassed.
+    ONLY THIS RUN'S PATHS, and "this run's" USED TO MEAN "everything that
+    changed since its boundary commit" - which is correct on a board running
+    one agent and is `git add -A` on a board running three. Measured in the
+    benchmark projects' own history: `bgate: item #1 [art]` carried nine .wav
+    files the AUDIO seat delivered concurrently under item #2, and
+    `bgate: item #6 [qa]` carried scripts/board_view.gd, scripts/hud.gd and
+    scenes/main.tscn. Git then attributes an audio delivery to an art item,
+    which destroys the one thing a multi-agent board is for.
+
+    So the scope is now git's list INTERSECTED WITH ATTRIBUTION
+    (bgate_core.provenance): what the hook observed this owner write, what a
+    tool registered against this work item, the engine sidecars of both, and -
+    for what none of those claim, which is every file a program the agent RAN
+    produced - the seat lane. A path in another seat's lane is left; a path no
+    lane covers goes here, so the deadlock below still cannot come back through
+    a file with no owner.
+
+    WHAT IS LEFT BEHIND IS SAID OUT LOUD. A path dropped in silence is the same
+    class of lie as a path wrongly swept, and the next dispatch's dirty-tree
+    refusal is where a human meets it.
 
     Skipped for a worktree run: those already live on their own branch, which
     is the isolation this exists to substitute for. Best effort throughout - the work is on disk either way, and a failed commit must never turn a
@@ -1565,17 +1686,29 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
         return
     base = entry.get("base_commit") or ""
     try:
+        from bgate_core import activity as _act
+        from bgate_core import provenance as _prov
+
         scope = _git.touched(root, base)
         if not scope.get("available") or not scope.get("paths"):
             return
         seat = str(entry.get("seat") or "")
+        split = _prov.attribute(root, item_id, seat, scope["paths"],
+                                since=str(entry.get("started_wall") or ""))
+        if split["left"]:
+            _act.log(root, "dispatch",
+                     f"item {item_id}: left {len(split['left'])} file(s) "
+                     "uncommitted - " + "; ".join(
+                         f"{one['path']} ({one['why']})"
+                         for one in split["left"][:6]),
+                     ref=str(item_id))
+        if not split["mine"]:
+            return
         made = _git.commit_paths(
-            root, scope["paths"],
+            root, split["mine"],
             f"bgate: item #{item_id}" + (f" [{seat}]" if seat else "")
             + " - committed by the harness so the board keeps moving")
         if made.get("ok"):
-            from bgate_core import activity as _act
-
             _act.log(root, "dispatch",
                      f"item {item_id}: committed {len(made['committed'])} "
                      f"file(s) as {made['commit'][:8]}", ref=str(item_id))

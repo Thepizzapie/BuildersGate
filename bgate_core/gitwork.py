@@ -32,7 +32,38 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 MAX_DIFF_CHARS = 200_000
 
 # Never surface (or revert) the dashboard's own state as if the agent wrote it.
-_ALWAYS_IGNORE = (".bgate/", ".git/")
+#
+# `.godot/` joined the list because that is where the harness's engine scratch
+# now lives (see godot.SCRATCH_DIR) AND because it is the engine's own cache:
+# running the game at all rewrites it, so counting it as the agent's work made
+# every capture look like an edit.
+_ALWAYS_IGNORE = (".bgate/", ".git/", ".godot/")
+
+# A DIRTY TREE REFUSES THE WHOLE BOARD, NOT ONE ITEM — which is why a file the
+# HARNESS wrote for its own purposes must never make the tree dirty. Taking a
+# screenshot stalled every seat, repeatedly, because the capture injection
+# leaves an `override.cfg` beside project.godot and Godot has no CLI flag that
+# would let it live anywhere else.
+#
+# It is recognised by CONTENT, not by name: our override.cfg registers a
+# BGate autoload and nothing else, and a project's own override.cfg is a
+# legitimate thing to have that SHOULD still dirty the tree. Guessing by
+# filename would silence both.
+_HARNESS_MARKERS = ("BGateShot", "BGateEvidence", "BGATE-INJECTED")
+_MAYBE_OURS = ("override.cfg", ".bgate_shot.gd", ".bgate_evidence.gd")
+
+
+def _harness_scratch(root: str | os.PathLike[str], path: str) -> bool:
+    """Is this an artefact the harness wrote for itself? Content-checked."""
+    name = path.rsplit("/", 1)[-1]
+    if name not in _MAYBE_OURS:
+        return False
+    try:
+        head = (Path(root) / path).read_text(
+            encoding="utf-8", errors="replace")[:600]
+    except OSError:
+        return False
+    return any(mark in head for mark in _HARNESS_MARKERS)
 
 
 def _run(cwd: str | os.PathLike[str], args: Sequence[str], *,
@@ -85,6 +116,20 @@ def head(root: str | os.PathLike[str]) -> str:
     return out.strip() if ok else ""
 
 
+#: THE SAFETY NET, NAMED WHEREVER DIRTINESS IS REPORTED. Nothing in the system
+#: said that auto-commit exists, so "uncommitted" was read as "unsaved" — and
+#: an operator who believes an agent's work has not landed makes exactly the
+#: wrong decision about it (re-run it, or discard the tree).
+MEANING_OF_DIRTY = (
+    "UNCOMMITTED IS NOT UNSAVED. These files are on disk. Every dispatched run "
+    "commits the paths it touched when it finishes (the dispatch.auto_commit "
+    "setting, on by default), against the base_commit stamped on its work item "
+    "— so `git diff <base_commit>` is what a run changed and `git log` is the "
+    "undo history. A dirty tree means a run is still going, or a commit was "
+    "declined because the tree already held edits that were not that run's. "
+    "It never means the work was lost.")
+
+
 def _ignored(path: str) -> bool:
     return any(path.startswith(p) for p in _ALWAYS_IGNORE)
 
@@ -103,16 +148,33 @@ def dirty(root: str | os.PathLike[str]) -> dict:
     ok, out, err = _run(root, ["status", "--porcelain=v1", "-uall"])
     if not ok:
         return {"available": False, "reason": err, "dirty": False, "paths": []}
-    paths = []
+    paths: list[str] = []
+    scratch: list[str] = []
     for line in out.splitlines():
         if len(line) < 4:
             continue
         path = line[3:].strip().strip('"')
         if " -> " in path:  # a rename reports "old -> new"
             path = path.split(" -> ", 1)[1]
-        if not _ignored(path):
-            paths.append(path)
-    return {"available": True, "reason": "", "dirty": bool(paths), "paths": paths}
+        if _ignored(path):
+            continue
+        if _harness_scratch(root, path):
+            scratch.append(path)
+            continue
+        paths.append(path)
+    return {"available": True, "reason": "", "dirty": bool(paths),
+            "paths": paths,
+            # Reported, not hidden: a leftover means a capture was KILLED, which
+            # is worth knowing even though it no longer stops the board.
+            "harness_scratch": scratch,
+            # WHAT DIRTY DOES AND DOES NOT MEAN. Read as "the work has not
+            # landed", which is close to the opposite of the truth: the files
+            # are on disk, and every dispatched run commits its OWN paths when
+            # it finishes (dispatch.auto_commit, on by default). Uncommitted
+            # means a run is still going, or the commit was declined because
+            # the tree already held somebody else's edits — not that anything
+            # was lost.
+            "means": MEANING_OF_DIRTY}
 
 
 def commit_paths(root: str | os.PathLike[str], paths: Sequence[str],

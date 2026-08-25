@@ -39,10 +39,25 @@ bound INSIDE a copied context in that thread, so the isolation survives the hop.
 """
 from __future__ import annotations
 
+import sys as _sys
+
+# `python -m bgate_mcp.server` - the command every MCP registration runs -
+# executes this file as `__main__`, NOT as `bgate_mcp.server`. The domain
+# modules at the bottom then `from bgate_mcp.server import ...`, which starts
+# a SECOND execution of this file under its package name; that copy reaches
+# the star imports while tools_blender is still half-initialized and the whole
+# boot dies on a circular ImportError. Registering the running module under
+# its package name first means the domain modules find THIS instance, exactly
+# as they do under a plain `import bgate_mcp.server`. This must precede every
+# bgate import below.
+if __name__ == "__main__":  # pragma: no cover - the subprocess boot test
+    _sys.modules.setdefault("bgate_mcp.server", _sys.modules[__name__])
+
 import contextvars
 import functools
 import inspect
 import itertools
+import logging
 import json as _json
 import os
 import re as _re
@@ -65,6 +80,7 @@ from bgate_core import assets as _assets
 from bgate_core import gameview as _gameview
 from bgate_core import providers as _providers
 from bgate_core import scenewire as _scenewire
+from bgate_core import toolindex as _toolindex
 from bgate_core import art_tournament as _art_tournament
 from bgate_core import artifacts as _artifacts
 from bgate_core import refs as _refs
@@ -608,6 +624,16 @@ def _normalize(result):
 _IMAGE_RETURN_EDGE = 512
 _IMAGE_RETURN_CAP = 6
 
+#: `image_sprites(limits=...)` - how much one run may spend, in money and in
+#: wall clock. Grouped because they are one question; named here so the tool
+#: and its refusal message cannot disagree about the legal keys.
+_SPRITE_LIMITS = {"max_retries": 1, "max_cost_usd": 0.0, "timeout": 300,
+                  "max_seconds": 1800}
+
+#: `image_sprites(palette=...)` - `lock` is "auto" (default), "on" or "off";
+#: `colors` is the quantisation target when locking.
+_SPRITE_PALETTE = {"lock": "auto", "colors": 64}
+
 
 def _image_blocks(paths) -> list:
     """The frames themselves as MCP image content. Never raises."""
@@ -634,6 +660,12 @@ def _image_blocks(paths) -> list:
             except Exception:
                 continue
     return blocks
+
+
+#: How often a long-running tool tells the client it is still alive. Must be
+#: comfortably under the smallest client idle ceiling; MCP clients commonly
+#: default to 1800s and some are configured far lower.
+_HEARTBEAT_SECONDS = 20.0
 
 
 def _tool(fn: Optional[Callable] = None, *,
@@ -690,6 +722,27 @@ def _tool(fn: Optional[Callable] = None, *,
             # whether this call only looks or actually writes, and _root() has
             # no other way to know which of 200 tools is asking.
             name_token = _CALL_TOOL.set(fn.__name__)
+            # A fresh bucket per call: every spend reservation the body takes
+            # is given back in the finally below, whatever the body did.
+            holds_token = _CALL_HOLDS.set([])
+            # ANNOUNCE THE CALL BEFORE IT BLOCKS. The heartbeat above stops a
+            # slow tool from LOOKING dead; it does nothing about the restart
+            # that happens anyway, and a killed server takes its worker
+            # threads with it while the provider still charges and still
+            # writes the file. This row outlives the process, so the next
+            # server start can name what the last one was holding instead of
+            # the work being gone with no record it existed.
+            flight_root = _root_hint()
+            flight = ""
+            if flight_root:
+                try:
+                    from bgate_core import inflight as _inflight
+
+                    flight = _inflight.begin(
+                        flight_root, fn.__name__, seat=_seat(),
+                        item_id=_work_item_id())
+                except Exception:                                 # noqa: BLE001
+                    flight = ""
             try:
                 payload = _normalize(fn(*args, **kwargs))
                 if images is None or not isinstance(payload, dict):
@@ -722,12 +775,74 @@ def _tool(fn: Optional[Callable] = None, *,
                 # now be deleted at leisure; this makes their absence safe.
                 return _fail(exc)
             finally:
+                _release_holds()
+                if flight and flight_root:
+                    try:
+                        from bgate_core import inflight as _inflight
+
+                        _inflight.end(flight_root, flight)
+                    except Exception:                             # noqa: BLE001
+                        pass
+                _CALL_HOLDS.reset(holds_token)
                 _CALL_TOOL.reset(name_token)
                 _CALL_ROOT.reset(token)
 
         # abandon_on_cancel stays False (the default): a cancelled client must
         # not leave a half-written .blend or a half-downloaded image behind.
-        return await anyio.to_thread.run_sync(contextvars.copy_context().run, _call)
+        #
+        # HEARTBEAT WHILE THE BODY RUNS, or the client kills the call and the
+        # work is thrown away after we paid for it. MCP clients abort a tool
+        # that "sent no response or progress" for their idle ceiling (1800s by
+        # default), and these bodies are blocking by design - Blender, Godot,
+        # ffmpeg, and image/animation models that legitimately run for minutes.
+        # Because abandon_on_cancel is False the thread then RUNS TO
+        # COMPLETION regardless, so the cancelled call still spends the money,
+        # still writes its files, and simply has nowhere to deliver its
+        # result. MEASURED on night-shift: Retro Diffusion jobs charged and
+        # succeeded, sheets appeared on disk at 19:46, 20:41 and 21:04, and
+        # the agent that paid for each one saw nothing and reported a hang.
+        # A periodic progress notification resets the client's idle timer, so
+        # a slow tool stays slow instead of becoming a silent loss.
+        async def _run_with_heartbeat():
+            done = anyio.Event()
+            result: dict = {}
+
+            async def _body():
+                try:
+                    result["value"] = await anyio.to_thread.run_sync(
+                        contextvars.copy_context().run, _call)
+                finally:
+                    done.set()
+
+            async def _beat():
+                # Cheap and best-effort: a transport that cannot take a
+                # progress notification must never break the tool call it was
+                # meant to protect.
+                try:
+                    ctx = mcp.get_context()
+                except Exception:
+                    return
+                ticks = 0
+                while not done.is_set():
+                    with anyio.move_on_after(_HEARTBEAT_SECONDS):
+                        await done.wait()
+                    if done.is_set():
+                        return
+                    ticks += 1
+                    try:
+                        await ctx.report_progress(
+                            progress=ticks,
+                            message=f"{fn.__name__}: working "
+                                    f"({ticks * _HEARTBEAT_SECONDS:.0f}s)")
+                    except Exception:
+                        return
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_beat)
+                await _body()
+            return result.get("value")
+
+        return await _run_with_heartbeat()
 
     wrapper.__signature__ = signature.replace(
         parameters=[*signature.parameters.values(), inspect.Parameter(
@@ -897,6 +1012,44 @@ def _work_item_id() -> Optional[int]:
     return int(raw) if raw.isdigit() else None
 
 
+# HOLDS TAKEN BY THIS CALL, released when the call returns. A ContextVar and
+# not a module global for the same reason _CALL_ROOT is one: tool bodies run on
+# a shared anyio worker pool, so a list left on a pooled thread would be
+# released by whatever call landed on that thread next.
+_CALL_HOLDS: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "bgate_call_holds", default=None)
+
+
+def _hold_token(root: str, token: str) -> None:
+    """Remember a spend reservation so the wrapper can give it back."""
+    if not token:
+        return
+    bucket = _CALL_HOLDS.get()
+    if bucket is None:
+        return
+    bucket.append((str(root), token))
+
+
+def _release_holds() -> None:
+    """Return every reservation this call took. Never raises.
+
+    Success and failure alike: a generation that failed still leaves whatever
+    the provider actually charged in the ledger, and a hold sitting on top of
+    that number would refuse the retry it just earned. A process that dies
+    before reaching here leaves holds that expire on their own (spend.HOLD_TTL_S).
+    """
+    bucket = _CALL_HOLDS.get()
+    if not bucket:
+        return
+    from bgate_core import spend as _spend
+    for root, token in bucket:
+        try:
+            _spend.release(root, token)
+        except Exception:
+            pass
+    bucket.clear()
+
+
 def _run_ceiling(root: str, override_usd: float = 0.0) -> float:
     """The dollar ceiling for ONE tool call. 0.0 means uncapped.
 
@@ -925,34 +1078,44 @@ def _run_ceiling(root: str, override_usd: float = 0.0) -> float:
 
 def _spend_gate(root: str, projected_usd: float, what: str,
                 ceiling_usd: float = 0.0) -> Optional[dict]:
-    """Refuse a paid run BEFORE the first call, or None to proceed.
+    """Reserve the money BEFORE the provider is called, or refuse. None = go.
 
-    A cap that only reports what a run cost is an invoice, not a cap. Both
-    ceilings are consulted: the per-run one (see _run_ceiling) and the project
-    /day budget (spend.check), which is the same gate the dispatcher asks before
-    spawning - an overnight fan-out must not be bounded in one leg and unbounded
-    in the other. The refusal names the number so the caller can decide, rather
-    than saying no and leaving the model to guess by how much.
+    THE CEILING WAS PER CALL AND HAD TO BE PER RUN. This function used to ask
+    "is THIS estimate under the ceiling", which a $0.40 image batch answers yes
+    to against a $5 cap eighteen times in a row - measured across three
+    benchmark games, which finished at $6.40, $9.49 and $5.16 against a $5
+    max_cost_usd while the RUNTIME ceiling stopped every one of them on time. A
+    limit presented as a hard ceiling has to be hard.
+
+    So the question is now "does this fit in what is LEFT of the run", asked of
+    spend.reserve, which sums what the item has already been charged plus every
+    hold that is live anywhere on the machine plus this estimate - inside one
+    transaction, so two seat processes racing cannot both be told there is
+    room. The hold is released by the _tool wrapper when the call returns; the
+    ledger row the provider produced is the truth after that.
+
+    Both ceilings still act: the per-run one (see _run_ceiling) and the project
+    /day budget, which is the same gate the dispatcher asks before spawning -
+    an overnight fan-out must not be bounded in one leg and unbounded in the
+    other.
     """
     from bgate_core import spend as _spend
 
     projected = round(max(0.0, float(projected_usd or 0.0)), 4)
-    if ceiling_usd and projected > ceiling_usd:
-        return {"ok": False, "stage": "spend_gate", "estimated_usd": projected,
-                "ceiling_usd": round(float(ceiling_usd), 4),
-                "error": f"{what} is estimated at ${projected:.2f}, over the "
-                         f"${float(ceiling_usd):.2f} ceiling for one run - cut "
-                         "poses or quality, or pass max_cost_usd to confirm the "
-                         "spend deliberately"}
     try:
-        verdict = _spend.check(root, projected_usd=projected)
+        got = _spend.reserve(root, projected, work_item_id=_work_item_id(),
+                             what=what, run_ceiling_usd=float(ceiling_usd or 0))
     except Exception:
-        verdict = {"allowed": True}  # no ledger is not a licence to refuse work
-    if not verdict.get("allowed", True):
+        return None  # no ledger is not a licence to refuse work
+    if not got.get("ok"):
+        scope = got.get("scope") or "budget"
         return {"ok": False, "stage": "spend_gate", "estimated_usd": projected,
-                "budget": verdict,
-                "error": f"{what} (~${projected:.2f}) is refused by the project "
-                         f"budget: {verdict.get('reason') or 'ceiling reached'}"}
+                "ceiling_usd": round(float(got.get("ceiling") or 0), 4),
+                "spent_usd": got.get("spent"), "held_usd": got.get("held"),
+                "scope": scope, "budget": got,
+                "error": f"{what} (~${projected:.2f}) is refused by the "
+                         f"{scope} ceiling: {got.get('reason') or 'reached'}"}
+    _hold_token(root, got.get("token") or "")
     return None
 
 
@@ -1383,6 +1546,7 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
     sets keys (bgate key / the Generators panel), deliberately.
     """
     from bgate_core import gateway as _gateway
+    from bgate_core import providers as _providers
     try:
         root = _root()
     except LookupError:
@@ -1392,6 +1556,14 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
            "providers": _gateway.status(root, fresh=bool(fresh)),
            "capabilities": {k: list(v)
                             for k, v in _gateway.CAPABILITIES.items()}}
+    # WHICH PROVIDER WOULD ACTUALLY BE SELECTED, for every family, without
+    # having to ask one capability at a time. `bgate doctor` and this tool were
+    # observed answering the same question differently across three benchmark
+    # games (doctor: "4 of 4 providers"; here: one live option, no
+    # alternatives), so the answer a caller acts on is stated in full: the
+    # order, the pick, the real alternatives, and WHY each excluded provider is
+    # out. `character_work` is the one route that does not come off the table.
+    out["routing"] = _providers.routing(root)
     if capability:
         out["pick"] = _gateway.pick(root, str(capability))
     return out
@@ -2859,6 +3031,48 @@ def _guide_image(result: dict) -> list[str]:
     return [path] if path else []
 
 
+@_tool
+def sprite_sheet_slice(image: str, out_dir: str = "", pad: int = 0,
+                       min_px: int = 16) -> dict:
+    """Find every sprite on an IRREGULAR sheet and cut it out. Free and local.
+
+    sprite_sheet_check assumes the grid you asked for; this is for the sheet
+    that has no grid - a generator that scattered five sprites across one
+    canvas, a found atlas with uneven gutters. Connected-alpha analysis
+    (Better Slicer's auto mode, headless): each blob of ink becomes a box,
+    speckle under `min_px` pixels is ignored, `pad` grows each box, and the
+    result comes back in reading order - rows top to bottom, left to right
+    within a row - so slice N is frame N when you assemble a master from it.
+
+    With `out_dir` each box is also cropped to <stem>_NN.png there. Without,
+    nothing is written - call it bare first to see what the sheet holds, then
+    again with out_dir once the boxes look right."""
+    root = _Path(_root())
+    rel = _assets.normalize_path(root, image)
+    src = root / rel
+    if not src.exists():
+        return {"ok": False, "error": f"no image at {rel}"}
+    _contained_path(out_dir, "out_dir")
+    boxes = _spritekit.islands(str(src), min_px=int(min_px), pad=int(pad))
+    result: dict = {"ok": True, "count": len(boxes), "slices": boxes}
+    if out_dir and boxes:
+        from PIL import Image as _Img
+        dest = root / out_dir
+        dest.mkdir(parents=True, exist_ok=True)
+        written = []
+        with _Img.open(src) as im:
+            rgba = im.convert("RGBA")
+            for n, b in enumerate(boxes):
+                cell = rgba.crop((b["x"], b["y"],
+                                  b["x"] + b["w"], b["y"] + b["h"]))
+                out_path = dest / f"{src.stem}_{n:02d}.png"
+                cell.save(out_path)
+                written.append(_assets.normalize_path(root, out_path))
+        result["cells"] = written
+        _note_tool_write(_root(), str(dest / f"{src.stem}_00.png"))
+    return result
+
+
 @_tool(images=_guide_image)
 def sprite_sheet_check(image: str, columns: int, rows: int = 1,
                        labels: Optional[list[str]] = None,
@@ -3029,7 +3243,8 @@ _RD_PROMPTS = {"walk": "confident, steady steps",
 def animation_generate(character: str, action: str,
                        source_sheet: str = "", prompt: str = "",
                        frames: int = 0, max_retries: int = 1,
-                       max_cost_usd: float = 0.0) -> dict:
+                       max_cost_usd: float = 0.0,
+                       direction: str = "") -> dict:
     """CONTRACT-DRIVEN character animation via Retro Diffusion.
 
     Reads the sprite contract (sprite_contract_get) for this character+action:
@@ -3061,6 +3276,25 @@ def animation_generate(character: str, action: str,
     contract = _sc.contract_for(str(root), character, action)
     act = str(action).strip().lower()
     drawn = contract["drawn"]
+    # ONE DIRECTION PER CALL, WHEN THE CALLER ASKS FOR IT. Retro Diffusion's
+    # turnaround is about ten minutes per drawn direction, so buying all
+    # three inside this single blocking call means ~30 minutes of silence -
+    # and the MCP client kills a tool that reports no progress at its idle
+    # ceiling (1800s by default). One cycle therefore sits right on the
+    # boundary: it looks stuck the whole time and dies at the edge, having
+    # already been billed. MEASURED on night-shift across several runs.
+    # Passing `direction` buys exactly that one, which finishes in about a
+    # third of the time and comfortably inside the ceiling; the per-direction
+    # resume check above then accumulates the cycle across successive calls,
+    # so three cheap calls produce the same sheet as one that cannot finish.
+    if direction:
+        want = str(direction).strip().lower()
+        if want not in drawn:
+            return {"ok": False,
+                    "error": f"direction {want!r} is not drawn for "
+                             f"{character}/{action}; drawn = {drawn}",
+                    "drawn": drawn}
+        drawn = [want]
     cw, ch = contract["cell"]
     spec = contract.get("action") or {}
     n_frames = int(frames or spec.get("frames") or 8)
@@ -3113,11 +3347,32 @@ def animation_generate(character: str, action: str,
         picks = [round(i * (rd_frames - 1) / (keep - 1))
                  for i in range(keep)]
     for direction in drawn:
-        # RE-ROLL LOOP. RD is stochastic: the same seed frame can come
-        # back with white trousers on half the frames one run and clean
-        # the next. A flagged strip is re-bought (bounded by max_retries
-        # and the cost ceiling) and the roll with the fewest findings is
-        # the one that ships — the hr_bard pattern, automated.
+        # RESUME BEFORE YOU BUY. This tool blocks one MCP call across every
+        # drawn direction, and the client aborts a silent tool at its idle
+        # ceiling — so a long run gets killed mid-loop routinely. The cells
+        # for directions that already finished are on disk; without this
+        # check the next run re-extracts the start frames and RE-BUYS them.
+        # MEASURED on night-shift: the identical motion prompt was charged
+        # twice for the player attack, twice for the manager walk and twice
+        # for the paper-jam attack across three aborted runs, and the
+        # provider's own job list shows each pair succeeding. Money spent,
+        # nothing new on disk. A direction whose frames are all present and
+        # newer than the start frame it came from is DONE; skip it.
+        done_paths = [out_dir / f"{character}_{act}_{direction}_{i}.png"
+                      for i in range(keep)]
+        if all(p.is_file() for p in done_paths):
+            seed = _Path(starts["frames"][direction])
+            fresh = (not seed.is_file()
+                     or min(p.stat().st_mtime for p in done_paths)
+                     >= seed.stat().st_mtime)
+            if fresh:
+                for i, p in enumerate(done_paths):
+                    label = f"{act}_{direction}/{i}"
+                    frame_files[label] = str(p)
+                    ordered.append(label)
+                per_dir[direction] = {"findings": [], "attempts": 0,
+                                      "resumed": True}
+                continue
         best = None
         attempts = max(1, 1 + int(max_retries))
         for attempt in range(attempts):
@@ -3578,6 +3833,64 @@ def aseprite_export(master: str, res_dir: str = "assets/sprites",
     result.update(_ase_export_review(root, data, sheet_path, stem))
     result.update(_ase_export_anchors(data, sheet_path, stem))
     return result
+
+
+@_tool
+def aseprite_antialias(image: str, out: str = "",
+                       use_pinned_palette: bool = True) -> dict:
+    """Soften stair-step corners in a sprite or tile PNG. Free and local.
+
+    The rule (C.T. Matthews' extension, headless): a pixel with two or more
+    orthogonal neighbours of one same other colour is a stair-step corner
+    and becomes the midpoint of the pair; straight edges are untouched, and
+    transparent pixels are never written, so silhouettes do not grow. With
+    use_pinned_palette (default) every blended pixel snaps back into the
+    project's pinned palette - the pass cannot mint colours the conform
+    would reject. Writes beside the source as <stem>_aa.png unless `out`
+    names a path. Run it AFTER generation and conform, before delivery."""
+    root = _Path(_root())
+    rel = _assets.normalize_path(root, image)
+    src = root / rel
+    if not src.exists():
+        return {"ok": False, "error": f"no image at {rel}"}
+    _contained_path(out, "out")
+    dest = (root / out) if out else src.with_name(src.stem + "_aa.png")
+    from bgate_adapters import aseprite as _ase
+    palette = _artdirection.palette_pinned(root) if use_pinned_palette else ()
+    got = _ase.antialias(str(src), str(dest), palette=palette or ())
+    if got.get("ok"):
+        got["out"] = _assets.normalize_path(root, dest)
+        got["palette_snapped"] = bool(palette)
+        _note_tool_write(_root(), str(dest))
+    return got
+
+
+@_tool
+def aseprite_normal_map(image: str, out: str = "", intensity: float = 1.0,
+                        invert_y: bool = False) -> dict:
+    """Normal map from a sprite or tile PNG, brightness read as height.
+
+    Central differences over the value channel, alpha preserved, green axis
+    OpenGL (+Y up) - exactly what a Godot CanvasTexture's normal slot wants
+    for 2D dynamic lighting. Art shaded light-on-top reads as relief; flat
+    art gives flat normals, so raise `intensity` for subtle shading. Writes
+    beside the source as <stem>_n.png unless `out` names a path. Wire it in
+    Godot by setting the sprite/tile texture to a CanvasTexture whose
+    diffuse is the art and whose normal_texture is this output."""
+    root = _Path(_root())
+    rel = _assets.normalize_path(root, image)
+    src = root / rel
+    if not src.exists():
+        return {"ok": False, "error": f"no image at {rel}"}
+    _contained_path(out, "out")
+    dest = (root / out) if out else src.with_name(src.stem + "_n.png")
+    from bgate_adapters import aseprite as _ase
+    got = _ase.normal_map(str(src), str(dest), intensity=float(intensity),
+                          invert_y=bool(invert_y))
+    if got.get("ok"):
+        got["out"] = _assets.normalize_path(root, dest)
+        _note_tool_write(_root(), str(dest))
+    return got
 
 
 def _ase_export_review(root: _Path, data: dict, sheet_path: _Path,
@@ -4084,12 +4397,11 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_image: Optional[str] = None, frame_width: int = 160,
                   frame_height: int = 240, quality: str = "medium",
                   ref_quality: str = "high", fps: float = 8.0,
-                  res_dir: str = "assets/sprites", max_retries: int = 1,
-                  max_cost_usd: float = 0.0, timeout: int = 300,
-                  max_seconds: int = 1800, provider: str = "",
+                  res_dir: str = "assets/sprites",
+                  limits: Optional[dict] = None, provider: str = "",
                   model: str = "", ref_strength: float = 0.6,
                   archetypes: Optional[list[str]] = None, view: str = "",
-                  palette_lock: str = "auto", palette_colors: int = 64,
+                  palette: Optional[dict] = None,
                   sheet_padding: int = 0, anchor_views: int = 3) -> dict:
     """PAINTED sprite set - REFERENCE-FIRST for consistency.
 
@@ -4161,7 +4473,8 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     anchor never carried. Two extra generations per character against one per
     pose plus one per re-roll.
 
-    palette_lock: "auto" (default), "on" or "off". Locking quantises every frame
+    palette: {"lock": ..., "colors": ...}, the sheet's colour handling.
+    `lock` is "auto" (default), "on" or "off". Locking quantises every frame
     to the reference's own palette, which makes colour drift UNREPRESENTABLE
     rather than merely detectable - the existing palette gate finds drift and
     pays for a re-roll; this leaves nowhere for the drift to be stored. It is a
@@ -4176,13 +4489,19 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     into a padded grid automatically whatever this says.
 
     THIS IS THE MOST EXPENSIVE TOOL HERE and it is capped like it. The plan is
-    priced before anything is bought and REFUSED if it exceeds max_cost_usd (or,
-    unset, the work item's ceiling / the project's per_item_usd) or the project
-    /day budget; the running tally is re-checked before every pose, so a retry
-    storm stops mid-set instead of discovering the overrun on the invoice.
-    `timeout` bounds ONE image call and `max_seconds` the whole run - past the
-    deadline the remaining poses are reported as skipped and whatever was made
-    is still assembled, because half a sheet plus a reason beats a hung call.
+    priced before anything is bought and REFUSED if it exceeds
+    limits["max_cost_usd"] (or, unset, the work item's ceiling / the project's
+    per_item_usd) or the project /day budget; the running tally is re-checked
+    before every pose, so a retry storm stops mid-set instead of discovering
+    the overrun on the invoice.
+
+    limits: {"max_retries": 1, "max_cost_usd": 0.0, "timeout": 300,
+    "max_seconds": 1800} - how much this run may spend, in money and in wall
+    clock, all optional. `timeout` bounds ONE image call and `max_seconds` the
+    whole run; past the deadline the remaining poses are reported as skipped
+    and whatever was made is still assembled, because half a sheet plus a
+    reason beats a hung call. `max_cost_usd` 0 means the project's own ceiling
+    decides rather than "free". An unknown key is refused by name.
 
     Returns the assembled sheet result, or {ok: false, stage, error} when the
     spend gate, the reference gate or every pose fails. The result carries a
@@ -4252,6 +4571,35 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         provider = _providers.provider_for("sheet", asked=provider, root=root)
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
+
+        # SIX DIALS, TWO DOORS. `max_retries`/`max_cost_usd`/`timeout`/
+        # `max_seconds` are all one question - how much is this run allowed to
+        # spend, in money and in wall clock - and `palette_lock`/
+        # `palette_colors` are one other. As six top-level parameters they sat
+        # among the ones that decide what the sprite LOOKS like, which is how a
+        # 23-parameter tool reads as undifferentiated. Unknown keys refused by
+        # name: a silently-ignored `max_cost` is a ceiling that was never set.
+        limits = dict(limits or {})
+        unknown = sorted(set(limits) - set(_SPRITE_LIMITS))
+        if unknown:
+            return _fail(ValueError(
+                f"limits has no key(s) {unknown} - it takes "
+                f"{sorted(_SPRITE_LIMITS)}"))
+        lim = {**_SPRITE_LIMITS, **limits}
+        max_retries = int(lim["max_retries"])
+        max_cost_usd = float(lim["max_cost_usd"])
+        timeout = int(lim["timeout"])
+        max_seconds = int(lim["max_seconds"])
+
+        palette = dict(palette or {})
+        unknown = sorted(set(palette) - set(_SPRITE_PALETTE))
+        if unknown:
+            return _fail(ValueError(
+                f"palette has no key(s) {unknown} - it takes "
+                f"{sorted(_SPRITE_PALETTE)}"))
+        pal = {**_SPRITE_PALETTE, **palette}
+        palette_lock = str(pal["lock"])
+        palette_colors = int(pal["colors"])
 
         # PRICE THE RUN BEFORE BUYING ANY OF IT. One reference (skipped when an
         # approved ref_image is reused) plus one edit per pose, at this call's
@@ -5067,10 +5415,49 @@ def godot_status() -> dict:
     return {**probe, **(_godot.version() if probe["available"] else {})}
 
 
+def _script_source(script: str, godot_project: Optional[str]):
+    """(source, path_it_came_from). A one-line argument that names a .gd file
+    on disk is a PATH, not a program — nothing else is treated as one.
+
+    Deliberately narrow: multi-line input is source, always. The only thing
+    that reads as a path is a single line ending in .gd, which no valid
+    GDScript program is.
+    """
+    raw = str(script or "").strip()
+    if "\n" in raw or not raw.lower().endswith(".gd"):
+        return None, ""
+    from pathlib import Path as _P
+
+    bases = [_P(raw)]
+    if raw.startswith("res://") and godot_project:
+        bases = [_P(godot_project) / raw[len("res://"):]]
+    elif godot_project:
+        bases.append(_P(godot_project) / raw)
+    try:
+        bases.append(_P(_root()) / raw)
+    except Exception:                                             # noqa: BLE001
+        pass
+    for candidate in bases:
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8",
+                                           errors="replace"), str(candidate)
+        except OSError:
+            continue
+    return None, raw
+
+
 @_tool
 def godot_run(script: str, godot_project: Optional[str] = None,
               timeout: int = 120) -> dict:
     """Run a GDScript headless and capture its output.
+
+    `script` is EITHER the source itself OR a path to a .gd file — this reads
+    the file when you hand it one. Passing a path used to run the path AS
+    GDSCRIPT: `res://tests/door_test.gd` is not a statement, so the engine
+    reported a parse error on line 1 of a file the caller never wrote. The
+    common case is re-running a script that already exists on disk, and making
+    the caller inline it first is asking them to copy a file into an argument.
 
     The script MUST `extends SceneTree`, do its work in `_init()`, and call
     `quit()` - without quit() it runs until the timeout. Returns stdout, stderr,
@@ -5081,7 +5468,14 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     not the Builders Gate root - that one is `project_dir`.
     """
     _contained_path(godot_project, "godot_project")
-    return _godot.run_script(script, project_dir=godot_project, timeout=timeout)
+    source, from_path = _script_source(script, godot_project)
+    if from_path and source is None:
+        return {"ok": False, "error": f"{script} looks like a path and is not "
+                                      "readable — pass the source itself, or a "
+                                      "path that exists"}
+    got = _godot.run_script(source if source is not None else script,
+                            project_dir=godot_project, timeout=timeout)
+    return {**got, "ran_from": from_path} if from_path else got
 
 
 # THE QA SEAT HAD NO WAY TO RUN A TEST. Its mission is "Own tests, repro,
@@ -5101,122 +5495,59 @@ def godot_run(script: str, godot_project: Optional[str] = None,
 # how many PASS lines it managed first.
 @_tool
 def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
-                   godot_project: Optional[str] = None) -> dict:
+                   godot_project: Optional[str] = None,
+                   mode: str = "failures_only") -> dict:
     """Run this project's own Godot test scripts headless and score them.
 
     Discovers `<godot project>/tests/*.gd` - resolved through the project's real
     layout, so it works whether project.godot sits at the root (bgate init) or
-    in <root>/game (godot_scaffold). Pass `paths` to run a subset; each may be
-    absolute, project-relative, or relative to the Godot project.
+    in <root>/game. Pass `paths` to run a subset; each may be absolute,
+    project-relative, or relative to the Godot project. Dotfiles and
+    underscore-prefixed files are SKIPPED: agents leave scratch (`.orig_*.gd`,
+    temp probes) in test directories and a backup of a broken file is not a
+    test.
 
-    Returns a per-script verdict - ok, PASS/FAIL marker counts, exit code,
-    seconds, engine errors, and the OUTPUT of the ones that failed - plus the
-    totals the QA brief asks for in one number: `scripts_failed` and
-    `failures`.
+    `mode` BOUNDS WHAT COMES BACK, and the default is not `full`:
+
+      summary        counts and failing script names only
+      failures_only  DEFAULT - the failing assertions, an excerpt of their
+                     output, and a path to the complete log
+      changed        only scripts whose verdict MOVED since the last run. The
+                     shape for iterative debugging
+      full           everything, including passing scripts' output
+
+    Measured on one agent's log while it debugged a single assertion: 68% of
+    8 MB was tool results echoed back, 366 entries at ~15 KB each. That is what
+    consumed the turn and clock ceilings - not the model.
+
+    TWO SIGNALS, REPORTED SEPARATELY. `assertions_ok` is whether the script's
+    own FAIL markers held; `process_ok` is whether the ENGINE ran cleanly.
+    Collapsing them produced `ok: false` with `0` failed assertions, which
+    reads as nonsense and got dismissed as harness noise for a full session -
+    while the engine error behind it (`N resources still in use at exit`) was a
+    REAL leak in the project's tests. Read `engine_error_scripts` and the
+    per-script `errors`; an engine complaint is not automatically noise.
 
     A PROJECT WITH NO TEST SCRIPTS IS NOT A PASS. It answers ok=false with
     no_tests=true and says where it looked, because "0 failures" out of nothing
-    run is the single most misleading thing this tool could report - a regression
-    gate that silently tests nothing looks exactly like a green one.
+    run is the single most misleading thing this tool could report.
 
-    Each script must `extends SceneTree` and call `quit()`, like godot_run.
+    Each script must `extends SceneTree` and call `quit()`, like godot_run - or
+    `extends Node` if it needs this project's autoloads.
+
+    Every run is RECORDED (.bgate/engine-tests.jsonl), which is what the
+    dashboard's Tests tab reads. It used to carry its own copy of the runner
+    and record nothing, so an agent's runs were invisible to the QA seat.
     """
     _contained_path(godot_project, "godot_project")
+    from bgate_core import enginetests as _tests
 
-    root = _root()
-    base = (_Path(godot_project) if godot_project
-            else _project.game_dir(root))
-    if base is None or not (_Path(base) / "project.godot").is_file():
-        return {"ok": False, "no_tests": True,
-                "error": "no Godot project found - looked for project.godot "
-                         f"at {root} and {_Path(root) / 'game'}. Run "
-                         "godot_scaffold, or pass godot_project."}
-    base = _Path(base)
-    tests_dir = base / "tests"
-
-    scripts: list[_Path] = []
-    missing: list[str] = []
-    if paths:
-        for raw in paths:
-            for candidate in (_Path(raw), base / raw, _Path(root) / raw):
-                if candidate.is_file():
-                    scripts.append(candidate)
-                    break
-            else:
-                missing.append(str(raw))
-    else:
-        try:
-            scripts = sorted(p for p in tests_dir.glob("*.gd"))
-        except OSError:
-            scripts = []
-
-    if not scripts:
-        return {
-            "ok": False, "no_tests": True, "tests_dir": str(tests_dir),
-            "missing": missing, "scripts": [], "scripts_run": 0,
-            "error": (f"none of {missing} exist" if missing else
-                      f"no test scripts in {tests_dir} - this project has "
-                      "no regression baseline to check. Write one "
-                      "(extends SceneTree, print PASS/FAIL per assertion, "
-                      "call quit()) before claiming tests are green."),
-        }
-
-    fail_marker = _re.compile(r"\bFAIL(?:ED|URE|URES)?\b", _re.I)
-    pass_marker = _re.compile(r"\bPASS(?:ED|ES)?\b", _re.I)
-
-    results, failed, total_pass, total_fail = [], 0, 0, 0
-    for script in scripts:
-        rel = (script.resolve().relative_to(base.resolve()).as_posix()
-               if str(script.resolve()).startswith(str(base.resolve()))
-               else str(script))
-        try:
-            source = script.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            results.append({"script": rel, "ok": False, "passed": 0,
-                            "failed": 0, "error": f"unreadable: {exc}"})
-            failed += 1
-            continue
-        run = _godot.run_script(source, project_dir=str(base),
-                                timeout=timeout)
-        output = (run.get("stdout") or "") + (run.get("stderr") or "")
-        passes = len(pass_marker.findall(output))
-        fails = len(fail_marker.findall(output))
-        errors = run.get("errors") or []
-        ok = bool(run.get("ok")) and fails == 0 and not errors
-        entry = {
-            "script": rel, "ok": ok, "passed": passes, "failed": fails,
-            "exit_code": run.get("exit_code"), "seconds": run.get("seconds"),
-            "errors": errors,
-        }
-        if not ok:
-            # Only the failures carry their output. A green run's stdout is
-            # thousands of lines of engine boot chatter, and returning it
-            # for every script is how a passing suite stops fitting in a
-            # tool result.
-            entry["output"] = output[-4000:]
-            if run.get("error"):
-                entry["error"] = run["error"]
-            failed += 1
-        total_pass += passes
-        total_fail += fails
-        results.append(entry)
-
-    return {
-        "ok": failed == 0,
-        "no_tests": False,
-        "tests_dir": str(tests_dir),
-        "godot_project": str(base),
-        "scripts_run": len(results),
-        "scripts_failed": failed,
-        "assertions_passed": total_pass,
-        "assertions_failed": total_fail,
-        "failures": [r["script"] for r in results if not r["ok"]],
-        "missing": missing,
-        "scripts": results,
-        "error": (f"{failed} of {len(results)} test script(s) failed: "
-                  + ", ".join(r["script"] for r in results if not r["ok"])
-                  if failed else ""),
-    }
+    try:
+        return _tests.run(_root(), paths=paths, timeout=timeout,
+                          godot_project=godot_project or "",
+                          actor=_actor(), mode=mode)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "modes": list(_tests.MODES)}
 
 
 @_tool
@@ -5278,14 +5609,27 @@ def godot_check_project(godot_project: str, timeout: int = 180) -> dict:
 @_tool
 def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "assets",
                        timeout: int = 240) -> dict:
-    """Bring an asset (e.g. a Blender .glb) into a project and VERIFY the engine loads it.
+    """THE DELIVERY PATH FOR ANY ASSET - 2D or 3D. A PNG belongs here too.
 
-    Copies the file in, triggers a headless import, then loads the resource
-    IN-ENGINE and reports the meshes Godot actually built - tri counts, UVs,
-    materials, bounding box. Copying a file in is not integration: an asset that
-    imports with zero surfaces is a silent failure, and this catches it by
-    checking the engine's view, not the file's presence. The end of the
-    Blender→Godot round trip.
+    Copies the file in, DROPS THE STALE IMPORT CACHE, triggers a headless
+    import, then loads the resource IN-ENGINE and reports what Godot actually
+    built. Copying a file in is not integration: an asset that imports with
+    zero surfaces is a silent failure, and this catches it by checking the
+    engine's view, not the file's presence.
+
+    USE THIS INSTEAD OF WRITING THE FILE INTO THE PROJECT YOURSELF. Measured
+    twice in the benchmark games: an art seat wrote new PNGs straight to
+    assets/, every structural check passed - resource path, dimensions, scene
+    reference - and the running game drew the OLD placeholder, because Godot
+    serves the imported product and the cache had not been rebuilt. A
+    screenshot was the only thing that caught it. The `freshness` field in this
+    result is that check, made mechanical: it says whether the engine's cached
+    product now matches the bytes on disk.
+
+    NOT godot_deliver_asset, which is the 3D-only sequel to this (it takes a
+    .glb, gives it a collider and stands it in its own scene). For a sprite,
+    a tileset, a sound or a font, THIS is the tool. `src_path` must be OUTSIDE
+    the project - generate to a staging directory and import FROM there.
 
     THE DESTINATION IS KEYED ON THE FILENAME ALONE, so a second `hero.glb` from
     a different output directory lands on the first one and wins. Keeping the
@@ -5353,7 +5697,15 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
                         nominal_size_m: float = 1.8, with_camera: bool = False,
                         overwrite_scene: bool = False, label: str = "",
                         timeout: int = 300) -> dict:
-    """Take a finished .glb the rest of the way - into the engine, into a scene.
+    """3D ONLY: take a finished .glb the rest of the way - engine, then scene.
+
+    IT TAKES A MESH AND NOTHING ELSE. There is no way to hand this a PNG, a
+    .wav or a tileset, and a 2D seat that reaches for it because the NAME
+    sounds like the delivery path has taken a wrong turn - observed: an art
+    seat was steered to "deliver via godot_deliver_asset", loaded its schema,
+    and could not use it. For a 2D asset the delivery path is
+    godot_import_asset, which copies, purges the stale import cache, reimports
+    and reports whether the engine now serves the current bytes.
 
     THE STEP THE 3D PATH WAS MISSING. Everything before this ends at a file:
     blender_combine writes a .glb, and blender_turnaround photographs a BLENDER
@@ -6306,11 +6658,35 @@ def pending_decisions(limit: int = 40) -> dict:
 
 @_tool
 def asset_verify() -> dict:
-    """Audit every tracked asset against disk - catches silent clobbers.
+    """PRESENCE IS NOT CORRECTNESS: is every asset intact, WIRED, and CURRENT?
 
-    'modified' means content changed with NO lock held: an unlocked write or an
-    outside edit. Locked files are expected to differ and aren't drift. Run this
-    before builds and after any multi-agent session.
+    Three questions, because a delivered asset can fail at three different
+    points and only the first one was ever asked here:
+
+      intact       'modified' means content changed with NO lock held - an
+                   unlocked write or an outside edit. Locked files are expected
+                   to differ and are not drift.
+      integration  which shipped assets NOTHING in the project names
+                   ('unreferenced'), and which res:// references name a file
+                   that is not there ('dangling'). Read as a pair they are the
+                   filename-contract mismatch: the art seat delivered
+                   projectile.png and the gameplay code still loads
+                   bolt_sheet.png. 'delivered_but_unwired' is the strong half -
+                   orphans this project's own artifact ledger says a seat
+                   produced, named with the item that paid for them.
+                   CANDIDATES, not verdicts: 'dynamic_load_sites' counts the
+                   places a path is built at run time, which no static scan
+                   follows.
+      freshness    whether the ENGINE is serving the bytes that are on disk. A
+                   PNG written straight into the project resolves, measures and
+                   references perfectly while Godot keeps drawing the old
+                   import-cache product. 'stale' names those; the repair is
+                   godot_check_project, then ask again.
+
+    Costs nothing and spawns no engine. Run it before builds, after any
+    multi-agent session, and as part of any QA gate on a delivered asset - a
+    gate that only proved the file exists has proved the one thing that was
+    never in doubt.
     """
     return _assets.verify(_root())
 
@@ -6468,8 +6844,53 @@ def seat_can_write(role: str, path: str) -> dict:
     Two gates, both must pass: the path must be inside the seat's write lanes,
     and the file must not be locked by another seat - being in-lane does not
     excuse stomping a locked binary. Fails closed for unknown/disabled seats.
+
+    `allowed: false` DOES NOT ALWAYS MEAN THE WRITE WILL BE REFUSED, and that
+    gap read as a bug: an agent edited out of lane, the Edit LANDED, and then
+    this tool said no. Enforcement is a PreToolUse hook, so it does run before
+    the mutation - but a seated worker's lane gate defaults to `warn`, where the
+    write lands and the human gets a non-blocking note. That default is
+    deliberate (a hard lane gate refused whole source trees on adopted repos and
+    turned refusals into dead agents instead of routed work); what was missing
+    was any way to tell the ORACLE'S answer from the ENFORCED one.
+
+    So the result now carries both:
+
+      allowed         the lane/lock verdict - unchanged
+      enforced        whether a write that fails it is actually BLOCKED
+      lane_mode       collide (silent) | warn (lands, human told) | block
+      aegis_mode      the project BOUNDARY, which is block by default and is
+                      what stopped a shell redirect out of the project
+      what_happens    the sentence for this exact combination
+
+    A lock or lease collision blocks in EVERY mode, because that is a fact
+    about two live runs rather than a rule about one.
     """
-    return _seats.can_write(_root(), role, path)
+    from bgate_core import aegis as _aegis
+
+    verdict = _seats.can_write(_root(), role, path)
+    lane_mode = _seats.lane_mode()
+    collision = bool(verdict.get("owner"))
+    enforced = collision or lane_mode == "block"
+    if verdict.get("allowed"):
+        what = "this write is in lane and unlocked; it lands."
+    elif collision:
+        what = (f"BLOCKED in every mode: {verdict['owner']} holds this file "
+                "right now. A collision is a fact about two live runs, not a "
+                "rule about one.")
+    elif lane_mode == "block":
+        what = "BLOCKED: lanes are enforced on this board (BGATE_LANES=block)."
+    elif lane_mode == "warn":
+        what = ("NOT BLOCKED. Lanes are advisory here (BGATE_LANES=warn): the "
+                "write will land and the human is told. It is still the wrong "
+                "seat for this path - queue_add the owning seat instead of "
+                "writing it yourself.")
+    else:
+        what = ("NOT BLOCKED. Lanes are waived here (BGATE_LANES=collide); "
+                "only collisions and the project boundary bite.")
+    return {**verdict, "enforced": enforced, "lane_mode": lane_mode,
+            "aegis_mode": _aegis.mode(), "collision": collision,
+            "what_happens": what}
 
 
 @_tool
@@ -7158,8 +7579,36 @@ def dialogue_list() -> dict:
 # ---------------------------------------------------------------------------
 @_tool
 def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
-               limit: int = 40, full: bool = False) -> dict:
+               limit: int = 40, full: bool = False,
+               order: str = "id") -> dict:
     """The work queue. status: queued | dispatched | done | failed.
+
+    WORK-ITEM IDs ARE CREATION IDENTIFIERS, NOT EXECUTION ORDER. Observed, and
+    it read as a broken scheduler:
+
+        #42 enlarge rooms       done
+        #45 swap in furniture   running
+        #43 rebuild routes      queued
+
+    The real order was #42 -> #45 -> #43, and it was correct: #43 was filed
+    after #42, then #45 was inserted between them because the route
+    measurements had to wait for real furniture dimensions. The dependency
+    engine did the right thing; the presentation made it look like a skip, and
+    an operator who believes the scheduler is broken starts working around it.
+
+    Ids are NEVER renumbered - they are in briefs, commit messages and people's
+    heads. What changed is that the order is stated instead of inferred:
+
+      order="id"         (default) creation order, as before
+      order="execution"  topological: predecessors first, ids untouched.
+                         Each row carries `execution_position` and
+                         `execution_state` (ready | running | waiting |
+                         blocked | held | done | failed)
+
+    Every queued row also carries `waiting_on`, which now NAMES the blocker:
+    "WAITING ON #45 Swap in furniture" rather than "#43 QUEUED". `blocked`
+    means a predecessor will never land on its own; `waiting` means the board
+    is working.
 
     BRIEFS ARE PREVIEWS and the list is PAGED. This used to answer with every
     work item a project had ever had, brief text and all - on a real board that
@@ -7192,7 +7641,20 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
         # different modules. Best-effort: an unreadable blocker is not a
         # reason to fail the whole listing.
         if item.get("status") == "queued":
-            if str(item.get("source") or "") in _q.HELD_SOURCES:
+            stage_hold = ""
+            try:
+                from bgate_core import greenlight as _gl
+
+                stage_hold = _gl.allows(root, str(item.get("seat") or ""))[1]
+            except Exception:
+                stage_hold = ""
+            if stage_hold:
+                # The production stage outranks the other reasons on the row:
+                # a seat the stage is holding will not dispatch whatever its
+                # dependencies say, and reporting the dependency instead sends
+                # the reader off to fix the wrong thing.
+                item["waiting_on"] = stage_hold
+            elif str(item.get("source") or "") in _q.HELD_SOURCES:
                 item["waiting_on"] = (
                     f"held: source {item.get('source')!r} is never "
                     "auto-dispatched - a human (or the director session) "
@@ -7203,23 +7665,71 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
                 except Exception:
                     blk = None
                 if blk is not None:
+                    # THE TITLE, NOT JUST THE ID. "#43 QUEUED" made a correct
+                    # insertion look like a skipped item; an id alone sends the
+                    # reader off to look it up, and the whole defect is that
+                    # people were not looking things up.
+                    also = blk.get("also_waiting_on") or []
                     item["waiting_on"] = (
-                        f"blocked: depends on #{blk['id']} which is "
-                        f"{blk['status']!r}"
+                        f"WAITING ON #{blk['id']} {blk['title']} "
+                        f"({blk['status']})"
+                        + (f" and {len(also)} more" if also else "")
                         + ("" if blk["status"] in ("queued", "dispatched",
                                                    "review")
                            else " - that predecessor will never reach "
                                 "'done' on its own; queue_reopen it or "
                                 "queue_cut_dependency to release this"))
+                    item["waiting_on_id"] = int(blk["id"])
+            # THE HARNESS STOPPED BUYING ROUNDS FOR THIS ONE. Previously
+            # indistinguishable from fresh work: same status, same row, and the
+            # only tell was reading two counters and comparing them to a
+            # setting by hand.
+            if item.get("exhausted_at"):
+                item["waiting_on"] = (
+                    "EXHAUSTED - the harness stopped retrying this: "
+                    + str(item.get("exhausted_why") or "")
+                    + " It is not claimable; queue_reopen it (with a changed "
+                      "brief or a fixed blocker) to start it again.")
         items.append(item)
-    return {
+    out = {
         "items": items,
         "shown": len(items),
         "total": len(rows),
         "truncated": len(rows) > len(items),
+        "order": order,
         "note": ("briefs are previews - queue_get(item_id) returns one item "
                  "whole" if not full else "full briefs; keep limit small"),
     }
+    if str(order).lower() == "execution":
+        try:
+            graph = _q.graph(root)
+        except Exception as exc:                                  # noqa: BLE001
+            out["order_error"] = f"{type(exc).__name__}: {exc}"
+            return out
+        rank = {n["id"]: n for n in graph["nodes"]}
+        for item in items:
+            node = rank.get(int(item["id"]))
+            if node:
+                item["execution_position"] = node["execution_position"]
+                item["execution_state"] = node["execution_state"]
+                item["unblocks"] = node["unblocks"]
+                item["depends_on_all"] = node["depends_on"]
+                if node["waiting_line"] and not item.get("waiting_on"):
+                    item["waiting_on"] = node["waiting_line"]
+        items.sort(key=lambda r: r.get("execution_position", 10 ** 6))
+        out["items"] = items
+        out["execution_path"] = [
+            {"id": n["id"], "title": n["title"],
+             "state": n["execution_state"], "waits_on": n["unresolved"]}
+            for n in graph["nodes"]]
+        out["cycles"] = graph["cycles"]
+        out["note"] += (". `order=execution` is a DISPLAY order derived from "
+                        "the dependency graph - ids are creation identifiers "
+                        "and are never renumbered. work_item.depends_on and "
+                        "work_item_dep are presented as ONE graph; which table "
+                        "holds a link is not a question you should have to "
+                        "answer.")
+    return out
 
 
 @_tool
@@ -7331,17 +7841,73 @@ def queue_add_chain(links: list, chain_id: str = "") -> dict:
 
 @_tool
 def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str] = None,
-                 seat: Optional[str] = None, priority: Optional[int] = None) -> dict:
+                 seat: Optional[str] = None, priority: Optional[int] = None,
+                 steer_running: bool = False) -> dict:
     """Edit an existing work item in place (title/brief/seat/priority).
 
     For enriching a ticket without re-filing it - e.g. rewriting a transcript-
     era brief to add the frames, timestamps, and telemetry you saw while
     watching the recording. Only the fields you pass change; status and lineage
     stay put. Pass the full new brief text (this replaces, it does not append).
+
+    THIS DOES NOT REACH A RUNNING AGENT. A dispatched agent was handed its
+    brief at spawn; rewriting the row afterwards changes what the NEXT reader
+    sees and nothing about what the agent is doing right now. That was easy to
+    misread as a mid-run correction - it looks like one, it returns ok, and the
+    agent carries on doing the thing you just edited out.
+
+    So a brief change on a DISPATCHED item is refused unless you say what you
+    mean:
+
+      steer_running=False  (default) - refused, with the agent_steer call to
+                           make instead
+      steer_running=True   - the row is updated AND the change is delivered to
+                           the running agent as a steer
+
+    Every result carries `live_delivered`, so no caller ever has to infer
+    whether a change reached anybody.
     """
-    from bgate_core import queue as _q
-    return _q.update(_root(), item_id, title=title, brief=brief,
-                     seat=seat, priority=priority)
+    from bgate_core import queue as _q, steerbox as _steerbox
+
+    root = _root()
+    item = _q.get(root, int(item_id))
+    running = str(item.get("status")) == "dispatched"
+    changes_the_work = brief is not None or seat is not None
+
+    if running and changes_the_work and not steer_running:
+        return {
+            "ok": False, "live_delivered": False, "status": item["status"],
+            "error": (f"#{item_id} is RUNNING. Editing its brief changes what "
+                      "the next reader sees and NOTHING about what the agent "
+                      "is doing - it would look like a mid-run correction and "
+                      "silently not be one. Either agent_steer(item_id, text) "
+                      "to reach the live agent, or call this again with "
+                      "steer_running=True to do both."),
+            "instead": "agent_steer",
+        }
+
+    updated = _q.update(root, item_id, title=title, brief=brief,
+                        seat=seat, priority=priority)
+    delivered = False
+    steer: dict = {}
+    if running and changes_the_work and steer_running:
+        summary = (str(brief or "")[:900] if brief is not None
+                   else f"this item has been reassigned to the {seat} seat")
+        steer = _steerbox.post_long(
+            root, int(item_id),
+            "YOUR BRIEF HAS BEEN CHANGED MID-RUN. The row now reads as "
+            "follows; work to this, not to what you were spawned with.\n\n"
+            + summary, by=_actor(), note="queue_update")
+        delivered = True
+    return {**updated, "live_delivered": delivered,
+            "steer": {k: steer.get(k) for k in ("id", "note_path")} if steer else {},
+            "why": ("delivered to the running agent as a steer, and recorded "
+                    "in the item's steer history" if delivered else
+                    "the item is not running, so there was nobody to deliver "
+                    "to - the next reader gets the new text"
+                    if not running else
+                    "only title/priority changed; the agent's instructions are "
+                    "unaffected")}
 
 
 @_tool
@@ -7368,12 +7934,43 @@ def board_digest(hours: int = 12) -> dict:
 
     The field to read first is ``blocked``. Queued work with nothing running is
     either a dead dashboard or a floor refusal - most often a dirty tree, which
-    stops the WHOLE board rather than one item - and this names which.
+    stops the WHOLE board rather than one item - and this names which. If the
+    board is holding whole SEATS, ``stage`` says which and why; that is the
+    production stage, and greenlight_status is the long answer.
+
+    ``restart_cost`` is what killing the MCP server right now would orphan, and
+    ``orphaned`` is what a previous one already did. READ THE FIRST ONE BEFORE
+    RESTARTING ANYTHING: a tool that has been silent for ten minutes is
+    usually a provider call that is still running, and the restart does not
+    stop the charge - it only throws away the result.
 
     Spends nothing. Read it at the start of a session before deciding anything.
     """
     from bgate_core import gameplan as _gameplan
-    return _gameplan.digest(_root(), hours=int(hours))
+
+    root = _root()
+    out = _gameplan.digest(root, hours=int(hours))
+    try:
+        from bgate_core import greenlight as _gl
+
+        state = _gl.state(root)
+        out["stage"] = {"stage": state["stage"], "label": state["label"],
+                        "held_seats": state["held_seats"],
+                        "blockers": state["blockers"]}
+    except Exception:                                             # noqa: BLE001
+        pass
+    try:
+        from bgate_core import inflight as _inflight
+
+        warning = _inflight.restart_warning(root)
+        if warning:
+            out["restart_cost"] = warning
+        lost = _inflight.orphaned(root)
+        if lost:
+            out["orphaned"] = lost[:10]
+    except Exception:                                             # noqa: BLE001
+        pass
+    return out
 
 
 @_tool
@@ -7431,6 +8028,410 @@ def plan_status() -> dict:
     return _gameplan.status(_root())
 
 
+# ── the production stage ────────────────────────────────────────────────────
+# A project does not go from a premise straight to a specialist fan-out. See
+# bgate_core/greenlight.py for the four stages and what each one holds.
+
+@_tool
+def greenlight_status(section: str = "") -> dict:
+    """WHAT STAGE IS THIS PROJECT AT, and what is it holding.
+
+    THE FIRST TOOL TO CALL WHEN A QUEUED ITEM WILL NOT DISPATCH. Builders Gate
+    holds whole SEATS until the work ahead of them is real: art, audio and
+    cinematic do not start until gameplay has proved the core loop in one ugly
+    graybox room and the director has ruled that the interaction is actually
+    interesting. That hold is enforced in the readiness rule itself, so a held
+    item looks exactly like a blocked one from the board and this is where the
+    reason lives.
+
+    `section` narrows the read, because the whole thing is four gates:
+      ''            stage, thesis, graybox, held seats, what blocks the next
+                    stage — the default, and what a director wants
+      'encounter'   the enemy roster and objective shapes, with their findings
+      'scale'       the reference scale contract and anything unmeasured
+      'rooms'       full-room composition reviews and their thresholds
+      'presentation' what a release candidate still owes (this gate takes no
+                    waiver — see greenlight_advance)
+    """
+    from bgate_core import greenlight as _gl
+
+    root = _root()
+    section = (section or "").strip().lower()
+    if section == "encounter":
+        from bgate_core import encounter as _enc
+        return _enc.state(root)
+    if section == "scale":
+        from bgate_core import scalecontract as _scale
+        return _scale.state(root)
+    if section == "rooms":
+        from bgate_core import roomqa as _roomqa
+        return _roomqa.state(root)
+    if section == "presentation":
+        return _gl.presentation_check(root)
+    if section == "findings":
+        from bgate_core import findings as _findings
+        return {"standing": _findings.standing(root),
+                "all": _findings.ledger(root),
+                "supersessions": _findings.supersessions(root),
+                "note": "every finding carries the tool, inputs and "
+                        "measurement behind it. greenlight_supersede retracts "
+                        "one that a better measurement has disproved; it stops "
+                        "blocking and stays visible."}
+    if section == "default_scene":
+        from bgate_core import sceneproof as _proof
+        return _proof.state(root)
+    if section:
+        raise ValueError(
+            "section is '', 'encounter', 'scale', 'rooms', 'presentation', "
+            "'findings' or 'default_scene'")
+    return _gl.state(root)
+
+
+@_tool
+def greenlight_supersede(finding_id: str, why: str, measurement: str = "",
+                         tool: str = "") -> dict:
+    """RETRACT a gate finding that a better measurement has disproved.
+
+    THE ROW THAT COULD NEVER BE DONE. A false blocker reached the presentation
+    gate because a tool answered outside its competence - scale_check measured
+    the opaque pixel box of a 3D character's TURNAROUND RENDER and reported
+    "30.00 player-heights tall" for an animal 0.24 m long. The row said it
+    cleared by being done, and it could never be done, because it was measuring
+    nothing real. There was no way to withdraw it.
+
+    Fixing the tool is not enough on its own: the bad finding is already in the
+    ledger, and a gate that cannot retract one teaches operators to route
+    around it.
+
+    So: a later, AUTHORITATIVE measurement supersedes an earlier one. The
+    retraction is itself a recorded row - the finding stops blocking and stays
+    readable, carrying what replaced it and why. `why` has to say what was
+    measured instead and why it outranks the finding; "superseded" with no
+    antecedent is the same unaccountable erasure as a delete.
+
+    greenlight_status(section='findings') lists what is there, with ids.
+    """
+    from bgate_core import findings as _findings
+
+    try:
+        return _findings.supersede(
+            _root(), str(finding_id), why=why, tool=tool or "greenlight_supersede",
+            measured={"measurement": str(measurement)[:600]} if measurement else {},
+            by=_actor())
+    except LookupError as exc:
+        return {"ok": False, "error": str(exc)}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
+def evidence_assert(scene: str, frame: str, says: str,
+                    views: Optional[list[str]] = None,
+                    subject: str = "") -> dict:
+    """Record what you SAW in a captured frame. CAPTURING IS NOT EXAMINING.
+
+    THE TWO-TAILED CAT. A character shipped with a forked tail for a full day
+    while its turnaround renders and a contact sheet sat on disk. Nobody opened
+    the rear view. Every defect that reached the player in that benchmark was
+    found by a human looking at a frame, and several of those frames already
+    existed. An evidence gate that records "beauty.png, 412 KB" has recorded
+    the one thing that was never in doubt.
+
+    `says` is prose, and it has to be: no static check reads a picture. What
+    makes it evidence is everything around it - the file, its DIGEST at the
+    moment of the claim, who said it, when. Regenerate the frame and the digest
+    moves, so the claim is reported stale rather than carried forward onto an
+    image it was never about.
+
+    `views` is which of front/back/left/right this covers, for a character.
+    Name them: the forked tail was invisible from every angle anybody had
+    rendered, and 'a turnaround' meant three views in one run and six in
+    another. `subject` groups views of one character.
+
+    Refuses a sentence short enough to be a shrug. "looks fine" is what the
+    two-tailed cat shipped under.
+    """
+    from bgate_core import sceneproof as _proof
+
+    try:
+        row = _proof.assert_content(_root(), scene, frame=frame, says=says,
+                                    by=_actor(), views=views, subject=subject)
+    except (ValueError, FileNotFoundError) as exc:
+        return {"ok": False, "error": str(exc)}
+    gaps = _proof.character_gaps(_root(), subject) if subject else []
+    return {"ok": True, **row, "missing_views": gaps,
+            "why": (f"{subject} has still not been described from: "
+                    + ", ".join(gaps) if gaps else
+                    "recorded against this frame's digest")}
+
+
+@_tool
+def greenlight_thesis_set(sentence: str, options: list, stakes: str,
+                          tension: str, dominant_strategy: str,
+                          cadence: str) -> dict:
+    """Settle the MECHANICAL THESIS — the one sentence the game is built on.
+
+    "What decision is the player repeatedly making that makes this game
+    interesting?" A feature list is not an answer to that question, and this
+    tool refuses one: the sentence has to name an act of choosing, and the
+    decision has to have at least two options, real stakes, and a reason the
+    answer is not the same every time.
+
+    That last field is the one that matters. A game can have nouns, systems,
+    a setting and a full backlog and still have no decision structure, and the
+    way you find out is that nobody can say why the player would ever pick the
+    other option. Say it here, before anything is built against it.
+
+      sentence           one sentence naming the repeated decision
+      options            two or more things the player is deciding between
+      stakes             what the wrong pick costs
+      tension            why the answer is not the same every time
+      dominant_strategy  the play that would COLLAPSE this decision, named on
+                         purpose so QA can go looking for it
+      cadence            how often the decision comes round
+
+    Settling a thesis does not advance the stage — greenlight_advance does.
+    """
+    from bgate_core import greenlight as _gl
+
+    return _gl.set_thesis(_root(), {
+        "sentence": sentence, "options": list(options or []),
+        "stakes": stakes, "tension": tension,
+        "dominant_strategy": dominant_strategy, "cadence": cadence},
+        by=_actor())
+
+
+@_tool
+def greenlight_graybox_submit(scene: str, evidence: list,
+                              notes: str = "") -> dict:
+    """Say the core loop is PLAYABLE in one ugly test room, with proof.
+
+    The gameplay seat's move at the graybox stage. `scene` must be a real file
+    under the project and `evidence` must be something a person can look at —
+    a playtest recording, a screenshot, telemetry from an actual run. The
+    director is about to be asked whether the interaction is interesting and
+    cannot answer that from a scene path.
+
+    Untextured is the point. Do not wait for art; art is what this gate exists
+    to hold back until the answer is yes.
+    """
+    from bgate_core import greenlight as _gl
+
+    return _gl.graybox_submit(_root(), scene=scene,
+                              evidence=list(evidence or []), notes=notes,
+                              by=_actor())
+
+
+@_tool
+def greenlight_graybox_verdict(verdict: str, interesting: bool,
+                               why: str) -> dict:
+    """Rule on the graybox: is the interaction actually interesting?
+
+    THE DIRECTOR'S CALL, and the one that decides whether a whole production
+    run happens. Play it. If the loop reduces to attack + dodge + hold
+    interact, fail it and say so — that is a cheap no now and an expensive one
+    after the assets exist.
+
+    `why` is required in both directions. A pass with no reason is the rubber
+    stamp this gate exists to stop; a fail with no reason sends gameplay back
+    with nothing to change.
+    """
+    from bgate_core import greenlight as _gl
+
+    return _gl.graybox_verdict(_root(), verdict=verdict,
+                               interesting=bool(interesting), why=why,
+                               by=_actor())
+
+
+@_tool
+def greenlight_advance(stage: str) -> dict:
+    """Move the project to the next production stage, or learn why it cannot.
+
+    thesis -> graybox -> production -> release. Moving BACKWARD is always
+    allowed and is not a failure: a project that discovers in production that
+    its loop does not hold should drop to graybox and say so.
+
+    Forward, each boundary asks for something real:
+      graybox      a settled mechanical thesis
+      production   a graybox the director passed, plus an enemy roster that
+                   is interactions rather than isolated state machines and an
+                   objective list that is more than one commitment shape
+      release      the presentation gate: every room reviewed as a WHOLE room,
+                   every delivered asset measured at game scale, every wired
+                   audio cue heard in a gameplay capture
+
+    THE RELEASE BOUNDARY TAKES NO WAIVER. greenlight_waive lets one seat
+    through a stage hold; nothing lets a release candidate through an
+    incomplete presentation QA. Call greenlight_status('presentation') for the
+    outstanding list.
+    """
+    from bgate_core import greenlight as _gl
+
+    return _gl.advance(_root(), stage, by=_actor())
+
+
+@_tool
+def greenlight_waive(seat: str, reason: str, withdraw: bool = False) -> dict:
+    """Let ONE seat through the current stage hold, on the record.
+
+    For the true case — a tech seat building the graybox's own tooling, an art
+    seat making its placeholder blocks — not as the route around the gate. It
+    costs a sentence naming what this seat has to do before the loop is proven
+    and why it cannot wait, and the waiver shows in greenlight_status forever.
+
+    `withdraw=True` takes it back. There is no waiver for the release gate.
+    """
+    from bgate_core import greenlight as _gl
+
+    root = _root()
+    if withdraw:
+        return {"waivers": _gl.unwaive(root, seat)}
+    return _gl.waive(root, seat, reason, by=_actor())
+
+
+@_tool
+def encounter_design_set(roster: Optional[list] = None,
+                         objectives: Optional[list] = None) -> dict:
+    """Declare enemies as INTERACTIONS and tasks as COMMITMENT SHAPES.
+
+    Two design failures this refuses, both of which look like finished work:
+
+    ENEMIES AS A LIST OF STATE MACHINES. "melee / ranged / support" is a
+    category table, not a design — three enemies that never change each
+    other's threat profile make fighting all three arithmetic on the same
+    fight. Each roster row is {name, pressure, alters:[{enemy, effect}],
+    role?, counterplay?}, and `alters` is the whole point: how does THIS enemy
+    change the player's read of THAT one?
+
+    TASKS THAT ARE ALL "STAND HERE FOR N SECONDS". A quota list can be long,
+    varied in fiction and completely uniform in mechanics, and prose review
+    will not catch it because the fiction is where the variety is. Each
+    objective row is {name, shape, costs, notes?} where `shape` comes from a
+    closed vocabulary — dwell, carry, escort, defend, route, timing, disarm,
+    restrict, manipulate, spend, gather — and `costs` says what the player
+    gives up for the duration. Call greenlight_status('encounter') for the
+    vocabulary with its definitions.
+
+    Both are optional: a game with no enemies is not refused for having none.
+    A DECLARED roster of isolated machines, or a declared task list that is one
+    shape eight times, blocks the move to production.
+    """
+    from bgate_core import encounter as _enc
+
+    root, out = _root(), {}
+    if roster is not None:
+        out.update(_enc.set_roster(root, roster, by=_actor()))
+    if objectives is not None:
+        out.update(_enc.set_objectives(root, objectives, by=_actor()))
+    if not out:
+        return _enc.state(root)
+    out["blockers"] = _enc.production_blockers(root)
+    return out
+
+
+@_tool
+def scale_contract_set(player_height_px: Optional[int] = None,
+                       tile_px: Optional[int] = None,
+                       classes: Optional[dict] = None) -> dict:
+    """Declare the REFERENCE SCALE every asset is measured against.
+
+    Player height and tile size already existed; nothing fixed how big a door,
+    a desk, a mug, a HUD icon or an enemy should be, so each was sized against
+    whatever the generator felt like and reviewed on a contact sheet — the one
+    presentation that cannot show a scale error, because it draws everything
+    in the same box.
+
+    `player_height_px` is the unit. `classes` overrides the default bands,
+    which are multiples of that height: {"door": {"low": 1.05, "high": 1.5}}.
+    The classes are prop, furniture, door, ui and enemy; every one of them has
+    a band, because "no expectation" is how a mug ends up chair-sized.
+    """
+    from bgate_core import scalecontract as _scale
+
+    return _scale.set_contract(_root(), player_height_px=player_height_px,
+                               tile_px=tile_px, classes=classes, by=_actor())
+
+
+@_tool
+def scale_check(path: str, klass: str, frames: int = 1) -> dict:
+    """Measure one asset AT GAME SCALE and record the result on its revision.
+
+    Measures the opaque bounding box — the box, not the canvas, because a
+    512x512 sheet holding a 40px mug is a 40px mug — and divides by the
+    declared player height. `klass` is prop, furniture, door, ui or enemy.
+    `frames` divides the width for a horizontal strip so a 6-frame sheet is
+    graded as one sprite rather than a six-player-wide prop.
+
+    The result rides on the artifact revision, so a regenerated asset is
+    unmeasured again. Every delivered image needs one before a release
+    candidate will close.
+    """
+    from bgate_core import scalecontract as _scale
+
+    return _scale.record(_root(), path, klass, frames=int(frames or 1))
+
+
+@_tool
+def room_review(scene: str, shot: str, verdict: str, notes: str,
+                bounds: Optional[list] = None) -> dict:
+    """Review a WHOLE ROOM against a full-room screenshot.
+
+    Not the asset, not a crop, not a contact sheet: the room. A cropped shot is
+    refused rather than accepted with a caveat, because accepting cropped
+    evidence is how a level of empty rectangles with the furniture shoved
+    against the walls passed art QA on every individual prop.
+
+    Alongside your judgement it MEASURES the scene tree and reports: empty
+    floor, perimeter hugging, prop scale spread, whether any region holds the
+    eye, and the lanes between obstacles. A pass is refused while any measured
+    finding still stands — answer them one at a time with room_override, or
+    fail the room. `bounds` is [x0,y0,x1,y1] when the room is larger than what
+    is placed in it.
+    """
+    from bgate_core import roomqa as _roomqa
+
+    return _roomqa.review(_root(), scene, shot=shot, verdict=verdict,
+                          notes=notes,
+                          bounds=list(bounds) if bounds else None,
+                          by=_actor())
+
+
+@_tool
+def room_override(scene: str, finding: str, reason: str) -> dict:
+    """Accept ONE measured room finding, with a reason on the record.
+
+    Per finding, never per room and never per project: "the thresholds do not
+    suit this game" would switch the gate off for everything, and a gate that
+    can be switched off wholesale is the one that was. Paste the finding text
+    from room_review and say why this room is right and the measurement is
+    wrong.
+    """
+    from bgate_core import roomqa as _roomqa
+
+    return _roomqa.override(_root(), scene, finding, reason, by=_actor())
+
+
+@_tool
+def audio_listen_record(capture: str, cues: list, verdict: str,
+                        notes: str) -> dict:
+    """Record an IN-GAME listening pass — the audio check metrics cannot make.
+
+    Peaks, RMS, wiring and duplicate detection all pass on a cue that is wrong
+    for the moment it fires, buried under the music, or three frames late. The
+    only thing that catches those is hearing them in context.
+
+    `capture` is a gameplay recording that exists on disk (video, or a capture
+    of the bus). `cues` are the event names you actually heard firing in it —
+    that list is the coverage, and a release candidate does not close while a
+    wired cue has never been heard.
+    """
+    from bgate_core import audiohooks as _hooks
+
+    return _hooks.listen_record(_root(), capture=capture,
+                                cues=list(cues or []), verdict=verdict,
+                                notes=notes, by=_actor())
+
+
 @_tool
 def queue_claim_next() -> dict:
     """Claim the next READY item for YOUR seat and keep this session working.
@@ -7481,7 +8482,8 @@ def queue_claim_next() -> dict:
 
 @_tool
 def queue_complete(item_id: int, result: str, failed: bool = False,
-                   evidence: str = "") -> dict:
+                   evidence: str = "",
+                   premise_refuted: Optional[dict] = None) -> dict:
     """Close out a work item with an honest one-paragraph result.
 
     failed=True when the work did not land - say why plainly; a false 'done'
@@ -7503,14 +8505,45 @@ def queue_complete(item_id: int, result: str, failed: bool = False,
     'review' and waits for the human - you are finished either way, but anything
     chained behind it does not start until it reaches 'done'. Do not "fix" a
     'review' status by re-reporting: it is the gate working.
+
+    `premise_refuted` — THE BRIEF CONTAINED A MEASURED CLAIM THAT IS NOT TRUE.
+    Pass {"claim": ..., "measured": ..., "did_instead": ...} and it becomes a
+    structured outcome on the board rather than a paragraph nobody can search.
+
+    This is the single most valuable thing agents did in the benchmark, and it
+    survived only as prose. Three times a brief carried a false measured
+    premise, twice written by the director: a "0.14 m guard clearance" that was
+    a task marker 2.75 m from the real target; a "blind spot" in a vision cone
+    that used the flattened horizontal bearing and therefore could not exist;
+    an inherited PASS from a previous attempt that turned out to be a driver
+    bug. In each case the agent MEASURED, refused to make the change it was
+    asked for, and fixed the real thing. Each one stopped a wrong fix shipping.
+
+    All three fields are required and the middle one is the point: a refutation
+    without a measurement is a disagreement. Recording one does not close the
+    item on its own - report the outcome of what you actually did as usual.
     """
     from bgate_core import queue as _q
     root = _root()
+    refutation = {}
+    if premise_refuted:
+        try:
+            refutation = _q.premise_refuted(
+                root, int(item_id),
+                claim=str(premise_refuted.get("claim") or ""),
+                measured=str(premise_refuted.get("measured") or ""),
+                did_instead=str(premise_refuted.get("did_instead") or ""),
+                by=_actor())
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc),
+                    "note": "the item was NOT closed - fix the refutation and "
+                            "call again, or drop premise_refuted"}
     if not failed:
         refused = _evidence_gate(root, int(item_id), evidence)
         if refused:
-            return refused
-    return _q.complete(root, item_id, result=result, failed=failed)
+            return {**refused, "premise_refuted": refutation}
+    closed = _q.complete(root, item_id, result=result, failed=failed)
+    return {**closed, "premise_refuted": refutation} if refutation else closed
 
 
 # Extensions whose write means "this run changed what a player SEES the scene
@@ -7760,8 +8793,25 @@ def agent_activity(item_id: int, limit: int = 30) -> dict:
 
 
 @_tool
-def ask_human(question: str, refs: Optional[list] = None) -> dict:
-    """Ask the human who owns this project ONE question - and keep working.
+def ask_human(question: str, refs: Optional[list] = None,
+              to: str = "human") -> dict:
+    """Ask ONE question of a NAMED recipient - and keep working.
+
+    `to` says WHO, and it is never silently changed:
+
+      human       DEFAULT. The person who owns this project.
+      director    the live director session. If there is not one, this FAILS
+                  with an error naming what to do instead - it does NOT quietly
+                  send your director question to a human who is not there.
+                  MEASURED: it used to, and two items sat waiting on an answer
+                  nobody knew existed.
+      seat:<name> another seat. Lands on the blackboard AND steers that seat's
+                  running agent if it has one.
+      decision    a FORMAL decision for the register, with its acceptance test.
+                  Use decision_add directly when you can write the acceptance
+                  test yourself; this is the "somebody has to settle this"
+                  shape.
+
 
     The director's ping. Use it for the calls that are genuinely not yours: which
     of two directions to take, whether a scope cut is acceptable, whether a thing
@@ -7791,6 +8841,36 @@ def ask_human(question: str, refs: Optional[list] = None) -> dict:
     from bgate_core import steerbox as _steerbox
     root = _root()
     item_id = _work_item_id() or 0
+    to = str(to or "human").strip().lower()
+
+    if to.startswith(_steerbox.SEAT_PREFIX):
+        target = to[len(_steerbox.SEAT_PREFIX):]
+        got = _steerbox.ask_seat(root, target, question, refs=refs,
+                                 item_id=item_id, by=_actor())
+        _log("question", f"asked the {target} seat: {str(question)[:100]}",
+             ref=str(item_id))
+        return got
+    if to == "director":
+        got = _steerbox.ask_director(root, question, refs=refs,
+                                     item_id=item_id, by=_actor())
+        _log("question", f"asked the director: {str(question)[:100]}",
+             ref=str(item_id))
+        return got
+    if to == "decision":
+        return {"ok": False, "delivered_to": "",
+                "error": "a formal decision is filed, not asked. Call "
+                         "decision_add(title, acceptance, ...) - it needs an "
+                         "acceptance test, which is the whole difference "
+                         "between a settled decision and an opinion."}
+    if to != "human":
+        return {"ok": False, "delivered_to": "",
+                "error": f"unknown recipient {to!r}; it is one of "
+                         f"{_steerbox.RECIPIENTS} or "
+                         f"'{_steerbox.SEAT_PREFIX}<seat name>'. The recipient "
+                         "is never guessed: a question delivered to somebody "
+                         "other than the one you named is a delivery failure "
+                         "wearing a success."}
+
     result = _steerbox.ask(root, question, refs=refs, item_id=item_id,
                            seat=_seat() or "director", by=_actor())
     _log("question", f"asked the human: {str(question)[:120]}",
@@ -7802,7 +8882,7 @@ def ask_human(question: str, refs: Optional[list] = None) -> dict:
     else:
         arrives = ("as a handoff decision note - this session is not a "
                    "dispatched work item, so there is no run to steer")
-    return {**result, "answer_arrives": arrives,
+    return {**result, "answer_arrives": arrives, "delivered_to": "human",
             "note": "returns immediately - do not wait for the answer"}
 
 
@@ -8373,7 +9453,166 @@ from bgate_mcp.tools_level import *  # noqa: E402,F401,F403
 from bgate_adapters import blender as _blender  # noqa: E402,F401
 from bgate_mcp.tools_blender import _imageto3d_summary  # noqa: E402,F401
 
+# ---------------------------------------------------------------------------
+# The map of the surface. Registered LAST, on purpose: it reads the live
+# registry, and everything above plus the four tools_* modules has to be in it
+# first.
+# ---------------------------------------------------------------------------
+def _registry_rows() -> list[tuple[str, str]]:
+    """(name, description) for every tool THIS process serves.
+
+    The live registry rather than a written list, because the two ways a
+    written list goes wrong are both invisible: it names a tool this session's
+    seat or module choices removed, or it omits one that was added last week.
+    """
+    return [(t.name, t.description or "")
+            for t in mcp._tool_manager.list_tools()]
+
+
+@_tool
+def tool_index(task: str = "") -> dict:
+    """THE MAP OF EVERY TOOL YOU CAN CALL, grouped by craft. Free, no side effects.
+
+    Call this FIRST when you do not know which tool does a job - before
+    guessing a name, before hand-rolling the work, and before asking the human
+    which tool to use. The tool list you were handed is flat and alphabetical;
+    this is the same set with shape.
+
+    task  "" returns the whole map, one line per tool. Otherwise a search:
+          every word must appear in a tool's name or first line, so
+          "sprite sheet" is narrower than "sprite" rather than louder.
+
+    The lines are first sentences, not documentation - the parameters are in
+    each tool's own schema, which is already in your context. This exists to
+    tell you WHICH schema to read.
+    """
+    rows = _registry_rows()
+    return {"ok": True, "count": len(rows), "task": task,
+            "index": _toolindex.render(rows, task=task, seat=_seat())}
+
+
+def _install_tool_index() -> None:
+    """Fold the compact map into the server's `instructions`.
+
+    A tool nobody knows about is not a discoverability fix, and `instructions`
+    is the one string every client shows the model before its first turn - so
+    the names ride along there and `tool_index()` is how the agent gets the
+    lines. Names only: the full render is ~230 lines and belongs in a result
+    the agent asked for.
+
+    THROUGH THE PRIVATE ATTRIBUTE because FastMCP exposes `instructions` as a
+    read-only property over `_mcp_server.instructions`, and the string cannot
+    be built at construction time - the registry it describes does not exist
+    until every module above has imported. Guarded rather than asserted: an
+    MCP release that moves the attribute must cost this index, not the server.
+    """
+    try:
+        compact = _toolindex.compact(_registry_rows(), seat=_seat())
+        current = mcp._mcp_server.instructions or ""
+        mcp._mcp_server.instructions = current + "\n\n" + compact
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "the tool index could not be folded into instructions; "
+            "tool_index() still serves it", exc_info=True)
+
+
+_install_tool_index()
+
+
+def _report_orphans() -> None:
+    """Say what the LAST server was holding when it died, before serving.
+
+    stdout is the MCP transport, so this goes to stderr — which is where the
+    client shows server logs, and the only channel available before a single
+    tool has been called. The one moment this information exists is the first
+    read after a restart: nothing else records that a provider call was in
+    flight when its process was killed, and the file it produced has no
+    provenance without this line.
+    """
+    try:
+        from bgate_core import inflight as _inflight
+
+        root = os.environ.get("BGATE_ROOT", "").strip() or _root_hint()
+        if not root:
+            root = str(_project.require_root())
+        notice = _inflight.startup_notice(root)
+    except Exception:                                             # noqa: BLE001
+        return
+    if notice:
+        print(notice, file=_sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# AN ARGUMENT THE TOOL DOES NOT HAVE IS A MISTAKE, NOT A NO-OP
+# ---------------------------------------------------------------------------
+#
+# MEASURED. An agent meaning to run one test script called
+# `godot_test_run(only=["tests/door_test.gd"])`. The real parameter is `paths`.
+# FastMCP validates arguments against each tool's JSON schema, and pydantic
+# IGNORES properties the schema does not mention — so `only` was dropped on the
+# floor, the tool ran with its defaults, and all fifteen scripts executed. The
+# result came back green and said nothing about the argument it had discarded.
+#
+# That is the same failure shape as everything else in this pass: the caller
+# believed it had scoped the run, the harness knew it had not, and the two
+# never met. A typo in a parameter name should cost one refusal, not a full
+# suite run plus the wrong conclusion drawn from it.
+#
+# WHY HERE AND NOT IN THE `_tool` WRAPPER. The wrapper never sees the extra
+# key — FastMCP has already stripped it by then. The check has to sit at the
+# call boundary, before validation, which is the last place the caller's actual
+# words still exist.
+_ORIGINAL_CALL_TOOL = mcp.call_tool
+
+
+async def _call_tool_checked(name, arguments, *args, **kwargs):
+    """Refuse a call carrying arguments its tool does not declare."""
+    try:
+        tool = mcp._tool_manager.get_tool(name)
+        known = set((tool.parameters or {}).get("properties") or {})
+    except Exception:                                             # noqa: BLE001
+        known = set()                    # unknown tool: let the real path 404
+    if known and isinstance(arguments, dict):
+        stray = [k for k in arguments if k not in known]
+        if stray:
+            # Name the near-miss. Half of these are one letter out, and an
+            # agent that is told "unknown argument" without being told the real
+            # one usually guesses again.
+            import difflib
+
+            hints = []
+            for key in stray:
+                close = difflib.get_close_matches(key, sorted(known), n=2)
+                hints.append(f"{key!r}" + (f" (did you mean {' or '.join(repr(c) for c in close)}?)"
+                                           if close else ""))
+            return _to_content({
+                "ok": False,
+                "refused": "unknown_argument",
+                "error": (f"{name} does not take " + ", ".join(hints)
+                          + ". The call was REFUSED rather than run with the "
+                            "argument dropped: a run that silently ignores "
+                            "the parameter you used to scope it does the "
+                            "wrong work and reports success. Its parameters "
+                            "are: " + ", ".join(sorted(known)) + "."),
+                "unknown_arguments": stray,
+                "parameters": sorted(known),
+            })
+    return await _ORIGINAL_CALL_TOOL(name, arguments, *args, **kwargs)
+
+
+def _to_content(payload: dict):
+    """The refusal, in the shape call_tool's caller expects."""
+    import json as _json
+
+    from mcp.types import TextContent
+    return [TextContent(type="text", text=_json.dumps(payload))]
+
+
+mcp.call_tool = _call_tool_checked
+
+
 def main() -> None:
+    _report_orphans()
     mcp.run()
 
 

@@ -159,7 +159,8 @@ async def test_the_extra_views_are_priced_before_anything_is_bought(root, calls)
     # views: medium poses at 0.042 x2, one high anchor at 0.167 = 0.251; the
     # two extra high views add 0.334.
     got = await call("image_sprites", character_prompt="a boxer", poses=POSES,
-                     name="boxer", max_cost_usd=0.30, project_dir=str(root))
+                     name="boxer", limits={"max_cost_usd": 0.30},
+                     project_dir=str(root))
     assert got.get("ok") is False
     assert got["stage"] == "spend_gate"
     assert got["estimated_usd"] == pytest.approx(0.585, abs=0.01)
@@ -260,7 +261,8 @@ async def test_krea_runs_are_priced_on_kreas_own_numbers(root, calls,
 
     got = await call("image_sprites", character_prompt="a boxer", poses=POSES,
                      name="boxer", provider="krea",
-                     max_cost_usd=expected - 0.01, project_dir=str(root))
+                     limits={"max_cost_usd": expected - 0.01},
+                     project_dir=str(root))
     assert got.get("ok") is False and got["stage"] == "spend_gate"
     assert got["estimated_usd"] == pytest.approx(expected, abs=0.001)
 

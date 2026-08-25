@@ -49,6 +49,59 @@ def _base_commit(item: dict) -> str:
             or _dispatch.read_run_record(root(), item["id"]).get("base_commit", ""))
 
 
+@router.get("/api/queue/graph")
+def queue_graph() -> dict:
+    """The dependency graph, normalised, with a topological DISPLAY order.
+
+    THE READABILITY DEFECT THIS ANSWERS. The board showed
+
+        #42 enlarge rooms       done
+        #45 swap in furniture   running
+        #43 rebuild routes      queued
+
+    which reads as a scheduler that skipped #43. It did not: #43 was filed
+    after #42, and #45 was inserted BETWEEN them later, because the route
+    measurements had to wait for real furniture dimensions. The dependency
+    engine was correct the whole time. The presentation made it look broken,
+    and an operator who believes the scheduler is broken starts working around
+    it.
+
+    IDS ARE NOT RENUMBERED. They are in briefs, commit messages and people's
+    heads. `execution_position` is a display index derived from the graph;
+    `execution_state` is the one word a card colours by. `work_item.depends_on`
+    and `work_item_dep` are presented as ONE graph — which table holds a link is
+    not a question anybody should have to answer.
+    """
+    return api.ok(_queue.graph(root()))
+
+
+@router.get("/api/queue/{item_id:int}/path")
+def queue_path(item_id: int) -> dict:
+    """Everything that has to happen before this item, in the order it happens.
+
+    `#42 -> #45 -> #43` as data, so a blocked card can show the chain it is
+    waiting behind rather than a status word.
+    """
+    _item(item_id)
+    return api.ok({"item": item_id,
+                   "path": _queue.execution_path(root(), item_id),
+                   "waiting_line": _queue.waiting_line(root(), item_id)})
+
+
+@router.get("/api/queue/stalled")
+def queue_stalled(seat: Optional[str] = None) -> dict:
+    """Queued work NO dispatcher will take, and what would release each row.
+
+    `/api/queue` answers "what is on the board". Nothing answered "what is
+    sitting here that nothing will ever start", and the difference between
+    those two lists is an operator's whole morning. An item whose retries are
+    spent, whose source is human-held, or whose seat the stage is holding
+    looked identical to fresh work; the only tell was reading the retry
+    counters off the row by hand.
+    """
+    return api.ok({"items": _queue.stalled(root(), seat=seat or "")})
+
+
 @router.get("/api/queue/{item_id:int}")
 def queue_item(item_id: int) -> dict:
     return api.ok(_item(item_id))

@@ -93,7 +93,11 @@ class TestDiscovery:
         _fake_engine(monkeypatch, {"MARK": {"stdout": "PASS one\nPASS two\n"}})
         got = await call("godot_test_run")
         assert got["ok"] is True
-        assert [s["script"] for s in got["scripts"]] == ["tests/fight_test.gd"]
+        # mode='full' because the default (failures_only) deliberately omits
+        # passing scripts — see enginetests.MODES. Discovery is what is under
+        # test here, not the trimming.
+        whole = await call("godot_test_run", mode="full")
+        assert [s["script"] for s in whole["scripts"]] == ["tests/fight_test.gd"]
 
     async def test_it_finds_tests_in_the_cli_layout_too(self, wired, monkeypatch):
         # `bgate init` puts project.godot at the ROOT. Everything that hardcoded
@@ -138,7 +142,7 @@ class TestScoring:
             "GREEN": {"stdout": "PASS door opens\nPASS door shuts\n"},
             "RED": {"stdout": "PASS door opens\nFAIL door eats the player\n"},
         })
-        got = await call("godot_test_run")
+        got = await call("godot_test_run", mode="full")
 
         assert got["ok"] is False
         assert got["scripts_run"] == 2 and got["scripts_failed"] == 1
@@ -152,7 +156,16 @@ class TestScoring:
         # stdout is engine boot chatter and returning it for every script is how
         # a passing run stops fitting in a tool result.
         assert "eats the player" in by_name["tests/red_test.gd"]["output"]
-        assert "output" not in by_name["tests/green_test.gd"]
+
+        # AND THE DEFAULT MODE DOES NOT RETURN THE PASSING SCRIPT AT ALL. A
+        # green suite's stdout is engine boot chatter; returning it for every
+        # script is how one agent's debug loop spent 68% of 8 MB echoing its
+        # own tool results back at itself.
+        concise = await call("godot_test_run")
+        assert [s["script"] for s in concise["scripts"]] == ["tests/red_test.gd"]
+        assert concise["scripts_omitted"] == 1
+        assert concise["scripts_run"] == 2          # the count is still true
+        assert concise["full_log"]                  # and the rest is on disk
 
     async def test_a_clean_suite_reports_ok_with_no_error_string(self, wired,
                                                                 monkeypatch):

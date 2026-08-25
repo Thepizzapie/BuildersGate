@@ -591,6 +591,26 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
 
         result["exit_code"] = proc.returncode
         result["seconds"] = elapsed
+        # THE SILENT NO-OP LINT. `bpy.ops.*` returns {'CANCELLED'} instead of
+        # raising when its poll fails, so a script that calls one and discards
+        # the return value can change nothing and report success. MEASURED:
+        # three identical "rotated" exports were paid for before anybody
+        # checked. This cannot see inside the run, but it can see the shape in
+        # the source, and naming it costs nothing.
+        discarded = _discarded_ops(script)
+        if discarded:
+            result.setdefault("issues", []).append({
+                "kind": "unchecked_operator",
+                "detail": ("these bpy.ops calls discard their return value: "
+                           + ", ".join(discarded[:8])
+                           + ". An operator that cannot run returns "
+                             "{'CANCELLED'} and the script carries on — it does "
+                             "NOT raise, and the run reports ok. Wrap them in "
+                             "bg_op(...) so a no-op fails loudly, or use the "
+                             "non-operator helper (bg_apply bakes transforms "
+                             "without an operator for exactly this reason)."),
+                "ops": discarded[:20],
+            })
         if export_glb and result.get("ok"):
             fields: dict = {}
             # ARMATURES ARE RECORDED EVEN WHEN record=False. `record` governs
@@ -650,6 +670,26 @@ def scene_stats(blend_file: str, timeout: int = 120) -> dict:
     """Report a .blend without changing it — the read-only path."""
     return run_script("pass", blend_file=blend_file, timeout=timeout,
                       factory_startup=True)
+
+
+#: Operators whose whole purpose is a side effect on geometry, so a CANCELLED
+#: from one is always a bug rather than a no-op somebody meant. Deliberately a
+#: list rather than "every bpy.ops": plenty of operator calls are genuinely
+#: fire-and-forget, and a lint that fires on all of them gets ignored.
+_EFFECTFUL_OPS = (
+    "transform_apply", "modifier_apply", "join", "parent_set",
+    "shade_smooth", "shade_flat", "convert", "duplicate",
+    "origin_set", "make_single_user", "shape_key_add",
+)
+
+_OPS_CALL = re.compile(
+    r"^[ 	]*bpy\.ops\.[A-Za-z_.]*?(" + "|".join(_EFFECTFUL_OPS) + r")\s*\(",
+    re.MULTILINE)
+
+
+def _discarded_ops(script: str) -> list[str]:
+    """Effectful bpy.ops calls whose result nobody looks at. See run_script."""
+    return sorted({m.group(1) for m in _OPS_CALL.finditer(str(script or ""))})
 
 
 def export_gltf(out_path: str, *, blend_file: Optional[str] = None,

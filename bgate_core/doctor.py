@@ -244,10 +244,41 @@ def _probe_art_key() -> dict:
             f"no art-generation key set — put one of {listed} in the project's "
             ".env (it is loaded from the project root) or the environment; "
             "local generation still works without any of them")
-    # The NAMES of the configured variables, never their values or lengths.
-    return _row(available=True, path=", ".join(have),
-                version=f"{len(have)} of {len(art)} providers",
-                min_required="")
+
+    # WHAT THE ROUTER WOULD ACTUALLY DO, not how many variables are set.
+    #
+    # THIS ROW SAID "4 of 4 providers" ON A MACHINE THE GENERATION GATEWAY
+    # DESCRIBED AS openai-unkeyed, krea-unkeyed, one live option, no
+    # alternatives. Measured across three benchmark games. Both statements were
+    # derived from the same environment and only one of them was the answer to
+    # the question a human asks a health check, because a key without its
+    # adapter's package - or exported empty, or belonging to a provider whose
+    # library is not installed - is a set variable and not a usable provider.
+    #
+    # `providers.usable` borrows each ADAPTER's own available() verdict, which
+    # is the same offline truth `gateway._probe` reads for `keyed`, so this row
+    # and provider_status cannot disagree about who can run. It deliberately
+    # stops there: `drained` needs a balance probe over the network and a
+    # doctor row must never spend a round trip, so the row names
+    # provider_status as the live read rather than guessing at it.
+    try:
+        live = providers.usable()
+    except Exception:  # noqa: BLE001 - an adapter blowing up is not a red row
+        live = []
+    usable = [one.env for one in art if one.id in live]
+    if not usable:
+        return _missing(
+            "art_key",
+            f"{len(have)} art key(s) are SET ({', '.join(have)}) and none is "
+            "usable — the adapter behind each refuses (missing package, empty "
+            "value, or unreachable). provider_status names which and why; "
+            "nothing will generate until one of them answers")
+    # The NAMES of the usable variables, never their values or lengths.
+    detail = f"{len(usable)} of {len(art)} providers usable"
+    if len(usable) < len(have):
+        detail += f" ({len(have)} keyed)"
+    return _row(available=True, path=", ".join(usable),
+                version=detail, min_required="")
 
 
 def _probe_ffmpeg() -> dict:

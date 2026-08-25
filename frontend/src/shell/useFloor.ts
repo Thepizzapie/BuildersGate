@@ -18,6 +18,20 @@ import { usePoll } from "../hooks";
 export type QueueItem = {
   id: number; seat: string; title: string; status: string;
   phase?: number | null; phases?: number | null; note?: string | null;
+  /* WHY THIS ROW IS NOT MOVING, from the server rather than derived here.
+     `status` alone made a correct dependency insertion look like a skipped
+     item: #43 QUEUED, next to a running #45 and a done #42, when the real
+     order was #42 -> #45 -> #43 and always had been. `execution_state` is the
+     one word a card colours by; `waiting_line` is the sentence, and it names
+     the blocker's TITLE because an id alone sends the reader off to look it
+     up and the whole defect is that people were not looking things up. */
+  execution_state?: string;
+  waiting_line?: string;
+  waiting_on?: { id: number; seat: string; title: string; status: string };
+  depends_on_all?: number[];
+  unresolved?: number[];
+  exhausted_at?: string | null;
+  exhausted_why?: string | null;
 };
 export type Agent = {
   item_id: number; state: string; seconds?: number; cost_usd?: number;

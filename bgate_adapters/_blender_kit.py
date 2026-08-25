@@ -30,7 +30,7 @@ inside Blender can `print(bg_help())` and read it without leaving the script.
 _HELPERS = r'''
 # --- Builders Gate modelling kit (injected) ---------------------------------
 import bpy, bmesh, math
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 
 def bg_deselect():
@@ -321,12 +321,83 @@ def bg_taper(obj, top=0.6, axis=2):
     return obj
 
 
+def bg_op(result, what):
+    """Fail LOUDLY on a bpy operator that quietly did nothing.
+
+    THE SILENT NO-OP. `bpy.ops.*` does not raise when its poll fails — it
+    returns `{'CANCELLED'}` and carries on. MEASURED: a script calling
+    `bpy.ops.object.transform_apply(...)` with nothing selected got
+    `{'CANCELLED'}`, changed not one vertex, and the run reported `ok: True`.
+    Three identical "rotated" exports shipped before anybody checked the return
+    value, because nothing in the pipeline ever looked at it.
+
+    Wrap any operator whose effect you are relying on:
+
+        bg_op(bpy.ops.object.shade_smooth(), "shade_smooth")
+    """
+    if not isinstance(result, set):
+        return result
+    if "FINISHED" in result:
+        return result
+    raise RuntimeError(
+        "bpy.ops %s returned %s and changed NOTHING. Operators do not raise "
+        "when their poll fails - they return CANCELLED and the script carries "
+        "on reporting success. The usual cause is context: nothing selected, "
+        "no active object, or the wrong mode. Select and activate the object "
+        "first (bg_only) and try again." % (what, sorted(result)))
+
+
 def bg_apply(obj, location=False, rotation=True, scale=True):
-    """Bake transforms into the mesh. An unapplied scale shears children and
-    normals, and the readiness check will say so after export."""
-    bg_only(obj)
-    bpy.ops.object.transform_apply(location=location, rotation=rotation,
-                                   scale=scale)
+    """Bake transforms into the mesh. NO OPERATOR — it cannot silently no-op.
+
+    An unapplied scale shears children and normals, and the readiness check
+    will say so after export. What it will NOT say is that the apply never
+    happened: `bpy.ops.object.transform_apply` returns `{'CANCELLED'}` on a bad
+    context and changes nothing, which is indistinguishable from success from
+    the calling script's point of view. Three re-exports were paid for before
+    that was identified.
+
+    So this transforms the mesh data by the object's own matrix directly and
+    then resets the components it baked. There is no poll to fail, no context
+    to be wrong, and no CANCELLED to ignore. It also VERIFIES: if the
+    components it was told to bake are not identity afterwards, it raises.
+    """
+    matrix = obj.matrix_basis
+    translation, rotation_q, scale_v = matrix.decompose()
+    bake = Matrix.Identity(4)
+    if location:
+        bake = Matrix.Translation(translation) @ bake
+    if rotation:
+        bake = bake @ rotation_q.to_matrix().to_4x4()
+    if scale:
+        bake = bake @ Matrix.Diagonal(scale_v).to_4x4()
+
+    data = getattr(obj, "data", None)
+    if data is not None and hasattr(data, "transform"):
+        data.transform(bake)
+        if hasattr(data, "update"):
+            data.update()
+    else:
+        raise RuntimeError(
+            "bg_apply needs object data that can be transformed (a mesh, a "
+            "curve); %r has none" % getattr(obj, "name", obj))
+
+    # Reset only what was baked, so a partial apply behaves like the operator's.
+    if location:
+        obj.location = (0.0, 0.0, 0.0)
+    if rotation:
+        obj.rotation_euler = (0.0, 0.0, 0.0)
+        if hasattr(obj, "rotation_quaternion"):
+            obj.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    if scale:
+        obj.scale = (1.0, 1.0, 1.0)
+
+    # THE ASSERTION THE OPERATOR NEVER MADE.
+    after = obj.matrix_basis.decompose()
+    if scale and max(abs(c - 1.0) for c in after[2]) > 1e-5:
+        raise RuntimeError("bg_apply: scale did not bake on %r" % obj.name)
+    if rotation and abs(after[1].angle) > 1e-5:
+        raise RuntimeError("bg_apply: rotation did not bake on %r" % obj.name)
     return obj
 
 

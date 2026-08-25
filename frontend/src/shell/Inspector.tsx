@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ExecutionPath } from "./ExecutionPath";
 import { Ti } from "./Ti";
+import { Markdown } from "../components/Markdown";
 import { ResumeInCli } from "./ResumeInCli";
 import { AgentMade } from "./AgentMade";
 import { SEAT_COLOR } from "./nav";
@@ -294,6 +296,26 @@ export function Inspector() {
     setOpened({});
   }, [selKey]);
 
+  /* The scroller, so the header's failure count can put the failure on
+     screen. Declared here with the other hooks: everything below the early
+     return runs conditionally and a hook there would change order between
+     renders. */
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  /* Folded ONCE per poll, not once per render pass. The header counts
+     failures out of the same list the body draws, so the two cannot
+     disagree about how many there are. */
+  const entries = useMemo(() => foldSteps(act.steps || []), [act.steps]);
+  const failedCount = entries.filter((e) => e.kind === "tool" && e.bad).length;
+
+  /* WHERE THE FAILURE IS, not just that there is one. A forty-step run puts
+     its one red step wherever it happened, and on a rail this narrow that is
+     several screens of scrolling to find the only line worth reading. */
+  const jumpToFailure = useCallback(() => {
+    const first = bodyRef.current?.querySelector<HTMLElement>("[data-bad='1']");
+    first?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, []);
+
   const open = !!sel;
   if (!sel) return <aside className="bg4-insp" aria-hidden="true" />;
 
@@ -391,22 +413,38 @@ export function Inspector() {
         </div>
         <div className="bg4-insp-title">{sel.title}</div>
         {itemId != null && (
+          /* WHAT THE NUMBER IS. It was a bare "40" against a bar that filled
+             to 100% while the agent was RUNNING and emptied when it finished
+             - so the one reading a viewer brings to a progress bar (full
+             means done) was exactly inverted, and the number beside it named
+             no unit at all. It is a step count and the run has no known
+             length, so there is no honest progress to draw: the count says
+             how far it has got, and the state says whether more is coming. */
           <div className="bg4-meter">
             <span className="big">{steps.length}</span>
-            <div className="track">
-              <span className="fill"
-                    style={{ width: running ? "100%" : "0%",
-                             animation: running ? "bgthrob 1.6s infinite" : undefined }} />
-            </div>
-            <span className="small">{running ? "running" : "finished"}</span>
+            <span className="unit">step{steps.length === 1 ? "" : "s"}</span>
+            {failedCount > 0 && (
+              <button className="bg4-jumpfail" onClick={jumpToFailure}
+                      title="scroll to the first step that failed">
+                <Ti name="alert-triangle" size={11} />
+                {failedCount} failed
+              </button>
+            )}
+            <span className={running ? "state live" : "state"}>
+              {running ? "running" : "finished"}
+            </span>
           </div>
         )}
         {/* THE SAME DRILLDOWN SERVES THE BOARD, THE GRAPH AND THE FLOOR, so
             putting this here puts it on all three at once. */}
         {itemId != null && <ResumeInCli itemId={itemId} />}
+        {/* WHAT HAS TO HAPPEN BEFORE THIS. Draws nothing for an unchained
+            item, which is most of them; for a chained one it is the answer to
+            the question a card cannot fit - see ExecutionPath. */}
+        {itemId != null && <ExecutionPath itemId={itemId} />}
       </div>
 
-      <div className="bg4-insp-body">
+      <div className="bg4-insp-body" ref={bodyRef}>
         {composing && (
           <div className="bg4-seatbox">
             <div className="bg4-insp-eyebrow" style={{ marginBottom: 8 }}>
@@ -455,7 +493,7 @@ export function Inspector() {
             different idle seats each showed gameplay's run. The effect on
             `selKey` below clears the state; this makes the render refuse to
             draw it even for the frame before that lands. */}
-        {itemId != null && foldSteps(steps).map((entry, i) => {
+        {itemId != null && entries.map((entry, i) => {
           if (entry.kind === "say" || entry.kind === "steer") {
             /* THE PROSE, at full width and unclipped. `say` is the one thing in
                the feed that was already written to be read, and `steer` is the
@@ -465,14 +503,15 @@ export function Inspector() {
             return (
               <div className={isSteer ? "bg4-said steer" : "bg4-said"} key={i}>
                 <Ti name={isSteer ? "steering-wheel" : "message-2"} size={13} />
-                <p>{entry.text}</p>
+                <Markdown text={entry.text} />
               </div>
             );
           }
           const key = String(i);
           const isOpen = !!opened[key];
           return (
-            <div className={`bg4-tl${entry.bad ? " bad" : ""}`} key={i}>
+            <div className={`bg4-tl${entry.bad ? " bad" : ""}`} key={i}
+                 data-bad={entry.bad ? "1" : undefined}>
               {/* THE WHOLE ROW OPENS IT. A tool result is a JSON object whose
                   first line is `{ "ok": false, "error": …` - the reason a run
                   failed used to sit one character past the cut with nothing to
@@ -533,11 +572,20 @@ export function Inspector() {
           rather than that the seat is free. */}
       {!composing && (
       <div className="bg4-insp-foot">
+        {/* EVERY CONTROL SAYS WHAT IT DOES AND, WHEN IT CANNOT, WHY. These
+            three are disabled by state a reader cannot see from the button
+            itself - stop and steer need a LIVE agent, and on a finished run
+            they greyed out with no explanation, which reads as the panel
+            being broken rather than the run being over. */}
         <button className="bg4-act" disabled={!itemId}
+                title="open this agent's full transcript"
                 onClick={() => itemId && watchAgent(itemId)}>
           <Ti name="file-text" size={14} />log
         </button>
-        <button className="bg4-act" disabled={!itemId || !running || busy} onClick={stop}>
+        <button className="bg4-act" disabled={!itemId || !running || busy}
+                title={running ? "kill this agent where it stands"
+                               : "nothing to stop - this run has finished"}
+                onClick={stop}>
           <Ti name="player-stop" size={14} />stop
         </button>
         {/* ONLY ON A SEAT THE FLOOR IS MARKING RED, and in steer's place
@@ -551,6 +599,9 @@ export function Inspector() {
           </button>
         ) : (
           <button className="bg4-act primary" disabled={!itemId || !running || busy}
+                  title={running
+                    ? "send a correction to the running agent's stdin"
+                    : "nothing to steer - this run has finished"}
                   onClick={steer}>
             <Ti name="steering-wheel" size={14} />steer
           </button>

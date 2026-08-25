@@ -122,6 +122,39 @@ def mcp_overrides(server_name: str = MCP_SERVER_NAME) -> list[str]:
     ]
 
 
+def claude_mcp_config(server_name: str = MCP_SERVER_NAME) -> list[str]:
+    """Register the Builders Gate MCP server for ONE `claude -p` invocation.
+
+    THE HOLE THIS FILLS. `_claude_args` passed `--allowedTools mcp__<server>`
+    and nothing else — AN ALLOW-LIST ENTRY FOR A SERVER IT NEVER REGISTERED.
+    Whether a dispatched agent had any bgate tools at all therefore depended on
+    the human's ambient config: if they had run `claude mcp add builders-gate
+    --scope user` it worked, and if they had not, the allow-list permitted a
+    prefix matching no tool. The agent then ran the whole item with none of the
+    pipeline's tools and nothing anywhere said so.
+
+    `_codex_args` had this right from the day codex was added — it calls
+    `mcp_overrides()`. The Claude path was "unchanged from the single-runner
+    era, on purpose", and that purpose stopped applying the moment a second
+    runner demonstrated what the first was missing.
+
+    `--mcp-config` takes inline JSON and applies to that invocation only, so
+    this never edits ~/.claude.json — the same bargain `mcp_overrides` strikes
+    with ~/.codex/config.toml, for the same reason.
+
+    NOT `--strict-mcp-config`. That would drop every server the user configured
+    themselves, and a dispatched agent losing the human's own tooling is a
+    worse surprise than the one being fixed. Ours becomes guaranteed; theirs is
+    left alone.
+    """
+    import json as _json
+
+    from bgate_ui.agentcli import MODULE_ARGS
+    return ["--mcp-config", _json.dumps({"mcpServers": {
+        server_name: {"command": sys.executable, "args": list(MODULE_ARGS)},
+    }})]
+
+
 def _toml_str(value: str) -> str:
     """A TOML literal string. `-c` parses the value as TOML, and a Windows path
     in a basic string turns \\U into a bad unicode escape and fails the parse."""
@@ -174,7 +207,13 @@ class Runner:
 
 def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
                  cwd: str, native_images: bool, max_turns: int = 0) -> list[str]:
-    """Unchanged from the single-runner era, on purpose.
+    """The capability surface of a dispatched Claude run.
+
+    IT REGISTERS THE MCP SERVER, which it did not do for as long as there were
+    two runners: `--allowedTools mcp__builders-gate` allow-listed a prefix
+    without registering the server behind it, so an agent had the pipeline's
+    tools only if the human happened to have added them at user scope. See
+    :func:`claude_mcp_config`.
 
     stream-json OUTPUT makes claude emit one NDJSON event per step AS IT WORKS
     instead of buffering to the end, which is what feeds the live activity view.
@@ -199,6 +238,7 @@ def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
             "--verbose", "--replay-user-messages",
             "--allowedTools", f"mcp__{MCP_SERVER_NAME}", "Read", "Edit", "Write",
             "Glob", "Grep", "Bash"] \
+        + claude_mcp_config() \
         + (["--model", model] if model else []) \
         + (["--max-turns", str(max_turns)] if max_turns else [])
 

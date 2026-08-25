@@ -1070,11 +1070,14 @@ def api_key(backend: str, root: Any = None) -> str:
     name = (BACKENDS.get(backend) or {}).get("env") or ""
     if not name:
         return ""
-    if root:
-        try:
-            envfile.load_project_env(root)
-        except Exception:                                        # noqa: BLE001
-            pass
+    # The machine-wide layer too, not the project alone: a key set with
+    # `bgate key set <p> --global` lives in ~/.bgate/.env, and reading only
+    # the project file made a correctly configured machine look unkeyed to
+    # everything that probes without a project in hand.
+    try:
+        envfile.load_env(root)
+    except Exception:                                            # noqa: BLE001
+        pass
     return (os.environ.get(name) or "").strip()
 
 

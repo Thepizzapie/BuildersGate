@@ -465,9 +465,17 @@ class TestSeatRulesAreProjectScoped:
             json.dumps({"art": "ART HOUSE RULE — everything ships as .aseprite.",
                         "narrative": ""}), encoding="utf-8")
 
+        # A project override replaces that seat's CRAFT rules. The two
+        # board-wide rules (ownership, production routing) are not craft and are
+        # not overridable per seat - a project that turns a seat's rules off
+        # must not silently turn off the doctrine that stopped every sound
+        # effect shipping twice. It states its own in the bible instead.
         assert "aseprite" in dispatch.seat_rules(str(root), "art")
-        assert dispatch.seat_rules(str(root), "narrative") == ""   # off, not default
-        assert dispatch.seat_rules(str(root), "audio") == dispatch.SEAT_RULES["audio"]
+        narrative = dispatch.seat_rules(str(root), "narrative")
+        assert "NO FIRST-THOUGHT JOKES" not in narrative     # off, not default
+        assert "OWNING ITS WIRE" in narrative
+        assert dispatch.seat_rules(str(root), "audio").endswith(
+            dispatch.SEAT_RULES["audio"])
 
         item = queue.add(root, "art", "paint")
         prompt = dispatch._prompt_for(str(root), item)
@@ -478,7 +486,8 @@ class TestSeatRulesAreProjectScoped:
         (Path(root) / ".bgate").mkdir(parents=True, exist_ok=True)
         (Path(root) / ".bgate" / dispatch.SEAT_RULES_FILENAME).write_text(
             "{not json", encoding="utf-8")
-        assert dispatch.seat_rules(str(root), "art") == dispatch.SEAT_RULES["art"]
+        assert dispatch.seat_rules(str(root), "art").endswith(
+            dispatch.SEAT_RULES["art"])
 
 
 # --- 8. the feed shows the agent, not the plumbing --------------------------

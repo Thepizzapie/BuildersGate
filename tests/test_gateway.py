@@ -130,3 +130,33 @@ class TestServerWiring:
                             lambda root: 1 / 0)
         out = server._fail(RuntimeError("no credit"))
         assert out["ok"] is False   # the original error survives
+
+
+class TestRetroDiffusionBalanceUnit:
+    """provider_status must report the SPENDABLE balance, not `credits`.
+
+    RD's /inferences/credits returns both. Preferring `credits` reported 50.0
+    on an account refusing every call with "Not enough balance." — four
+    animation jobs were refused across two characters while the surface said
+    it was funded, with fresh=True.
+    """
+
+    def _row(self, monkeypatch, payload):
+        from bgate_adapters import retrodiffusion as rd
+        from bgate_core import gateway
+        monkeypatch.setattr(rd, "available",
+                            lambda root=None: {"available": True})
+        monkeypatch.setattr(rd, "balance", lambda root=None: payload)
+        return gateway._probe("retrodiffusion", None)
+
+    def test_prefers_usd_balance_over_credits(self, monkeypatch):
+        row = self._row(monkeypatch, {"balance": 0.0, "credits": 50.0})
+        assert row["balance"] == 0.0
+        assert row["balance_unit"] == "usd"
+
+    def test_falls_back_to_credits_when_no_usd(self, monkeypatch):
+        # CONTROL: the fallback still works, so the test above is about
+        # PREFERENCE rather than about ignoring `credits` entirely.
+        row = self._row(monkeypatch, {"balance": None, "credits": 50.0})
+        assert row["balance"] == 50.0
+        assert row["balance_unit"] == "credits"

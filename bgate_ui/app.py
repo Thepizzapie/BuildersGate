@@ -991,23 +991,94 @@ def _with_chain_state(root: Path, row: dict) -> dict:
 
     A chained link that is not ready looks exactly like a normal queued item from
     the outside, so the UI happily offered a DEPLOY button that could only ever
-    refuse. One extra lookup per row that actually has a predecessor; rows
-    without one (the overwhelming majority) cost nothing.
+    refuse.
+
+    IT USED TO READ ONE OF THE TWO DEPENDENCY STORES. This was a THIRD copy of
+    the blocking rule (after queue.ready and the console's _chain_state), and
+    the only one that never learned about `work_item_dep` — so an item held by
+    an extra parent came back `ready: true`, with a deploy button, on the very
+    endpoint the board fetches. queue.blocker() is the one answer that knows
+    about both columns; asking it is both the fix and the end of the third copy.
+
+    WHAT THE ROW SAYS NOW. `execution_state` is one word a card can colour by,
+    and `waiting_line` is the sentence: `#43 QUEUED` next to a running #45 and a
+    done #42 reads as a scheduler that skipped an item, and the scheduler was
+    right every time. Ids are creation identifiers - #45 was inserted between
+    #42 and #43 later, because the route measurements needed real furniture
+    dimensions - so the order has to be STATED rather than inferred from an
+    ordering that never meant it.
     """
+    from bgate_core import queue as _queue
+
     row = dict(row)
     row["ready"] = True
-    if not row.get("depends_on"):
+    status = str(row.get("status") or "")
+
+    # THE HARNESS STOPPED BUYING ROUNDS FOR THIS ONE. Before migration 0043 this
+    # was two counters a reader had to add up by hand, and two readers did it
+    # differently on the same board.
+    if row.get("exhausted_at"):
+        row["ready"] = False
+        row["execution_state"] = "exhausted"
+        row["waiting_line"] = (
+            "EXHAUSTED — the harness stopped retrying this: "
+            + str(row.get("exhausted_why") or "")
+            + " Reopen it (with a changed brief or a fixed blocker) to start "
+              "it again.")
         return row
-    dep = db.connect(root).execute(
-        "SELECT id, seat, title, status FROM work_item WHERE id = ?",
-        (int(row["depends_on"]),)).fetchone()
-    if dep is None:
-        return row                       # predecessor deleted: no longer blocked
-    if dep["status"] == "done":
+
+    # THE PRODUCTION STAGE HOLDS WHOLE SEATS, and it holds them ahead of any
+    # dependency — an art item at the graybox stage will not dispatch however
+    # clean its predecessors are. Reported first for that reason: showing the
+    # dependency instead sends somebody to fix the wrong thing.
+    if status == "queued":
+        try:
+            from bgate_core import greenlight as _greenlight
+
+            ok, why = _greenlight.allows(root, str(row.get("seat") or ""))
+        except Exception:                                         # noqa: BLE001
+            ok, why = True, ""
+        if not ok:
+            row["ready"] = False
+            row["execution_state"] = "held"
+            row["stage_hold"] = why
+            row["waiting_line"] = why
+            return row
+        if str(row.get("source") or "") in _queue.HELD_SOURCES:
+            row["ready"] = False
+            row["execution_state"] = "held"
+            row["waiting_line"] = (
+                f"held — source {row.get('source')!r} is never auto-dispatched; "
+                "a human (or the director session) takes it")
+            return row
+
+    try:
+        blocked = _queue.blocker(root, int(row["id"]))
+        parents = _queue.parents(root, int(row["id"]))
+    except Exception:                                             # noqa: BLE001
+        blocked, parents = None, []
+    row["depends_on_all"] = parents
+
+    if blocked is None:
+        row["execution_state"] = ("running" if status == "dispatched"
+                                  else "ready" if status == "queued" else status)
         return row
+
     row["ready"] = False
-    row["waiting_on"] = {"id": dep["id"], "seat": dep["seat"],
-                         "title": dep["title"], "status": dep["status"]}
+    row["waiting_on"] = blocked
+    also = blocked.get("also_waiting_on") or []
+    row["unresolved"] = [int(blocked["id"]), *(int(i) for i in also)]
+    # A predecessor that will never reach 'done' on its own is BLOCKED, not
+    # waiting: one needs a person, the other is the board working, and they
+    # used to look identical.
+    dead = blocked["status"] in ("failed", "cancelled")
+    row["execution_state"] = ("running" if status == "dispatched" else
+                              "blocked" if dead else "waiting")
+    row["waiting_line"] = (
+        f"WAITING ON #{blocked['id']} {blocked['title']}"
+        + (f" (and {len(also)} more)" if also else "")
+        + (f" — that predecessor is {blocked['status']!r} and will not reach "
+           "'done' on its own; reopen it or cut the dependency" if dead else ""))
     return row
 
 
@@ -2054,6 +2125,30 @@ def serve(port: int = 7788) -> None:
               "or run: bgate init <name>")
     else:
         print(f"  project: {root}")
+        # WHAT STAGE THE BOARD IS AT, on the line a person actually reads.
+        # A board holding the art, audio and cinematic seats looks identical
+        # to a dead board from the dashboard's queue view, and "nothing
+        # dispatches" was reported as a bug twice before it was reported as
+        # the gate working.
+        try:
+            from bgate_core import greenlight as _greenlight
+
+            state = _greenlight.state(root)
+            held = ", ".join(state["held_seats"])
+            print(f"  stage: {state['label']}")
+            if held:
+                print(f"  holding: {held} — these seats will not dispatch "
+                      "until the stage advances (Design > Greenlight)")
+        except Exception:                                         # noqa: BLE001
+            pass
+        try:
+            from bgate_core import inflight as _inflight
+
+            notice = _inflight.startup_notice(root)
+        except Exception:                                         # noqa: BLE001
+            notice = ""
+        if notice:
+            print("  " + notice.replace("\n", "\n  "))
     print("  ctrl-c to stop")
 
     # 127.0.0.1 on purpose: this is a local window into a local store.

@@ -71,7 +71,73 @@ def post(root: str | os.PathLike[str], item_id: int, text: str, *,
     tmp = directory / f".{payload['id']}.tmp"
     tmp.write_text(json.dumps(payload), encoding="utf-8")
     tmp.replace(directory / f"{int(payload['at'] * 1000)}-{payload['id']}.json")
+    _record_on_item(root, payload)
     return payload
+
+
+def _record_on_item(root: str | os.PathLike[str], payload: dict) -> None:
+    """Put the steer in the ITEM'S OWN HISTORY, not only in the inbox.
+
+    THE GAP. A steer lives in a spool directory that is consumed and deleted,
+    so a mid-run correction existed in exactly two places: that spool, until it
+    was read, and whatever prose the agent chose to write about it afterwards.
+    A later reader looking at a finished item — a QA reviewer, a debrief, a
+    person six weeks on asking why the result does not match the brief — could
+    not tell WHICH corrections shaped it, or that any had. The most influential
+    input to a run was the one input the run did not record.
+
+    Best-effort in both directions: a steer that lands and is not logged is
+    still delivered, and a logging failure must never make ``post`` raise on a
+    correction somebody is trying to get to a live agent.
+    """
+    item_id = int(payload.get("item_id") or 0)
+    if not item_id:
+        return
+    text = str(payload.get("text") or "")
+    by = str(payload.get("by") or "")
+    try:
+        from . import activity as _activity
+
+        _activity.log(root, "steer",
+                      f"steered #{item_id}"
+                      + (f" (from {by})" if by else "") + f": {text[:200]}",
+                      ref=str(item_id))
+    except Exception:                                             # noqa: BLE001
+        pass
+    try:
+        from . import events as _events
+
+        _events.emit(root, "item.steered", ref=str(item_id), payload={
+            "id": item_id, "steer_id": payload.get("id"),
+            "by": by[:120], "text": text[:600],
+            "note": str(payload.get("note") or "")[:200]})
+    except Exception:                                             # noqa: BLE001
+        pass
+
+
+def history(root: str | os.PathLike[str], item_id: int,
+            limit: int = 40) -> list[dict]:
+    """Every steer this item has received, oldest first. Never raises.
+
+    Read off the event log rather than the spool, because the spool is
+    consumed: this is the copy that survives the run it was aimed at.
+    """
+    try:
+        from . import db as _db
+
+        rows = _db.connect(root).execute(
+            "SELECT id, payload, created_at FROM event WHERE kind = ? "
+            "AND ref = ? ORDER BY id LIMIT ?",
+            ("item.steered", str(int(item_id)), max(1, int(limit)))).fetchall()
+    except Exception:
+        return []
+    out = []
+    for row in rows:
+        got = _payload(row["payload"])
+        out.append({"at": row["created_at"], "seq": row["id"],
+                    "by": got.get("by", ""), "text": got.get("text", ""),
+                    "note": got.get("note", "")})
+    return out
 
 
 # How much of a long correction goes in the steer itself. The rest is cited.
@@ -324,6 +390,119 @@ def _encode(payload: dict) -> str:
     lean["answer"] = str(lean.get("answer") or "")[:cap // 2]
     lean["_shed"] = "refs,question,answer"
     return json.dumps(lean, ensure_ascii=False, default=str)
+
+
+# ---------------------------------------------------------------------------
+# WHO IS BEING ASKED — named, never inferred
+# ---------------------------------------------------------------------------
+#
+# MEASURED. An agent had a question for the DIRECTOR — a design call, the kind
+# the director seat exists to make — and the only channel available was
+# `ask_human`. It went to the human, who was not there. Two items sat waiting
+# on an answer nobody knew existed.
+#
+# The tempting fix is to route a director question to the human anyway, on the
+# grounds that a human can always answer. That is exactly what happened, and it
+# is the failure: the asker believed it had reached the director, the board
+# showed a question pending, and nothing said the recipient had been changed.
+# A silent remap of the recipient is a delivery failure wearing a success.
+#
+#   human      the person who owns this project. The event bus, the console
+#              card, the drawer, any notification channel switched on.
+#   director   the director SESSION — the dashboard's live director chat. If
+#              there is no such session this REFUSES IMMEDIATELY rather than
+#              creating a question nobody will ever see.
+#   seat:<x>   another seat. Lands on the blackboard, and steers that seat's
+#              running agent if it has one.
+#   decision   a FORMAL decision, filed in the decision register with its
+#              acceptance test. For "this needs to be settled and written
+#              down", not "what do you think".
+RECIPIENTS = ("human", "director", "decision")
+SEAT_PREFIX = "seat:"
+
+
+class NoRecipient(RuntimeError):
+    """The named recipient has no path to answer. Fail loudly, not quietly.
+
+    An orphaned blocking question is the most expensive shape this can take:
+    the asker is satisfied, the board shows work waiting, and the thing it is
+    waiting on does not exist.
+    """
+
+
+def _director_session_live(root: str | os.PathLike[str]) -> dict:
+    """Is there a director chat session that could answer? Never raises."""
+    try:
+        from bgate_ui import directorsession as _ds
+
+        got = _ds.status(root) or {}
+        return {"available": bool(got.get("running") or got.get("live")
+                                  or got.get("cli_session_id")),
+                "detail": {k: got.get(k) for k in
+                           ("running", "live", "cli_session_id")}}
+    except Exception as exc:                                      # noqa: BLE001
+        return {"available": False, "detail": {"error": f"{type(exc).__name__}"}}
+
+
+def ask_director(root: str | os.PathLike[str], question: str, *,
+                 refs: Optional[list] = None, item_id: int = 0,
+                 by: str = "") -> dict:
+    """Put a question to the DIRECTOR SESSION. Refuses if there is not one."""
+    live = _director_session_live(root)
+    if not live["available"]:
+        raise NoRecipient(
+            "there is no live director session on this project, so a question "
+            "addressed to the director would reach nobody. It is NOT silently "
+            "sent to the human — that is what left two items waiting on an "
+            "answer no one knew existed. Choose one: ask_human(to='human') if "
+            "a person can answer it; queue_add('director', ...) if it is work; "
+            "decision_add(...) if it needs settling and writing down; or "
+            "seat_post_note('director', ...) if it can wait for the next "
+            "director session to read the blackboard.")
+    from bgate_ui import directorsession as _ds
+
+    text = str(question or "").strip()
+    cited = "".join(f"\n  - {str(r)[:160]}" for r in (refs or [])[:MAX_REFS])
+    _ds.send(root, (f"QUESTION from {by or 'an agent'}"
+                    + (f" working item #{item_id}" if item_id else "")
+                    + f":\n\n{text}"
+                    + (f"\n\nRefs:{cited}" if cited else "")))
+    return {"ok": True, "delivered_to": "director", "live": True,
+            "session": live["detail"]}
+
+
+def ask_seat(root: str | os.PathLike[str], seat: str, question: str, *,
+             refs: Optional[list] = None, item_id: int = 0,
+             by: str = "") -> dict:
+    """Put a question to another SEAT: blackboard note, plus a live steer."""
+    from . import queue as _queue, seats as _seats
+
+    if seat not in _seats.DEFAULT_SEATS:
+        raise NoRecipient(
+            f"there is no {seat!r} seat; seats are "
+            f"{tuple(_seats.DEFAULT_SEATS)}")
+    text = str(question or "").strip()
+    body = (f"QUESTION from {by or 'an agent'}"
+            + (f" (item #{item_id})" if item_id else "") + f": {text}"
+            + ("\nRefs: " + ", ".join(str(r)[:120] for r in (refs or [])[:MAX_REFS])
+               if refs else ""))
+    _seats.post_note(root, seat, body, topic="question")
+    steered = []
+    try:
+        for row in _queue.list_items(root, status="dispatched", seat=seat):
+            post(root, int(row["id"]),
+                 f"QUESTION from the {by or 'another'} seat: {text[:900]}",
+                 by=by, note="cross-seat question")
+            steered.append(int(row["id"]))
+    except Exception:                                             # noqa: BLE001
+        pass
+    return {"ok": True, "delivered_to": f"seat:{seat}", "note_posted": True,
+            "steered_items": steered,
+            "live": bool(steered),
+            "why": ("the note is on the blackboard either way; a running "
+                    f"{seat} agent was also steered" if steered else
+                    f"no {seat} agent is running, so this waits on the "
+                    "blackboard for the next one")}
 
 
 def ask(root: str | os.PathLike[str], question: str,

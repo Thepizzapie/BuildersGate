@@ -34,6 +34,26 @@ BEST-EFFORT, ALWAYS. This is called from inside the PreToolUse hook, whose one
 hard rule is that it must never dam a session: a write the oracle already
 allowed cannot be blocked because its bookkeeping failed. Every function here
 swallows its own errors.
+
+IT NOW KEEPS A PRE-IMAGE, AND IT IS NOT A BACKUP SYSTEM. The ledger recorded
+that a path was written and nothing about what was there before, so a
+destructive edit -- an agent replacing a 500-line file with a 3-line stub it
+believed was the whole thing -- was recorded accurately and irrecoverably. The
+harness watched it happen and kept the receipt, not the goods.
+
+:func:`preimage` copies the file's EXISTING bytes the FIRST time a given
+execution touches it, before the write lands. First-touch only, so a file
+edited twenty times keeps what it looked like before that agent started rather
+than before its last keystroke -- which is the version somebody restoring
+actually wants. Bounded by :data:`MAX_PREIMAGE_BYTES` and by
+:data:`MAX_PREIMAGE_FILES`, because this rides on the hook's hot path and an
+unbounded copy of every generated .glb would make writing slower than working.
+
+WHAT IT IS NOT. Not version control, not a substitute for the auto-commit that
+is the real safety net (see :func:`recovery_note`), and not a promise: a write
+this harness never saw -- one made by a program the hook cannot parse -- has no
+pre-image, and :func:`recoverable` says so rather than implying coverage it
+does not have.
 """
 from __future__ import annotations
 
@@ -51,6 +71,60 @@ DIRNAME = "writes"
 # well under a hundred paths.
 MAX_LINES = 2000
 
+#: Where first-touch copies live. Beside the ledger, under the harness's own
+#: directory, gitignored with everything else in `.bgate/`.
+PREIMAGE_DIRNAME = "preimages"
+
+#: Per-file ceiling. Big enough for any source file anybody edits by hand,
+#: small enough that a generated mesh or a texture is skipped rather than
+#: copied on the hook's hot path.
+MAX_PREIMAGE_BYTES = 512 * 1024
+
+#: Per-execution ceiling. An agent touching more files than this is doing a
+#: sweep, and a sweep's recovery path is the commit, not a pile of copies.
+MAX_PREIMAGE_FILES = 200
+
+
+# Characters that mean "this is not one file". The hook reads write targets off
+# a shell command line, which is a fence and not a parser: a glob it cannot
+# expand, an unbalanced bracket, a fragment of a printf argument all arrive here
+# looking like paths. From the benchmark projects' own write logs:
+#
+#     Bash art   0]
+#     Bash qa    0
+#     Bash qa    thresh:
+#     Bash qa    assets/sprites/_qa_*
+#     Bash art   art/preview/*.import
+#
+# None of those is a file, and every one of them was in a record whose whole
+# purpose is to be believed about what a run touched. Judging them was right -
+# an unreadable write target must still be graded - but RECORDING them makes the
+# record noise, and a noisy record gets ignored, which is how the file list went
+# back to being self-reported in practice.
+#
+# Deliberately narrow, and it errs toward keeping: `Makefile` and `.gdignore`
+# have no extension and are real, so extensionlessness is not a test. What is
+# tested is characters no filename this harness will ever write can contain.
+_IMPLAUSIBLE = set('*?[]<>|"') | {":"}
+
+
+def plausible(rel: str) -> bool:
+    """Could this string be a path to one file in this project?
+
+    Not "does it exist" - the hook runs BEFORE the write, so the answer is
+    almost always no. This is the weaker and answerable question, and it is the
+    one that separates a real target from a shell fragment.
+    """
+    rel = str(rel or "").strip()
+    if not rel:
+        return False
+    if any(ch in _IMPLAUSIBLE for ch in rel):
+        return False
+    if any(ch.isspace() for ch in rel):
+        return False
+    # A bare number is a positional argument somebody's parser lost hold of.
+    return not rel.replace(".", "").isdigit()
+
 
 def _safe(owner: str) -> str:
     """Owner ids become FILENAMES, and they arrive from the environment
@@ -62,6 +136,91 @@ def _safe(owner: str) -> str:
 
 def path_for(root: str | os.PathLike[str], owner: str) -> Path:
     return Path(root) / db.DB_DIRNAME / DIRNAME / f"{_safe(owner)}.jsonl"
+
+
+def preimage_dir(root: str | os.PathLike[str], owner: str) -> Path:
+    return Path(root) / db.DB_DIRNAME / PREIMAGE_DIRNAME / _safe(owner)
+
+
+def preimage(root: str | os.PathLike[str], rel: str, owner: str) -> dict:
+    """Copy a file's CURRENT bytes before an execution first overwrites it.
+
+    Returns ``{kept, why, path}``; never raises, and never blocks the write it
+    is about to let happen. Called by the hook immediately before it allows an
+    edit, which is the only moment the previous content still exists.
+
+    FIRST TOUCH ONLY. A file edited twenty times in one run keeps what it
+    looked like before that run started -- the version somebody restoring
+    actually wants -- rather than the state one keystroke ago.
+    """
+    if not owner:
+        return {"kept": False, "why": "no execution owner", "path": ""}
+    rel = str(rel).replace("\\", "/").lstrip("/")
+    source = Path(root) / rel
+    target = preimage_dir(root, owner) / rel
+    try:
+        if target.exists():
+            return {"kept": True, "why": "already captured this run",
+                    "path": str(target)}
+        if not source.is_file():
+            # A NEW FILE HAS NO PRE-IMAGE, and that is worth recording as a
+            # fact rather than as an absence: "there was nothing here before"
+            # is exactly what a restorer needs to know.
+            return {"kept": False, "why": "the file did not exist before this "
+                                          "write", "path": ""}
+        size = source.stat().st_size
+        if size > MAX_PREIMAGE_BYTES:
+            return {"kept": False, "path": "",
+                    "why": (f"{size} bytes is over the {MAX_PREIMAGE_BYTES}-byte "
+                            "pre-image ceiling — recover this one from git")}
+        base = preimage_dir(root, owner)
+        if base.is_dir() and sum(1 for _ in base.rglob("*")) >= MAX_PREIMAGE_FILES:
+            return {"kept": False, "path": "",
+                    "why": "this run has already captured its file ceiling — "
+                           "recover from git"}
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        return {"kept": True, "why": "", "path": str(target)}
+    except Exception:                                             # noqa: BLE001
+        return {"kept": False, "why": "the copy failed", "path": ""}
+
+
+def recoverable(root: str | os.PathLike[str], owner: str) -> dict:
+    """What this execution could be rolled back from, and what it could not.
+
+    DECLARES ITS OWN GAPS. A path in the ledger with no pre-image is either a
+    file that did not exist before (nothing to restore) or one too big to copy
+    (git has it). Reporting only the successes would imply a coverage this does
+    not have — see the module docstring.
+    """
+    kept, missing = [], []
+    base = preimage_dir(root, owner)
+    for rel in paths_for(root, owner):
+        (kept if (base / rel).is_file() else missing).append(rel)
+    return {
+        "owner": owner, "preimages": kept, "no_preimage": missing,
+        "dir": str(base),
+        "note": ("a pre-image is the file's content BEFORE this execution "
+                 "first touched it. Paths under `no_preimage` were created by "
+                 "this run (nothing to restore) or were too large to copy — "
+                 "for those, and for anything this harness never observed, "
+                 "the commit is the recovery path."),
+        "recovery": recovery_note(),
+    }
+
+
+def recovery_note() -> str:
+    """THE SAFETY NET, NAMED. See #30: auto-commit is what actually makes an
+    agent's work recoverable, and nothing anywhere said so — 'uncommitted' was
+    read as 'the work has not landed' when it means the opposite."""
+    return ("AUTO-COMMIT IS THE REAL SAFETY NET. Every dispatched run commits "
+            "the paths IT touched at the end (gitwork.commit_paths against the "
+            "run's base_commit), so `git log` is the undo history and "
+            "`git diff <base_commit>` is what a run changed. The pre-images "
+            "here are a shorter-range convenience for a single destructive "
+            "edit inside a live run. Note that UNCOMMITTED DOES NOT MEAN THE "
+            "WORK DID NOT LAND: it means the run has not finished, or the tree "
+            "was dirty with somebody else's edits and the commit was declined.")
 
 
 def record(root: str | os.PathLike[str], rel: str, seat: str, owner: str,
@@ -77,7 +236,7 @@ def record(root: str | os.PathLike[str], rel: str, seat: str, owner: str,
     # twenty identical lines — a record that inflates with effort rather than
     # describing what changed.
     rel = str(rel).replace("\\", "/").lstrip("/")
-    if not rel:
+    if not plausible(rel):
         return False
     try:
         target = path_for(root, owner)

@@ -212,7 +212,11 @@ class TestTheThreeDBlockIsKindKeyed:
         # agent reconstructing it from memory is what the cut was meant to stop.
         text = seats.workflow_for("art", "2d", seats.DEFAULT_SEATS["art"]["workflow"])
         assert "dimension" in text
-        assert "do not reconstruct" in text
+        # Case-insensitive: the assertion is about what the brief SAYS, and
+        # the sentence moved when a dispatched seat stopped being able to set
+        # the dimension itself (modules.DIRECTOR_ONLY).
+        assert "do not reconstruct" in text.lower()
+        assert "ask_human" in text
 
     @pytest.mark.parametrize("dimension", ["3d", "2d+3d"])
     def test_a_project_that_makes_meshes_gets_all_of_it(self, dimension):

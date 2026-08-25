@@ -10,6 +10,247 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **Every important gate now terminates at the actual player-facing runtime.**
+  A 3D benchmark game (Catnip Fiend) was built through the harness end to end.
+  Generation was cheap and mostly worked; what cost money was verification
+  proving the wrong thing, ceilings killing already-finished work, and board
+  state that was technically correct and read as broken. This pass closes the
+  measured holes. Regressions in `tests/test_catnip_findings.py`.
+
+  - **The default scene is mandatory evidence.** The benchmark shipped with
+    `run/main_scene` still pointing at the scaffold demo while every named-scene
+    test passed — each of those tests named the scene it tested, and none named
+    the one the game boots into. `godot_evidence` with no `scene` argument now
+    launches exactly what pressing play launches, records the proof, and fails
+    on a missing, broken or scaffold default. Named-scene evidence does not
+    substitute for it (`bgate_core/sceneproof.py`).
+  - **Capturing evidence is not examining it.** A character shipped with two
+    tails for a full day with its turnaround renders already on disk; nobody
+    opened the rear view. `evidence_assert(scene, frame, says=...)` records an
+    explicit claim about image CONTENT, bound to the frame's digest so it goes
+    stale when the frame changes. Characters need all four cardinal views.
+  - **`asset_verify` is release truth.** It already answered `dangling`,
+    `delivered_but_unwired` and `freshness`, and it was in no gate. The
+    presentation gate runs it and blocks on actionable findings. Dynamic-loading
+    caveats are preserved: where a project builds paths at run time, an unwired
+    asset is a candidate, not a verdict.
+  - **Real-controller traversal, terminating in a SETTLED state**
+    (`bgate_core/traversal.py`, `traversal_prove`). Four of six climbing routes
+    passed while measuring vertical rise alone. The gate written to fix that
+    then produced its own false green: it accepted arrival on any frame the body
+    was near the target, including mid-arc during a jump that MISSED — and a
+    grounded check was not enough either, because a scripted mantle carries
+    `is_on_floor` from before it began. Arrival now requires inside the
+    destination's OWN volume, grounded, not in a scripted move, held across N
+    consecutive frames. A controller with no public "am I in a scripted move"
+    query is REFUSED rather than sampled naively.
+  - **Gate findings carry provenance and can be RETRACTED**
+    (`bgate_core/findings.py`, `greenlight_supersede`). A false blocker reached
+    the gate because `scale_check` measured a 3D character's turnaround render
+    and reported "30.00 player-heights tall" for a 0.24 m animal. The row said
+    it cleared by being done and could never be done. Findings now carry the
+    producing tool, its inputs and the measurement; a later authoritative
+    measurement supersedes one, with an audit trail, and the superseded row
+    stays visible.
+  - **Every blocking row must name an action that can clear it.** The gate
+    audits its own rows: `blocking` / `judgement` (a person has to look —
+    correct, not backlog) / `unfinished` / `impossible` (a HARNESS BUG, reported
+    as one). `scale_check`'s vocabulary gained the `player` class it was missing
+    while the contract's own unit is `player_height_px`.
+  - **"The brief's premise is false" is a first-class outcome.**
+    `queue_complete(premise_refuted={claim, measured, did_instead})`. Three
+    times an agent was handed a brief with a false measured premise, twice
+    written by the director; each refusal stopped a wrong fix shipping, and each
+    survived only as prose in a result note. It is now on the board and in
+    `board_digest`.
+  - **Dependency order is readable without renumbering anything.**
+    `queue_list(order='execution')` and `queue.graph()` present
+    `work_item.depends_on` and `work_item_dep` as ONE graph, with
+    `execution_position` and `execution_state` (ready / running / waiting /
+    blocked / held). A queued row now says `WAITING ON #45 Swap in furniture`
+    rather than `#43 QUEUED`. Ids are creation identifiers and are never
+    renumbered.
+  - **Engine invocations are serialised** (`bgate_core/enginelock.py`). Two
+    Godot processes sharing one `.godot` cache deadlock on Windows and the
+    symptom is identical to a hang. The rule used to live in a hand-written seat
+    note that every operator and agent had to remember.
+  - **What a killed run already delivered is read before a retry is bought**
+    (`bgate_core/salvage.py`). One item ran three agents and $33 to deliver work
+    that was ~95% complete after the first, because the retry brief described
+    the job and never mentioned that most of it was on disk. The
+    harness-observed write log and the artifact ledger now ride into the retry
+    brief with an explicit instruction not to regenerate.
+
+### Changed
+- **`godot_run` is autoload-safe.** Scripts naming project autoloads failed with
+  `Identifier not found` against the CALLER'S line number — it read as a syntax
+  error the author did not write, and cost about $9 before it was identified.
+  Verified on 4.4.1: `--script` replaces the main loop, so Godot never
+  instantiates autoloads and `root.get_children()` is `[]`. `extends Node` is
+  now a supported shape and runs as the project's main scene, where autoloads
+  resolve exactly as in the game; a SceneTree script that reaches for one is
+  refused before the engine spawns, naming the real cause.
+- **Evidence tools no longer dirty the tree.** A dirty tree refuses the WHOLE
+  board, so one killed screenshot stalled every seat. The injected capture
+  scripts moved to `.godot/bgate_run/`; `override.cfg` cannot move, so
+  `gitwork.dirty` recognises OURS by its marker and ignores it while a user's
+  own `override.cfg` still counts.
+- **`godot_test_run` returns concise output by default and separates two
+  signals.** Measured on one agent's log: 68% of 8 MB was tool results echoed
+  back, 366 entries at ~15 KB each — that, not model quality, is what consumed
+  the turn and clock ceilings. Modes: `summary` / `failures_only` (default) /
+  `changed` / `full`, with the complete log on disk. `assertions_ok` and
+  `process_ok` are now separate, because `ok: false` with `0` failed assertions
+  read as nonsense and was dismissed as harness noise for a full session — while
+  the engine error behind it (`N resources still in use at exit`) was a REAL
+  leak in the project's own tests. It is deliberately NOT easier to ignore. The
+  tool also now delegates to `bgate_core.enginetests`, so an agent's runs are
+  recorded in the history the dashboard reads.
+- **`godot_deliver_asset` handles non-humanoids.** Unsupported `shape_type` /
+  `body_type` / `character_body` values were written into the import settings
+  and silently dropped by the engine; they are refused now. The absurd-capsule
+  check was written against a PERSON and failed a correct quadruped collider
+  while blaming an A-pose arm span on an animal with no arms — `asset_class`
+  grades against the declared class. The authored origin is preserved unless
+  `normalize_origin=True`, and `origin_proof` / `collider_proof` report
+  before-and-after either way.
+- **`ask_human` names its recipient.** A question addressed to the director went
+  to the human, who was not there, and two items sat waiting on an answer nobody
+  knew existed. `to=` is `human` / `director` / `seat:<name>`; a director
+  question with no live director session fails immediately with the channels
+  that would have worked, rather than being silently remapped.
+- **`queue_update` on a running item says whether it reached anybody.** It never
+  did — it rewrites the row, not the running agent's instructions. A brief
+  change on a dispatched item is now refused with the `agent_steer` call to make
+  instead, or delivered as a steer with `steer_running=True`. Every result
+  carries `live_delivered`.
+- **Steers are recorded in the item's own history.** The steer inbox is a spool
+  that is consumed and deleted, so a mid-run correction existed only until it
+  was read and a later reader could not tell which corrections shaped a result.
+- **Retry exhaustion is a state, not two counters to add up by hand**
+  (`work_item.exhausted_at/why`, migration 0043). Exhausted work is not offered
+  by `queue_next` or `ready`; only a reopen clears it. `queue.next_for` now
+  delegates to `queue.ready` — the two copies of "THE one readiness rule" had
+  drifted, so `queue_next` was offering human-held escalations as claimable
+  work.
+- **A spend total never silently omits a channel.** 84 credits across 11 kie
+  calls were invisible to every spend figure and to both budget ceilings.
+  `spend.spend_line()` is the one formatter and prints `$4.12 + 84 unpriced
+  credits (11 calls…)`; `spend.check` carries its own blind spot in the verdict.
+  No rate is invented.
+- **`scale_check` refuses to answer outside its competence.** A pixel
+  measurement on a 3D project's world-space asset, or on any mesh, raises
+  `WrongDimension` and names the measurement that CAN answer it.
+- **`godot_evidence` no longer returns `ok: true` with empty data on 3D.** An
+  empty `entities` on a 3D project is now labelled as a limit of the tool rather
+  than a fact about the scene.
+- **The QA seat's doctrine gained the rules the benchmark paid for**: never
+  verify a derived value against the constant that created it (with a
+  deliberately-wrong control); a test must not depend on the behaviour it is
+  proving; a label must name the thing measured; and the five checks that caught
+  what hundreds of assertions missed.
+
+### Fixed
+- **`bg_apply` cannot silently no-op.** `bpy.ops.object.transform_apply` returns
+  `{'CANCELLED'}` rather than raising when its poll fails, and three identical
+  "rotated" exports were paid for before anybody read the return value. It is
+  NOT a headless limitation — verified, the operator works with a valid
+  selection. `bg_apply` no longer uses an operator at all and asserts the bake
+  happened; `bg_op()` checks operators that must stay; `blender_run` lints
+  discarded `bpy.ops.*` results.
+- **A re-exported GLB no longer probes as its old self.** `ensure_fresh()` reads
+  Godot's own `source_md5` sidecars, reimports when the source has moved, and
+  returns freshness evidence. `godot_inspect_resource` calls it first.
+- **`queue.successors` reads both dependency stores.** It read the `depends_on`
+  column alone, so the graph could be walked in one direction only.
+- **A reopen reason is no longer cut mid-sentence.** `reason[:1900]` produced a
+  half-sentence that reads as complete, in the one field the next agent reads to
+  learn what to change.
+- **Agent scratch in a test directory is no longer run as a test.**
+  `Path.glob("*.gd")` matches leading dots unlike a shell glob, so
+  `tests/.orig_player.gd` was picked up and scored.
+
+### Added (earlier in this cycle)
+- **The production stage: a project no longer goes from a premise straight to a
+  specialist fan-out.** `bgate_core/greenlight.py` puts four stages under every
+  project — `thesis`, `graybox`, `production`, `release` — and the stage holds
+  whole SEATS. At `graybox` the art, audio and cinematic seats do not dispatch
+  at all. The hold lives in `queue.ready`, THE one copy of the readiness rule,
+  so both dispatchers honour it and no third path exists; the advisory version
+  of the same rule (a line in the director's brief) lost every time it competed
+  with a queue full of dispatchable work.
+
+  Each boundary asks for something real:
+
+  - **`thesis` → `graybox`** wants a MECHANICAL THESIS: one sentence naming the
+    decision the player repeatedly makes, plus the options, the stakes, the
+    tension (why the answer is not the same every time), the dominant strategy
+    that would collapse it, and the cadence. A premise is refused as a thesis —
+    the sentence has to name an act of choosing. Night Shift reached full
+    production with nouns and systems and no decision structure, and nothing in
+    the pipeline could ask the question that would have surfaced it. The
+    sentence now travels in every seat brief with a rule attached: build against
+    the decision, not the feature list.
+  - **`graybox` → `production`** wants a graybox the director PLAYED and passed
+    — submitted with a real scene and evidence somebody can look at, ruled on
+    with a reason in both directions. It also wants any declared enemy roster to
+    be interactions rather than isolated state machines, and any declared
+    objective list to be more than one commitment shape wearing several names
+    (`bgate_core/encounter.py`). "melee / ranged / support" and eight tasks that
+    are all "stand here for N seconds" are both refused, and both look like
+    finished design work until somebody plays them.
+  - **`production` → `release`** wants the presentation gate, below.
+
+  A project that already had work dispatched before this existed reads as
+  `production`, derived from its own board. Holding an in-flight project
+  retroactively would be a silent behaviour change on upgrade, which is exactly
+  what `gates.py` refuses to do about sign-off.
+
+- **A presentation gate that cannot be routed around.** Night Shift's was
+  blocked and the build shipped anyway, which is only possible when a gate is
+  something a caller consults rather than something the close path runs. So
+  `greenlight.release_guard` is called by `webbuild.rebuild`, on the
+  `--export-release` line, and an unmet row refuses the build. It takes **no
+  waiver** — `greenlight_waive` releases a seat from a stage hold and does
+  nothing here, and the refusal says so. It binds only at the `release` stage;
+  every playtest build during development exports exactly as before.
+
+  Three checks stand behind it, each replacing a judgement the old pipeline made
+  against the wrong evidence:
+
+  - **Scale, at game scale** (`bgate_core/scalecontract.py`). Player height and
+    tile size existed; nothing fixed how big a door, a desk, a mug, a HUD icon
+    or an enemy should be, so each was sized by whatever the generator felt like
+    and reviewed on a contact sheet — the one presentation that cannot show a
+    scale error, because it draws everything in the same box. Five classes with
+    bands in multiples of player height, and `scale_check` measures the OPAQUE
+    BOUNDING BOX (a 512×512 sheet holding a 40px mug is a 40px mug) and records
+    the result on the artifact revision, so a regenerated asset is unmeasured
+    again.
+  - **Whole rooms, not cropped evidence** (`bgate_core/roomqa.py`). `room_review`
+    takes a full-room screenshot — a mostly-transparent or square image is
+    refused as a crop, not accepted with a caveat — and measures the scene tree
+    for empty floor, perimeter hugging, prop scale spread, focal concentration
+    and the lanes between obstacles. A pass cannot stand over a measured
+    finding; each is answered with `room_override` and a reason, per finding,
+    because a per-project switch is a gate that gets switched off wholesale.
+  - **Audio heard in context** (`audiohooks.listen_record`). Peaks, RMS, wiring
+    and duplicate detection all pass on a cue that is wrong for the moment it
+    fires, buried under the music, or three frames late. A listening pass names
+    the gameplay capture it was made over and the cues actually heard; coverage
+    is per capture, so re-recording after a mix change starts it over.
+
+- **In-flight call registry, so a restart cannot lose work without a record**
+  (`bgate_core/inflight.py`). The progress heartbeat stops a slow tool from
+  LOOKING dead; it does nothing about the restart that happens anyway. Every
+  tool call now announces itself to a file that outlives the process, so the
+  next server start names what the last one was holding when it died (stderr at
+  MCP boot, and on the `bgate serve` banner), `board_digest.restart_cost` says
+  what killing the server right now would orphan, and `board_digest.orphaned`
+  says what a previous one already did. Measured on night-shift: three Retro
+  Diffusion jobs charged, succeeded, wrote their sheets, and were never
+  delivered to the agent that paid for them.
+
 - **Tilesets: the bridge that unblocked level generation.** `levelgen`,
   `autotile`, `tilemap` and `wire_tilemap` were all real and all dark, because
   every one of them needed a Godot `TileSet.tres` and nothing here could write

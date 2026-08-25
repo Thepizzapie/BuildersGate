@@ -19,6 +19,38 @@ import { useViewActive } from "../hooks";
 
 const LIVE_STATUS = new Set(["running", "in_progress", "working"]);
 
+/* WHAT THE BADGE SAYS, AND WHY IT IS NOT `status`.
+ *
+ *     #42 enlarge rooms       done
+ *     #45 swap in furniture   running
+ *     #43 rebuild routes      queued
+ *
+ * That read as a scheduler that skipped #43, and the scheduler was right: #45
+ * was inserted between #42 and #43 later, because the route measurements had
+ * to wait for real furniture dimensions. `queued` was true and useless. These
+ * five words are the difference between "the board is working, leave it" and
+ * "this needs a person", which `queued` could not express at all.
+ *
+ * WAITING is deliberately the quiet one. BLOCKED, HELD and EXHAUSTED are the
+ * loud ones, because each of those needs somebody and none of them used to be
+ * distinguishable from an ordinary queued row. */
+const STATE_LABEL: Record<string, string> = {
+  ready: "ready",
+  waiting: "waiting",
+  blocked: "blocked",
+  held: "held",
+  exhausted: "exhausted",
+};
+const STATE_ICON: Record<string, string> = {
+  waiting: "clock-pause",
+  blocked: "hand-stop",
+  held: "user-question",
+  exhausted: "alert-triangle",
+};
+/* Loud states get their own class so the card can carry a border rather than
+   hiding the fact in a tooltip. */
+const NEEDS_A_PERSON = new Set(["blocked", "held", "exhausted"]);
+
 export function Board() {
   const host = useRef<HTMLDivElement>(null);
   const active = useViewActive(host);
@@ -84,12 +116,26 @@ export function Board() {
                     <span className="line">
                       <Ti name={isLive ? "player-play" : "clock"} />
                       <span className="ttl">{t.title}</span>
-                      <span className="badge">
+                      <span className={`badge${
+                        NEEDS_A_PERSON.has(t.execution_state || "") ? " needs" : ""}`}>
                         {isLive
                           ? (t.phase && t.phases ? `phase ${t.phase}` : "running")
-                          : t.status}
+                          : (STATE_LABEL[t.execution_state || ""] || t.status)}
                       </span>
                     </span>
+                    {/* THE BLOCKER'S TITLE, ON THE CARD. `waiting_on` was on
+                        the wire as a nested object nobody rendered, so the
+                        reader had to open the item to learn what it was behind
+                        - and the whole defect is that they were not opening
+                        it. The server writes the sentence; this draws it. */}
+                    {!isLive && t.waiting_line && (
+                      <span className={`note wait${
+                        NEEDS_A_PERSON.has(t.execution_state || "") ? " needs" : ""}`}>
+                        <Ti name={STATE_ICON[t.execution_state || ""] || "clock"}
+                            size={11} />
+                        {t.waiting_line}
+                      </span>
+                    )}
                     {(t.note || agent) && (
                       <span className="note">
                         {/* dispatch.status() documents `seconds: 0` as NOT RECORDED rather than

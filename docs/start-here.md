@@ -199,6 +199,43 @@ pulled at each remark, plus the game's own telemetry joined on one clock, so
 Items land as `new` and stay there until you promote them. This needs ffmpeg
 and a microphone; skip it if you have neither.
 
+## Before the working loop: the production stage
+
+A new project does not start with every seat open. It starts at `thesis`, and it
+gets to `production` by earning it:
+
+```text
+thesis      Write the ONE SENTENCE: what decision is the player repeatedly
+            making that makes this game interesting?  greenlight_thesis_set —
+            with the options, the stakes, the reason the answer is not the same
+            every time, and the play that would collapse the whole thing.
+            A premise ("a tense horror game about surviving the night shift")
+            is refused. It is not a decision.
+
+graybox     Gameplay proves that loop in ONE UGLY ROOM.  No art, no audio, no
+            cinematic — those seats do not dispatch at this stage, at all.
+            greenlight_graybox_submit with a scene and evidence somebody can
+            look at; greenlight_graybox_verdict is the director playing it and
+            saying whether the interaction is actually interesting.
+            If it reduces to attack + dodge + hold interact, fail it here.
+
+production   The specialist fan-out. To get here the graybox has to have
+            PASSED, a declared enemy roster has to be interactions rather than
+            isolated state machines, and a declared objective list has to be
+            more than one commitment shape wearing several names.
+
+release     Everything above, plus a presentation gate that `--export-release`
+            runs and nothing waives.
+```
+
+If a queued item will not dispatch and its dependencies are clean, this is
+almost always why — `greenlight_status` says which seats are held and what
+would release them. `greenlight_waive(seat, reason)` lets one seat through for
+a real reason, on the record; there is no equivalent for the release gate.
+
+A project that already had work dispatched before this existed reads as
+`production` and is not held retroactively.
+
 ## The working loop
 
 Once you are past the first hour, a day looks like this:
@@ -230,12 +267,20 @@ QA          headless test scripts via godot_run; asset_verify for drift
 YOU         play the build, talk out loud, promote what becomes work
 ```
 
-Two habits that cost the most when skipped:
+Four habits that cost the most when skipped:
 
 - **A green doctor row is a capability, not a tick.** If you decline a
   capability, say so as a decision.
 - **`usable` means configured, not running.** A local backend lists as usable
   with no server up. Check `hosted` before reporting a path unavailable.
+- **Review rooms, not crops.** A prop passes on a contact sheet and the room it
+  goes in is still an empty rectangle with the furniture against the walls.
+  `room_review` takes a full-room screenshot and refuses a cropped one.
+- **Do not restart the MCP server because a tool has gone quiet.** A provider
+  call that has said nothing for ten minutes is usually still running, and the
+  restart does not stop the charge — it only throws away the result.
+  `board_digest` reports `restart_cost` before you do it and `orphaned` after
+  somebody already has.
 
 ## What dispatch does
 

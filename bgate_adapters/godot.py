@@ -25,6 +25,8 @@ from glob import glob
 from pathlib import Path
 from typing import Optional
 
+from bgate_core import enginelock as _enginelock
+
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # Same rule as blender.py: a child that inherits a stdio MCP server's stdin
@@ -178,50 +180,317 @@ _NOT_MAINLOOP_BASES = {
 }
 _EXTENDS_RE = re.compile(r"^\s*(?:class_name\s+\w+\s+)?extends\s+([\"']?)([^\s\"']+)\1")
 
+# ---------------------------------------------------------------------------
+# AUTOLOADS, AND THE $9 ERROR MESSAGE
+# ---------------------------------------------------------------------------
+#
+# MEASURED. A script naming one of the project's own autoloads failed under
+# `godot_run` with:
+#
+#     SCRIPT ERROR: Compile Error: Identifier not found: GameState
+#        at: GDScript::reload (.../agent_script.gd:4)
+#
+# which names the CALLING FILE and reads, exactly, as a syntax error the author
+# did not write. It cost about $9 of agent time before anybody identified it,
+# and it hit the harness's own scaffold code.
+#
+# THE CAUSE, verified on 4.4.1 with a two-file project: `--script` REPLACES the
+# main loop, and autoloads are only instantiated when Godot starts a main scene.
+# Under `--script` the tree has no autoload children at ALL - `root.get_children()`
+# is `[]` - so the singleton is not merely unresolvable as a global identifier,
+# it does not exist. Writing the script inside res:// does not help; verified.
+#
+# WHAT DOES WORK, verified the same way: run the script as a NODE inside a
+# generated scene, launched as the main scene. Then Godot boots normally,
+# autoloads enter the tree before it, and `GameState.hello()` resolves exactly
+# as it does in the game. So `extends Node` is now a supported shape rather than
+# a refusal, and a SceneTree script that reaches for an autoload is refused
+# BEFORE the engine spawns, naming the real cause.
+#
+# `class_name` is deliberately NOT the substitute here: the global class
+# registry is built from `.godot/global_script_class_cache.cfg`, which is
+# editor-written state a headless-only project may never have.
+_AUTOLOAD_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[\"']\*?res://",
+                          re.MULTILINE)
 
-def _script_gate(script: str) -> Optional[dict]:
-    """Refuse a script --script cannot run, before Godot is spawned."""
-    base = None
+
+def project_autoloads(project_dir: Optional[str]) -> list[str]:
+    """The singleton names project.godot registers, or []. Never raises."""
+    if not project_dir:
+        return []
+    try:
+        text = (Path(project_dir) / "project.godot").read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    section = re.search(r"^\[autoload\]\s*$(.*?)(?=^\[|\Z)", text,
+                        re.MULTILINE | re.DOTALL)
+    if not section:
+        return []
+    return [m.group(1) for m in _AUTOLOAD_RE.finditer(section.group(1))]
+
+
+def _strip_literals(script: str) -> str:
+    """Source with comment and string BODIES blanked, offsets/lines preserved.
+
+    A NAME INSIDE A LABEL IS NOT A REFERENCE. test_foundation.gd spells the
+    autoload in an assertion label - "Scale.CAT_WIDTH == 0.14" - and never
+    touches the singleton; the gate below refused it anyway and reported 0 of
+    its 27 assertions. Written as a scanner rather than one alternation regex
+    because GDScript has four quote forms and the escaping in that pattern is
+    exactly the kind of thing that fails silently.
+    """
+    out: list[str] = []
+    i, n = 0, len(script)
+    quote = ""
+    while i < n:
+        ch = script[i]
+        if quote:
+            if ch == "\\" and i + 1 < n:
+                out.append("  " if script[i + 1] != "\n" else " \n")
+                i += 2
+                continue
+            if script.startswith(quote, i):
+                out.append(" " * len(quote))
+                i += len(quote)
+                quote = ""
+                continue
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            continue
+        if ch == "#":
+            while i < n and script[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        for q in ('"""', "'''", '"', "'"):
+            if script.startswith(q, i):
+                quote = q
+                out.append(" " * len(q))
+                i += len(q)
+                break
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+_DECL_KEYWORDS = r"(?:(?:@onready\s+|static\s+)?(?:const|var)|class_name|for)"
+
+
+def _shadows(script: str, name: str) -> bool:
+    """True when the SCRIPT declares `name` itself, so it is not the autoload.
+
+    `const Scale = preload("res://scripts/scale.gd")` is the idiom for reaching
+    a singleton's SCRIPT without the singleton - which is exactly what a
+    --script test is supposed to do, and what the gate below exists to permit.
+    Two of catnip-fiend's test scripts use it; both were refused, and their 414
+    assertions reported as 0.
+    """
+    pattern = r"(?m)^\s*" + _DECL_KEYWORDS + r"\s+" + re.escape(name) \
+        + r"(?![A-Za-z0-9_])"
+    return re.search(pattern, script) is not None
+
+
+def _names_used(script: str, names: list[str]) -> list[str]:
+    """Which of `names` the script actually reaches AS THE AUTOLOAD.
+
+    TWO WAYS TO MENTION A NAME WITHOUT USING THE SINGLETON, and this gate
+    refused scripts for both. Measured on catnip-fiend: seven scripts reported
+    as unrunnable with 0 assertions each, hiding 441 that passed and 2 that
+    genuinely failed - a red gate that was not measuring the thing its message
+    named. `const Scale = preload(...)` shadows it; "Scale.CAT_WIDTH == 0.14"
+    as an assertion label only spells it.
+    """
+    body = _strip_literals(script)
+    used = []
+    for name in names:
+        if _shadows(body, name):
+            continue
+        if re.search(rf"(?<![A-Za-z0-9_.]){re.escape(name)}\s*[.\[(]", body):
+            used.append(name)
+    return used
+
+
+def _script_base(script: str) -> tuple[Optional[str], bool]:
+    """(base class name, was it a quoted res:// path)."""
     for line in script.splitlines():
         stripped = line.split("#", 1)[0].strip()
         if not stripped:
             continue
         m = _EXTENDS_RE.match(stripped)
         if m:
-            quoted, base = m.group(1), m.group(2)
-            if quoted:  # extends "res://..." - chain unknowable, let Godot try
-                return None
-            break
+            return m.group(2), bool(m.group(1))
+    return None, False
+
+
+def _script_gate(script: str, project_dir: Optional[str] = None) -> Optional[dict]:
+    """Refuse a script --script cannot run, before Godot is spawned."""
+    base, quoted = _script_base(script)
+    if quoted:  # extends "res://..." - chain unknowable, let Godot try
+        return None
     if base in _MAINLOOP_BASES:
+        # A SceneTree script CAN run. Whether it can see the project's
+        # singletons is a different question, and the one that produced an
+        # unreadable error - so it is answered here, before anything is spawned.
+        wanted = _names_used(script, project_autoloads(project_dir))
+        if wanted:
+            return {
+                "ok": False,
+                # A REFUSAL IS NOT A RESULT, and it must not be scored like
+                # one. This gate refused seven healthy scripts and each was
+                # recorded as 0 passed / 0 failed — which reads as "nothing to
+                # see", not "I declined to look". See enginetests.run.
+                "refused": "autoload_unreachable",
+                "error": (f"this script names the project autoload(s) "
+                          f"{', '.join(wanted)}, and `--script` cannot see "
+                          "them: it REPLACES the main loop, so Godot never "
+                          "instantiates autoloads and the tree has no such "
+                          "node. The engine reports this as `Identifier not "
+                          "found` AGAINST YOUR SCRIPT'S LINE NUMBER, which "
+                          "reads as a syntax error you did not write."),
+                "hint": ("write it as a NODE instead - `extends Node`, work in "
+                         "`func _ready():`, finish with `get_tree().quit()`. "
+                         "godot_run runs a Node script as the main scene, "
+                         "which boots the project properly and resolves every "
+                         "autoload exactly as the game does."),
+                "autoloads": wanted,
+                "seconds": 0.0,
+            }
         return None
     if base is not None and base not in _NOT_MAINLOOP_BASES:
         return None  # custom class name - the chain may reach SceneTree
+    if base in _NODE_BASES:
+        return None  # runs through the scene path below
     got = f"`extends {base}`" if base else "no extends clause (implicit RefCounted)"
     return {
         "ok": False,
-        "error": f"script cannot run under --script: {got}. "
-                 "A headless run must `extends SceneTree` (or MainLoop).",
-        "hint": "start the script with `extends SceneTree`, do the work in "
-                "`func _init():`, and end with `quit()`. To exercise a Node "
-                "script, load it from a SceneTree script instead: "
-                "var n = load(\"res://path.gd\").new(); root.add_child(n)",
+        "refused": "wrong_base_class",
+        "error": f"script cannot run headless: {got}. Run it as a SceneTree "
+                 "script (`extends SceneTree`, work in `_init()`, call "
+                 "`quit()`) or as a node (`extends Node`, work in `_ready()`, "
+                 "call `get_tree().quit()`).",
+        "hint": "a node script is the one that can see this project's "
+                "autoloads; a SceneTree script cannot.",
         "seconds": 0.0,
     }
 
 
+#: Bases godot_run will host inside a generated scene. Everything here is a
+#: Node, so it has a _ready() and a tree to quit.
+_NODE_BASES = {
+    "Node", "Node2D", "Node3D", "CanvasItem", "CanvasLayer", "Control",
+}
+
+#: Where the harness's own scratch scripts and scenes live INSIDE a project.
+#: `.godot/` is the engine's own cache directory: every Godot .gitignore
+#: template ignores it, the engine rewrites it freely, and nothing a user
+#: authored is in there. Putting our scratch anywhere else is what made taking
+#: a screenshot dirty the tree, and a dirty tree refuses the WHOLE board rather
+#: than one item - so one capture stalled every seat.
+SCRATCH_DIR = ".godot/bgate_run"
+
+
+def _scratch(project: Path) -> Path:
+    path = project / ".godot" / "bgate_run"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+_SCENE_WRAPPER = ('[gd_scene load_steps=2 format=3]\n\n'
+                  '[ext_resource type="Script" path="{res}" id="1"]\n\n'
+                  '[node name="BGateRun" type="Node"]\nscript = ExtResource("1")\n')
+
+
+def _run_node_script(script: str, project_dir: str, timeout: int) -> dict:
+    """Run a Node script as the project's main scene. THE AUTOLOAD-SAFE PATH.
+
+    Everything it writes lives under ``.godot/bgate_run`` and is removed in a
+    finally, so a project that was clean before the call is clean after it -
+    including on the timeout path, which is when an agent runs the most.
+    """
+    import time
+
+    from bgate_core import enginelock as _lock
+
+    project = Path(project_dir)
+    scratch = _scratch(project)
+    stem = f"run_{os.getpid()}_{int(time.time() * 1000) % 100000}"
+    gd = scratch / f"{stem}.gd"
+    tscn = scratch / f"{stem}.tscn"
+    res_gd = f"res://{SCRATCH_DIR}/{gd.name}"
+    res_tscn = f"res://{SCRATCH_DIR}/{tscn.name}"
+    try:
+        gd.write_text(script, encoding="utf-8")
+        tscn.write_text(_SCENE_WRAPPER.format(res=res_gd), encoding="utf-8")
+        started = time.monotonic()
+        try:
+            with _lock.hold(project, what="godot_run") as waited:
+                proc = _spawn([find_godot(), "--headless", "--path",
+                               str(project), res_tscn], timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"Godot timed out after {timeout}s",
+                    "hint": "a node script must call get_tree().quit() or it "
+                            "runs until the timeout",
+                    "seconds": timeout, "ran_as": "scene"}
+        except _lock.EngineBusy as exc:
+            return {"ok": False, "error": str(exc), "seconds": 0.0,
+                    "ran_as": "scene", "engine_contended": True}
+        stdout, stderr = proc.stdout or "", proc.stderr or ""
+        return {
+            "ok": proc.returncode == 0 and "SCRIPT ERROR" not in stdout + stderr,
+            "stdout": stdout[-8000:], "stderr": stderr[-4000:],
+            "exit_code": proc.returncode,
+            "seconds": round(time.monotonic() - started, 2),
+            "errors": _errors(stdout + stderr),
+            "ran_as": "scene",
+            "autoloads": project_autoloads(project_dir),
+            "engine_waited_s": waited.get("waited_s", 0.0),
+            "engine_contended": bool(waited.get("contended")),
+        }
+    finally:
+        for path in (gd, tscn, gd.with_suffix(".gd.uid"),
+                     tscn.with_suffix(".tscn.uid")):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def run_script(script: str, project_dir: Optional[str] = None,
                timeout: int = 120) -> dict:
-    """Run a GDScript file headless (a SceneTree script) and capture output.
+    """Run a GDScript file headless and capture output.
 
-    The script must extend SceneTree or MainLoop and call quit(), or it will run
-    until the timeout. Returns {ok, stdout, stderr, exit_code, seconds}.
+    TWO SHAPES, and which one you need depends on ONE question: does the script
+    touch this project's autoloads?
+
+      ``extends SceneTree``  work in ``_init()``, end with ``quit()``. Fast, no
+                             main scene, and it CANNOT see autoloads (see the
+                             note above ``project_autoloads``).
+      ``extends Node``       work in ``_ready()``, end with
+                             ``get_tree().quit()``. Runs as the project's main
+                             scene, so autoloads resolve exactly as in the game.
+
+    Returns {ok, stdout, stderr, exit_code, seconds, ran_as}.
     """
     import tempfile
     import time
 
-    refused = _script_gate(script)
+    from bgate_core import enginelock as _lock
+
+    refused = _script_gate(script, project_dir)
     if refused is not None:
         return refused
+
+    base, _quoted = _script_base(script)
+    if base in _NODE_BASES:
+        if not project_dir or not (Path(project_dir) / "project.godot").is_file():
+            return {"ok": False, "seconds": 0.0,
+                    "error": "a node script runs as the project's main scene, "
+                             "so it needs a Godot project - pass "
+                             "godot_project, or write it as `extends "
+                             "SceneTree` to run without one"}
+        return _run_node_script(script, project_dir, timeout)
 
     exe = find_godot()
     # The scratch dir is torn down in a finally, INCLUDING on the timeout path.
@@ -241,25 +510,55 @@ def run_script(script: str, project_dir: Optional[str] = None,
         cmd += ["--script", str(script_path)]
 
         started = time.monotonic()
+        waited: dict = {}
         try:
-            proc = _spawn(cmd, timeout=timeout)
+            if project_dir:
+                with _lock.hold(project_dir, what="godot_run") as waited:
+                    proc = _spawn(cmd, timeout=timeout)
+            else:
+                proc = _spawn(cmd, timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"Godot timed out after {timeout}s",
                     "hint": "a SceneTree script must call quit() or it runs forever",
                     "seconds": timeout}
+        except _lock.EngineBusy as exc:
+            return {"ok": False, "error": str(exc), "seconds": 0.0,
+                    "engine_contended": True}
         finally:
             elapsed = round(time.monotonic() - started, 2)
 
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
-        return {
+        out = {
             "ok": proc.returncode == 0 and "SCRIPT ERROR" not in stdout + stderr,
             "stdout": stdout[-8000:],
             "stderr": stderr[-4000:],
             "exit_code": proc.returncode,
             "seconds": elapsed,
             "errors": _errors(stdout + stderr),
+            "ran_as": "scenetree",
+            "engine_waited_s": waited.get("waited_s", 0.0),
+            "engine_contended": bool(waited.get("contended")),
         }
+        # THE ERROR THAT NAMED THE WRONG FILE. `Identifier not found: X` where
+        # X is one of this project's autoloads is not a mistake in the script -
+        # it is `--script` having no autoloads at all. The gate above catches
+        # the common shape; this catches the rest (an autoload reached through
+        # a loaded class, a name the regex could not see) and says which of the
+        # two it is, rather than leaving the reader staring at their own line.
+        missing = set(re.findall(r"Identifier not found:\s*(\w+)",
+                                 stdout + stderr))
+        singletons = [a for a in project_autoloads(project_dir) if a in missing]
+        if singletons:
+            out["autoload_unreachable"] = singletons
+            out["error"] = (
+                f"{', '.join(singletons)} is a project AUTOLOAD, and a "
+                "`--script` run has none: it replaces the main loop, so Godot "
+                "never instantiates them. The line number in the error is your "
+                "script's, but the fault is not. Rewrite as `extends Node` "
+                "(work in `_ready()`, finish with `get_tree().quit()`) and "
+                "godot_run will boot the project properly.")
+        return out
     finally:
         # ignore_errors: a killed Godot can still hold the .gd open for a beat
         # on Windows, and a failed cleanup must never mask the real result.
@@ -335,6 +634,98 @@ def export_templates(platform: str = "web") -> dict:
                       "Install them from the editor (Editor > Manage Export "
                       "Templates > Download and Install), or drop the "
                       f".tpz contents into one of: {', '.join(searched)}"}
+
+
+def import_freshness(project_dir: str) -> dict:
+    """Which assets the ENGINE is still showing an older version of.
+
+    THE FAILURE THIS CATCHES, observed twice in the benchmark games: an art seat
+    wrote new PNGs straight into the project. Every structural check passed - the
+    resource path resolved, the dimensions were right, the scene referenced it -
+    and the running game drew the old placeholder, because Godot serves the
+    IMPORTED product out of `.godot/imported/` and that cache had not been
+    rebuilt. A screenshot caught it; nothing else could have. "The file is at
+    the right path" and "the game shows this file" are two different claims and
+    only one of them was being checked.
+
+    Godot itself writes the evidence: beside every cached product is a `.md5`
+    holding `source_md5`, the digest of the source AS IMPORTED. Compare it to
+    the file on disk now and a stale entry names itself, with no engine spawn,
+    no screenshot and no network.
+
+    Returns ``{ok, stale: [...], checked, unimported: [...]}``. ``ok`` is False
+    when anything is stale - which is a REPAIRABLE state, not a broken one: run
+    check_project (`--import`) and ask again.
+    """
+    project = Path(project_dir)
+    if not (project / "project.godot").exists():
+        return {"ok": True, "checked": 0, "stale": [], "unimported": [],
+                "reason": f"no project.godot in {project_dir}"}
+    imported = project / ".godot" / "imported"
+    stale, unimported = [], []
+    checked = 0
+    for meta in project.rglob("*.import"):
+        source = meta.with_suffix("")            # `x.png.import` -> `x.png`
+        if not source.exists():
+            continue
+        try:
+            text = meta.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel = str(source.relative_to(project)).replace("\\", "/")
+        declared = _DEST_FILES.search(text)
+        dest_files = (re.findall(r'"([^"]+)"', declared.group(1))
+                      if declared else [])
+        if not dest_files:
+            # An .import with no products is a resource Godot imports in place
+            # (some importers have no cached form). Nothing to be stale about.
+            continue
+        checked += 1
+        # MD5, and not this module's `_digest` (a short sha256): the number on
+        # the other side of the comparison is written by Godot, and Godot writes
+        # md5. Comparing a digest to a different algorithm's digest is a check
+        # that reports 100% stale on a perfectly fresh project - which is worse
+        # than no check, because a report that is always red gets turned off.
+        digest = _md5(source)
+        recorded = ""
+        missing_product = False
+        for res in dest_files:
+            cached = project / res.replace("res://", "").replace("/", os.sep)
+            if not cached.exists():
+                missing_product = True
+                continue
+            sidecar = cached.with_suffix(".md5")
+            try:
+                found = re.search(r'source_md5="([0-9a-f]+)"',
+                                  sidecar.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            if found:
+                recorded = found.group(1)
+        if missing_product or not recorded:
+            unimported.append(rel)
+            continue
+        if recorded != digest:
+            stale.append({"path": rel, "on_disk_md5": digest,
+                          "imported_md5": recorded,
+                          "why": "the engine is serving an older build of this "
+                                 "file - the bytes on disk are not what the "
+                                 "running game shows"})
+    return {
+        "ok": not stale and not unimported,
+        "checked": checked,
+        "stale": stale[:60],
+        "stale_count": len(stale),
+        "unimported": sorted(unimported)[:60],
+        "unimported_count": len(unimported),
+        "note": ("run godot_check_project to reimport, then ask again - a stale "
+                 "entry is a cache that has not been rebuilt, not a broken "
+                 "asset. Until it is rebuilt, a screenshot of the running game "
+                 "is showing the OLD bytes."
+                 if stale or unimported else
+                 "every imported asset's cached product matches the file on "
+                 "disk: what is in the project is what the engine serves"),
+    }
 
 
 def check_project(project_dir: str, timeout: int = 180) -> dict:
@@ -584,9 +975,25 @@ func _init():
 		quit()
 		return
 	if not (res is PackedScene):
+		# A TEXTURE IS NOT A FAILED SCENE. This probe reports what the engine
+		# built out of a .glb, and every non-scene resource - a sprite sheet, a
+		# .wav, a font - came back ok=false with a sentence that reads like a
+		# broken asset. That is what the CANONICAL 2D DELIVERY PATH returns:
+		# measured on the control run, a correctly imported hero sheet answered
+		# `ok: false, "loaded, but not a PackedScene: CompressedTexture2D"`.
+		# An art agent reading that abandons the tool, which is the observed
+		# behaviour the benchmark recorded as "godot_deliver_asset and
+		# asset_verify were never called".
+		#
+		# So a non-scene resource reports what it IS and that the engine loaded
+		# it. That is the whole claim available for a texture, and it is a true
+		# one; the scene-shaped `checks` below simply do not apply.
 		print("BGATE_JSON_START")
-		print(JSON.stringify({"ok": false,
-			"error": "loaded, but not a PackedScene: " + res.get_class()}))
+		print(JSON.stringify({"ok": true, "kind": "resource",
+			"resource_class": res.get_class(),
+			"loads_in_engine": true,
+			"note": "loaded in-engine as " + res.get_class()
+				+ " — not a scene, so the mesh/rig checks below do not apply"}))
 		print("BGATE_JSON_END")
 		quit()
 		return
@@ -661,6 +1068,20 @@ func _init():
 """
 
 
+def _md5(path: Path) -> str:
+    """The digest GODOT records for an imported source, in Godot's algorithm."""
+    import hashlib
+
+    digest = hashlib.md5()
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
+
+
 def _digest(path: Path) -> str:
     """Short sha256 of a file — enough to say "a different mesh", not a key."""
     import hashlib
@@ -729,6 +1150,22 @@ def import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
 
     shutil.copy2(src, dest)
 
+    # DROP THE CACHED PRODUCT BEFORE REIMPORTING, or "delivered" is a claim
+    # about the filesystem and not about the game. Godot serves the imported
+    # form out of `.godot/imported/`, and it decides "already imported" from the
+    # source's md5 sidecar - so new bytes under an existing path can leave the
+    # OLD product in place and the running game keeps drawing the placeholder.
+    # Observed twice in the benchmark games: correct resource path, correct
+    # dimensions, correct scene reference, wrong picture on screen, caught only
+    # by a screenshot. Same purge write_import_settings already does for the
+    # settings-changed case; the bytes-changed case needed it just as much.
+    meta = dest.with_suffix(dest.suffix + ".import")
+    try:
+        import_text = meta.read_text(encoding="utf-8") if meta.exists() else ""
+    except OSError:
+        import_text = ""
+    purged = _purge_import_cache(project, dest, import_text)
+
     imported = check_project(str(project), timeout=timeout)
     res_path = "res://" + str(dest.relative_to(project)).replace("\\", "/")
     inspected = inspect_resource(str(project), res_path, timeout=timeout)
@@ -737,6 +1174,11 @@ def import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
         "ok": bool(inspected.get("ok")),
         "copied_to": str(dest),
         "res_path": res_path,
+        # PROOF, not a promise: after the purge and the reimport, does the
+        # engine's cached product match the bytes now on disk? A caller that
+        # reports "delivered" can point at this.
+        "freshness": import_freshness(str(project)),
+        "purged_cache": purged,
         # None when nothing was there; a dict naming what was overwritten
         # otherwise. Never absent, so a caller can test one key.
         "replaced": replaced,
@@ -1256,7 +1698,8 @@ def character_scene_text(model_res: str, *, node_name: str,
                          script_res: str = "", model_uid: str = "",
                          camera_height: float = 0.7, with_camera: bool = False,
                          with_capsule: bool = True,
-                         body_type: str = "CharacterBody3D") -> str:
+                         body_type: str = "CharacterBody3D",
+                         recentre: bool = True) -> str:
     """The .tscn source: model instanced under a body, capsule fitted to it.
 
     with_camera adds a first-person Camera3D at eye height. OFF by default, and
@@ -1283,8 +1726,15 @@ def character_scene_text(model_res: str, *, node_name: str,
     # The model's centre goes to the body's origin, because that is where the
     # template's capsule already is and where player.gd's camera offset assumes
     # the eyes are. Getting this wrong buries the character in the floor.
-    offset = (-(pos_x + size_x * 0.5), -(pos_y + size_y * 0.5),
-              -(pos_z + size_z * 0.5))
+    #
+    # AND IT IS NOT ALWAYS RIGHT, which is why it is now a decision rather than
+    # a fact. An asset whose origin was AUTHORED — feet at y=0 so it stands on
+    # a floor, a hinge at the pivot so a door swings — arrives with that origin
+    # thrown away and nothing in the result saying it happened. Silently
+    # mutating an authored transform is the same class of failure as silently
+    # dropping an unsupported shape_type: the caller is told about neither.
+    offset = ((-(pos_x + size_x * 0.5), -(pos_y + size_y * 0.5),
+               -(pos_z + size_z * 0.5)) if recentre else (0.0, 0.0, 0.0))
 
     ext = ['[ext_resource type="PackedScene" '
            + (f'uid="{model_uid}" ' if model_uid else "")
@@ -1493,6 +1943,61 @@ def preview_scene_text(character_res: str, *, longest_axis: float,
     ])
 
 
+def ensure_fresh(project_dir: str, res_path: str = "",
+                 timeout: int = 300) -> dict:
+    """Make the ENGINE agree with the bytes on disk before an authoritative read.
+
+    WHAT WENT WRONG WITHOUT IT. A GLB was re-exported with a longer clip and
+    then probed. The probe reported the OLD animation length, with complete
+    confidence and no hedge, until an unrelated operation happened to trigger a
+    reimport. Nothing in the result said "this is a cached value" — because
+    nothing knew.
+
+    ``import_freshness`` already detects the condition from Godot's own
+    ``source_md5`` sidecars with no engine spawn. This is the other half: when
+    the answer is "stale", REIMPORT and then re-check, and return the evidence
+    either way. A tool that reads an asset's structure should call this first;
+    a tool that reports a cached number as current is a tool that is wrong
+    exactly when somebody has just changed something.
+
+    Returns ``{ok, was_stale, reimported, before, after, checked_path}``.
+    ``ok`` is False only when the reimport ran and the asset is STILL stale,
+    which means the engine could not import it — a fact worth failing on.
+    """
+    before = import_freshness(project_dir)
+    target = str(res_path or "").replace("res://", "").replace("\\", "/")
+
+    def _hits(report: dict) -> list[dict]:
+        rows = report.get("stale") or []
+        if not target:
+            return list(rows) + [{"path": u, "why": "never imported"}
+                                 for u in (report.get("unimported") or [])]
+        return ([r for r in rows if str(r.get("path", "")).endswith(target)]
+                + [{"path": u, "why": "never imported"}
+                   for u in (report.get("unimported") or [])
+                   if str(u).endswith(target)])
+
+    stale = _hits(before)
+    if not stale:
+        return {"ok": True, "was_stale": False, "reimported": False,
+                "before": before, "after": before, "checked_path": res_path,
+                "why": "the engine is serving the bytes that are on disk"}
+    check_project(project_dir, timeout=timeout)
+    after = import_freshness(project_dir)
+    still = _hits(after)
+    return {
+        "ok": not still, "was_stale": True, "reimported": True,
+        "before": before, "after": after, "checked_path": res_path,
+        "why": ("reimported: the engine was serving an older build of "
+                + ", ".join(sorted({str(r.get("path")) for r in stale}))[:400]
+                if not still else
+                "STILL STALE after a reimport — the engine could not import "
+                + ", ".join(sorted({str(r.get("path")) for r in still}))[:400]
+                + ". Any structural reading of this asset is a cached value, "
+                  "not a current one."),
+    }
+
+
 def inspect_resource(project_dir: str, res_path: str, timeout: int = 180, *,
                      min_size_m: float = 0.05, max_size_m: float = 50.0,
                      nominal_size_m: float = 1.8) -> dict:
@@ -1508,6 +2013,12 @@ def inspect_resource(project_dir: str, res_path: str, timeout: int = 180, *,
     """
     import json
     import tempfile
+
+    # FRESHNESS FIRST. This function's whole product is "what did the engine
+    # make of this file", and the engine answers out of `.godot/imported/`. A
+    # re-exported GLB read without this returns the PREVIOUS export's clip
+    # lengths and bone counts, confidently. Measured.
+    freshness = ensure_fresh(project_dir, res_path, timeout=timeout)
 
     exe = find_godot()
     tmp = Path(tempfile.mkdtemp(prefix="bgate_inspect_"))  # cleaned in the finally
@@ -1535,10 +2046,17 @@ def inspect_resource(project_dir: str, res_path: str, timeout: int = 180, *,
         blob = output.split("BGATE_JSON_START", 1)[1].split(
             "BGATE_JSON_END", 1)[0].strip()
         try:
-            return json.loads(blob)
+            got = json.loads(blob)
         except json.JSONDecodeError as exc:
             return {"ok": False, "error": f"unreadable inspector output: {exc}",
-                    "raw": blob[:500]}
+                    "raw": blob[:500], "freshness": freshness}
+        got["freshness"] = freshness
+        if not freshness.get("ok"):
+            # A reading taken off a cache that would not rebuild is not a
+            # reading. Say so on the result rather than in a footnote.
+            got["ok"] = False
+            got["error"] = ((got.get("error") or "") + " " + freshness["why"]).strip()
+        return got
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1602,6 +2120,31 @@ func _shoot() -> void:
 """
 
 
+# WHERE THE INJECTED SCRIPT LIVES, AND WHY IT MOVED.
+#
+# It used to be a dotfile in the PROJECT ROOT (`.bgate_shot.gd`,
+# `.bgate_evidence.gd`), which put harness scratch inside the user's working
+# tree. A killed capture left it there, `git status` reported it, and the
+# dispatcher refuses a dirty tree — which refuses the WHOLE BOARD, not one
+# item. So taking a screenshot stalled every seat. Hit repeatedly.
+#
+# They now live under `.godot/bgate_run/`, the engine's own cache directory:
+# ignored by every Godot .gitignore template, rewritten by the engine freely,
+# and containing nothing anybody authored. Verified on 4.4.1 that an autoload
+# resolves from there.
+#
+# `override.cfg` CANNOT MOVE. Godot reads it from beside project.godot and
+# there is no CLI flag for an autoload, so that one file still lands in the
+# root. Two things cover it: it is removed in a `finally` (which covers a
+# failure and a timeout), and `bgate_core.gitwork` recognises OUR override.cfg
+# by its marker and does not count it as a dirty tree — a user's own
+# override.cfg still does, which is the distinction that matters.
+_SHOT_SCRIPT = "bgate_shot.gd"
+_EVIDENCE_SCRIPT = "bgate_evidence.gd"
+# The pre-move locations, still cleaned so an upgrade does not strand one.
+_LEGACY_INJECTED = (".bgate_shot.gd", ".bgate_evidence.gd")
+
+
 def clear_injection(project_dir: str) -> dict:
     """Remove a capture injection left behind by a killed run. Ours only.
 
@@ -1628,8 +2171,11 @@ def clear_injection(project_dir: str) -> dict:
         else:
             blocked.append(override.name)
 
-    for name in (".bgate_shot.gd", ".bgate_evidence.gd"):
-        script = project / name
+    scratch = project / ".godot" / "bgate_run"
+    candidates = [(scratch / _SHOT_SCRIPT, _SHOT_SCRIPT),
+                  (scratch / _EVIDENCE_SCRIPT, _EVIDENCE_SCRIPT)]
+    candidates += [(project / name, name) for name in _LEGACY_INJECTED]
+    for script, name in candidates:
         if not script.exists():
             continue
         try:
@@ -1639,7 +2185,7 @@ def clear_injection(project_dir: str) -> dict:
         if _INJECT_MARK not in head:
             blocked.append(name)
             continue
-        for path in (script, project / (name + ".uid")):
+        for path in (script, script.with_name(script.name + ".uid")):
             try:
                 path.unlink(missing_ok=True)
                 if path.name == name:
@@ -1667,18 +2213,31 @@ def _begin_injection(project: Path, script_name: str, script_body: str,
                            "rename them first",
                 "blocked": recovered["blocked"]}
 
-    (project / script_name).write_text(script_body, encoding="utf-8")
+    scratch = _scratch(project)
+    (scratch / script_name).write_text(script_body, encoding="utf-8")
     (project / "override.cfg").write_text(
-        f'[autoload]\n{autoload}="*res://{script_name}"\n', encoding="utf-8")
+        f'[autoload]\n{autoload}="*res://{SCRATCH_DIR}/{script_name}"\n',
+        encoding="utf-8")
     return {"recovered": recovered["removed"]}
 
 
 def _end_injection(project: Path, script_name: str) -> None:
     """Never leave the injection behind — a stray override.cfg silently changes
-    how the user's project runs forever after."""
-    for name in ("override.cfg", script_name, script_name + ".uid"):
+    how the user's project runs forever after.
+
+    Runs in a `finally` on both capture paths, and it is deliberately total:
+    the whole reason a capture must not dirty the tree is that a dirty tree
+    refuses the board, so a partial cleanup is the same failure as none.
+    """
+    scratch = project / ".godot" / "bgate_run"
+    victims = [project / "override.cfg",
+               scratch / script_name,
+               scratch / (script_name + ".uid")]
+    victims += [project / name for name in _LEGACY_INJECTED]
+    victims += [project / (name + ".uid") for name in _LEGACY_INJECTED]
+    for path in victims:
         try:
-            (project / name).unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -1702,7 +2261,7 @@ def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
     if not (project / "project.godot").exists():
         return {"ok": False, "error": f"no project.godot in {project_dir}"}
 
-    started = _begin_injection(project, ".bgate_shot.gd", _SHOT_GD, "BGateShot")
+    started = _begin_injection(project, _SHOT_SCRIPT, _SHOT_GD, "BGateShot")
     if started.get("error"):
         return {"ok": False, **started}
 
@@ -1716,13 +2275,18 @@ def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
             cmd.append(scene)
         env = {**os.environ, "BGATE_SHOT_PATH": str(out.resolve()),
                "BGATE_SHOT_AT": str(at)}
+        # SERIALISED. Two Godot processes sharing one .godot cache deadlock on
+        # Windows and look exactly like a hang — see bgate_core.enginelock.
         try:
-            proc = subprocess.run(cmd, capture_output=True,
-                                  timeout=timeout, stdin=subprocess.DEVNULL,
-                                  env=env, creationflags=_NO_WINDOW, **_TEXT)
+            with _enginelock.hold(project, what="godot_screenshot") as waited:
+                proc = subprocess.run(cmd, capture_output=True,
+                                      timeout=timeout, stdin=subprocess.DEVNULL,
+                                      env=env, creationflags=_NO_WINDOW, **_TEXT)
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"game did not exit within {timeout}s — "
                                           "the shot autoload should quit after capture"}
+        except _enginelock.EngineBusy as exc:
+            return {"ok": False, "error": str(exc), "engine_contended": True}
 
         output = (proc.stdout or "") + (proc.stderr or "")
         if not out.exists():
@@ -1733,9 +2297,11 @@ def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
                     "output": output[-1500:], "errors": _errors(output)}
         return {"ok": True, "path": str(out), "bytes": out.stat().st_size,
                 "at": at, "recovered": started.get("recovered") or [],
+                "engine_waited_s": waited.get("waited_s", 0.0),
+                "engine_contended": bool(waited.get("contended")),
                 "errors": _errors(output)}
     finally:
-        _end_injection(project, ".bgate_shot.gd")
+        _end_injection(project, _SHOT_SCRIPT)
 
 
 # Structured visual evidence — DESIGN.md §9, on the shipped screenshot path.
@@ -1989,7 +2555,7 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
     if not (project / "project.godot").exists():
         return {"ok": False, "error": f"no project.godot in {project_dir}"}
 
-    injected = _begin_injection(project, ".bgate_evidence.gd", _EVIDENCE_GD,
+    injected = _begin_injection(project, _EVIDENCE_SCRIPT, _EVIDENCE_GD,
                                 "BGateEvidence")
     if injected.get("error"):
         return {"ok": False, **injected}
@@ -2014,13 +2580,16 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
             "BGATE_EV_HIDDEN": "1" if include_hidden else "",
         }
         try:
-            proc = subprocess.run(cmd, capture_output=True,
-                                  timeout=timeout, stdin=subprocess.DEVNULL,
-                                  env=env, creationflags=_NO_WINDOW, **_TEXT)
+            with _enginelock.hold(project, what="godot_evidence") as waited:
+                proc = subprocess.run(cmd, capture_output=True,
+                                      timeout=timeout, stdin=subprocess.DEVNULL,
+                                      env=env, creationflags=_NO_WINDOW, **_TEXT)
         except subprocess.TimeoutExpired:
             return {"ok": False,
                     "error": f"game did not exit within {timeout}s — "
                              "the evidence autoload should quit after capture"}
+        except _enginelock.EngineBusy as exc:
+            return {"ok": False, "error": str(exc), "engine_contended": True}
 
         output = (proc.stdout or "") + (proc.stderr or "")
         if not manifest_path.exists():
@@ -2058,10 +2627,12 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
             # Non-empty means a previous capture was killed and left its
             # autoload wired into this project until now.
             "recovered": injected.get("recovered") or [],
+            "engine_waited_s": waited.get("waited_s", 0.0),
+            "engine_contended": bool(waited.get("contended")),
             "errors": _errors(output),
         }
     finally:
-        _end_injection(project, ".bgate_evidence.gd")
+        _end_injection(project, _EVIDENCE_SCRIPT)
 
 
 # ---------------------------------------------------------------------------
@@ -2384,11 +2955,62 @@ def retarget_check(project_dir: str, res_path: str, *,
 # tree, and screenshot() runs the real renderer and captures a frame.
 
 
+# ---------------------------------------------------------------------------
+# WHAT AN ASSET IS, AND WHY A QUADRUPED FAILED A GATE IT SHOULD HAVE PASSED
+# ---------------------------------------------------------------------------
+#
+# The collider check was written against a PERSON: a capsule wider than half
+# its own height cannot fit through a door built for that person, so it was
+# absurd. That is true of a person and false of almost everything else. A cat
+# is roughly three times as long as it is tall. A crate is a cube. A car is
+# wider than it is high. Measured: a quadruped delivery failed `has_collider`
+# with a correct collider, and the message blamed "an A-pose arm span" on an
+# animal that has no arms.
+#
+# So an asset DECLARES ITS CLASS and is graded against that class's own
+# proportions. `humanoid` keeps exactly the old band, so nothing that passed
+# before changes.
+#
+# `auto` is deliberately conservative: skinned means "animal or person", and
+# without knowing which, the honest bound is the loose one. A caller that wants
+# the tight humanoid gate says humanoid.
+ASSET_CLASSES = {
+    "humanoid": {"max_width_ratio": 0.5,
+                 "why": "a person has to fit through a door built for a person"},
+    "quadruped": {"max_width_ratio": 4.0,
+                  "why": "a four-legged animal is legitimately several times "
+                         "longer than it is tall"},
+    "creature": {"max_width_ratio": 4.0,
+                 "why": "a non-humanoid body has no standard proportion"},
+    "prop": {"max_width_ratio": 6.0,
+             "why": "a table is wide and low and that is what a table is"},
+    "vehicle": {"max_width_ratio": 6.0,
+                "why": "a car is wider than it is tall"},
+    "auto": {"max_width_ratio": 4.0,
+             "why": "class not declared - graded loosely, because a gate that "
+                    "guesses humanoid fails every animal"},
+}
+
+#: Collision shapes Godot's glTF importer understands. An unrecognised value
+#: used to be written into the import settings and SILENTLY DROPPED by the
+#: engine, so a caller asking for a convex shape got a trimesh and no word
+#: about it.
+SHAPE_TYPES = ("trimesh", "box", "sphere", "capsule", "cylinder", "convex")
+
+#: Body types the importer will build. Same failure, same fix.
+BODY_TYPES = ("static", "dynamic", "area")
+
+#: Root body classes deliver_asset will wrap an asset in.
+ROOT_BODIES = ("CharacterBody3D", "StaticBody3D", "RigidBody3D",
+               "AnimatableBody3D", "Area3D", "Node3D")
+
+
 def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None,
                   dest_rel: str = "assets", scene_rel: str = "scenes",
                   script_res: str = "", physics: str = "auto",
                   shape_type: str = "trimesh", body_type: str = "static",
-                  character_body: str = "auto",
+                  character_body: str = "auto", asset_class: str = "auto",
+                  normalize_origin: bool = False,
                   screenshot_dir: Optional[str] = None, at: float = 1.2,
                   min_size_m: float = 0.05, max_size_m: Optional[float] = None,
                   nominal_size_m: float = 1.8, with_camera: bool = False,
@@ -2431,12 +3053,58 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
                  new import and leaves the node tree alone. Pass True to throw
                  the hand edits away and regenerate from scratch.
 
+    asset_class  WHAT THIS IS, so the collider is graded against its own
+                 proportions rather than a person's. humanoid | quadruped |
+                 creature | prop | vehicle | auto. The absurd-capsule check was
+                 written for a person ("wider than half its own height cannot
+                 fit through a door") and failed a correct quadruped collider
+                 while blaming an A-pose arm span on an animal with no arms.
+                 `auto` grades loosely, which is the honest answer when nobody
+                 said. See ASSET_CLASSES.
+
+    normalize_origin  OFF. The generated scene used to RE-CENTRE the model on
+                 the body origin unconditionally, throwing away an authored
+                 origin — for a character whose feet are deliberately at y=0,
+                 or a prop whose pivot is its hinge, that is a silent mutation
+                 of the thing being delivered. Pass True to ask for the
+                 re-centring explicitly. `origin_proof` in the result reports
+                 the authored origin, the applied offset and the result either
+                 way, so the decision is never invisible.
+
     Returns {ok, res_path, scene, preview, screenshot, engine_view, checks,
-             steps}. `checks` is the gate: rigged/animated/textured/sized/
-             collided, each with the measurement that decided it.
+             steps, origin_proof, collider_proof}. `checks` is the gate:
+             rigged/animated/textured/sized/collided, each with the measurement
+             that decided it.
+
+    Raises ValueError for an unrecognised shape_type, body_type,
+    character_body or asset_class. These used to be written straight into the
+    import settings and silently dropped by the engine, so a caller asking for
+    a convex collider got a trimesh with nothing anywhere saying so.
     """
     project = Path(project_dir)
     steps: list[dict] = []
+
+    # REFUSE, DO NOT DROP. See the docstring.
+    if shape_type not in SHAPE_TYPES:
+        raise ValueError(
+            f"shape_type {shape_type!r} is not one Godot's glTF importer "
+            f"understands; it is one of {SHAPE_TYPES}. An unrecognised value "
+            "used to be written into the import settings and dropped by the "
+            "engine, so you got a trimesh and no word about it.")
+    if body_type not in BODY_TYPES:
+        raise ValueError(
+            f"body_type {body_type!r} is not an importer body type; it is one "
+            f"of {BODY_TYPES}. (The ROOT node class is `character_body`, which "
+            f"takes {ROOT_BODIES}.)")
+    if character_body not in ("", "auto") and character_body not in ROOT_BODIES:
+        raise ValueError(
+            f"character_body {character_body!r} is not a node class this "
+            f"delivers into; it is 'auto' or one of {ROOT_BODIES}")
+    if asset_class not in ASSET_CLASSES:
+        raise ValueError(
+            f"asset_class {asset_class!r} is unknown; it is one of "
+            f"{tuple(ASSET_CLASSES)}. It decides which proportions the "
+            "collider is graded against.")
 
     first = import_asset(project_dir, glb_path, dest_rel=dest_rel, timeout=timeout)
     steps.append({"step": "import", "ok": bool(first.get("ok")),
@@ -2573,7 +3241,8 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
                                  bounds_position=origin, script_res=script_res,
                                  model_uid=model_uid, with_camera=with_camera,
                                  with_capsule=not mesh_shapes,
-                                 body_type=root_body),
+                                 body_type=root_body,
+                                 recentre=bool(normalize_origin)),
             encoding="utf-8")
     scene_res = "res://" + str(scene_file.relative_to(project)).replace("\\", "/")
 
@@ -2627,11 +3296,50 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
     # the human left in it, and reporting our computed numbers against their
     # file would be a measurement of something that is not on disk.
     judged_capsule = (_capsule_for_bounds(*size[:3])
-                      if skinned_asset and scene_action == "written"
-                      and not mesh_shapes else None)
+                      if scene_action == "written" and not mesh_shapes
+                      else None)
+    graded_class = asset_class
+    if graded_class == "auto" and not skinned_asset:
+        # An unskinned mesh is a thing, not a body. Grading it against a
+        # person's proportions is what failed the crate and the cat alike.
+        graded_class = "prop"
     checks = _delivery_checks(scene_view if scene_view.get("ok") else view, view,
-                              character_capsule=judged_capsule)
+                              character_capsule=judged_capsule,
+                              asset_class=graded_class)
+    # BEFORE AND AFTER, ON THE RESULT. Whichever way the origin decision went,
+    # the caller can see what the asset declared, what was applied, and where
+    # the model ended up - rather than discovering a re-centring by noticing a
+    # character standing in the floor two items later.
+    recentred = (-(origin[0] + size[0] * 0.5), -(origin[1] + size[1] * 0.5),
+                 -(origin[2] + size[2] * 0.5))
+    origin_proof = {
+        "authored_min_corner": [round(float(v), 5) for v in origin],
+        "bounds_size_m": [round(float(v), 5) for v in size[:3]],
+        "normalize_origin": bool(normalize_origin),
+        "offset_applied": ([round(v, 5) for v in recentred]
+                           if normalize_origin else [0.0, 0.0, 0.0]),
+        "scene_action": scene_action,
+        "why": ("the model was re-centred on the body origin because "
+                "normalize_origin=True" if normalize_origin else
+                "the authored origin was PRESERVED. Pass normalize_origin=True "
+                "to centre the model on the body instead - which is what the "
+                "template's capsule and first-person camera offset assume, and "
+                "what a character built around its own feet does NOT want."),
+    }
+    collider_proof = {
+        "strategy": collision,
+        "asset_class": graded_class,
+        "graded_against": ASSET_CLASSES[graded_class],
+        "capsule": ({"radius": round(judged_capsule[0], 5),
+                     "height": round(judged_capsule[1], 5),
+                     "width_m": round(judged_capsule[0] * 2.0, 5)}
+                    if judged_capsule else None),
+        "shapes_in_scene": scene_view.get("collider_count", 0),
+    }
     return {
+        "origin_proof": origin_proof,
+        "collider_proof": collider_proof,
+        "asset_class": graded_class,
         "ok": all(c["ok"] for c in checks if c["required"]) and bool(shot.get("ok")),
         "res_path": res_path,
         "asset_rel": asset_rel,
@@ -2658,36 +3366,40 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
 
 
 def _delivery_checks(scene_view: dict, asset_view: dict,
-                     character_capsule: Optional[tuple] = None) -> list[dict]:
+                     character_capsule: Optional[tuple] = None,
+                     asset_class: str = "auto") -> list[dict]:
     """The gate. Each row names the measurement that decided it.
 
     `required` marks the ones a shipping asset cannot be without. A prop has no
     rig and no animation and that is fine — those rows report, they do not fail.
 
-    character_capsule is (radius, height) for a capsule THIS run generated for a
-    CHARACTER. It folds into has_collider rather than adding a ninth row,
-    because callers index these rows by name and the list is a contract. Passing
-    it for a crate would be wrong: the absurdity below is defined against a
-    person's proportions, and a 1x1x1 m crate legitimately has a capsule as wide
-    as it is tall.
+    character_capsule is (radius, height) for a capsule THIS run generated, and
+    `asset_class` is what it is graded against. The absurdity test used to be
+    defined against a PERSON and applied to anything skinned — so a quadruped
+    with a perfectly correct collider failed, and the failure message blamed an
+    A-pose arm span on an animal with no arms. See ASSET_CLASSES.
     """
     materials = asset_view.get("materials", {}) or {}
     missing = materials.get("without_albedo_texture", []) or []
     size = asset_view.get("size_check", {}) or {}
 
-    # A capsule wider than half the figure it wraps cannot fit through a door
-    # built for that figure. REPRODUCED: a 1.75 m character was delivered with
-    # radius=0.8158 — 1.63 m across, her own arm span — and it shipped green,
-    # because has_collider had only ever COUNTED shapes and never looked at one.
+    # A capsule wider than the class's own proportions allow. REPRODUCED both
+    # ways: a 1.75 m HUMANOID delivered with radius=0.8158 — 1.63 m across, her
+    # own arm span — shipped green because has_collider had only ever COUNTED
+    # shapes; and a QUADRUPED with a correct collider failed the same check once
+    # it started looking, because it was looking with a person's eyes.
     absurd = ""
+    band = ASSET_CLASSES.get(asset_class, ASSET_CLASSES["auto"])
     if character_capsule:
         radius, cap_height = (float(v) for v in character_capsule)
-        if radius * 2.0 > cap_height * 0.5:
+        ratio = band["max_width_ratio"]
+        if cap_height > 0 and radius * 2.0 > cap_height * ratio:
             absurd = (f"capsule is {radius * 2.0:.2f} m across on a "
-                      f"{cap_height:.2f} m figure — wider than half its own "
-                      "height, so it cannot fit through a door built for it. "
-                      "An A-pose arm span in the measured bounds is the usual "
-                      "cause.")
+                      f"{cap_height:.2f} m body graded as {asset_class!r}, "
+                      f"whose ceiling is {ratio:g}x its height — {band['why']}. "
+                      "If this asset is not a "
+                      f"{asset_class}, pass asset_class= and it will be graded "
+                      f"against its own proportions ({', '.join(ASSET_CLASSES)}).")
     return [
         {"check": "loads_in_engine", "required": True,
          "ok": bool(asset_view.get("ok")),
@@ -2711,7 +3423,8 @@ def _delivery_checks(scene_view: dict, asset_view: dict,
          "measured": f"{scene_view.get('collider_count', 0)} collision shapes"
                      + (f", capsule r={character_capsule[0]:.4f} "
                         f"h={character_capsule[1]:.4f}"
-                        if character_capsule else ""),
+                        if character_capsule else "")
+                     + f", graded as {asset_class}",
          "detail": absurd},
         {"check": "has_skeleton", "required": False,
          "ok": asset_view.get("skeleton_count", 0) > 0,

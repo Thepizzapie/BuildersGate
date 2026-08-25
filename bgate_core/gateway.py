@@ -98,11 +98,21 @@ def _probe(provider: str, root) -> dict:
             if row["keyed"]:
                 try:
                     bal = rd.balance(root)
-                    value = bal.get("credits")
+                    # PREFER THE USD BALANCE, NOT `credits`. RD's
+                    # /inferences/credits returns BOTH, and only `balance` is
+                    # the spendable figure its billing charges against —
+                    # `credits` kept reporting 50.0 on an account that was
+                    # refusing every call with {'code': 'request_failed',
+                    # 'message': 'Not enough balance.'}. Preferring `credits`
+                    # made this surface state, with fresh=True, that a dry
+                    # account was funded; four animation jobs were refused
+                    # across two characters while it did. A balance nobody can
+                    # spend is not a balance.
+                    value = bal.get("balance")
                     if value is None:
-                        value, row["balance_unit"] = bal.get("balance"), "usd"
+                        value, row["balance_unit"] = bal.get("credits"), "credits"
                     else:
-                        row["balance_unit"] = "credits"
+                        row["balance_unit"] = "usd"
                     row["balance"] = float(value) if value is not None else None
                 except Exception:
                     row["balance"] = None

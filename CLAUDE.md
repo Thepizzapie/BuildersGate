@@ -36,9 +36,14 @@ are what the core loop requires. Blender, ffmpeg and whisper are for the 3D,
 playtest-capture and voice paths respectively; a red row there is not a blocker
 and you should say that instead of trying to fix it.
 
-The `art_key` row is green when **any** art provider has a key — OpenAI or
-Krea. (It used to probe `OPENAI_API_KEY` alone and fail a working Krea-only
-setup; if you see `MISS openai_key`, that build predates the fix.)
+The `art_key` row is green when **any** art provider is USABLE — keyed AND
+with its adapter able to run. That is a narrower question than "is the
+variable set", deliberately: it read the second one and printed `4 of 4
+providers` on a machine whose generation gateway had exactly one live
+option. It now says `N of M providers usable`, and names how many are
+merely keyed when the two differ. `provider_status` is the live read — it
+adds account balances and says which provider each job would actually
+route to.
 
 ## Point it at a game
 

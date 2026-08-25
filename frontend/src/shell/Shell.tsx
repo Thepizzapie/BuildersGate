@@ -162,7 +162,7 @@ function RunningChip({ floor, onOpenFloor }: {
           <Ti name="player-play" />{floor.counts.live} running
         </button>
       </Menu.Target>
-      <Menu.Dropdown>
+      <Menu.Dropdown className="bg4-runmenu">
         <Menu.Label>Running now</Menu.Label>
         {floor.agents.length === 0 && (
           <Menu.Item disabled>nothing is running</Menu.Item>

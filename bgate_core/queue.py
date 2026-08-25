@@ -13,6 +13,7 @@ dispatches real Claude sessions against items.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Optional
 
@@ -96,6 +97,34 @@ def clip_result(text: str) -> str:
     if cut > 0:
         head = head[:cut]
     return head + (CLIPPED % MAX_RESULT)
+
+
+#: How much of a reopen reason rides in the result note. The brief gets the
+#: whole thing; this is the summary line a listing shows.
+MAX_REOPEN_REASON = 1900
+
+
+def clip_reason(text: str) -> str:
+    """Bound a reopen reason WITHOUT cutting mid-sentence, and say it was cut.
+
+    ``reason[:1900]`` was a silent mid-sentence truncation, and a reopen reason
+    is the one thing the next agent reads to learn what to change — a
+    half-sentence there is worse than a short one, because it reads as
+    complete. Cuts at the last sentence or line break before the ceiling and
+    marks the cut, so the reader knows to open the brief for the rest (which
+    carries the full text either way).
+    """
+    text = str(text or "")
+    if len(text) <= MAX_REOPEN_REASON:
+        return text
+    head = text[:MAX_REOPEN_REASON]
+    cut = max(head.rfind("\n"), head.rfind(". "), head.rfind("? "),
+              head.rfind("! "))
+    if cut > MAX_REOPEN_REASON - 600:
+        head = head[:cut + 1]
+    return head.rstrip() + (
+        f" […reason clipped at {MAX_REOPEN_REASON} chars for this listing; "
+        "the whole of it is appended to the item's brief]")
 
 
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
@@ -633,10 +662,211 @@ def chain(root: str | os.PathLike[str], chain_id: str) -> list[dict]:
 
 
 def successors(root: str | os.PathLike[str], item_id: int) -> list[dict]:
-    """Items waiting directly on this one."""
-    return rows(db.connect(root).execute(
+    """Items waiting directly on this one — BOTH mechanisms, one answer.
+
+    It used to read the `depends_on` column alone, which is half the graph:
+    the extra parents added by `queue_add_dependency` live in `work_item_dep`,
+    and an item waiting through that table was invisible to every caller
+    asking "what unblocks when this lands". `parents()` has always merged the
+    two; this is the same merge pointed the other way, and the asymmetry was a
+    graph that could be walked in one direction only.
+
+    A user should never have to know which of the two stores holds a link. See
+    :func:`graph`.
+    """
+    direct = rows(db.connect(root).execute(
         "SELECT * FROM work_item WHERE depends_on = ? ORDER BY chain_pos, id",
         (int(item_id),)))
+    seen = {int(r["id"]) for r in direct}
+    try:
+        extra = rows(db.connect(root).execute(
+            "SELECT i.* FROM work_item i JOIN work_item_dep d ON d.item_id = i.id "
+            "WHERE d.depends_on = ? AND d.cut_at IS NULL ORDER BY i.chain_pos, i.id",
+            (int(item_id),)))
+    except Exception:
+        extra = []             # pre-migration project: one parent is all there is
+    return direct + [r for r in extra if int(r["id"]) not in seen]
+
+
+# ---------------------------------------------------------------------------
+# DEPENDENCY ORDER, READ BY A HUMAN
+# ---------------------------------------------------------------------------
+#
+# WORK-ITEM IDs ARE CREATION IDENTIFIERS, NOT EXECUTION ORDER, and the board
+# presented them as if they were. Observed:
+#
+#     #42 enlarge rooms       done
+#     #45 swap in furniture   running
+#     #43 rebuild routes      queued
+#
+# which reads as a scheduler that skipped #43. It did not. #43 was filed after
+# #42; #45 was inserted between them later, because the route measurements had
+# to wait for real furniture dimensions. The dependency engine was correct
+# throughout. The PRESENTATION made it look broken, and an operator who
+# believes the scheduler is broken starts working around it.
+#
+# THE FIX IS NOT RENUMBERING. Stable ids stay stable — they are in briefs, in
+# git commit messages, in result notes and in the human's head. What changes is
+# that the human-facing surfaces state the execution order explicitly instead
+# of leaving it to be inferred from an ordering that never meant that.
+#
+#     #43 Rebuild routes
+#     WAITING ON #45 Swap in furniture
+#
+# beats `#43 QUEUED`, and it beats it precisely because it does not require the
+# reader to already know the answer.
+
+#: A status that satisfies a dependency. Only 'done' — see cut_dependency.
+_TERMINAL = ("done", "cancelled")
+
+
+def waiting_line(root: str | os.PathLike[str], item_id: int) -> str:
+    """"WAITING ON #45 Swap in furniture" — or '' when nothing holds it.
+
+    The one sentence the board was missing. Names the blocker AND ITS TITLE:
+    an id alone sends the reader off to look it up, and the whole defect here
+    is that people were not looking things up.
+    """
+    blk = blocker(root, item_id)
+    if blk is None:
+        return ""
+    also = blk.get("also_waiting_on") or []
+    tail = (f" (and {len(also)} more: "
+            + ", ".join(f"#{i}" for i in also[:4]) + ")") if also else ""
+    return f"WAITING ON #{blk['id']} {blk['title']}{tail}"
+
+
+def graph(root: str | os.PathLike[str], *, limit: int = 400) -> dict:
+    """The whole dependency graph, normalised, with a topological READ ORDER.
+
+    ``order`` is a display sequence, not a renumbering: predecessors before
+    successors, and within a tier the existing priority/id ordering, so two
+    unrelated items keep the order the board already showed them in. Items in a
+    cycle (which the add paths refuse to create, but a hand-edited database
+    could) come last and are named in ``cycles`` rather than silently dropped.
+
+    Every node carries ``execution_state``, which is the question the operator
+    was actually asking:
+
+        running | ready | waiting | blocked | held | done | failed
+
+    ``waiting`` means an ordinary predecessor has not landed yet; ``blocked``
+    means one never will on its own (a cancelled or failed parent), which is
+    the state that needs a person and used to look identical to ``waiting``.
+    """
+    items = {int(r["id"]): dict(r)
+             for r in list_items(root)[:max(1, int(limit))]}
+    parents_of = {i: [p for p in parents(root, i) if p in items] for i in items}
+    children_of: dict[int, list[int]] = {i: [] for i in items}
+    for child, ups in parents_of.items():
+        for up in ups:
+            children_of.setdefault(up, []).append(child)
+
+    try:
+        held_seats = set(__import__(
+            "bgate_core.greenlight", fromlist=["x"]).held_seats(root))
+    except Exception:
+        held_seats = set()
+
+    # Kahn, seeded and tie-broken by the board's own ordering so the display is
+    # stable between calls.
+    def rank(i: int) -> tuple:
+        row = items[i]
+        return (-int(row.get("priority") or 0), i)
+
+    pending = {i: len(parents_of[i]) for i in items}
+    frontier = sorted([i for i, n in pending.items() if n == 0], key=rank)
+    order: list[int] = []
+    while frontier:
+        node = frontier.pop(0)
+        order.append(node)
+        for child in children_of.get(node, []):
+            pending[child] -= 1
+            if pending[child] == 0:
+                frontier.append(child)
+        frontier.sort(key=rank)
+    cycles = sorted(i for i in items if i not in order)
+    order.extend(cycles)
+
+    nodes = []
+    for position, i in enumerate(order):
+        row = items[i]
+        status = str(row.get("status") or "")
+        unresolved = [p for p in parents_of[i]
+                      if str(items[p].get("status")) != "done"]
+        dead = [p for p in unresolved
+                if str(items[p].get("status")) in _TERMINAL + ("failed",)]
+        if status == "dispatched":
+            state = "running"
+        elif status in ("done", "failed", "cancelled", "review"):
+            state = status
+        elif str(row.get("seat")) in held_seats:
+            state = "held"
+        elif str(row.get("source") or "") in HELD_SOURCES:
+            state = "held"
+        elif dead:
+            state = "blocked"
+        elif unresolved:
+            state = "waiting"
+        else:
+            state = "ready"
+        nodes.append({
+            "id": i,
+            "title": row.get("title", ""),
+            "seat": row.get("seat", ""),
+            "status": status,
+            "execution_state": state,
+            "execution_position": position,
+            "depends_on": parents_of[i],
+            "unresolved": unresolved,
+            "blocking_now": (unresolved[0] if unresolved else None),
+            "unblocks": sorted(children_of.get(i, [])),
+            "waiting_line": (
+                f"WAITING ON #{unresolved[0]} {items[unresolved[0]]['title']}"
+                if unresolved else ""),
+            "in_cycle": i in cycles,
+        })
+    return {
+        "nodes": nodes,
+        "order": order,
+        "cycles": cycles,
+        "note": ("`order` is a DISPLAY order derived from the dependency "
+                 "graph. Ids are creation identifiers and are never "
+                 "renumbered — read `execution_position`, not `id`, for what "
+                 "runs when."),
+        "sources": ("work_item.depends_on and work_item_dep are one graph "
+                    "here; which table holds a link is not a question anybody "
+                    "should have to answer."),
+    }
+
+
+def execution_path(root: str | os.PathLike[str], item_id: int) -> list[dict]:
+    """The chain that has to happen before this item, in the order it happens.
+
+    What ``#42 -> #45 -> #43`` looks like as data. Multiple parents are
+    followed depth-first through the currently-blocking one, with the rest
+    named on each node, because "which of my three parents is holding me right
+    now" is the question and the other two are context.
+    """
+    seen: set[int] = set()
+    out: list[dict] = []
+
+    def walk(node: int) -> None:
+        if node in seen:
+            return
+        seen.add(node)
+        try:
+            row = get(root, node)
+        except LookupError:
+            return
+        for parent in parents(root, node):
+            walk(parent)
+        out.append({"id": node, "title": row["title"], "seat": row["seat"],
+                    "status": row["status"],
+                    "depends_on": parents(root, node)})
+
+    walk(int(item_id))
+    return out
 
 
 def complete(root: str | os.PathLike[str], item_id: int, result: str = "",
@@ -862,6 +1092,130 @@ def note_auto_retry(root: str | os.PathLike[str], item_id: int) -> int:
         return 0
 
 
+MAX_PREMISE = 1200
+
+
+def premise_refuted(root: str | os.PathLike[str], item_id: int, *,
+                    claim: str, measured: str, did_instead: str,
+                    by: str = "") -> dict:
+    """THE BRIEF WAS WRONG, AND HERE IS THE MEASUREMENT. A real outcome.
+
+    THE MOST VALUABLE THING AGENTS DID IN THE BENCHMARK, and until now it
+    survived only as prose in a result note — where it dies with the item.
+    Three times an agent was handed a brief containing a false MEASURED
+    premise, twice authored by the director:
+
+      * an item filed on a "0.14 m guard clearance" that was in fact a task
+        marker 2.75 m from the real target. The agent measured, refused to move
+        furniture that was fine, and fixed the mislabelled assertion instead —
+        adding the missing half of the gate and a deliberately-wrong control.
+      * a briefed "blind spot" in a vision cone. The agent traced the
+        implementation, found the cone used the flattened horizontal bearing so
+        the claimed blind spot could not exist, said so, and built the correct
+        fix anyway.
+      * an inherited PASS from a previous attempt. The agent distrusted it,
+        found the driver bug behind it, and fixed that instead.
+
+    Each of those prevented a wrong fix from shipping. None of them was
+    visible on the board, none was searchable, and none reached the author of
+    the brief in a form that would stop them writing the next one the same way.
+
+    THREE FIELDS, ALL REQUIRED, and the middle one is the point: a refutation
+    without a measurement is a disagreement, and a disagreement is not evidence.
+    Recording one does NOT close the item — an agent that refuted a premise
+    usually went on to do the right work, and the outcome of that is a separate
+    question from this.
+    """
+    item = get(root, item_id)
+    parts = {"claim": claim, "measured": measured, "did_instead": did_instead}
+    for name, value in parts.items():
+        cleaned = " ".join(str(value or "").split())
+        if len(cleaned) < 10:
+            raise ValueError(
+                f"{name} is required and has to be a sentence. A refutation is "
+                "worth something because it carries the claim as stated, the "
+                "measurement that contradicts it, and what you did instead — "
+                "drop any one of those and it is an opinion.")
+        parts[name] = cleaned[:MAX_PREMISE]
+    actor = (by or activity.current_actor() or "")[:120]
+    row = {"id": int(item_id), "seat": item["seat"], "by": actor, **parts}
+    _emit(root, "item.premise_refuted", ref=str(item_id), payload=row)
+    activity.log(root, "queue",
+                 f"PREMISE REFUTED on #{item_id}: {parts['claim'][:100]} — "
+                 f"measured: {parts['measured'][:100]}",
+                 seat=item["seat"], ref=str(item_id))
+    note = ("\n\nPREMISE REFUTED — this brief contained a measured claim that "
+            "is not true.\n"
+            f"  CLAIMED:  {parts['claim']}\n"
+            f"  MEASURED: {parts['measured']}\n"
+            f"  INSTEAD:  {parts['did_instead']}")
+    try:
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE work_item SET result = ? WHERE id = ?",
+                (clip_result((item.get("result") or "") + note), int(item_id)))
+    except Exception:                                             # noqa: BLE001
+        pass
+    return {**row, "recorded": True,
+            "note": "the item is NOT closed by this — report its own outcome "
+                    "separately"}
+
+
+def refutations(root: str | os.PathLike[str], limit: int = 50) -> list[dict]:
+    """Every refuted premise on this board, newest first. For the digest."""
+    try:
+        rows_ = db.connect(root).execute(
+            "SELECT id, ref, payload, created_at FROM event WHERE kind = ? "
+            "ORDER BY id DESC LIMIT ?",
+            ("item.premise_refuted", max(1, int(limit)))).fetchall()
+    except Exception:
+        return []
+    out = []
+    for row in rows_:
+        try:
+            got = json.loads(row["payload"] or "{}")
+        except Exception:
+            got = {}
+        out.append({"at": row["created_at"], "item": row["ref"], **got})
+    return out
+
+
+def mark_exhausted(root: str | os.PathLike[str], item_id: int,
+                   why: str) -> dict:
+    """The harness has stopped buying rounds for this item. Say so ON THE ROW.
+
+    Called when the follow-up router escalates instead of retrying. Before
+    this the fact lived only in the router's decision and in a director item
+    filed elsewhere; the item itself carried two counters and left every
+    reader to do the arithmetic. Two readers did it differently.
+
+    Exhausted work does not dispatch (see :func:`ready`) and is not offered by
+    :func:`next_for`. Only a reopen clears it, which is the explicit human or
+    director action the state exists to require.
+    """
+    said = " ".join(str(why or "").split())[:600] or (
+        "the automatic retry budget is spent")
+    try:
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE work_item SET exhausted_at = datetime('now'), "
+                "exhausted_why = ? WHERE id = ?", (said, int(item_id)))
+    except Exception:
+        # A project whose database predates migration 0043. The escalation
+        # itself already landed; losing the stamp must not lose that.
+        return get(root, item_id)
+    activity.log(root, "queue",
+                 f"item {item_id} is exhausted: {said[:120]}", ref=str(item_id))
+    _emit(root, "item.failed", ref=str(item_id),
+          payload={"id": int(item_id), "exhausted": True, "why": said})
+    return get(root, item_id)
+
+
+def is_exhausted(item: dict) -> bool:
+    """Has the harness stopped retrying this item? Never raises."""
+    return bool((item or {}).get("exhausted_at"))
+
+
 def was_stopped(item: dict) -> bool:
     """Did a human end this run, as opposed to it dying?
 
@@ -918,7 +1272,17 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
     with db.tx(root) as conn:
         conn.execute("UPDATE work_item SET attempts = attempts + 1 WHERE id = ?",
                      (item_id,))
-    return set_status(root, item_id, "queued", result=f"reopened: {reason[:1900]}")
+    # A REOPEN IS THE HUMAN ACTION THAT CLEARS EXHAUSTION. Whoever reopens has
+    # decided this is worth another round; leaving the stamp on would mean the
+    # dispatcher still refused it and the reopen did nothing visible.
+    try:
+        with db.tx(root) as conn:
+            conn.execute("UPDATE work_item SET exhausted_at = NULL, "
+                         "exhausted_why = '' WHERE id = ?", (item_id,))
+    except Exception:
+        pass                              # pre-0043 database: nothing to clear
+    return set_status(root, item_id, "queued",
+                      result="reopened: " + clip_reason(reason))
 
 
 # Columns dispatch owns: they describe the RUN, not the request, so they are
@@ -943,25 +1307,78 @@ def set_run_fields(root: str | os.PathLike[str], item_id: int, **fields) -> dict
 def next_for(root: str | os.PathLike[str], seat: str) -> Optional[dict]:
     """The highest-priority READY item for a seat — what an agent works next.
 
+    DELEGATES TO ``ready()``, WHICH IS WHAT ITS DOCSTRING ALREADY CLAIMED TO BE.
+    This function kept its own SQL, and the two copies had drifted exactly the
+    way ``ready``'s own comment warns about: this one did not filter
+    HELD_SOURCES, did not filter placeholder briefs, and did not apply the
+    production-stage seat holds. So ``queue_next('director')`` reported a
+    qa-gate escalation — a row NO auto-dispatcher will ever take, filed
+    precisely because a human has to decide — as the next thing to work on.
+    Observed on a board where the only way to tell "waiting for a director"
+    from "ready to run" was to read the retry counters by hand.
+
     Ready excludes a link whose predecessor has not landed. Handing an agent
     blocked work is worse than handing it nothing: it cannot tell the difference,
     so it starts, finds the file it was promised missing, and either stalls or
     invents one.
     """
-    candidates = rows(db.connect(root).execute(
-        "SELECT i.* FROM work_item i "
-        "LEFT JOIN work_item d ON d.id = i.depends_on "
-        "WHERE i.status = 'queued' AND i.seat = ? "
-        "  AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
-        "ORDER BY i.priority DESC, i.id LIMIT 20", (seat,)))
-    # The SQL join can only see the single-column parent; extra parents live in
-    # work_item_dep, so readiness is settled by blocker() — the one place that
-    # knows about both. Handing an agent work whose OTHER parent has not landed
-    # is the failure this function's docstring is about.
-    for row in candidates:
-        if blocker(root, int(row["id"])) is None:
-            return dict(row)
-    return None
+    found = ready(root, seat=seat, limit=20)
+    return dict(found[0]) if found else None
+
+
+def stalled(root: str | os.PathLike[str], seat: str = "") -> list[dict]:
+    """Queued work that NO dispatcher will take, and why. The other half of ready().
+
+    ``ready`` answers "what may start". Nothing answered "what is sitting here
+    that never will", and the difference between those two lists is the whole
+    of an operator's morning. An item whose automatic retries are spent, whose
+    source is human-held, or whose seat the production stage is holding looks
+    identical to fresh work in every listing — the only tell was the retry
+    counters, read by hand, on the row.
+
+    Each row carries ``stalled_because`` and ``needs``, where ``needs`` names
+    the human or director action that would release it.
+    """
+    from . import greenlight as _greenlight
+
+    try:
+        held = set(_greenlight.held_seats(root))
+    except Exception:
+        held = set()
+    dispatchable = {int(r["id"]) for r in ready(root, seat=seat, limit=500)}
+    out: list[dict] = []
+    for row in list_items(root, status="queued", seat=seat or None):
+        item = dict(row)
+        item_id = int(item["id"])
+        if item_id in dispatchable:
+            continue
+        source = str(item.get("source") or "")
+        auto = int(item.get("auto_retries") or 0)
+        if source in HELD_SOURCES:
+            because = (f"source {source!r} is never auto-dispatched — it "
+                       "exists because a person has to decide")
+            needs = "a human (or the director session) takes it by hand"
+        elif str(item.get("seat")) in held:
+            because = "the production stage is holding this seat"
+            needs = "greenlight_advance, or a per-seat waiver"
+        elif str(item.get("brief") or "").startswith("(preparing"):
+            because = "the brief is still a placeholder"
+            needs = "whatever is filing this item finishes writing it"
+        elif blocker(root, item_id) is not None:
+            blk = blocker(root, item_id)
+            because = waiting_line(root, item_id)
+            needs = ("nothing — this is the board working" if
+                     blk["status"] in ("queued", "dispatched", "review") else
+                     f"#{blk['id']} is {blk['status']!r} and will not reach "
+                     "'done' on its own: queue_reopen it, or "
+                     "queue_cut_dependency to release this")
+        else:
+            continue
+        item["stalled_because"] = because
+        item["needs"] = needs
+        item["auto_retries"] = auto
+        out.append(item)
+    return out
 
 
 def reserve(root: str | os.PathLike[str], item_id: int) -> bool:
@@ -1032,7 +1449,17 @@ def ready(root: str | os.PathLike[str], seat: str = "",
     out here produce NO refusal by design; a blocked successor is the board
     working as intended, and the row's own `waiting_on` (queue_list) is
     where the reason surfaces.
+
+    THE PRODUCTION STAGE IS APPLIED HERE, and here is the only place it could
+    have been. greenlight holds whole SEATS - art, audio and cinematic do not
+    dispatch until gameplay has proved the loop in a graybox - and the advisory
+    version of that rule (a line in the director's brief) lost every time it
+    competed with a queue full of dispatchable work. A seat held by the stage
+    is filtered out exactly like a blocked successor, for the same reason: this
+    is the one function both dispatchers ask.
     """
+    from . import greenlight as _greenlight
+
     marks = ", ".join("?" * len(HELD_SOURCES))
     seat_clause = "AND i.seat = ? " if seat else ""
     params = (*( (seat,) if seat else () ), *HELD_SOURCES, PLACEHOLDER_BRIEF)
@@ -1044,7 +1471,22 @@ def ready(root: str | os.PathLike[str], seat: str = "",
         "AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
         f"ORDER BY i.priority DESC, i.id LIMIT {max(1, int(limit))}",
         params))
-    return [c for c in candidates if blocker(root, int(c["id"])) is None]
+    try:
+        held = set(_greenlight.held_seats(root))
+    except Exception:
+        # A greenlight doc that will not read must not stop the board. The
+        # failure it guards against is expensive; a deadlocked queue is worse,
+        # and state() surfaces the unreadable doc to anyone looking.
+        held = set()
+    # EXHAUSTED WORK IS NOT CLAIMABLE WORK. An item the harness has stopped
+    # retrying (see mark_exhausted) is waiting on a decision, not on a slot,
+    # and offering it to a dispatcher is how it gets re-run for free while a
+    # director item about it sits unread. Cleared by reopen(), which is the
+    # explicit action.
+    return [c for c in candidates
+            if c["seat"] not in held
+            and not c.get("exhausted_at")
+            and blocker(root, int(c["id"])) is None]
 
 
 def claim_next(root: str | os.PathLike[str], seat: str,
@@ -1056,9 +1498,14 @@ def claim_next(root: str | os.PathLike[str], seat: str,
     other move: the same session claims the next item and keeps going, with
     its context already paid for.
 
-    Readiness is next_for's rule plus autodeploy's holds (sources a human must
-    touch, placeholder briefs) — a pickup loop that could grab an escalation
-    would be an agent dispatching the item that exists because agents disagreed.
+    Readiness is ``ready()`` — sources a human must touch, placeholder briefs,
+    stage-held seats, spent retry budgets and unlanded parents, all of it. A
+    pickup loop that could grab an escalation would be an agent dispatching the
+    item that exists because agents disagreed. ``next_for`` used to keep a
+    SECOND copy of that rule and had already drifted from this one; it
+    delegates now, so the read an agent does and the claim it then makes cannot
+    disagree about what is available.
+
     The claim itself is reserve(), so racing the dashboard is safe: whoever
     loses the UPDATE simply tries the next candidate.
 

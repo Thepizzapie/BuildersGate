@@ -37,6 +37,22 @@ from bgate_mcp.server import (  # noqa: F401
 # Level generation
 # ---------------------------------------------------------------------------
 _WALL_LAYOUTS = ("blob47", "grid16", "solid", "none")
+
+#: The partition knobs `level_generate(tuning=...)` accepts, with their
+#: defaults. Exactly `level_plan`'s own arguments minus width/height/seed/
+#: layout, so a plan previewed there transfers verbatim - and named in ONE
+#: place so the two tools cannot drift apart the way eight duplicated
+#: parameter defaults quietly did.
+_LEVEL_TUNING = {"min_leaf": 10, "min_room": 4, "margin": 1, "max_depth": 5,
+                 "corridor_width": 2, "room_fill": 0.8, "rooms": 5,
+                 "side_rooms": 1}
+
+#: One character's physics, which is what `sidescroll_generate(jump=...)`
+#: takes. `player_scene` reads the same four numbers off a real .tscn and
+#: overrides these - a level built for a jump the character does not have is
+#: unplayable in a way no screenshot shows.
+_JUMP_SPEC = {"run": 9.0, "jump_speed": 18.0, "gravity": 40.0,
+              "body_cells": 2}
 _EMPTY_SCENE = ('[gd_scene load_steps=1 format=3]\n\n'
                 '[node name="{root}" type="Node2D"]\n')
 
@@ -352,17 +368,11 @@ def _player_jump(godot_dir: _Path, scene_disk: _Path) -> dict:
 @_tool
 def sidescroll_generate(godot_project: str, scene: str, tileset: str,
                         length: int = 160, height: int = 16, seed: int = 0,
-                        run: float = 9.0, jump_speed: float = 18.0,
-                        gravity: float = 40.0, body_cells: int = 2,
+                        jump: Optional[dict] = None,
                         difficulty: float = 0.5, segments: str = "",
-                        solid_source: int = 0, solid_layout: str = "grid16",
-                        solid_columns: int = 4,
-                        solid_atlas_x: int = 0, solid_atlas_y: int = 0,
-                        prop_manifest: str = "", prop_source: int = 1,
-                        prop_types: str = "", prop_spacing: int = 9,
+                        prop_manifest: str = "", prop_spacing: int = 9,
                         player_scene: str = "",
-                        parent: str = ".", solid_name: str = "Solid",
-                        prop_name: str = "Props",
+                        parent: str = ".", names: Optional[dict] = None,
                         create: bool = False, dry_run: bool = False) -> dict:
     """GENERATE A SIDE-SCROLLING LEVEL and write it into a scene.
 
@@ -373,23 +383,26 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
     segments left to right and guarantees something else entirely: that the
     goal can be REACHED, by a character with this exact jump.
 
-    THE JUMP IS AN INPUT, not a detail. `run`, `jump_speed` and `gravity` are
-    in CELLS PER SECOND, and every segment sizes itself from what they allow: a
-    pit is never wider than this character clears, a pipe never taller than it
-    rises. An unclearable gap is unrepresentable rather than generated and
-    rejected.
+    THE JUMP IS AN INPUT, not a detail. `jump` is one character's physics -
+    {"run": ..., "jump_speed": ..., "gravity": ..., "body_cells": ...}, the
+    first three in CELLS PER SECOND - and every segment sizes itself from what
+    they allow: a pit is never wider than this character clears, a pipe never
+    taller than it rises. An unclearable gap is unrepresentable rather than
+    generated and rejected. One dict rather than four loose floats because
+    they describe ONE thing, and four separate arguments invite three of them
+    being right. An unknown key is refused by name rather than ignored.
 
     `player_scene` IS THE WAY TO PASS THEM. Point it at the player's .tscn and
     the tunables are read from the scene itself — its script's @export
     defaults, overridden by anything the scene sets — converted to cells by
     the tileset's own tile size, and the player is INSTANCED AT SPAWN in the
-    written scene. The loose run/jump_speed/gravity arguments are then ignored,
-    because two sources of the same number is the drift this parameter closes:
-    a level built for one jump and played with another is the failure the whole
-    parameterisation exists to prevent. `fall_multiplier` is honoured by
-    modelling with the fall gravity, so the error runs only in the safe
-    direction. Without `player_scene` the loose numbers are trusted as given —
-    then it is on you to keep the player scene agreeing with them.
+    written scene. `jump` is then ignored, because two sources of the same
+    number is the drift this parameter closes: a level built for one jump and
+    played with another is the failure the whole parameterisation exists to
+    prevent. `fall_multiplier` is honoured by modelling with the fall gravity,
+    so the error runs only in the safe direction. Without `player_scene` the
+    `jump` numbers are trusted as given — then it is on you to keep the player
+    scene agreeing with them.
 
     IT REFUSES AN UNPLAYABLE LEVEL rather than reporting one. The checks are
     `reachable` (the goal is in the flood fill of jump arcs from spawn),
@@ -397,14 +410,41 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
     land and never leave) and `stranded` (no platform outside its own jump).
     A finding here is a bug to report, not a difficulty dial.
 
+    THE TILESET DESCRIBES ITSELF. Where the platform tiles live comes off the
+    `<tileset>.tiles.json` sidecar - written by `tileset_generate` for a set it
+    made, or by `tileset_describe` once for a hand-built one. This tool takes
+    no atlas coordinates; without that file it refuses rather than guessing.
+
     `segments` is a comma list from flat, pit, stair, hop, blocks, pipe — "" for
     all of them. `prop_manifest` is what `prop_generate` wrote; pass it and the
-    props are placed and drawn, and you never type an atlas coordinate.
+    props are placed and drawn, and the types come from the manifest too.
+    `names` renames the layer nodes, {"solid": ..., "props": ...}.
 
     Returns the ASCII map, which is the cheapest way to see a level before
     anything is spent on art for it.
     """
     try:
+        # THE JUMP, BEHIND ONE DOOR. `run`, `jump_speed`, `gravity` and
+        # `body_cells` are one physical description of one character, and four
+        # loose floats invite three of them being right. Unknown keys are
+        # refused by name: a silently-ignored `jump_height` is a character
+        # model that did nothing and reported success.
+        jump = dict(jump or {})
+        unknown = sorted(set(jump) - set(_JUMP_SPEC))
+        if unknown:
+            return {"ok": False, "error": (
+                f"jump has no key(s) {unknown} - it takes "
+                f"{sorted(_JUMP_SPEC)}. Those are the character's own "
+                "numbers; player_scene reads them off a real scene instead.")}
+        spec_in = {**_JUMP_SPEC, **jump}
+        run = float(spec_in["run"]); jump_speed = float(spec_in["jump_speed"])
+        gravity = float(spec_in["gravity"])
+        body_cells = int(spec_in["body_cells"])
+
+        names = dict(names or {})
+        solid_name = str(names.get("solid") or "Solid")
+        prop_name = str(names.get("props") or "Props")
+
         root = _root()
         view = _gameview.load(root)
         if view != "side_scroller":
@@ -483,14 +523,15 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
         # describes its own layout, so the solid_* arguments are for
         # hand-built sheets and any non-default value wins outright.
         manifest = _tileset_manifest(tiles_disk)
-        solid_defaults = (solid_source == 0 and solid_layout == "grid16"
-                          and solid_atlas_x == 0 and solid_atlas_y == 0)
-        manifest_used = bool(manifest is not None and solid_defaults)
-        if manifest_used:
-            terrain = _manifest_floor(manifest, solid_name)
-        else:
-            terrain = _terrain(solid_layout, solid_source, solid_atlas_x,
-                               solid_atlas_y, solid_columns, solid_name)
+        if manifest is None:
+            return {"ok": False, "error": (
+                f"{tiles_res} has no {tiles_disk.stem}.tiles.json beside it, "
+                "so nothing here knows where its platform tiles live. "
+                "tileset_generate writes that file for a set it made itself; "
+                "for a hand-built or imported sheet call tileset_describe "
+                "once. This tool no longer takes atlas coordinates.")}
+        manifest_used = True
+        terrain = _manifest_floor(manifest, solid_name)
         cells = _autotile.resolve(sorted(solid), terrain,
                                   region=(0, 0, length, height))
         varied = _scatter_variants(cells, tiles_disk)
@@ -503,8 +544,9 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
             prop_source = _manifest_source(tiles_disk, man)
             parsed_set = _tilemap.parse_tileset(
                 tiles_disk.read_text(encoding="utf-8", errors="replace"))
-            want = tuple(prop_types.replace(",", " ").split()) or \
-                tuple(man["types"])
+            # The manifest names its own types; `prop_types` was a second,
+            # retyped opinion about a list already sitting on disk.
+            want = tuple(man["types"])
             # GROUND MOUNTS ONLY. A side view has no floor plane to stand a
             # prop on except the surface itself, and `jump.surfaces` already
             # knows which cells those are — the same function the reachability
@@ -1413,6 +1455,172 @@ def _manifest_floor(meta: dict, name: str):
         fallback=(int(solid[0]), int(solid[1])) if solid else None)
 
 
+@_tool
+def tileset_describe(godot_project: str, tileset: str,
+                     floor_layout: str = "solid", floor_source: int = 0,
+                     floor_atlas_x: int = 0, floor_atlas_y: int = 0,
+                     floor_columns: int = 4,
+                     wall_layout: str = "blob47", wall_source: int = 0,
+                     wall_atlas_x: int = 0, wall_atlas_y: int = 0,
+                     wall_columns: int = 8,
+                     variants: str = "", interior: str = "",
+                     overwrite: bool = False) -> dict:
+    """TEACH THE LEVEL TOOLS A HAND-BUILT TILESET. Once per sheet, then never again.
+
+    A sheet bought from an asset pack or authored in Tilesetter knows where
+    its tiles are; nothing else does. That knowledge used to travel as ten
+    parameters on EVERY `level_generate` call - re-typed per level, per seat,
+    per session, and wrong in exactly one of them. The art seat holds the
+    sheet; gameplay and tech build the levels; a pasted string was the only
+    channel between them.
+
+    So it is written down instead. This produces the same
+    `<tileset>.tiles.json` sidecar `tileset_generate` writes for a set it made
+    itself, which is why `level_generate` now takes no atlas coordinates from
+    anybody: generated or hand-built, the sheet describes itself on disk.
+
+    LAYOUTS, for both floor and wall:
+      blob47   8-bit mask, 47 tiles, row-major from (atlas_x, atlas_y),
+               `columns` wide, masks ascending. Sides plus corners.
+      grid16   4-bit mask, 16 tiles, same layout rule. Sides only - right for
+               a wall one cell thick.
+      solid    one tile everywhere, at (atlas_x, atlas_y). No autotiling.
+      none     no layer of this kind at all (walls only).
+
+    THAT ORDER IS A CONVENTION, NOT A STANDARD, and a wrong one draws a
+    complete, confident, wrong-looking level rather than an error. Check the
+    first screenshot after describing a sheet, not the tenth.
+
+    variants/interior are optional and only affect floors: `interior` is the
+    plain fill tile "x,y" and `variants` is a space list of alternates
+    ("3,0 4,0") scattered deterministically over it, which is what stops a
+    large room reading as one repeated square.
+
+    Re-describing a sheet needs `overwrite=True` - a set generated by
+    `tileset_generate` already has a manifest holding its full mask table, and
+    silently replacing it with a guess is how a working level starts drawing
+    at (0, 0).
+    """
+    try:
+        _contained_path(godot_project, "godot_project")
+        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
+        if not tiles_disk.is_file():
+            return {"ok": False, "error": (
+                f"no tileset at {tiles_res} - import or generate the sheet "
+                "first; there is nothing here to describe")}
+        for got, field in ((floor_layout, "floor_layout"),
+                           (wall_layout, "wall_layout")):
+            if got not in _WALL_LAYOUTS:
+                return {"ok": False, "error": (
+                    f"{field} {got!r} is not one of {_WALL_LAYOUTS}")}
+        if floor_layout == "none":
+            return {"ok": False, "error": (
+                "a level with no floor is not a level - floor_layout takes "
+                "solid, grid16 or blob47")}
+        side = tiles_disk.with_name(tiles_disk.stem + ".tiles.json")
+        if side.is_file() and not overwrite:
+            return {"ok": False, "error": (
+                f"{side.name} already exists. If tileset_generate made this "
+                "set, that file holds its real mask table and this call would "
+                "replace it with a guess; pass overwrite=True only if you "
+                "know the sheet was hand-built and the description is wrong.")}
+
+        floor = _terrain(floor_layout, floor_source, floor_atlas_x,
+                         floor_atlas_y, floor_columns, "Floor")
+        wall = (None if wall_layout == "none" else
+                _terrain(wall_layout, wall_source, wall_atlas_x,
+                         wall_atlas_y, wall_columns, "Walls"))
+        parsed = _tilemap.parse_tileset(
+            tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        # THE SOURCES MUST EXIST IN THE .tres. A described sheet pointing at a
+        # source the resource never defines draws an empty layer and reports
+        # success - the same silent shape this whole sidecar exists to kill.
+        known = set(parsed.get("sources") or ())
+        wanted = {floor_source} | ({wall_source} if wall else set())
+        missing = sorted(wanted - known) if known else []
+        if missing:
+            return {"ok": False, "error": (
+                f"{tiles_res} defines sources {sorted(known)}, so source(s) "
+                f"{missing} would draw nothing. Fix the source ids or import "
+                "the missing atlas into the tileset first.")}
+
+        meta: dict = {"kind": "bgate-tileset", "version": 1,
+                      "described": True,
+                      "tile_px": int(parsed.get("tile_px") or 0) or 32,
+                      "bits": int(floor.bits),
+                      "floor": _terrain_block(floor, floor_layout)}
+        if wall is not None:
+            meta["wall"] = _terrain_block(wall, wall_layout)
+        picks = [tuple(int(v) for v in pair.split(","))
+                 for pair in str(variants).replace(",", ",").split()
+                 if pair.strip()]
+        if interior.strip():
+            at = [int(v) for v in interior.split(",")]
+            meta["interior"] = at
+            meta["floor"]["solid"] = at
+        if picks:
+            meta["variants"] = [list(p) for p in picks]
+            meta["floor"]["variants"] = [list(p) for p in picks]
+        side.write_text(_json.dumps(meta, indent=1), encoding="utf-8")
+        _log("level", f"described the hand-built tileset {tiles_res}",
+             ref=tiles_res)
+        return {"ok": True, "tileset": tiles_res, "manifest": str(side),
+                "floor": {"layout": floor_layout, "source": floor_source,
+                          "tiles": len(floor.table) or 1},
+                "wall": (None if wall is None else
+                         {"layout": wall_layout, "source": wall_source,
+                          "tiles": len(wall.table) or 1}),
+                "next": ("level_generate(godot_project, scene, tileset) - it "
+                         "reads this file, so you pass no atlas coordinates "
+                         "and no layouts. Look at the first screenshot: a "
+                         "wrong tile order draws a confident wrong level.")}
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _manifest_wall(meta: dict, name: str):
+    """The wall Terrain a manifest describes, or None for a floor-only set.
+
+    TWO SHAPES, and both are current. `tileset_generate` writes a wall as one
+    solid block (`{"source": n, "atlas": [x, y]}`) because its walls ARE
+    blocks; a hand-built sheet described by `tileset_describe` carries a mask
+    table exactly like the floor, because an authored sheet is where blob47
+    and grid16 came from in the first place. Reading only the first shape is
+    what kept `wall_layout`/`wall_columns`/`wall_atlas_*` alive as tool
+    parameters long after the sidecar existed.
+    """
+    wall = meta.get("wall")
+    if not wall:
+        return None
+    table = {int(m): (int(c[0]), int(c[1]))
+             for m, c in (wall.get("table") or {}).items()}
+    if table:
+        solid = wall.get("solid")
+        return _autotile.Terrain.from_table(
+            int(wall.get("source", 0)), table,
+            bits=int(wall.get("bits") or meta.get("bits") or 8), name=name,
+            fallback=(int(solid[0]), int(solid[1])) if solid else None)
+    # `atlas` is tileset_generate's word for the one block tile; `solid` is
+    # what _terrain_block writes for a solid layout, since that is where a
+    # Terrain with no table keeps its coordinate. Same fact, two spellings,
+    # and refusing one of them would make a described set draw at (0, 0).
+    at = wall.get("atlas") or wall.get("solid") or (0, 0)
+    return _autotile.Terrain.solid(
+        int(wall.get("source", 1)),
+        (int(at[0]), int(at[1])), name=name)
+
+
+def _terrain_block(terrain, layout: str) -> dict:
+    """A Terrain as the sidecar stores it. The inverse of `_manifest_*`."""
+    block: dict = {"source": int(terrain.source), "layout": layout,
+                   "bits": int(terrain.bits),
+                   "table": {str(m): [int(c[0]), int(c[1])]
+                             for m, c in sorted(terrain.table.items())}}
+    if terrain.fallback:
+        block["solid"] = [int(terrain.fallback[0]), int(terrain.fallback[1])]
+    return block
+
+
 def _iso_blocks(tiles_disk: _Path) -> Optional[dict]:
     """The raised-tile map tileset_generate wrote beside an isometric set.
 
@@ -1501,99 +1709,15 @@ def _manifest_source(tiles_disk: _Path, man: dict) -> int:
 
 
 
-#: Where each prop TYPE sits on its atlas when the caller says nothing — one
-#: row, in `props.DEFAULT_TYPES` order, because that is how a generated prop
-#: sheet is packed and a default nobody has to think about is the point.
-_PROP_ATLAS_DEFAULT = {"torch": (0, 0), "barrel": (1, 0),
-                       "rubble": (2, 0), "altar": (3, 0)}
-
-
-def _prop_atlas(spec: str, source: int) -> dict:
-    """"torch=0,0 barrel=1,0;2,0" into the map `props.cells` takes.
-
-    Keyed on the prop TYPE, not its role: a torch and a banner are both wall
-    mounts, with different sprites and different mounting rules, and a single
-    entry for "wall" cannot express that.
-
-    Refuses a malformed spec rather than falling back to the default, because a
-    typo would otherwise put every prop on tile (0, 0) and the level would look
-    dressed with the wrong sprite everywhere.
-    """
-    if not spec.strip():
-        return dict(_PROP_ATLAS_DEFAULT)
-    out: dict = {}
-    for chunk in spec.split():
-        if "=" not in chunk:
-            raise ValueError(
-                f"prop_atlas entry {chunk!r} needs type=x,y — for example "
-                '"torch=0,0 barrel=1,0;2,0"')
-        kind, spots = chunk.split("=", 1)
-        kind, _, facing = kind.strip().partition(".")
-        if kind not in _props.PROP_TYPES:
-            raise ValueError(f"unknown prop type {kind!r}; "
-                             f"declared types are {sorted(_props.PROP_TYPES)}")
-        if facing and facing not in _props.MOUNTABLE_SIDES:
-            raise ValueError(
-                f"{kind}.{facing} is not a mountable facing; a wall's inner "
-                f"face points one of {list(_props.MOUNTABLE_SIDES)} "
-                "— \"n\" is the wall you see the back of")
-        coords = []
-        for one in spots.split(";"):
-            parts = one.split(",")
-            if len(parts) != 2:
-                raise ValueError(
-                    f"prop_atlas {kind}={one!r} is not an x,y atlas coordinate")
-            try:
-                coords.append((int(parts[0]), int(parts[1])))
-            except ValueError:
-                raise ValueError(
-                    f"prop_atlas {kind}={one!r} has a non-integer coordinate"
-                    ) from None
-        # "torch.e=0,0 torch.w=1,0" — ONE TILE PER FACING, which is what a
-        # seated wall mount needs: Godot's flip bit mirrors the sprite but NOT
-        # its texture_origin (measured in the engine), so a shared tile would
-        # seat the prop correctly on one wall and wrongly on the other.
-        if facing:
-            if not isinstance(out.get(kind), dict):
-                if kind in out:
-                    raise ValueError(
-                        f"prop_atlas gives {kind} both a plain entry and a "
-                        f"per-facing one ({kind}.{facing}) — pick one")
-                out[kind] = {}
-            out[kind][facing] = coords[0] if len(coords) == 1 else coords
-        else:
-            if isinstance(out.get(kind), dict):
-                raise ValueError(
-                    f"prop_atlas gives {kind} both a per-facing entry and a "
-                    "plain one — pick one")
-            out[kind] = coords if len(coords) > 1 else coords[0]
-    if not out:
-        raise ValueError("prop_atlas named no types")
-    return out
-
-
 @_tool
 def level_generate(godot_project: str, scene: str, tileset: str,
                    width: int = 48, height: int = 32, seed: int = 0,
-                   floor_source: int = 0, floor_atlas_x: int = 0,
-                   floor_atlas_y: int = 0,
-                   floor_layout: str = "solid",
-                   floor_columns: int = 4,
-                   wall_source: int = 0, wall_layout: str = "blob47",
-                   wall_atlas_x: int = 0, wall_atlas_y: int = 0,
-                   wall_columns: int = 8,
-                   min_leaf: int = 10, min_room: int = 4, margin: int = 1,
-                   max_depth: int = 5, corridor_width: int = 2,
-                   room_fill: float = 0.8,
-                   layout: str = "bsp", rooms: int = 5,
-                   side_rooms: int = 1, floor_sources: str = "",
+                   layout: str = "bsp", walls: bool = True,
+                   tuning: Optional[dict] = None,
                    levels: int = 1, raised: float = 0.35,
                    props: bool = False, prop_manifest: str = "",
-                   prop_source: int = 0,
-                   prop_density: float = 0.1, prop_atlas: str = "",
-                   prop_types: str = "",
-                   parent: str = ".", floor_name: str = "Floor",
-                   wall_name: str = "Walls", prop_name: str = "Props",
+                   prop_density: float = 0.1,
+                   parent: str = ".", names: Optional[dict] = None,
                    create: bool = False,
                    dry_run: bool = False) -> dict:
     """Generate a level and write it into a scene as TileMapLayer nodes.
@@ -1602,24 +1726,27 @@ def level_generate(godot_project: str, scene: str, tileset: str,
     binary Godot stores tiles in -> a .tscn edit, backed up. No engine and no
     editor involved, so it runs headless and is a normal reviewable diff.
 
+    THE TILESET DESCRIBES ITSELF, so this call takes NO atlas coordinates.
+    `tileset_generate` writes a `<name>.tiles.json` sidecar for a set it made;
+    for a hand-built or imported sheet, `tileset_describe` writes the same file
+    once. Either way the mask table, the sources and the layouts come off disk.
+    Without that file this refuses rather than guessing - a guessed coordinate
+    draws a complete, confident, wrong-looking level, which is worse than an
+    error. `walls=False` writes the floor layer only.
+
     WHICH TILE GOES WHERE is decided by a neighbour bitmask, the same job the
     Godot editor's terrain sets do - and they only run in the editor, which is
-    why it is redone here. `wall_layout` says how the wall sheet is arranged:
-
-      blob47   8-bit mask, 47 tiles, row-major from (wall_atlas_x, wall_atlas_y),
-               `wall_columns` wide, masks ascending. Sides plus corners.
-      grid16   4-bit mask, 16 tiles, same layout rule. Sides only - right for a
-               wall one cell thick.
-      solid    one tile everywhere. No autotiling.
-      none     no wall layer at all; floor only.
+    why it is redone here.
 
     `props=True` adds a third layer of DRESSING — wall torches, clutter against
     the architecture, cover in the rooms you walk through, a feature in the dead
     ends. Placement is by what the room is for (see `bgate_core.props`) and every
     solid prop is refused if it would break the level into two regions, checked
-    by flood filling rather than by reasoning about it. `prop_types` names the
-    sprites you actually have — "torch,barrel,rubble,altar" — and `prop_atlas`
-    says where each lives, "torch=0,0 barrel=1,0;2,0".
+    by flood filling rather than by reasoning about it. It needs
+    `prop_manifest`, the file `prop_generate` writes beside its atlas: the
+    types, coordinates, spans, texture origins and animation all come from
+    there. `prop_density` is the only dial here, because it is the only one
+    that is about the LEVEL rather than about the sheet.
 
     EACH TYPE DECLARES ITS OWN CONSTRAINTS and the placer obeys them instead of
     assuming a prop goes anywhere. A wall mount occupies the WALL cell, so it is
@@ -1644,8 +1771,41 @@ def level_generate(godot_project: str, scene: str, tileset: str,
 
     godot_project: the directory holding project.godot.
     scene/tileset: res:// paths, or paths relative to that directory.
+    tuning: the eight BSP partition knobs, all optional — min_leaf, min_room,
+      margin, max_depth, corridor_width, room_fill, rooms, side_rooms. The
+      same numbers `level_plan` takes, so preview there and pass the dict
+      here. An unknown key is refused by name rather than ignored.
+    names: layer node names, {"floor": ..., "walls": ..., "props": ...};
+      defaults Floor/Walls/Props.
     """
     try:
+        # THE EIGHT BSP KNOBS, BEHIND ONE DOOR. They were eight top-level
+        # parameters that almost nobody set and everybody had to read past;
+        # they are the same eight `level_plan` takes, and they tune the
+        # PARTITION rather than the level. Unknown keys are refused by name
+        # because a silently-ignored `min_rooms` typo is a tuning dict that
+        # did nothing and said it worked.
+        tuning = dict(tuning or {})
+        unknown = sorted(set(tuning) - set(_LEVEL_TUNING))
+        if unknown:
+            return {"ok": False, "error": (
+                f"tuning has no key(s) {unknown} - it takes "
+                f"{sorted(_LEVEL_TUNING)}. level_plan previews the same "
+                "numbers without writing a scene.")}
+        tune = {**_LEVEL_TUNING, **{k: v for k, v in tuning.items()}}
+        min_leaf = int(tune["min_leaf"]); min_room = int(tune["min_room"])
+        margin = int(tune["margin"]); max_depth = int(tune["max_depth"])
+        corridor_width = int(tune["corridor_width"])
+        room_fill = float(tune["room_fill"])
+        rooms = int(tune["rooms"]); side_rooms = int(tune["side_rooms"])
+
+        # Layer node names: cosmetic, three parameters deep, and only ever
+        # touched by a project whose scene already has a `Floor`.
+        names = dict(names or {})
+        floor_name = str(names.get("floor") or "Floor")
+        wall_name = str(names.get("walls") or "Walls")
+        prop_name = str(names.get("props") or "Props")
+
         # THE SAME GATE sidescroll_generate holds in the other direction.
         # Under gravity a connected floor guarantees nothing — you cannot
         # walk upward — so rooms-and-corridors geometry in a platformer is
@@ -1658,9 +1818,6 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 "builds for this character's jump, or game_view_set if the "
                 "declared view is wrong.")}
         iso = view == "isometric"
-        if wall_layout not in _WALL_LAYOUTS:
-            raise ValueError(
-                f"wall_layout {wall_layout!r} is not one of {_WALL_LAYOUTS}")
         scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
         tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
 
@@ -1681,6 +1838,35 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 "Godot renders the mismatch without complaint and it looks "
                 "wrong everywhere — fix the tileset or the declared view, "
                 "not this call.")
+        # THE SHEET DESCRIBES ITSELF, AND THAT IS THE WHOLE POINT.
+        #
+        # Ten parameters used to carry the atlas layout on EVERY call -
+        # floor_source, floor_atlas_x/_y, floor_layout, floor_columns and the
+        # same five for walls - re-typed per level, per seat, per session. The
+        # art seat holds the sheet and knows every coordinate; gameplay and
+        # tech build the levels and need them; the only channel between the
+        # two was a pasted string, and a string is wrong in exactly one call
+        # out of ten. `tileset_generate` has written the sidecar for its own
+        # sets for a while; what was missing was a way for a HAND-BUILT sheet
+        # to have one, which is `tileset_describe`. With both, this tool takes
+        # no atlas coordinates from anyone.
+        manifest = _tileset_manifest(tiles_disk)
+        if manifest is None:
+            return {"ok": False, "error": (
+                f"{tiles_res} has no {tiles_disk.stem}.tiles.json beside it, "
+                "so nothing here knows where its floor and wall tiles live. "
+                "tileset_generate writes that file for a set it made itself; "
+                "for a hand-built or imported sheet call tileset_describe "
+                "ONCE and every level after it needs no atlas coordinates. "
+                "This tool no longer takes them - a coordinate typed per "
+                "call is the bug that file exists to end.")}
+        floor_terrain = _manifest_floor(manifest, floor_name)
+        floor_source = int(floor_terrain.source)
+        wall_terrain = _manifest_wall(manifest, wall_name) if walls else None
+        wall_layout = ("none" if wall_terrain is None else
+                       str((manifest.get("wall") or {}).get("layout")
+                           or "solid"))
+        wall_source = int(wall_terrain.source) if wall_terrain else 0
         # AN ISOMETRIC WALL IS A BLOCK, AND A BLOCK IS A BLOCK. The 47- and
         # 16-mask layouts exist so a FLAT wall can show which sides face open
         # floor; a raised cell shows its two camera-facing sides whatever its
@@ -1691,7 +1877,15 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         # block source draws its floor and says so, rather than refusing over
         # a default the caller never typed.
         iso_walls = None
-        if iso and wall_layout in ("blob47", "grid16"):
+        # WANTED, NOT "WHICH MASK LAYOUT". This read `wall_layout in
+        # ("blob47", "grid16")`, which worked only because wall_layout
+        # defaulted to blob47 - now that the layout comes off the manifest, a
+        # set describing no flat wall at all reads as "none" and the block
+        # routing below never ran, so an isometric level came out floorless
+        # of walls. The question here was always "does this level want
+        # walls", and for an iso set the answer routes to blocks regardless of
+        # what the flat sheet says.
+        if iso and walls:
             # ONLY A SET THAT SAYS SO. This used to route walls to source 1
             # on the assumption that source 1 is the block strip, which is
             # true of every tileset this tool writes and false of a hand-built
@@ -1724,6 +1918,16 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                              "tileset_generate writes one for an isometric "
                              "project; a set imported from elsewhere needs "
                              "its wall blocks as source 1.")
+            # THE TERRAIN FOLLOWS THE ROUTING, not the manifest. The sidecar
+            # describes the FLAT wall sheet's mask table, which is exactly
+            # what an iso block strip does not have: a raised cell shows its
+            # two camera-facing sides whatever its neighbours do. So the
+            # decision above is honoured by rebuilding the terrain, rather
+            # than by the old code's trick of reading a "did the caller pass
+            # defaults" flag to decide which branch won.
+            wall_terrain = (None if wall_layout == "none" else
+                            _autotile.Terrain.solid(wall_source, (0, 0),
+                                                    name=wall_name))
         have = sorted(parsed_set["sources"])
         wanted = {floor_source} | ({wall_source} if wall_layout != "none" else set())
         missing = sorted(w for w in wanted if w not in parsed_set["sources"])
@@ -1767,37 +1971,9 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         # rooms as a solid slab of partition. When the set draws thin panels,
         # take the ring.
         thin_walls = bool(iso and iso_walls == "blocks")
-        # THE MANIFEST DECIDES THE LAYOUT when the caller did not: a
-        # tileset_generate set carries its own mask table on disk, so the
-        # floor_*/wall_* parameters exist for hand-built sheets only, and any
-        # explicitly non-default value wins outright. The iso blocks path has
-        # already claimed wall_source by here, which correctly reads as
-        # non-default and keeps that routing untouched.
-        manifest = _tileset_manifest(tiles_disk)
-        defaults = (floor_source == 0 and floor_atlas_x == 0
-                    and floor_atlas_y == 0 and floor_layout == "solid"
-                    and wall_source == 0 and wall_layout == "blob47"
-                    and wall_atlas_x == 0 and wall_atlas_y == 0)
-        manifest_used = bool(manifest is not None and defaults)
-        if manifest_used:
-            floor_terrain = _manifest_floor(manifest, floor_name)
-            man_wall = manifest.get("wall")
-            wall_terrain = (_autotile.Terrain.solid(
-                int(man_wall.get("source", 1)),
-                tuple(man_wall.get("atlas") or (0, 0)), name=wall_name)
-                if man_wall else None)
-        else:
-            # FLOORS AUTOTILE TOO. This was pinned to "solid", so a floor
-            # could only ever be one repeated tile — and with a terrain
-            # transition set that is the WHOLE look: the wall is drawn into
-            # the floor tiles' own edges, so a solid fill throws away every
-            # edge and corner the sheet came with and paints the level in
-            # one square.
-            floor_terrain = _terrain(floor_layout, floor_source, floor_atlas_x,
-                                     floor_atlas_y, floor_columns, floor_name)
-            wall_terrain = (None if wall_layout == "none" else
-                            _terrain(wall_layout, wall_source, wall_atlas_x,
-                                     wall_atlas_y, wall_columns, wall_name))
+        # floor_terrain/wall_terrain came off the manifest above, before the
+        # isometric routing had its say. Nothing is decided here any more.
+        manifest_used = True
         layers = _levelgen.layers(
             level,
             wall_fill=not thin_walls,
@@ -1882,13 +2058,14 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         # A FLOOR PER ROOM. One surface across a whole level is the other
         # half of why a generated floor reads as generated: a building
         # changes underfoot at every threshold, and the layout already knows
-        # where its rooms are. `floor_sources` is the atlas sources to deal
-        # out — the project's own carpets, walkway, breakroom, whatever it
-        # ships — and the route gets the first one so the critical path
-        # stays legible as you walk it.
+        # where its rooms are. The sources to deal out — the project's own
+        # carpets, walkway, breakroom, whatever it ships — are a fact about
+        # the SHEET, so they come off the sheet's manifest rather than off a
+        # string retyped per call; the route gets the first one so the
+        # critical path stays legible as you walk it.
         room_floors = {}
-        picks = [int(v) for v in str(floor_sources).replace(",", " ").split()
-                 if v.strip().lstrip("-").isdigit()]
+        picks = [int(v) for v in (manifest.get("floor_sources") or [])
+                 if str(v).strip().lstrip("-").isdigit()]
         if picks:
             for i, room in enumerate(level["rooms"]):
                 src = picks[i % len(picks)]
@@ -1927,23 +2104,30 @@ def level_generate(godot_project: str, scene: str, tileset: str,
 
         prop_report: dict = {}
         if props:
-            want = tuple(prop_types.replace(",", " ").split()) or None
-            # THE MANIFEST IS THE EASY PATH and the one to use: prop_generate
-            # writes it, and it already knows every atlas coordinate, span,
-            # texture origin and animation. The loose prop_atlas/prop_types
-            # arguments stay for a hand-built sheet, but nobody should be
-            # typing atlas coordinates into a tool call to dress a level.
-            if prop_manifest:
-                man = _read_prop_manifest(_root(), prop_manifest)
-                atlas = man["atlas"]
-                prop_source = _manifest_source(tiles_disk, man)
-                if not want:
-                    want = tuple(man["types"])
-            else:
-                atlas = _prop_atlas(prop_atlas, prop_source)
-            walls = _levelgen.wall_ring({tuple(c) for c in level["floor"]})
+            # THE MANIFEST IS THE ONLY PATH NOW. `prop_generate` writes it and
+            # it already knows every atlas coordinate, span, texture origin
+            # and animation. What stood beside it was `prop_atlas`, a string
+            # mini-language - "torch=0,0 barrel=1,0;2,0" - parsed by hand with
+            # its own bespoke errors, plus `prop_types` and `prop_source` to
+            # go with it. Three parameters and a DSL to re-state, per call,
+            # what a file next to the atlas already said.
+            if not prop_manifest:
+                return {"ok": False, "error": (
+                    "props=True needs prop_manifest=<path>. `prop_generate` "
+                    "writes that file beside the atlas it packs, and it "
+                    "carries the types, coordinates, spans, texture origins "
+                    "and animation frames - none of which are tool "
+                    "parameters any more. Generate the props first, or pass "
+                    "props=False for a bare level.")}
+            man = _read_prop_manifest(_root(), prop_manifest)
+            atlas = man["atlas"]
+            prop_source = _manifest_source(tiles_disk, man)
+            want = tuple(man["types"]) or None
+            # NOT `walls`: that is this tool's own parameter, and rebinding it
+            # here worked only because the wall terrain was already built.
+            wall_ring = _levelgen.wall_ring({tuple(c) for c in level["floor"]})
             plan_props = _props.plan(level, seed=seed, density=prop_density,
-                                     walls=walls, types=want,
+                                     walls=wall_ring, types=want,
                                      view=_gameview.load(_root()))
             # ONE LAYER PER DRAW LEVEL. A TileMapLayer holds a single tile
             # per coordinate, so a crack in the floor and the barrel standing
@@ -2215,6 +2399,64 @@ def godot_retarget_check(godot_project: str, res_path: str,
     return result
 
 
+def _annotate_evidence(result: dict, godot_project: str,
+                       default_run: bool) -> dict:
+    """Default-scene proof, and the honest 2D/3D caveat. Never raises."""
+    try:
+        from bgate_core import project as _project, sceneproof as _proof
+    except Exception:                                             # noqa: BLE001
+        return result
+
+    dimension = ""
+    try:
+        dimension = str((_project.get(_root()) or {}).get("dimension") or "")
+    except Exception:                                             # noqa: BLE001
+        pass
+
+    # NOT `ok: true` WITH NOTHING IN IT. The manifest walk reports screen-space
+    # bounds, which is a 2D question; on a 3D project an empty `entities` means
+    # "this walk could not see the world", not "the world is empty".
+    if dimension == "3d" and not (result.get("entities") or {}):
+        result["entities_note"] = (
+            "`entities` is EMPTY and this is a 3D project. That is a limit of "
+            "this tool, NOT a fact about the scene: the manifest walk reports "
+            "screen-space bounds and is not authoritative about 3D contents. "
+            "Measure the world with godot_inspect_resource (engine mesh and "
+            "collider bounds) or read the frame. It used to come back as "
+            "ok:true with entities:{} on a populated scene, which reads as a "
+            "verdict and is not one.")
+        result["entities_authoritative"] = False
+    elif dimension == "3d":
+        result["entities_authoritative"] = False
+
+    if not default_run:
+        result["default_scene_proof"] = False
+        result["why_not_proof"] = (
+            "a named scene was captured, so this does NOT satisfy the release "
+            "gate's default-scene row. Call godot_evidence with no `scene` to "
+            "launch what the player actually boots into.")
+        return result
+
+    state = _proof.default_scene_state(_root())
+    result["default_scene_proof"] = True
+    result["declared_scene"] = state.get("scene", "")
+    result["scaffold"] = state.get("scaffold", False)
+    if state.get("scene") and result.get("beauty"):
+        result["beauty_digest"] = _proof.digest(result["beauty"])
+    if not state.get("ok"):
+        result["ok"] = False
+        result["error"] = state.get("why") or result.get("error", "")
+    try:
+        _proof.record_capture(_root(), state.get("scene", ""), result)
+    except Exception:                                             # noqa: BLE001
+        pass
+    result["next"] = ("evidence_assert(scene, frame, says=...) - say what is "
+                      "IN this frame. A captured file nobody opened is not "
+                      "evidence, and the release gate holds until somebody "
+                      "has said something about it.")
+    return result
+
+
 @_tool
 def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = None,
                    overlay: bool = True, label: str = "",
@@ -2233,6 +2475,26 @@ def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = N
     `ui`. Pair with `causal_chains` - the manifest says what was on screen, the
     chains say why it happened.
 
+    CALL IT WITH NO `scene` TO PROVE THE DEFAULT. That is the capture the
+    release gate requires and the one nobody was taking: a 3D benchmark shipped
+    with `application/run/main_scene` still pointing at the scaffold demo while
+    every named-scene test passed, because each of those tests named the scene
+    it tested and none of them named the one the game boots into. With no
+    `scene` this launches exactly what pressing play launches, records the
+    proof against the release gate, and FAILS if the default scene is missing,
+    broken, or still the template's demo room. Named-scene evidence does not
+    substitute for it.
+
+    ENTITIES CAN BE EMPTY ON A POPULATED 3D SCENE, and that used to come back
+    as `ok: true` with `entities: {}`. The manifest walk is screen-space and
+    2D-shaped; on a 3D project it is not authoritative about what is in the
+    world. The result now says so rather than reading as "this scene has
+    nothing in it" - measure 3D contents with godot_inspect_resource.
+
+    THE CAPTURE IS NOT THE EVIDENCE. Record what you saw in the frame with
+    evidence_assert(scene, frame, says=...) - a file on disk that nobody opened
+    is what let a two-tailed character ship for a day.
+
     godot_project: the directory holding project.godot.
     """
     try:
@@ -2241,9 +2503,11 @@ def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = N
                       _run_tag(label or "frame"))
     except Exception:
         out_dir = f"bgate_evidence_{_run_tag()}"
+    default_run = not scene
     try:
         result = _godot.evidence(godot_project, out_dir, at=at, scene=scene,
                                  overlay=overlay, timeout=timeout)
+        result = _annotate_evidence(result, godot_project, default_run)
         if result.get("ok"):
             for key, tag in (("beauty", "beauty"), ("overlay", "overlay")):
                 path = result.get(key)
@@ -2275,3 +2539,121 @@ def evidence_check_ui(manifest_path: str, expect: dict,
     """
     manifest = _json.loads(_Path(manifest_path).read_text(encoding="utf-8"))
     return _godot.check_ui_matches(manifest, expect, tolerance=tolerance)
+
+
+# ---------------------------------------------------------------------------
+# Traversal — can the player actually GET THERE
+# ---------------------------------------------------------------------------
+# A NEW VERB, AND THE ONLY ONE THIS PASS ADDS. Nothing existing could express
+# it: `godot_run` runs a script, `godot_evidence` photographs a frame, and the
+# geometry tools measure shapes. "Drive the real controller with real input
+# from the real launch surface and prove it ENDS UP SETTLED inside the
+# destination's own volume" is a different question from all three, and the
+# four-of-six false-green climbing routes are what happens when it is answered
+# by proxy.
+@_tool
+def traversal_prove(godot_project: str, scene: str, launch: str,
+                    destination: str, inputs: list, name: str = "route",
+                    player: str = "", player_script: str = "",
+                    settle_frames: int = 3, timeout: int = 180) -> dict:
+    """DRIVE THE PLAYER and prove it arrives — settled, in the real volume.
+
+    FOUR OF SIX CLIMBING ROUTES PASSED AND WERE NOT TRAVERSABLE. The tests
+    measured vertical rise against jump height. None measured the horizontal
+    edge gap, the launch surface size, the landing pad size, the player's own
+    body width, or what the controller does when you hold the stick that way.
+
+    Then the gate written to catch that produced its own false green, which is
+    the sharpest defect in the whole benchmark: the driver accepted arrival on
+    ANY frame where the body was near the target - including mid-ballistic-arc
+    during a jump that MISSED. Requiring `is_on_floor` was not enough either: a
+    scripted mantle carries that flag from before it began, so the check passed
+    mid-interpolation while an AnimationPlayer was lerping the body through the
+    air.
+
+    So arrival here is three conditions, all required:
+
+      IN THE VOLUME  inside `destination`, which must be the destination's OWN
+                     Area2D/Area3D - the volume the GAME uses to know the
+                     player is there. Not a marker plus a radius; a radius
+                     around a point is what passed mid-jump.
+      SETTLED        grounded AND not inside any scripted or interpolated move
+      HELD           for `settle_frames` CONSECUTIVE frames. One frame is a
+                     sample of a trajectory; N frames is a state.
+
+    YOUR CONTROLLER MUST SAY WHEN IT IS BUSY. Nothing outside a controller can
+    tell "standing on the ledge" from "being lerped by a mantle" - that is
+    exactly why the grounded check failed. Expose
+    `func is_in_scripted_move() -> bool` (or is_busy / is_traversal_busy /
+    is_animation_driving / is_scripted_move_active) returning true while any
+    scripted move owns the body. Pass `player_script` and this REFUSES a
+    controller without one rather than sampling it naively, because sampling it
+    naively is the bug.
+
+    `inputs` is the real input program through the real input map:
+    [{"action": "move_forward", "frames": 20}, {"action": "jump", "frames": 1}]
+
+    Bounded by construction: the run stops at a frame ceiling and prints a
+    heartbeat, because an unbounded wait-until-condition loop is
+    indistinguishable from a hang and three agents were killed after 25 minutes
+    of silence having written nothing.
+
+    Geometry (rise, gap, pad sizes, player bounds) is reported when available
+    as EXPLANATION. It is never the verdict.
+    """
+    from bgate_core import traversal as _traversal
+
+    _contained_path(godot_project, "godot_project")
+    try:
+        spec = _traversal.route(name=name, scene=scene, launch=launch,
+                                destination=destination, inputs=list(inputs),
+                                player=player, settle_frames=settle_frames)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    if player_script:
+        source = ""
+        for candidate in (_Path(player_script),
+                          _Path(godot_project) / player_script,
+                          _Path(godot_project) /
+                          player_script.replace("res://", "")):
+            if candidate.is_file():
+                source = candidate.read_text(encoding="utf-8", errors="replace")
+                break
+        if not source:
+            return {"ok": False,
+                    "error": f"player_script {player_script} is not readable"}
+        try:
+            _traversal.require_controller(source)
+        except _traversal.ControllerRefused as exc:
+            return {"ok": False, "controller_refused": True,
+                    "error": str(exc)}
+
+    out_path = _Path(_root()) / ".bgate_out" / "traversal" / f"{_run_tag(name)}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    driver = _traversal.driver_source(spec, out_path.as_posix())
+    ran = _godot.run_script(driver, project_dir=godot_project, timeout=timeout)
+
+    payload = {"ok": False, "error": "the driver wrote no result"}
+    if out_path.exists():
+        try:
+            payload = _json.loads(out_path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            payload = {"ok": False, "error": f"unreadable driver output: {exc}"}
+    if not ran.get("ok") and not payload.get("samples"):
+        payload = {"ok": False,
+                   "error": str(ran.get("error") or "the driver did not run"),
+                   "engine": {"stdout": (ran.get("stdout") or "")[-1200:],
+                              "errors": ran.get("errors") or []}}
+
+    verdict = _traversal.verdict(spec, payload)
+    verdict["route_spec"] = {k: spec[k] for k in
+                             ("name", "scene", "launch", "destination",
+                              "settle_frames", "max_frames")}
+    verdict["driver_output"] = str(out_path)
+    verdict["engine_contended"] = bool(ran.get("engine_contended"))
+    _log("traversal",
+         f"{name}: {'REACHABLE' if verdict['ok'] else 'NOT REACHABLE'} — "
+         f"{verdict.get('why') or 'settled in the destination volume'}",
+         ref=scene)
+    return verdict

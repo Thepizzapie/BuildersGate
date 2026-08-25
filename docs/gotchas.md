@@ -157,6 +157,81 @@ so an agent's real render is never the one that stalls. Iterate on
 It fails `poll()` in OBJECT mode. In EDIT mode it is fine headless, around 0.5s,
 and it does not hang despite the folklore.
 
+### `bpy.ops.*` returns CANCELLED instead of raising, and the script carries on
+
+`bpy.ops.object.transform_apply(...)` with nothing selected returns
+`{'CANCELLED'}`, changes not one vertex, and the run reports `ok: true`.
+Measured: three identical "rotated" exports were paid for before anybody looked
+at the return value.
+
+It is **not** a headless limitation - with a valid selection the same call
+inside `blender_run` applies correctly, verified. Blender operators simply do
+not raise when their poll fails, and nothing in a normal script reads the status
+set they return instead.
+
+**Fix.** `bg_apply()` no longer uses an operator at all: it transforms the mesh
+data by the object's own matrix, resets the components it baked, and *asserts*
+that they came out identity. For operators that must stay, the kit ships
+`bg_op(bpy.ops.object.shade_smooth(), "shade_smooth")`, which raises on
+CANCELLED. `blender_run` also lints your script and reports any effectful
+`bpy.ops.*` call whose result is discarded.
+
+### A `godot_run` script fails with "Identifier not found" on your own autoload
+
+The error names your script's line number, so it reads as a syntax error you did
+not write. It cost about $9 of agent time before it was identified, and it hit
+the harness's own scaffold code.
+
+**Cause.** `--script` REPLACES the main loop. Godot only instantiates autoloads
+when it starts a main scene, so under `--script` the tree has no autoload
+children at all - verified on 4.4.1, `root.get_children()` is `[]`. The
+singleton is not merely unresolvable as a global identifier; it does not exist.
+Moving the script inside `res://` does not help.
+
+**Fix.** Write it as a node: `extends Node`, work in `_ready()`, finish with
+`get_tree().quit()`. `godot_run` runs a node script as the project's main scene,
+which boots normally and resolves every autoload exactly as the game does. A
+SceneTree script that names an autoload is now refused *before* the engine
+spawns, with the real cause named.
+
+### Two Godot processes on one project hang forever
+
+Two engine invocations sharing one `.godot` cache deadlock on Windows, and the
+symptom is identical to a hang: both sit there, neither prints, and the timeout
+reports "the game did not exit". Three agents were killed after 25 minutes of
+silence having written nothing, and some of that was this.
+
+`bgate_core/enginelock.py` now serialises engine spawns per project. A second
+call waits, reports that it waited and on what, and refuses with an explicit
+message rather than racing. A lock left by a killed run expires and is broken by
+the next caller, which says so.
+
+### Taking a screenshot blocks the whole board
+
+`godot_evidence` and `godot_screenshot` inject an autoload to capture the running
+game. A killed capture used to leave `.bgate_shot.gd` / `.bgate_evidence.gd` in
+the project root, `git status` reported them, and the dispatcher refuses a dirty
+tree - which refuses the WHOLE board, not one item. One screenshot stalled every
+seat.
+
+The injected scripts now live under `.godot/bgate_run/` (the engine's own cache
+directory, ignored by every Godot `.gitignore`). `override.cfg` cannot move -
+Godot reads it from beside `project.godot` and there is no CLI flag for an
+autoload - so it is removed in a `finally` and `gitwork.dirty` recognises *our*
+override.cfg by its marker and does not count it. A user's own `override.cfg`
+still dirties the tree, which is the distinction that matters.
+
+### A re-exported GLB probes as its OLD self
+
+A modified `.glb` returned the previous export's clip lengths until some
+unrelated operation forced a reimport. The probe reported the old number with
+complete confidence, because nothing knew it was reading a cache.
+
+`godot_inspect_resource` now calls `ensure_fresh()` first: it compares Godot's
+own `source_md5` sidecars against the bytes on disk, reimports when they differ,
+and returns `freshness` evidence either way. A reading taken off a cache that
+would not rebuild fails rather than being reported as current.
+
 ## Processes and capture
 
 ### A render is slow under the MCP server and fine standalone

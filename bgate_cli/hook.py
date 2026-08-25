@@ -321,17 +321,39 @@ def _collapse_fd_dups(tokens: list[str]) -> list[str]:
 
 def _split_segments(tokens: list[str]) -> list[list[str]]:
     """One token stream -> the simple commands inside it."""
-    out: list[list[str]] = []
+    return [segment for segment, _open, _close in _scoped_segments(tokens)]
+
+
+def _scoped_segments(tokens: list[str]) -> list[tuple[list[str], int, int]]:
+    """The simple commands, each with the subshell brackets around it.
+
+    ``(segment, opened_before, closed_after)``. The brackets are separators, so
+    the plain splitter above threw them away - which made a ``cd`` inside
+    ``( ... )`` look like it changed the shell's directory for everything after
+    the closing paren. It does not, and modelling it that way judged later
+    relative writes against a directory the shell had already left. That is not
+    a cosmetic misread: it decides which seat's lane a path falls in, and it
+    produced write-log entries like
+    ``assets/audio/assets/audio/attack.synth.json`` in the benchmark projects -
+    a path that exists nowhere.
+    """
+    out: list[tuple[list[str], int, int]] = []
     current: list[str] = []
+    opened = 0
     for token in tokens:
         if token in _SEPARATORS:
             if current:
-                out.append(current)
-                current = []
+                out.append((current, opened, 0))
+                current, opened = [], 0
+            if token in ("(", "{"):
+                opened += 1
+            elif token in (")", "}") and out:
+                segment, before, after = out[-1]
+                out[-1] = (segment, before, after + 1)
         else:
             current.append(token)
     if current:
-        out.append(current)
+        out.append((current, opened, 0))
     return out
 
 
@@ -567,6 +589,7 @@ def analyse_bash(command: str, *, _embedded: bool = False) -> dict:
     unclear: list[str] = []
     cd_to = ""            # where the command has cd'd so far ("" = nowhere)
     cd_unknown = False
+    subshells: list[tuple[str, bool]] = []   # directory state saved at each `(`
     for line, heredoc in _logical_lines(command):
         if not line.strip():
             continue
@@ -580,7 +603,12 @@ def analyse_bash(command: str, *, _embedded: bool = False) -> dict:
                 unclear.append("the command could not be parsed (unbalanced "
                                "quotes?) and it writes")
             continue
-        for segment in _split_segments(_collapse_fd_dups(tokens)):
+        for segment, opened, closed in _scoped_segments(_collapse_fd_dups(tokens)):
+            # A SUBSHELL'S `cd` DOES NOT ESCAPE IT. Save the shell's directory
+            # state on `(` and put it back on `)` - which is what the shell
+            # itself does, and what this did not.
+            for _ in range(opened):
+                subshells.append((cd_to, cd_unknown))
             seg_writes, seg_unclear, program = _scan_segment(segment, _embedded)
             if program == "cd":
                 target = next((t for t in segment[1:]
@@ -590,7 +618,10 @@ def analyse_bash(command: str, *, _embedded: bool = False) -> dict:
                 elif os.path.isabs(target) or target[1:2] == ":":
                     cd_to, cd_unknown = target, False
                 else:
-                    cd_to = os.path.join(cd_to, target) if cd_to else target
+                    cd_to = _join(cd_to, target)
+                for _ in range(closed):
+                    if subshells:
+                        cd_to, cd_unknown = subshells.pop()
                 continue
             if heredoc and program in _INTERPRETERS \
                     and program not in _SHELLS \
@@ -620,11 +651,22 @@ def analyse_bash(command: str, *, _embedded: bool = False) -> dict:
                         f"a relative write ({w}) after a cd whose target this "
                         "hook cannot resolve")
                 elif cd_to:
-                    writes.append(os.path.join(cd_to, w))
+                    writes.append(_join(cd_to, w))
                 else:
                     writes.append(w)
             unclear.extend(seg_unclear)
+            for _ in range(closed):
+                if subshells:
+                    cd_to, cd_unknown = subshells.pop()
     return {"writes": writes, "unclear": unclear}
+
+
+def _join(base: str, rel: str) -> str:
+    """`base`/`rel`, COLLAPSED. `a/b/../c` and `a/c` are the same file and only
+    one of them matches a lane glob, so leaving the `..` in produced a verdict
+    about a path the shell will never write to."""
+    joined = os.path.join(base, rel) if base else rel
+    return os.path.normpath(joined).replace("\\", "/")
 
 
 # ---------------------------------------------------------------------------
@@ -1037,6 +1079,13 @@ def _note_write(root, rel: str, seat: str, owner: str, payload: dict) -> None:
         return
     try:
         from bgate_core import writelog
+        # THE PRE-IMAGE, TAKEN HERE BECAUSE HERE IS THE ONLY MOMENT IT EXISTS.
+        # This hook runs BEFORE the tool, so the file on disk is still the old
+        # one. A ledger of paths told you a destructive edit had happened and
+        # gave you no way to undo it; first-touch copies give a live run a
+        # short-range undo. Before record(), so a write that is about to
+        # clobber something is captured even if the ledger append then fails.
+        writelog.preimage(root, rel, owner)
         writelog.record(root, rel, seat, owner,
                         tool=str((payload or {}).get("tool_name", "")))
     except Exception:

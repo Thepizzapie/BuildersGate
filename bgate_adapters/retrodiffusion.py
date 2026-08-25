@@ -46,6 +46,22 @@ FRAME_COUNTS = (4, 6, 8, 10, 12, 16)
 #: Job poll cadence. Animations run tens of seconds; the vendor suggests ~2s.
 POLL_SECONDS = 2.0
 
+#: MOTION PROMPT CEILING, in characters. Measured on this account, twice and
+#: independently: a ~140-char motion prompt returns in about two minutes, a
+#: ~700-char one hung for 1800s and produced nothing, and ~900 hung the same
+#: way. The job is accepted and then never completes, so the caller sees a
+#: timeout rather than a rejection and reasonably concludes the provider is
+#: down. The animation prompt describes MOTION only ("confident, steady
+#: steps") — the style id carries the rendering and the input image carries
+#: the subject — so there is nothing a long prompt buys that is worth a dead
+#: job. Trimmed on a word boundary rather than refused: a caller that wrote
+#: an over-long prompt still wants its animation.
+#: Set to 140 rather than a round 200 because 140 is the length actually
+#: MEASURED to return; 200 was interpolation between a working 140 and a
+#: hanging 700, and the provider's own job list shows long-prompt jobs
+#: failing beside short-prompt ones that succeed.
+PROMPT_MAX_CHARS = 140
+
 
 class RetroDiffusionError(RuntimeError):
     """A call that failed in words worth surfacing. Charges on failed jobs
@@ -161,6 +177,20 @@ def check_cost(action: str, size: tuple[int, int], *, root: Any = None) -> dict:
                 "balance": None}
 
 
+def _trim_prompt(prompt: str, limit: int = PROMPT_MAX_CHARS) -> str:
+    """Motion prompt, bounded. See PROMPT_MAX_CHARS for why this exists.
+
+    Cuts on the last word boundary at or before ``limit`` so the trimmed text
+    still reads as an instruction rather than half a word.
+    """
+    text = " ".join(str(prompt or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    return (cut[:space] if space > 0 else cut).rstrip(" ,;:.")
+
+
 def _animation_body(prompt: str, action: str, image_b64: str,
                     size: tuple[int, int], frames: int) -> dict:
     if action not in ACTIONS:
@@ -179,7 +209,7 @@ def _animation_body(prompt: str, action: str, image_b64: str,
     # flat background itself (see key_background): a corner-seeded flood only
     # removes background CONNECTED to the outside, so pale garments survive.
     body = {
-        "prompt": prompt,
+        "prompt": _trim_prompt(prompt),
         "prompt_style": f"rd_advanced_animation__{action}",
         "width": w, "height": h, "num_images": 1,
         "frames_duration": frames,
@@ -194,7 +224,7 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
             frames: int = 8, size: Optional[tuple[int, int]] = None,
             prompt: str = "", palette: Optional[str | os.PathLike[str]] = None,
             bg: tuple[int, int, int] = (255, 255, 255),
-            root: Any = None, timeout: float = 360.0) -> dict:
+            root: Any = None, timeout: float = 600.0) -> dict:
     """One character frame -> one animation spritesheet. Blocking.
 
     ``prompt`` describes the MOTION, not the art ("confident, steady steps");
@@ -202,6 +232,28 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
     frame's own dimensions — RD wants them to match. ``palette`` optionally
     pins output colours (their input_palette). Uses the async job flow the
     vendor recommends for animations, polling until done or ``timeout``.
+
+    TIMEOUT IS SIZED AGAINST THE MCP TOOL IDLE CEILING, NOT AGAINST
+    PATIENCE. animation_generate calls this once per DRAWN DIRECTION - three
+    for a four_dir contract - inside a SINGLE MCP tool call that reports no
+    progress while it runs. The client aborts a silent tool at 1800s
+    (CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT). At the old 360s this budgeted
+    3 x (120s POST + 360s poll) = 1440s before any conform, import or
+    stitching, so one hung job took the whole call down and the caller saw
+    "sent no response or progress for 1800s; aborting" with nothing written
+    and no error to act on - measured, twice, on this project.
+    THE COST OF GIVING UP TOO EARLY IS NOT ZERO — IT IS THE WHOLE JOB.
+    RD bills when the job runs, so a poll that expires before the job flips
+    to succeeded pays full price and discards the result: the provider's
+    dashboard shows SUCCEEDED and nothing reaches disk. Measured here at
+    200s with four agents running concurrently: $0.70 charged, zero files.
+    A single agent returns in about 120s, but RD queues concurrent work and
+    that figure does not survive a fan-out, so the timeout is sized for the
+    slow case, not the fast one. 600s costs nothing on a healthy job (the
+    poll exits the moment status flips) and stops paying for results we
+    then throw away. Surviving the MCP idle ceiling is the resume check's
+    job in animation_generate, not this timeout's — a killed call now
+    re-adopts finished directions instead of re-buying them.
 
     Returns {ok, sheet_b64, usd, balance, frames, size}. The caller decodes
     and slices; this adapter does not write files.
@@ -244,6 +296,70 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
             "usd": result.get("balance_cost"),
             "balance": result.get("remaining_balance"),
             "frames": frames, "size": [int(size[0]), int(size[1])]}
+
+
+def submit(start_frame: str | os.PathLike[str], action: str, *,
+           frames: int = 8, size: Optional[tuple[int, int]] = None,
+           prompt: str = "", palette: Optional[str | os.PathLike[str]] = None,
+           bg: tuple[int, int, int] = (255, 255, 255),
+           root: Any = None) -> dict:
+    """POST the job and return its task id. DOES NOT WAIT.
+
+    The blocking half of animate() is what made this pipeline fragile: a
+    tool that holds an MCP call open for minutes is killed by the client's
+    idle ceiling, orphaned by any server restart, and billed either way -
+    RD charges when the job runs, so a call that dies after submitting pays
+    full price and throws the result away. Submitting and collecting
+    separately means no call is ever long enough to be killed.
+
+    Returns {ok, task_id}. Pair with collect().
+    """
+    from PIL import Image
+
+    src = Path(start_frame)
+    if not src.is_file():
+        raise RetroDiffusionError(f"no start frame at {src}")
+    if size is None:
+        with Image.open(src) as im:
+            size = im.size
+    body = _animation_body(prompt or "smooth, natural motion", action,
+                           _b64_rgb(src, bg), size, frames)
+    if palette:
+        body["input_palette"] = _b64_rgb(palette, (0, 0, 0))
+    body["async"] = True
+    got = _post("/inferences", body, root=root)
+    task = got.get("task_id")
+    if not task:
+        raise RetroDiffusionError(f"job not accepted: {got}")
+    return {"ok": True, "task_id": task,
+            "size": [int(size[0]), int(size[1])], "frames": frames}
+
+
+def collect(task_id: str, *, root: Any = None) -> dict:
+    """Read a submitted job ONCE. Never blocks.
+
+    Returns {ok: True, ...} when the sheet is ready, {ok: False,
+    pending: True} while it is still running, and raises only when the job
+    genuinely failed. The caller decides how long to keep asking, which is
+    the point - patience belongs to the agent, not to a socket.
+    """
+    status = _get(f"/inferences/tasks/{task_id}", root=root)
+    state = status.get("status")
+    if state not in ("succeeded", "failed"):
+        return {"ok": False, "pending": True, "status": state,
+                "task_id": task_id}
+    if state == "failed":
+        raise RetroDiffusionError(
+            f"animation job {task_id} failed: {status.get('error')}")
+    result = status.get("result") or {}
+    images = result.get("base64_images") or []
+    if not images:
+        raise RetroDiffusionError(
+            f"job {task_id} succeeded but returned no images")
+    return {"ok": True, "pending": False, "sheet_b64": images[0],
+            "usd": result.get("balance_cost"),
+            "balance": result.get("remaining_balance"),
+            "task_id": task_id}
 
 
 def key_background(img, *, tolerance: int = 28) -> "object":
@@ -351,6 +467,78 @@ def tileset(prompt: str, *, kind: str = "tileset", tile_px: int = 32,
             "usd": got.get("balance_cost"),
             "balance": got.get("remaining_balance"),
             "kind": kind, "tile_px": int(tile_px)}
+
+
+#: THE UI STYLES. Distinct from :data:`TILE_STYLES` because they are a
+#: different model family with a different size contract, and because a UI
+#: element is not a tile: a nine-slice panel, a socket frame and an item icon
+#: all want to be drawn as INTERFACE, flat and readable at 1x, not as a piece
+#: of a world seen in perspective.
+#:
+#: `px` is the size range the style accepts. rd_pro's two are 256-only, which
+#: is the vendor's constraint and not a choice made here.
+UI_STYLES = {
+    "ui": {"style": "rd_fast__ui", "usd": 0.01, "px": (64, 384)},
+    "ui_element": {"style": "rd_plus__ui_element", "usd": 0.02, "px": (64, 384)},
+    "item_sheet": {"style": "rd_plus__item_sheet", "usd": 0.02, "px": (64, 384)},
+    "ui_panel": {"style": "rd_pro__ui_panel", "usd": 0.04, "px": (256, 256)},
+    "inventory_items": {"style": "rd_pro__inventory_items", "usd": 0.04,
+                        "px": (256, 256)},
+}
+
+
+def ui(prompt: str, *, kind: str = "ui_element", px: int = 128,
+       height: Optional[int] = None, count: int = 1,
+       palette: Optional[str] = None, input_image: Optional[str] = None,
+       strength: Optional[float] = None, root: Any = None,
+       timeout: float = 180.0) -> dict:
+    """One or more UI elements from RD's interface styles.
+
+    Returns ``{ok, png_b64_list, usd, balance, kind, size}``.
+
+    WHY THIS EXISTS AND WHY IT IS NOT `tileset`. This adapter shipped with
+    animation and tile styles only, and the project's standing rule was that RD
+    ANIMATES and never generates. The director lifted that for interface art
+    specifically: RD is the only provider here trained on pixel UI, and a
+    button drawn by a general image model is a picture of a button.
+
+    ``prompt`` describes the ELEMENT ("a bevelled slot frame for an ability
+    card, empty centre"), never the rendering - the style carries the pixel
+    art, the same contract `animate` and `tileset` follow. Saying "pixel art"
+    in the prompt makes the output worse, per the vendor's own reference.
+
+    Synchronous, like the tile calls.
+    """
+    spec = UI_STYLES.get(kind)
+    if spec is None:
+        raise RetroDiffusionError(
+            f"unknown ui kind {kind!r} - one of {sorted(UI_STYLES)}")
+    lo, hi = spec["px"]
+    h = int(height if height is not None else px)
+    for name, val in (("width", int(px)), ("height", h)):
+        if not (lo <= val <= hi):
+            raise RetroDiffusionError(
+                f"{kind} draws {lo}-{hi}px, not {val} ({name})")
+    body = {"prompt": prompt, "prompt_style": spec["style"],
+            "width": int(px), "height": h, "num_images": max(1, int(count))}
+    if palette:
+        body["input_palette"] = _b64_rgb(palette, (0, 0, 0))
+    # THE CONCEPT ART, AS THE ACTUAL REFERENCE. Prompting a UI style blind gets
+    # you a plausible button; handing it the project's own pinned concept gets
+    # you THIS project's button. `.bgate/refs/` is full of them and generating
+    # without one is leaving the art direction on the table.
+    if input_image:
+        body["input_image"] = _b64_rgb(input_image, (255, 255, 255))
+        if strength is not None:
+            body["strength"] = float(strength)
+    got = _post("/inferences", body, root=root, timeout=timeout)
+    images = got.get("base64_images") or []
+    if not images:
+        raise RetroDiffusionError("ui call returned no images")
+    return {"ok": True, "png_b64_list": images,
+            "usd": got.get("balance_cost"),
+            "balance": got.get("remaining_balance"),
+            "kind": kind, "size": (int(px), h)}
 
 
 # ---------------------------------------------------------------------------

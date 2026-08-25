@@ -93,7 +93,7 @@ EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.stopped",
                "artifact.candidate", "artifact.reviewed",
                "chain.filed", "chain.advanced",
                "chain.stalled", "gate.mode", "settings.guard", "style.trained",
-               "budget.refused",
+               "budget.refused", "dispatch.blocked",
                "director.question", "agent.spawned", "agent.exited",
                "file.edited")
 
@@ -631,7 +631,12 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         key="notify.kinds", group="Notifications", kind=LIST,
         default=("item.done", "item.failed", "item.review", "chain.stalled",
-                 "director.question", "budget.refused"),
+                 "director.question", "budget.refused",
+                 # A FLOOR refusal stops the whole board. On by default for the
+                 # same reason budget.refused is: a board that stopped looks
+                 # exactly like a board with nothing to do, and two seats idled
+                 # for an hour inside that ambiguity.
+                 "dispatch.blocked"),
         choices=EVENT_KINDS, store=("registry", "notify.kinds"),
         help="Which events are worth telling you about. The rest are still "
              "recorded and still readable in the drawer, they just do not "

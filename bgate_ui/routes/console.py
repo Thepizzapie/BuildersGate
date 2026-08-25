@@ -97,9 +97,18 @@ _CARD_FIELDS = ("id", "seat", "title", "status", "priority", "source",
                 "chain_id", "chain_pos", "depends_on", "approved_by",
                 "created_at", "updated_at")
 
+# Columns a project's database may not have yet: the card must still build on
+# one that predates the migration, so these are read defensively rather than
+# named in _CARD_FIELDS. `exhausted_at`/`exhausted_why` arrived with 0043.
+_CARD_OPTIONAL = ("exhausted_at", "exhausted_why", "auto_retries")
+
 
 def _card(row) -> dict:
     item = {k: row[k] for k in _CARD_FIELDS}
+    keys = row.keys()
+    for name in _CARD_OPTIONAL:
+        if name in keys:
+            item[name] = row[name]
     brief = row["brief"] or ""
     item["brief_preview"] = brief[:240]
     item["brief_len"] = len(brief)
@@ -213,12 +222,142 @@ def _chain_state(conn, items: list[dict]) -> None:
         it["ready"] = not unsatisfied
         it["held"] = (it.get("status") == "queued"
                       and str(it.get("source") or "") in HELD_SOURCES)
+        it["depends_on_all"] = sorted(parents)
+        it["unresolved"] = sorted(int(d["id"]) for d in unsatisfied)
+        it["stuck"] = any(d["status"] in ("failed", "cancelled")
+                          for d in unsatisfied)
         if unsatisfied:
             it["waiting_on"] = unsatisfied[0]
             if len(unsatisfied) > 1:
                 it["waiting_count"] = len(unsatisfied)
-            it["stuck"] = any(d["status"] in ("failed", "cancelled")
-                              for d in unsatisfied)
+            # THE SENTENCE, NOT THE STATUS WORD. `#43 QUEUED` next to a running
+            # #45 and a done #42 reads as a scheduler that skipped an item -
+            # observed, and the dependency engine was correct throughout. Ids
+            # are creation identifiers; #45 was inserted between #42 and #43
+            # later because the route measurements needed real furniture
+            # dimensions. Naming the blocker AND ITS TITLE is what stops a
+            # correct insertion looking like a fault.
+            it["waiting_line"] = (
+                f"WAITING ON #{unsatisfied[0]['id']} {unsatisfied[0]['title']}"
+                + (f" (and {len(unsatisfied) - 1} more)"
+                   if len(unsatisfied) > 1 else "")
+                # A DEAD PREDECESSOR IS NOT PATIENCE. Naming the two acts that
+                # free it is the difference between a card that reads as the
+                # board working and one that reads as a stall somebody owns.
+                + (f" — that predecessor is {unsatisfied[0]['status']!r} and "
+                   "will not reach 'done' on its own; reopen it or cut the "
+                   "dependency" if it["stuck"] else ""))
+        # ONE FIELD THE CARD CAN COLOUR BY, so a reader never has to derive the
+        # difference between "the board is working" and "this needs a person"
+        # from four booleans.
+        it["execution_state"] = _execution_state(it, unsatisfied)
+        # EXHAUSTED AND HELD OWE A SENTENCE TOO. Neither has an unmet
+        # predecessor, so neither took the branch above — and both rendered as
+        # the seat name, which is the least informative thing the row could
+        # have said about why nothing is happening to it.
+        if it["execution_state"] == "exhausted":
+            it["waiting_line"] = (
+                "EXHAUSTED — the harness stopped retrying this: "
+                + str(it.get("exhausted_why") or "")
+                + " Reopen it (with a changed brief or a fixed blocker) to "
+                  "start it again.")
+        elif it["execution_state"] == "held" and not it.get("waiting_line"):
+            it["waiting_line"] = (
+                f"held — source {it.get('source')!r} is never auto-dispatched; "
+                "a human (or the director session) takes it")
+
+
+def _liveness(items: list[dict], agents: list[dict]) -> None:
+    """IS IT WORKING, OR IS IT WEDGED? Stamped onto the item, not just the agent.
+
+    A dispatched row carried no signal of its own. `num_turns` and
+    `total_cost_usd` are written at COMPLETION, so both sit at 0 for the whole
+    of a run — the two numbers that look like progress are precisely the two
+    that cannot report it while you need them. The only way to tell a working
+    agent from a wedged one was to go and `stat` the log file by hand.
+
+    The dispatcher already measures it (`_last_output_age_s`, which watches the
+    log AND files written under .bgate_out / game assets, so a long atomic image
+    batch is not mistaken for a corpse) and already puts it on the AGENT row.
+    Items and agents are two lists in one payload and nothing joined them, so
+    the number existed and the card that needed it did not have it.
+
+    `progress` is the word a reader wants:
+        working  output within the quiet threshold
+        quiet    silent a while — often legitimate, an atomic call writes
+                 nothing until it returns
+        stalled  silent past the dispatcher's own stall ceiling; this is what
+                 the watchdog would kill on
+    """
+    by_item = {int(a["item_id"]): a for a in (agents or [])
+               if a.get("item_id") is not None}
+    for it in items:
+        agent = by_item.get(int(it["id"]))
+        if agent is None:
+            continue
+        silent = agent.get("last_output_s")
+        it["last_output_s"] = silent
+        it["run_seconds"] = agent.get("seconds")
+        it["runner"] = agent.get("runner") or ""
+        # cost_usd from the live entry, NOT total_cost_usd from the row: the
+        # column is written at completion and reads 0.00 for the whole run.
+        it["live_cost_usd"] = agent.get("cost_usd")
+        it["cost_tracked"] = agent.get("cost_tracked", True)
+        if silent is None:
+            it["progress"] = "unknown"
+            continue
+        it["progress"] = ("stalled" if silent >= _STALL_S
+                          else "quiet" if silent >= _QUIET_S else "working")
+        if it["progress"] != "working":
+            it["progress_why"] = (
+                f"no log line and no file written for {int(silent) // 60}m"
+                + (" — past the stall ceiling; the watchdog kills at this "
+                   "point unless an MCP call is in flight"
+                   if it["progress"] == "stalled" else
+                   ". Often legitimate: an atomic image or engine call writes "
+                   "nothing until it returns"))
+
+
+#: Mirrors the dispatcher's own threshold so the card and the watchdog cannot
+#: disagree about what silence means. Imported lazily — this module is on the
+#: three-second poll and dispatch drags the whole runner stack in.
+def _stall_s() -> int:
+    try:
+        from bgate_ui import dispatch as _d
+
+        return int(getattr(_d, "STALL_S", 900))
+    except Exception:
+        return 900
+
+
+_STALL_S = _stall_s()
+_QUIET_S = max(60, _STALL_S // 4)
+
+
+def _execution_state(item: dict, unsatisfied: list[dict]) -> str:
+    """ready | running | waiting | blocked | held | exhausted | <status>.
+
+    `waiting` means an ordinary predecessor has not landed yet: the board is
+    working, and nobody should touch it. `blocked` means one never will on its
+    own. `exhausted` means the harness stopped buying rounds for this item and
+    a person now owns it - it used to be indistinguishable from fresh queued
+    work, and the only tell was reading two counters off the row and comparing
+    them to a setting by hand.
+    """
+    status = str(item.get("status") or "")
+    if status == "dispatched":
+        return "running"
+    if status != "queued":
+        return status
+    if item.get("exhausted_at"):
+        return "exhausted"
+    if item.get("held"):
+        return "held"
+    if any(d["status"] in ("failed", "cancelled") for d in unsatisfied):
+        return "blocked"
+    if unsatisfied:
+        return "waiting"
+    return "ready"
 
 
 def _ws_update(root_dir, key: str, change) -> dict:
@@ -621,6 +760,22 @@ def console_state(steps: bool = True) -> dict:
     active |= live_ids
 
     _chain_state(conn, items)
+    _liveness(items, agents)
+
+    # WHETHER EACH FAILURE HAS ALREADY BEEN ESCALATED, so the failed rail can
+    # offer the button once and say "escalated" after - without this flag the
+    # only signal was a refusal toast from the once-per-item cap.
+    failed_ids = [str(it["id"]) for it in items if it.get("status") == "failed"]
+    if failed_ids:
+        from bgate_ui import followup as _followup
+        marks = ", ".join("?" * len(failed_ids))
+        esc = {str(row["source_ref"]) for row in conn.execute(
+            "SELECT source_ref FROM work_item WHERE source = ? "
+            f"AND source_ref IN ({marks})",
+            (_followup.FAIL_ESCALATION_SOURCE, *failed_ids))}
+        for it in items:
+            if it.get("status") == "failed":
+                it["escalated"] = str(it["id"]) in esc
 
     questions = _questions(r)
     _question_reminders(r, questions)
@@ -655,6 +810,39 @@ def console_state(steps: bool = True) -> dict:
             "failed": counts.get("failed", 0),
         },
     }
+
+
+@router.post("/api/console/escalate")
+def console_escalate(payload: dict) -> dict:
+    """Escalate one FAILED item to the director, by hand.
+
+    The automatic escalation paths only see recent failures (the event batch
+    and sweep_failed's 12-hour window), so anything that failed while the
+    server was down aged out with no route to a decider. This is the human's
+    button for exactly those. Same branch, same guards - one escalation per
+    item ever, and an item that is itself an escalation refuses.
+    """
+    try:
+        item_id = int(payload.get("item_id"))
+    except (TypeError, ValueError):
+        raise _api.bad_request("item_id (int) is required")
+    reason = str(payload.get("reason") or "").strip()
+    r = root()
+    try:
+        item = _queue.get(r, item_id)
+    except LookupError:
+        raise _api.not_found(f"no work item {item_id}")
+    if item["status"] != "failed":
+        raise _api.bad_request(
+            f"item {item_id} is {item['status']} — only a failed item "
+            "escalates")
+    from bgate_ui import followup as _followup
+    out = _followup.escalate_failure(r, item_id, reason)
+    if not out.get("ok"):
+        raise _api.bad_request(str(out.get("why") or "refused"))
+    return {"ok": True, "item_id": item_id,
+            "escalation": out.get("escalation"),
+            "session": bool(out.get("session"))}
 
 
 @router.post("/api/console/signoff")

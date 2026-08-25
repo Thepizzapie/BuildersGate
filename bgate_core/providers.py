@@ -353,20 +353,72 @@ def provider_for(task_kind: str = "", *, asked: str = "",
         # same model, a project may hold only a krea key, and character work
         # must never fall through to the general order - that is what handed
         # sprite sheets to gpt-image, which refuses them outright.
-        if (os.environ.get("KIE_API_KEY") or "").strip():
-            return "kie"
-        if (os.environ.get("KREA_API_KEY") or "").strip():
-            return "krea"
-    if (os.environ.get("OPENAI_API_KEY") or "").strip():
-        return "openai"
-    if (os.environ.get("KREA_API_KEY") or "").strip():
-        return "krea"
-    if (os.environ.get("KIE_API_KEY") or "").strip():
-        return "kie"
+        live = _routable(("kie", "krea"), root)
+        if live:
+            return live[0]
+    # THE GATEWAY'S DOCTRINE ORDER, NOT WHICHEVER KEY PROBES FIRST. This read
+    # `openai, krea, kie` by key presence alone, which is two bugs in one
+    # line: it contradicted gateway.CAPABILITIES["image"] (kie > krea >
+    # openai, the stated house rule), and it could not see a DRAINED account,
+    # so a 429/402 was routed to on every call while two funded providers sat
+    # idle. The gateway already knew both facts and was only ever consulted
+    # AFTER the failure - this is the same answer, one call earlier.
+    live = _routable(_gateway_order("image"), root)
+    if live:
+        return live[0]
     # None configured: the historical default, so the error a caller sees is the
     # familiar "OPENAI_API_KEY not set" rather than a surprise about a provider
     # they never mentioned.
     return "openai"
+
+
+def _gateway_order(capability: str) -> tuple[str, ...]:
+    try:
+        from bgate_core import gateway as _gateway
+
+        return _gateway.CAPABILITIES.get(capability) or ()
+    except Exception:
+        return ("kie", "krea", "openai")
+
+
+def _routable(order: tuple[str, ...],
+              root: str | os.PathLike | None = None) -> list[str]:
+    """``order``, minus what has no key and minus what is provably drained.
+
+    Balance is UNKNOWN for most providers and unknown is routable - the call
+    itself is the probe. Only a balance that reads 0 skips a provider, which
+    is the gateway's own semantics rather than a second opinion about them.
+
+    A gateway that cannot answer (no network, a probe that raised) must not
+    take art generation down with it, so key presence is the fallback and the
+    order still holds.
+    """
+    rows: dict[str, dict] = {}
+    drained: set[str] = set()
+    try:
+        from bgate_core import gateway as _gateway
+
+        rows = {r["id"]: r for r in _gateway.status(root)}
+        drained = {p for p, r in rows.items() if _gateway._drained(r)}
+    except Exception:
+        rows = {}
+    live = []
+    for one in order:
+        if one in drained:
+            continue
+        row = rows.get(one)
+        keyed = (bool(row.get("keyed")) if row is not None
+                 else bool((os.environ.get(_env_of(one)) or "").strip()))
+        if keyed:
+            live.append(one)
+    return live
+
+
+def _env_of(provider_id: str) -> str:
+    try:
+        return by_id(provider_id).env
+    except ProviderError:
+        return ""
 
 
 def ids() -> tuple[str, ...]:
@@ -487,6 +539,84 @@ def status_for(root: Optional[str | os.PathLike[str]], provider_id: str) -> dict
 def configured(root: Optional[str | os.PathLike[str]] = None) -> list[str]:
     """The ids that have a key right now, in auto-select order."""
     return [row["id"] for row in status(root) if row["configured"]]
+
+
+def usable(root: Optional[str | os.PathLike[str]] = None) -> list[str]:
+    """The ids whose ADAPTER says it can run, which is not the same list.
+
+    ``configured`` answers "is the variable set". This answers the question a
+    human is actually asking of a health check: could a generation start right
+    now. An openai key with no ``openai`` package, a krea key the adapter cannot
+    reach, a var exported empty - all configured, none usable. The doctor's
+    art row counted the first list and printed "4 of 4 providers" for a machine
+    with one usable option, which is the disagreement this pair exists to end.
+    """
+    return [row["id"] for row in status(root) if row["available"]]
+
+
+def routing(root: Optional[str | os.PathLike[str]] = None) -> dict:
+    """WHAT WOULD ACTUALLY HAPPEN, per capability, from the router itself.
+
+    THE FAILURE THIS CLOSES, measured across three benchmark games: `bgate
+    doctor` reported ``art_key  4 of 4 providers`` while the gateway that
+    routes generation reported openai unkeyed, krea unkeyed, and one live
+    option with no alternatives. Two surfaces answering one question from two
+    interpretations of the environment, and the human-facing one was the
+    optimistic wrong answer.
+
+    So there is one function, and it DELEGATES: the per-capability order and
+    the pick come from :mod:`bgate_core.gateway` (which owns doctrine order,
+    keying and drained balances) and the character-work override comes from
+    :func:`provider_for` (which owns the routing rule and the stored
+    ``art.provider`` preference). Nothing here re-derives either. A caller that
+    wants "is this machine able to make art" reads ``families`` and gets the
+    same verdict the next generation call will act on.
+
+    Cheap enough for a status panel: gateway.status caches its balance probes
+    for two minutes and every other input is offline.
+    """
+    from bgate_core import gateway as _gateway
+
+    try:
+        rows = {r["id"]: r for r in _gateway.status(root)}
+    except Exception as exc:  # noqa: BLE001 - a status panel must still render
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}",
+                "families": {}, "character_work": ""}
+
+    families: dict[str, dict] = {}
+    for capability, order in _gateway.CAPABILITIES.items():
+        picked = _gateway.pick(root, capability)
+        unavailable = []
+        for one in order:
+            row = rows.get(one) or {}
+            if not row.get("keyed"):
+                unavailable.append({"id": one,
+                                    "why": str(row.get("reason") or "no key")})
+            elif _gateway._drained(row):
+                unavailable.append({"id": one, "why": "keyed but drained "
+                                                      "(balance reads 0)"})
+        families[capability] = {
+            "order": list(order),
+            "provider": picked.get("provider"),
+            "alternatives": list(picked.get("alternatives") or []),
+            "why": picked.get("why", ""),
+            "unavailable": unavailable,
+        }
+
+    # The one route that does NOT come off the capability table: identity work
+    # is routed by provider_for (kie, then krea), and an `art.provider`
+    # preference overrides everything. A panel that showed only the table would
+    # name the provider a sprite sheet will not go to.
+    try:
+        character = provider_for("character", root=root)
+    except Exception:
+        character = ""
+    return {"ok": True, "reason": "", "families": families,
+            "character_work": character,
+            "note": "families come from bgate_core.gateway - the same table "
+                    "and the same pick the next generation call uses. "
+                    "character_work is provider_for('character'), which "
+                    "overrides the image order for sprite/identity jobs."}
 
 
 # ---------------------------------------------------------------------------
