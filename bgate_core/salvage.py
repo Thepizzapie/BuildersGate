@@ -145,8 +145,6 @@ def brief_note(root: str | os.PathLike[str], item_id: int,
     says, in the first thing it reads: this exists, it was paid for, read it
     before you write anything.
     """
-    from . import writelog as _writelog
-
     if on_disk is None or artifacts is None:
         got = inspect(root, item_id)
         on_disk = got["files"]["on_disk"]

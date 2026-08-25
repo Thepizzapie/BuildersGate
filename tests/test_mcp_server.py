@@ -133,7 +133,12 @@ async def test_full_authoring_flow(wired):
                statement="The Ashen Order worships the flame.", locked=True)
 
     status = await call("project_status")
-    assert status["counts"] == {"bible_sections": 2, "entities": 1,
+    # THREE SECTIONS, NOT TWO: the two this test adds, plus the ownership
+    # constraint project.init seeds into every new project (_seed_doctrine).
+    # A doctrine that only exists in a seat's prompt is one every agent has to
+    # be told again; seeding it into the bible makes it something a human can
+    # read, diff and disagree with.
+    assert status["counts"] == {"bible_sections": 3, "entities": 1,
                                 "canon_entities": 1, "facts": 1, "links": 0}
 
     assert (await call("recall", query="flame"))["results"]

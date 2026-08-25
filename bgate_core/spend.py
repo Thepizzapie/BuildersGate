@@ -522,11 +522,23 @@ def reserve(root: str | os.PathLike[str], usd: float, *,
     try:
         with db.tx(root) as conn:
             _reap_holds(conn)
-            if ceiling and work_item_id:
+            # A CEILING WITH NO WORK ITEM IS STILL A CEILING. This was
+            # `if ceiling and work_item_id`, so a call from a session that is
+            # not executing a queued item — a human at the console, a seatless
+            # agent, anything the board did not dispatch — skipped the check
+            # entirely. `per_item_usd` is a budget field the settings panel
+            # offers and `_run_ceiling` resolves; it bound nothing at all in
+            # exactly the case where nobody is watching the run.
+            #
+            # With no item there is no history to accumulate against, so the
+            # question degrades to "is this ONE call over the ceiling". That is
+            # what a per-call ceiling means when there is no run to sum, and it
+            # is strictly more than the nothing it did before.
+            if ceiling:
                 spent = float(conn.execute(
                     "SELECT COALESCE(SUM(usd), 0) FROM spend_event "
                     "WHERE billing = 'api' AND work_item_id = ?",
-                    (int(work_item_id),)).fetchone()[0] or 0)
+                    (int(work_item_id),)).fetchone()[0] or 0) if work_item_id else 0.0
                 # LIVE holds and SETTLED estimates both count. A settled row
                 # is a call that really happened and really consumed provider
                 # credit while reporting no dollars - see the spend_hold
@@ -536,7 +548,7 @@ def reserve(root: str | os.PathLike[str], usd: float, *,
                 pending = float(conn.execute(
                     "SELECT COALESCE(SUM(usd), 0) FROM spend_hold "
                     "WHERE work_item_id = ?",
-                    (int(work_item_id),)).fetchone()[0] or 0)
+                    (int(work_item_id),)).fetchone()[0] or 0) if work_item_id else 0.0
                 if spent + pending + projected > ceiling:
                     return {
                         "ok": False, "scope": "run", "spent": round(spent, 4),

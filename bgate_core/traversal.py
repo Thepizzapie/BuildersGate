@@ -43,9 +43,8 @@ controller went there and stayed.
 from __future__ import annotations
 
 import json
-import os
 import time
-from typing import Any, Optional
+from typing import Optional
 
 #: Consecutive frames the settled state must hold. Three is not arbitrary:
 #: a mantle's interpolation is many frames long, a landing's grounded-flicker

@@ -60,7 +60,7 @@ import itertools
 import logging
 import json as _json
 import os
-import re as _re
+import re as _re  # noqa: F401 - re-exported to bgate_mcp.tools_level, which imports _re from this module
 import tempfile as _tempfile
 import threading
 import time as _time

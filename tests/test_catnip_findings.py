@@ -1361,8 +1361,13 @@ class TestHarnessEditedUnderRunningAgents:
         (repo / "bgate_core").mkdir(parents=True)
         (repo / "bgate_core" / "x.py").write_text("x = 1\n", encoding="utf-8")
         assert harness.recently_edited(repo=repo) == ["bgate_core/x.py"]
-        # Nothing written for a while reads as settled.
-        assert harness.recently_edited(within_s=0.0, repo=repo) == []
+        # Nothing written for a while reads as settled. A NEGATIVE window,
+        # not 0.0: the cutoff is `now - within_s`, and a file written this
+        # instant has an mtime that compares >= now on a filesystem whose
+        # timestamp granularity rounds up. That is a real property of the
+        # clock, not of the code, and asserting against it made this test
+        # pass on Windows and fail on CI.
+        assert harness.recently_edited(within_s=-5.0, repo=repo) == []
 
     def test_block_mode_refuses_a_spawn_mid_edit(self, tmp_path, monkeypatch):
         from bgate_core import harness

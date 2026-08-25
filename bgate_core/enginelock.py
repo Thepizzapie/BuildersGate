@@ -35,7 +35,7 @@ import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 LOCK_NAME = "engine.lock"
 

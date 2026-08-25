@@ -136,6 +136,11 @@ NOT_TOOLS = {
     "work_item_id", "item_id",
     # spritekit.row_report finding kinds, quoted by name in the art brief
     "size_ramp", "sheet_size_ramp",
+    # asset_verify result keys and queue_complete's premise_refuted payload,
+    # quoted by name in the QA brief. Named rather than described because a
+    # brief saying "read the unwired list" sends an agent looking for a list
+    # that is spelled differently in the result it gets back.
+    "delivered_but_unwired", "premise_refuted", "did_instead",
     # not ours
     "add_child", "one_of",
 }

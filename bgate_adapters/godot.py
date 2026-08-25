@@ -661,7 +661,6 @@ def import_freshness(project_dir: str) -> dict:
     if not (project / "project.godot").exists():
         return {"ok": True, "checked": 0, "stale": [], "unimported": [],
                 "reason": f"no project.godot in {project_dir}"}
-    imported = project / ".godot" / "imported"
     stale, unimported = [], []
     checked = 0
     for meta in project.rglob("*.import"):
@@ -2991,14 +2990,16 @@ ASSET_CLASSES = {
                     "guesses humanoid fails every animal"},
 }
 
-#: Collision shapes Godot's glTF importer understands. An unrecognised value
-#: used to be written into the import settings and SILENTLY DROPPED by the
-#: engine, so a caller asking for a convex shape got a trimesh and no word
-#: about it.
-SHAPE_TYPES = ("trimesh", "box", "sphere", "capsule", "cylinder", "convex")
-
-#: Body types the importer will build. Same failure, same fix.
-BODY_TYPES = ("static", "dynamic", "area")
+#: THE NAMES A CALLER MAY PASS, derived from the enum maps rather than typed
+#: out beside them. An earlier draft declared these as its own tuples and
+#: SHADOWED `SHAPE_TYPES`/`BODY_TYPES` above — which are dicts mapping a name
+#: to Godot's numeric enum and are what `write_import_settings` indexes. The
+#: shadow turned every import-settings write into a TypeError. Deriving them
+#: means the vocabulary this validates against and the vocabulary that gets
+#: written can never disagree, which is the whole reason the tuples were
+#: wrong to exist.
+DELIVER_SHAPE_TYPES = tuple(SHAPE_TYPES)
+DELIVER_BODY_TYPES = tuple(BODY_TYPES)
 
 #: Root body classes deliver_asset will wrap an asset in.
 ROOT_BODIES = ("CharacterBody3D", "StaticBody3D", "RigidBody3D",
@@ -3085,16 +3086,16 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
     steps: list[dict] = []
 
     # REFUSE, DO NOT DROP. See the docstring.
-    if shape_type not in SHAPE_TYPES:
+    if shape_type not in DELIVER_SHAPE_TYPES:
         raise ValueError(
             f"shape_type {shape_type!r} is not one Godot's glTF importer "
-            f"understands; it is one of {SHAPE_TYPES}. An unrecognised value "
+            f"understands; it is one of {DELIVER_SHAPE_TYPES}. An unrecognised value "
             "used to be written into the import settings and dropped by the "
             "engine, so you got a trimesh and no word about it.")
-    if body_type not in BODY_TYPES:
+    if body_type not in DELIVER_BODY_TYPES:
         raise ValueError(
             f"body_type {body_type!r} is not an importer body type; it is one "
-            f"of {BODY_TYPES}. (The ROOT node class is `character_body`, which "
+            f"of {DELIVER_BODY_TYPES}. (The ROOT node class is `character_body`, which "
             f"takes {ROOT_BODIES}.)")
     if character_body not in ("", "auto") and character_body not in ROOT_BODIES:
         raise ValueError(

@@ -232,7 +232,16 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  # the seat that made the thing has to be able to check it
                  # before it hands it over.
                  "room_review", "room_override", "scale_check",
-                 "audio_listen_record"),
+                 "audio_listen_record",
+                 # THE TWO THE PRESENTATION GATE GAINED. `evidence_assert` is
+                 # the verdict a captured frame never had — recording what
+                 # somebody SAW, which is the half that let a two-tailed
+                 # character ship past a folder full of renders. `traversal_prove`
+                 # is the verdict on a route: it drives the real controller and
+                 # is the only thing here that measures the player rather than
+                 # the geometry. Both are judgements about a runtime, which is
+                 # what this craft is.
+                 "evidence_assert", "traversal_prove"),
     "brainstorm": ("brainstorm_",),
 }
 
@@ -270,7 +279,7 @@ SPINE: frozenset[str] = frozenset({
     # canon, filed the way bible_add is.
     "greenlight_status", "greenlight_thesis_set",
     "greenlight_graybox_submit", "greenlight_graybox_verdict",
-    "greenlight_advance", "greenlight_waive",
+    "greenlight_advance", "greenlight_waive", "greenlight_supersede",
     "encounter_design_set", "scale_contract_set",
     "godot_check_project",
     "godot_inspect_resource", "godot_run", "godot_scaffold",
@@ -338,6 +347,12 @@ DIRECTOR_ONLY: frozenset[str] = frozenset({
     # "why am I held"); these four are the arbitration.
     "greenlight_thesis_set", "greenlight_graybox_verdict",
     "greenlight_advance", "greenlight_waive",
+    # RETRACTING A GATE FINDING IS ARBITRATION. A seat that could withdraw the
+    # row blocking its own work has not been gated, it has been asked nicely —
+    # the same reduction the four above exist to prevent. The evidence for a
+    # retraction (a better measurement) is anybody's to produce; the decision
+    # to accept it is not.
+    "greenlight_supersede",
 })
 
 
@@ -362,7 +377,10 @@ def unclassified(tool_names) -> list[str]:
 # plan is seatless director work.
 SEAT_CRAFTS: dict[str, tuple[str, ...]] = {
     "art": ("image", "three_d"),
-    "gameplay": ("playtest", "level", "quest"),
+    # gameplay gets `verdicts` for traversal_prove and nothing else would be
+    # the wrong trade — a seat that builds routes and cannot prove one drives
+    # the QA seat for every jump it places. The rest of the craft is cheap.
+    "gameplay": ("playtest", "level", "quest", "verdicts"),
     "tech": ("level", "three_d"),
     "audio": ("music", "voice", "sfx"),
     # narrative holds `cinematic` for the storyboard half — scripts and

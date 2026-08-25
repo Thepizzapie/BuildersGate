@@ -95,6 +95,15 @@ EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.stopped",
                "chain.stalled", "gate.mode", "settings.guard", "style.trained",
                "budget.refused", "dispatch.blocked",
                "director.question", "agent.spawned", "agent.exited",
+               # A mid-run correction, and a brief whose measured premise an
+               # agent DISPROVED. Both are notifiable: the first is the most
+               # influential input a run gets and used to leave no trace on the
+               # item, and the second is the signal that stopped several wrong
+               # fixes shipping. See events.KINDS, which this must mirror —
+               # test_settings asserts the two sets are equal, because a kind
+               # the bus can emit and the panel cannot offer is a notification
+               # nobody can switch on.
+               "item.steered", "item.premise_refuted",
                "file.edited")
 
 
