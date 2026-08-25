@@ -1137,7 +1137,23 @@ def _do_reopen(root, action: dict) -> dict:
     # that has a window in which the item is running again with its budget
     # apparently untouched.
     _queue.note_auto_retry(root, item_id)
-    _queue.reopen(root, item_id, str(action.get("reason") or "reopened"))
+    # WHAT THE DEAD RUN ALREADY DELIVERED, IN THE FIRST THING THE NEXT AGENT
+    # READS. reopen() already appends the harness-observed write list; this
+    # adds the PAID side (delivered artifacts, dollars already spent) and the
+    # instruction not to regenerate any of it. MEASURED: one item ran three
+    # agents and $33 to deliver work that was ~95% complete after the first,
+    # because the retry brief described the job and never mentioned that most
+    # of it was sitting on disk.
+    reason = str(action.get("reason") or "reopened")
+    try:
+        from bgate_core import salvage as _salvage
+
+        already = _salvage.brief_note(root, item_id)
+        if already:
+            reason = already + "\n\n---\n\n" + reason
+    except Exception:                                             # noqa: BLE001
+        pass                       # a salvage read must never block the retry
+    _queue.reopen(root, item_id, reason)
     activity.log(root, LEDGER_KIND,
                  f"auto-reopened #{item_id} after a failure — attempt "
                  f"{int(item.get('attempts') or 0) + 2}, automatic retry "
@@ -1183,9 +1199,39 @@ def _do_fail_escalate(root, action: dict) -> dict:
                  f"#{item_id} failed and was escalated to the director — "
                  f"{str(action.get('reason') or '')[:120]}",
                  seat="director", ref=str(item_id))
+    # EXHAUSTED IS A STATE ON THE ROW. The escalation says so to the director;
+    # the item itself used to say nothing, so an operator scanning the board
+    # could not tell "waiting for a decision" from "ready to run" without
+    # reading auto_retries and comparing it to a setting by hand. Two readers
+    # did that arithmetic differently on the same board.
+    try:
+        _queue.mark_exhausted(
+            root, item_id,
+            str(action.get("reason") or "the harness stopped retrying this")
+            + f" — escalated to the director as #{int(row['id'])}. Only a "
+              "reopen (with a changed brief, or a fixed blocker) starts it "
+              "again.")
+    except Exception:                                             # noqa: BLE001
+        pass                    # the escalation landed; losing the stamp must
+                                # not lose that
     handed = _hand_to_director_session(root, row, item)
     return {"ok": True, "escalation": int(row["id"]), "item": item_id,
             "session": handed, "why": str(action.get("why") or "")}
+
+
+def escalate_failure(root, item_id: int, reason: str = "") -> dict:
+    """A human pointing at a failed item and saying \"deal with this\".
+
+    The automatic paths only reach RECENT failures - the event batch, and
+    sweep_failed's 12-hour window - so a failure that aged out while the
+    server was down was escalated by nothing and had no surface a person
+    could escalate it FROM. This is that surface's entry point: the same
+    branch the event path runs, with every guard intact (one escalation per
+    item ever, never-escalate sources, the director-session handoff).
+    """
+    return _do_fail_escalate(root, {
+        "item": int(item_id),
+        "reason": reason or "escalated by hand from the dashboard"})
 
 
 def _hand_to_director_session(root, escalation: dict, failed_item: dict) -> bool:

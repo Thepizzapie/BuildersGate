@@ -394,3 +394,168 @@ def tileset_master(atlas, out, *, tile_size, timeout: int = 180) -> dict:
     }, timeout=timeout)
     got["master"] = str(out)
     return got
+
+
+# ── anti-alias: soften stair-steps, optionally inside a pinned palette ──────
+# The rule is C.T. Matthews' (ct-anti-aliasing v1.1.1, installed as the
+# human's editor extension): a pixel with TWO OR MORE orthogonal neighbours
+# of one same other colour sits on a stair-step corner and becomes the
+# midpoint of the pair. Straight edges have one such neighbour and are left
+# alone. The extension is a dialog and picks one colour pair by hand; this
+# is the headless generalisation - every opaque pair, most-frequent
+# neighbour wins, ties broken by pixel value so a rerun is identical.
+# Transparent pixels are never written: silhouettes do not grow.
+_ANTIALIAS_LUA = r"""
+local p = app.params
+local spr = app.open(p.src)
+if not spr then print("BGATE:" .. json.encode({ok=false, error="unreadable: " .. p.src})) return end
+app.command.ChangePixelFormat{ format="rgb" }
+local w, h = spr.width, spr.height
+local img = Image(w, h, ColorMode.RGB)
+img:drawSprite(spr, 1)
+local pal = {}
+if p.palette ~= nil and p.palette ~= "" then
+  for hex in string.gmatch(p.palette, "[^,]+") do
+    pal[#pal + 1] = { tonumber(hex:sub(1,2),16), tonumber(hex:sub(3,4),16),
+                      tonumber(hex:sub(5,6),16) }
+  end
+end
+local pc = app.pixelColor
+local function snap(r, g, b)
+  if #pal == 0 then return r, g, b end
+  local br, bg, bb, bd = r, g, b, math.huge
+  for i = 1, #pal do
+    local q = pal[i]
+    local d = (r-q[1])^2 + (g-q[2])^2 + (b-q[3])^2
+    if d < bd then bd = d; br, bg, bb = q[1], q[2], q[3] end
+  end
+  return br, bg, bb
+end
+local function at(x, y)
+  if x < 0 or y < 0 or x >= w or y >= h then return 0 end
+  return img:getPixel(x, y)
+end
+local out = img:clone()
+local changed = 0
+for y = 0, h - 1 do
+  for x = 0, w - 1 do
+    local v = img:getPixel(x, y)
+    if pc.rgbaA(v) > 0 then
+      local counts = {}
+      local ns = { at(x-1,y), at(x+1,y), at(x,y-1), at(x,y+1) }
+      for i = 1, 4 do
+        local nv = ns[i]
+        if nv ~= v and pc.rgbaA(nv) > 0 then
+          counts[nv] = (counts[nv] or 0) + 1
+        end
+      end
+      local bestv, bestn = nil, 0
+      for nv, n in pairs(counts) do
+        if n > bestn or (n == bestn and (bestv == nil or nv < bestv)) then
+          bestv, bestn = nv, n
+        end
+      end
+      if bestv ~= nil and bestn >= 2 then
+        local r = math.floor((pc.rgbaR(v) + pc.rgbaR(bestv) + 1) / 2)
+        local g = math.floor((pc.rgbaG(v) + pc.rgbaG(bestv) + 1) / 2)
+        local b = math.floor((pc.rgbaB(v) + pc.rgbaB(bestv) + 1) / 2)
+        local a = math.floor((pc.rgbaA(v) + pc.rgbaA(bestv) + 1) / 2)
+        r, g, b = snap(r, g, b)
+        local nv = pc.rgba(r, g, b, a)
+        if nv ~= v then
+          out:drawPixel(x, y, nv)
+          changed = changed + 1
+        end
+      end
+    end
+  end
+end
+local dst = Sprite(w, h, ColorMode.RGB)
+dst.cels[1].image = out
+dst:saveCopyAs(p.out)
+print("BGATE:" .. json.encode({ok=true, changed=changed}))
+"""
+
+
+def antialias(src: str, out: str, *,
+              palette: Sequence[Sequence[int]] = (),
+              timeout: int = 120) -> dict:
+    """Soften stair-step corners in ``src``, write ``out`` (PNG).
+
+    With ``palette`` (RGB triples - the project's pinned palette) every
+    blended pixel snaps back into it, so the pass cannot mint colours the
+    conform would then reject. Returns {ok, changed}.
+    """
+    source = Path(src)
+    if not source.is_file():
+        raise AsepriteError(f"no image at {src}")
+    hexes = ",".join(f"{r:02x}{g:02x}{b:02x}" for r, g, b in palette)
+    return _run_script(_ANTIALIAS_LUA, {
+        "src": str(source), "out": str(out), "palette": hexes,
+    }, timeout=timeout)
+
+
+# ── normal map: heightmap-by-brightness -> tangent-space normals ────────────
+# Central differences over the value channel, alpha preserved. The Normal
+# Toolkit extension does the same thing behind a dialog; this is the version
+# an agent can run on every tile of an atlas. Green axis follows OpenGL
+# (+Y up), which is what Godot's CanvasTexture expects; invert_y flips it
+# for DirectX-convention consumers.
+_NORMAL_LUA = r"""
+local p = app.params
+local spr = app.open(p.src)
+if not spr then print("BGATE:" .. json.encode({ok=false, error="unreadable: " .. p.src})) return end
+app.command.ChangePixelFormat{ format="rgb" }
+local w, h = spr.width, spr.height
+local img = Image(w, h, ColorMode.RGB)
+img:drawSprite(spr, 1)
+local pc = app.pixelColor
+local intensity = tonumber(p.intensity) or 1.0
+local flip = (p.invert_y == "1") and -1.0 or 1.0
+local function height(x, y)
+  if x < 0 then x = 0 elseif x >= w then x = w - 1 end
+  if y < 0 then y = 0 elseif y >= h then y = h - 1 end
+  local v = img:getPixel(x, y)
+  if pc.rgbaA(v) == 0 then return 0 end
+  return math.max(pc.rgbaR(v), pc.rgbaG(v), pc.rgbaB(v)) / 255
+end
+local out = Image(w, h, ColorMode.RGB)
+for y = 0, h - 1 do
+  for x = 0, w - 1 do
+    local a = pc.rgbaA(img:getPixel(x, y))
+    if a > 0 then
+      local dx = (height(x-1, y) - height(x+1, y)) * intensity
+      local dy = (height(x, y-1) - height(x, y+1)) * intensity * flip
+      local len = math.sqrt(dx*dx + dy*dy + 1.0)
+      local nx = dx / len
+      local ny = dy / len
+      local nz = 1.0 / len
+      out:drawPixel(x, y, pc.rgba(
+        math.floor((nx * 0.5 + 0.5) * 255 + 0.5),
+        math.floor((ny * 0.5 + 0.5) * 255 + 0.5),
+        math.floor((nz * 0.5 + 0.5) * 255 + 0.5), 255))
+    end
+  end
+end
+local dst = Sprite(w, h, ColorMode.RGB)
+dst.cels[1].image = out
+dst:saveCopyAs(p.out)
+print("BGATE:" .. json.encode({ok=true}))
+"""
+
+
+def normal_map(src: str, out: str, *, intensity: float = 1.0,
+               invert_y: bool = False, timeout: int = 120) -> dict:
+    """Brightness-as-height normal map of ``src``, written to ``out`` (PNG).
+
+    Flat art gives flat normals; art shaded light-on-top gives normals that
+    read as relief under a moving 2D light. Returns {ok}.
+    """
+    source = Path(src)
+    if not source.is_file():
+        raise AsepriteError(f"no image at {src}")
+    return _run_script(_NORMAL_LUA, {
+        "src": str(source), "out": str(out),
+        "intensity": str(float(intensity)),
+        "invert_y": "1" if invert_y else "0",
+    }, timeout=timeout)

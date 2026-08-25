@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Group, ScrollArea, Textarea } from "@mantine/core";
 import { Ti } from "../Ti";
+import { Markdown } from "../../components/Markdown";
 import { usePoll } from "../../hooks";
 import { toast } from "../../bridge";
 import { directorChat, directorNew, directorSay, type ChatMsg } from "./api";
@@ -154,7 +155,9 @@ function Line({ msg }: { msg: ChatMsg }) {
   return (
     <div className={bad ? "bg4-msg dir bad" : "bg4-msg dir"}>
       <div className="who">director</div>
-      <div className="txt">{msg.text}</div>
+      {/* The director writes markdown; "you" stays verbatim because what a
+          person typed should read back exactly as typed. */}
+      <div className="txt"><Markdown text={msg.text} /></div>
     </div>
   );
 }

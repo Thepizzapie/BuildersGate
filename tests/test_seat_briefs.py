@@ -136,6 +136,11 @@ NOT_TOOLS = {
     "work_item_id", "item_id",
     # spritekit.row_report finding kinds, quoted by name in the art brief
     "size_ramp", "sheet_size_ramp",
+    # asset_verify result keys and queue_complete's premise_refuted payload,
+    # quoted by name in the QA brief. Named rather than described because a
+    # brief saying "read the unwired list" sends an agent looking for a list
+    # that is spelled differently in the result it gets back.
+    "delivered_but_unwired", "premise_refuted", "did_instead",
     # not ours
     "add_child", "one_of",
 }
@@ -212,7 +217,11 @@ class TestTheThreeDBlockIsKindKeyed:
         # agent reconstructing it from memory is what the cut was meant to stop.
         text = seats.workflow_for("art", "2d", seats.DEFAULT_SEATS["art"]["workflow"])
         assert "dimension" in text
-        assert "do not reconstruct" in text
+        # Case-insensitive: the assertion is about what the brief SAYS, and
+        # the sentence moved when a dispatched seat stopped being able to set
+        # the dimension itself (modules.DIRECTOR_ONLY).
+        assert "do not reconstruct" in text.lower()
+        assert "ask_human" in text
 
     @pytest.mark.parametrize("dimension", ["3d", "2d+3d"])
     def test_a_project_that_makes_meshes_gets_all_of_it(self, dimension):

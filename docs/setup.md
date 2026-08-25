@@ -205,8 +205,13 @@ unavailable, including things nobody needs on day one. The core loop needs
 `python` and `godot`, and the command prints that itself along with which of the
 two are missing.
 
-- `art_key` is green when **any** art provider has a key, from any layer. A
-  Krea-only setup is fine.
+- `art_key` is green when **any** art provider is USABLE — a key, from any
+  layer, plus an adapter that can actually run. A Krea-only setup is fine.
+  The count reads `N of M providers usable`; when some keys are set but
+  unusable it says so, because a row that counts variables reported
+  `4 of 4` for a machine with one live option. `provider_status` (or the
+  Generators panel) is the live read: balances, and which provider each
+  kind of job would route to right now.
 - `local_runtimes` and `local_image` answer "can this machine generate without
   renting anything". Red there is not a fault on a machine that never wanted it.
 - `agent_cli` catches a coding-agent CLI that is installed and registered and

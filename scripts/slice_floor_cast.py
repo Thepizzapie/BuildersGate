@@ -424,6 +424,16 @@ RETRY = {
 # These three are measured against the standing pose instead.
 WORKING_STANDS = {"art", "qa", "cinematic"}
 
+# HOW ALIKE TWO CELLS' SILHOUETTES MUST BE TO COUNT AS THE SAME FACING.
+#
+# Measured, not chosen. Pairwise silhouette IoU across the bought working
+# sheets puts same-facing cells at 0.77-0.97 (different arm and shoulder
+# positions of one seated 3/4 view) and cross-facing pairs at 0.57-0.76 (a
+# front 3/4 against a back 3/4 of the same character). 0.77 is the floor of
+# the first band and above the ceiling of the second on every sheet
+# measured.
+SAME_FACING_IOU = 0.77
+
 # THE INSTALLED CELL. 128x160 is the size the repo's other cast already uses
 # (frontend/public/img/agents, 8 frames of 128x160), and matching it means the
 # two renderers can be read against each other.
@@ -913,12 +923,36 @@ def beat_cycle(keyed: list[Image.Image], n: int, scale: float,
     """
     k = len(keyed)
     out = []
+    # WHAT EACH FRAME ALREADY IS, so no two come out the same picture.
+    #
+    # The offsets are whole pixels (a half-pixel nudge is not a thing a
+    # sprite can hold), and the working beat is one pixel of bounce and one
+    # of lean - so at sixteen frames the phases either side of a turning
+    # point BOTH round to zero and two frames of the same beat come out
+    # pixel-identical. That is what check_distinct was reporting on five
+    # casts, and it is a rounding artifact rather than a missing drawing:
+    # the motion is real, it is just finer than the grid it lands on.
+    #
+    # So a collision is pushed to the nearest free offset instead of being
+    # shipped as a repeat. One pixel, on a strip whose whole vocabulary is
+    # one pixel, is the smallest honest way to say "this frame is further
+    # through the beat than the last one".
+    seen: set[tuple[int, int, int]] = set()
     for i in range(n):
         t = i * k / n
         idx = int(t) % k
         r = t - int(t)
         dy = iround(bounce * (1 - math.cos(2 * math.pi * r)) / 2)
         dx = iround(lean * math.sin(2 * math.pi * r))
+        if (idx, dx, dy) in seen:
+            # Along the bounce first: it is the axis the eye reads as the
+            # body working, where the lean reads as the body turning.
+            for ddy, ddx in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                             (2, 0), (-2, 0)):
+                if (idx, dx + ddx, dy + ddy) not in seen:
+                    dx, dy = dx + ddx, dy + ddy
+                    break
+        seen.add((idx, dx, dy))
         out.append(nudge(place(keyed[idx], scale), dx, dy))
     return out
 
@@ -1118,6 +1152,165 @@ def median(xs: list[int]) -> float:
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
+def reject_scale_outliers(frames: list[Image.Image], tol: float = 0.4) \
+        -> list[Image.Image]:
+    """Drop any cell whose ink is wildly off the sheet's own scale.
+
+    A BOUGHT SHEET IS EIGHT DRAWINGS FROM ONE PROMPT, NOT EIGHT DRAWINGS AT
+    ONE SCALE - the model draws each cell independently and nothing enforces
+    that the character comes out the same size twice. `fit_scale` measures
+    ONE scale off the group's median height, so a cell whose own character
+    was drawn small is not caught there - it is scaled by the SAME
+    multiplier as every other cell and comes out small on screen where the
+    others come out right (and the reverse for one drawn big). Six working
+    sheets shipped exactly this - every cast but art and audio, most of them
+    2-3 of 8 cells at roughly half the others' height - and every one of
+    them read on the floor as the character breathing in and out between
+    frames.
+
+    DROPPED, not swapped for a neighbour: the first version of this function
+    duplicated the nearest good cell into the bad one's slot, which passed
+    `fit_scale` clean but failed `check_distinct` on six casts at once - the
+    module's own hard rule is that no two frames of a strip are the same
+    picture, and a duplicated cell is exactly that picture twice. `beat_cycle`
+    derives its phase purely from how many keys it is GIVEN (`k = len(keyed)`
+    at call time, not any original position in an 8-cell grid), so simply
+    shortening the list costs a little pose variety and buys back every
+    surviving cell being both correctly scaled AND, via the per-phase
+    bounce/lean nudge, still a distinct frame.
+    """
+    heights = [(b[3] - b[1]) if (b := f.getbbox()) else 0 for f in frames]
+    live = [i for i, h in enumerate(heights) if h > 0]
+    if len(live) < 3:
+        return frames
+    # THE LARGEST GROUP THAT AGREES WITH ITSELF, found as a window over the
+    # SORTED heights. Two earlier versions of this got it wrong in two
+    # different ways and both shipped a strip that still pulsed:
+    #
+    #   * measuring every cell against the MEDIAN assumes the good cells
+    #     outnumber the bad ones by enough to hold it. On a sheet drawn half
+    #     at one size and half at another (audio's working: four cells at
+    #     1241px of ink and four at 620px) the median lands in the gap and
+    #     calls both groups fine.
+    #   * grouping by "everything within tol of cell i" is not transitive.
+    #     gameplay's heights run 671..1486 as a continuum, and seeded on the
+    #     middle cell (976) every other cell is within 40% of it - so the
+    #     group was all eight and nothing was dropped, while the two ends of
+    #     it differ from each other by more than half.
+    #
+    # A window over sorted heights cannot do either: every member is within
+    # tol of every other by construction, because the extremes are.
+    order = sorted(live, key=lambda i: heights[i])
+    best: list[int] = []
+    for a in range(len(order)):
+        b = a
+        while (b + 1 < len(order)
+               and heights[order[b + 1]] <= heights[order[a]] * (1 + tol)):
+            b += 1
+        window = order[a:b + 1]
+        # Ties go to the taller group: both are internally consistent and
+        # fit_scale normalises whichever wins to the same target height, so
+        # the only thing left to choose on is which drawings carry more
+        # pixels into that downscale.
+        if (len(window) > len(best)
+                or (len(window) == len(best) and best
+                    and heights[window[0]] > heights[best[0]])):
+            best = window
+    keep = sorted(best)
+    return [frames[j] for j in keep] if len(keep) >= 2 else frames
+
+
+def equalise_heights(frames: list[Image.Image]) -> list[Image.Image]:
+    """Resize every cell so they all carry the same height of ink.
+
+    THE LAST OF THE PULSE, and it only makes sense for a strip whose pose is
+    meant to hold still. `working` is a character seated at a station moving
+    its hands: nothing about it should change the character's height, so any
+    height difference between two of its cells is the generator drawing the
+    same person at two sizes and nothing else. Dropping the gross outliers
+    leaves a group that agrees to within a fifth, which is still four or
+    five pixels of breathing on a 129px figure - visible, because the eye
+    reads a silhouette edge moving against a static room behind it.
+
+    Scaled about the FEET, which `place` pins to the cell's floor line: a
+    character resized about its centre would sink into or float above the
+    floor it is standing on, trading one visible fault for a worse one.
+    """
+    heights = [(b[3] - b[1]) if (b := f.getbbox()) else 0 for f in frames]
+    live = [h for h in heights if h > 0]
+    if len(live) < 2:
+        return frames
+    want = median(live)
+    out = []
+    for f, h in zip(frames, heights):
+        if not h or abs(h - want) <= 1:
+            out.append(f)
+            continue
+        box = f.getbbox()
+        ink = f.crop(box)
+        k = want / h
+        ink = ink.resize((max(1, round(ink.width * k)),
+                          max(1, round(ink.height * k))), Image.NEAREST)
+        cell = Image.new("RGBA", f.size, (0, 0, 0, 0))
+        # Bottom-aligned on the ink's own baseline, centred on its own
+        # horizontal middle, so the feet stay where they were.
+        cx = (box[0] + box[2]) / 2
+        cell.alpha_composite(ink, (max(0, round(cx - ink.width / 2)),
+                                   max(0, box[3] - ink.height)))
+        out.append(cell)
+    return out
+
+
+def _silhouette(frame: Image.Image, size=(64, 80)) -> list[bool]:
+    """The frame's ink as a normalised binary mask.
+
+    Cropped to its own ink and resized to a common box first, so the
+    comparison is of SHAPE and not of how big the model happened to draw
+    this cell - scale is the other filter's job and conflating the two
+    would let a correctly-facing small cell read as a different facing.
+    """
+    box = frame.getbbox()
+    crop = frame.crop(box) if box else frame
+    small = crop.resize(size, Image.LANCZOS)
+    return [p > 8 for p in small.getchannel("A").getdata()]
+
+
+def _iou(a: list[bool], b: list[bool]) -> float:
+    inter = sum(1 for x, y in zip(a, b) if x and y)
+    union = sum(1 for x, y in zip(a, b) if x or y)
+    return inter / union if union else 0.0
+
+
+def reject_facing_outliers(frames: list[Image.Image]) -> list[Image.Image]:
+    """Keep the largest group of cells that share one facing.
+
+    THE OTHER HALF OF "THE CHARACTER KEEPS SWAPPING ROUND". A bought sheet
+    is one prompt, and nothing in this script has ever told the generator
+    which way the character faces - so several sheets came back holding a
+    front 3/4 for some cells and a back 3/4 for others. Played at eight
+    frames a second that is not a working loop, it is a person spinning on
+    the spot, and it is the thing a reader notices before anything else on
+    the floor.
+
+    Silhouette IoU separates the two cleanly (see SAME_FACING_IOU), so the
+    dominant facing is the largest set of cells that all agree with one
+    another. Everything outside it is dropped, exactly as a scale outlier
+    is: `beat_cycle` re-derives its phase from however many keys it is
+    handed, so a shorter list costs pose variety and nothing else, and the
+    strip that comes out holds one character facing one way.
+    """
+    if len(frames) < 3:
+        return frames
+    sils = [_silhouette(f) for f in frames]
+    best: list[int] = []
+    for i in range(len(frames)):
+        group = [j for j in range(len(frames))
+                 if _iou(sils[i], sils[j]) >= SAME_FACING_IOU]
+        if len(group) > len(best):
+            best = group
+    return [frames[j] for j in best] if len(best) >= 2 else frames
+
+
 def pose_frames(name: str) -> dict[str, list[Image.Image]]:
     """The original model sheet, keyed, as the fallback strip per animation.
 
@@ -1218,7 +1411,38 @@ def build(name: str) -> dict[str, int]:
                 print(f"{name}/{anim}: {len(cut)}/{want} cells survived "
                       "keying - falling back to the model sheet")
             else:
-                keyed = cut
+                fixed = reject_scale_outliers(cut)
+                if len(fixed) != len(cut):
+                    dropped = len(cut) - len(fixed)
+                    print(f"{name}/{anim}: {dropped}/{len(cut)} cells were "
+                          "off the sheet's own scale - dropped")
+                # FACING SECOND, on what survived the scale cut. Order
+                # matters: a cell the generator drew at half size distorts
+                # its own silhouette enough to read as a different facing,
+                # so measuring facing first would let a scale fault pick
+                # which facing wins.
+                #
+                # ONLY THE ANIMATIONS WHOSE SILHOUETTE IS MEANT TO HOLD
+                # STILL. A walk is a silhouette that changes on purpose -
+                # legs apart on the stride, together on the passing frame -
+                # and a handoff is an arm leaving the body's outline, which
+                # is the entire gesture. Run over those, this filter reads
+                # the motion itself as disagreement and throws away half the
+                # cycle: measured, 4/8 of narrative's and qa's walks and 2/4
+                # of four handoffs. `working` is the one strip that is a
+                # fixed pose with small hand movement, so it is the one
+                # strip where a silhouette that disagrees means the
+                # character turned round.
+                turned = (reject_facing_outliers(fixed)
+                          if anim == "working" else fixed)
+                if len(turned) != len(fixed):
+                    dropped = len(fixed) - len(turned)
+                    print(f"{name}/{anim}: {dropped}/{len(fixed)} cells face "
+                          "a different way from the rest - dropped")
+                # LAST, on the survivors: the two filters above remove the
+                # cells that are wrong, this one settles the small
+                # disagreement left between the ones that are right.
+                keyed = equalise_heights(turned) if anim == "working" else turned
                 origin = "salvaged sheet" if keep else "bought sheet"
 
         if not keyed:

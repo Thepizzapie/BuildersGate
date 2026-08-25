@@ -135,10 +135,34 @@ def _export_error(stderr: str) -> str:
 
 
 def rebuild(root: str | os.PathLike[str], timeout: int = 240) -> dict:
-    """Export the Web build from current source. What /play serves next."""
+    """Export the Web build from current source. What /play serves next.
+
+    THE PRESENTATION GATE BINDS HERE, and it has to bind HERE rather than in a
+    panel or a checklist. Night Shift's presentation gate was blocked and the
+    build shipped anyway, which is only possible when the gate is something a
+    caller consults instead of something the export runs. `--export-release` is
+    the one line in this product that turns a project into a build, so that is
+    where the refusal lives.
+
+    It bites ONLY at the release stage (greenlight). Every playtest build
+    during development exports exactly as before — the gate is about a release
+    candidate, not about iteration, and a gate that slowed iteration would be
+    switched off inside a week.
+    """
     game = _game(root)
     if game is None:
         return {"ok": False, "error": "no game project at this root"}
+    try:
+        from bgate_core import greenlight as _greenlight
+
+        _greenlight.release_guard(root)
+    except ImportError:
+        pass
+    except Exception as exc:                                      # noqa: BLE001
+        # StageRefused, or a check that would not run - which greenlight
+        # already counts as a failure rather than a skip. Either way this
+        # build does not happen, and the reason is the whole message.
+        return {"ok": False, "error": str(exc), "refused": "presentation"}
     if not (game / "export_presets.cfg").exists():
         return {"ok": False, "error": "no export_presets.cfg — copy the Web "
                                       "preset the scaffold ships "

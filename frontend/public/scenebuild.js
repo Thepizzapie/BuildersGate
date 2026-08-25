@@ -1050,7 +1050,19 @@ window.SceneBuild = (() => {
              style="width:100%;background:var(--bg);border-radius:6px;image-rendering:pixelated;margin-bottom:5px">` : ""}
           <b>${E(r.property)}</b> → ${E(r.path)}${r.exists ? "" : ` <span class="sb-warn">missing</span>`}
           <div style="display:flex;gap:5px;margin-top:5px">
-            <button class="sb-b" onclick="SceneBuild.swapMenu('${E(n.path)}','${E(r.property)}')">swap…</button>
+            ${/* A SCENE INSTANCE CANNOT BE REPOINTED IN PLACE - not by
+                  scenewire.swap_resource, which refuses it by name, and not in
+                  Godot either: the instance IS the other scene, so changing
+                  which scene it is means placing a different node. The button
+                  was drawn for every resource row alike, so on an instanced
+                  prop it was an offer that could only ever come back as an
+                  error, and it is the row a reader is most likely to press
+                  ("swap this vending machine for that one"). */
+              r.property === "instance"
+              ? `<button class="sb-b" disabled title="A scene instance cannot be
+                   repointed at another scene - here or in Godot. Delete this
+                   node and place the other scene instead.">swap… (n/a here)</button>`
+              : `<button class="sb-b" onclick="SceneBuild.swapMenu('${E(n.path)}','${E(r.property)}')">swap…</button>`}
             ${IMG.test(r.path) && r.preview ? `<button class="sb-b"
               onclick="SceneBuild.editPixels('${E(r.preview)}')">edit pixels</button>` : ""}
             ${SND.test(r.path) ? `<button class="sb-b"

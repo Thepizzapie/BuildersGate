@@ -165,9 +165,11 @@ def _kind_note(role: str, dimension: str) -> str:
     """
     return (
         f"THIS PROJECT'S DIMENSION IS {dimension!r}, so the layered 3D sequence "
-        "is not in this brief. If a mesh is genuinely needed, set the project's "
-        "dimension (project_init) and re-read this brief — do not reconstruct "
-        "the 3D sequence from memory. For a character, the painted path "
+        "is not in this brief. If a mesh is genuinely needed, ask for the "
+        "project's dimension to be changed (ask_human) and re-read this brief "
+        "— a seat worker cannot set it and should not: the dimension decides "
+        "every other seat's pipeline too. Do not reconstruct the 3D sequence "
+        "from memory. For a character, the painted path "
         "(image_sprites, image_talkhead) is the stronger tool here anyway."
     )
 
@@ -246,6 +248,78 @@ _LEVEL_RULE = (
     "godot_screenshot. Every level defect found so far - protrusions, "
     "black corridor cracks, gaps in the wall shadow, props floating in "
     "stone - was invisible in the numbers and obvious in one frame."
+)
+
+# EVERY SEAT GETS THESE TWO, AND NEITHER IS A CRAFT RULE. DISPATCH_RULES below
+# is keyed by seat because it says how to do one seat's job; these say how the
+# board works, so they are prepended to whatever a seat's own rules are.
+#
+# WHY OWNERSHIP IS FIRST AND WHY IT IS PROSE. In the first of three benchmark
+# games every sound effect shipped TWICE: two seats independently wired the same
+# four SFX, both implementations valid, and the QA gate passed the duplicated
+# build because it checked that each stream was non-null and playing - which was
+# true, twice. The next two games carried a short ownership paragraph in the
+# project bible and the failure did not recur: the art seat found mismatched and
+# unwired assets in both, and FILED them against gameplay instead of silently
+# editing gameplay's integration code.
+#
+# That is a cheap rule that worked, so it is now the default rather than
+# something each project has to rediscover. Deliberately NOT a subsystem: there
+# is no ownership table, no registry and no new tool, because the thing that
+# worked was a paragraph and the evidence for anything heavier does not exist.
+OWNERSHIP_RULE = (
+    "OWNERSHIP - PRODUCING A THING IS NOT OWNING ITS WIRE:\n"
+    "• Making an artifact does not make its INTEGRATION yours. The producer "
+    "creates the asset; the declared consumer/integration owner wires it into "
+    "the game. Every cross-seat wire has exactly ONE owner, and two valid "
+    "implementations of the same wire is a DEFECT, not redundancy - the first "
+    "benchmark game shipped every sound effect twice that way and passed QA.\n"
+    "• Pairs where this bites: audio file -> gameplay event; art asset -> "
+    "scene/resource consumer; animation -> state machine; simulation -> UI; "
+    "death -> occupancy/state cleanup; ability -> VFX; narrative content -> "
+    "gameplay trigger. In each, the SECOND half is the consumer seat's, "
+    "whoever made the first half.\n"
+    "• When you find the consumer side wrong - a mismatched filename, an "
+    "unwired asset, a stale path - do NOT fix it in their file. "
+    "queue_add(<owning seat>, title, brief, depends_on=<your item>) and say so "
+    "in your result note. Handing work on IS finishing yours.\n"
+    "• If the bible names an owner for that wire, the bible wins over this."
+)
+
+# WHICH WAY A THING GETS MADE. Short on purpose: the benchmark did NOT show that
+# hosted generation is bad or that local authoring is bad. It showed that the
+# CHOICE was ad hoc - one art seat burned a 30-minute ceiling re-rolling a
+# hosted sprite sheet that had already failed structurally the same way twice,
+# and two later seats used no hosted model at all for work it would have suited.
+# Neither "always use the API" nor "hand-roll it, it is faster" is the rule; the
+# ARTIFACT decides, and the provider board says whether the choice is available.
+PRODUCTION_ROUTE_RULE = (
+    "HOW TO MAKE IT - THE ARTIFACT DECIDES, NOT HABIT:\n"
+    "• HOSTED GENERATION is the right tool for anything with authored richness: "
+    "composed music, ambience, layered sound design, illustration, concept art, "
+    "complex character and source art, textures. Do not hand-roll these; a "
+    "synthesized stand-in for a music cue is not a cheaper version of the cue, "
+    "it is a different (worse) deliverable.\n"
+    "• DETERMINISTIC LOCAL production is the right tool where the spec IS the "
+    "output: tiny constrained pixel sprites, exact palette transforms, derived "
+    "frames, UI beeps and clicks, short synthetic SFX, test tones, anything "
+    "geometric or exactly specified. sfx_generate is this path for audio and it "
+    "ships a re-renderable recipe; a hosted model cannot hit an exact peak.\n"
+    "• CHECK THE BOARD BEFORE YOU DECIDE, not after a failure: "
+    "provider_status() names which provider would actually be selected for each "
+    "family, what the alternatives really are, and why anything configured is "
+    "unavailable. A drained account is a ROUTING event, never a reason to "
+    "hand-roll a hosted-path artifact.\n"
+    "• A STRUCTURAL FAILURE MEANS CHANGE METHOD, NOT RE-ROLL. Generate a "
+    "sample, INSPECT it (consistency_check, sprite_sheet_check, the alpha "
+    "flags, ffmpeg astats for audio), and CLASSIFY what went wrong. A failure "
+    "the same prompt will reproduce - size_ramp, palette blowout, no ground "
+    "line, wrong facing - is not fixed by rolling again: change the "
+    "conditioning, change the tool, or split the job. MEASURED: one art seat "
+    "spent its entire 30-minute ceiling and 136 credits re-rolling a sheet that "
+    "failed size_ramp every time, and delivered good assets in minutes once it "
+    "changed method. Two identical structural failures = change something "
+    "structural, and say in your result note what you changed and why."
 )
 
 DISPATCH_RULES = {
@@ -431,7 +505,15 @@ DISPATCH_RULES = {
         "approved source is an automatic reject (observed failure: floors "
         "shipped with an invented X-bevel that existed in no approved rev).\n"
         "• Name the source in your seat note per delivered file "
-        "(delivered X <- approved revision N) so the trail is auditable."
+        "(delivered X <- approved revision N) so the trail is auditable.\n"
+        "• DELIVER THROUGH godot_import_asset, do not copy the file in "
+        "yourself. It purges the stale import cache, reimports, and its "
+        "`freshness` field is the proof that the ENGINE now serves your bytes "
+        "rather than the placeholder that was there. MEASURED twice: new PNGs "
+        "written straight into assets/ passed every structural check - path, "
+        "size, scene reference - while the running game drew the old sprite. "
+        "godot_deliver_asset is the 3D-only sequel and takes a .glb; it cannot "
+        "accept a PNG. Generate to a staging directory and import FROM there."
     ),
 }
 
@@ -456,8 +538,16 @@ def dispatch_rules(root: str | os.PathLike[str], seat: str) -> str:
     except (OSError, ValueError):
         data = {}
     if isinstance(data, dict) and seat in data:
-        return str(data[seat] or "").strip()
-    return DISPATCH_RULES.get(seat, "")
+        own = str(data[seat] or "").strip()
+    else:
+        own = DISPATCH_RULES.get(seat, "")
+    # THE TWO BOARD-WIDE RULES RIDE ON EVERY SEAT, including a seat whose craft
+    # rules a project has switched off with an empty override. A project that
+    # genuinely wants different ownership doctrine states it in the BIBLE, which
+    # the rule itself defers to - that is one place to look, and it is the place
+    # that worked in the benchmark.
+    return "\n\n".join(part for part in
+                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, own) if part)
 
 
 # ---------------------------------------------------------------------------
@@ -926,9 +1016,11 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "deliverable clears before anyone says 'done'. A pass is a "
                    "WRITTEN VERDICT with evidence, not a finished run. An "
                    "assertion that would still pass with the feature deleted is "
-                   "not a test: every claim needs a control that fails. Run "
-                   "asset_verify after any multi-seat session; "
-                   "godot_check_project before builds.",
+                   "not a test: every claim needs a control that fails, and a "
+                   "value is never verified against the constant that created "
+                   "it. Run asset_verify after any multi-seat session; "
+                   "godot_check_project before builds; godot_evidence with NO "
+                   "scene argument before any release claim.",
         "write_globs": ["tests/**", "game/tests/**"],
         "workflow": (
             "QA PERSONA — be the picky owner, not a cheerleader. No participation "
@@ -1004,6 +1096,86 @@ DEFAULT_SEATS: dict[str, dict] = {
             "7. VERIFY IT ACTUALLY RUNS: tests at the known baseline, no new "
             "failures, no console errors, the change visibly does what was asked "
             "in the real app — not just 'the code looks right'.\n"
+            "7b. PRESENCE IS NOT CORRECTNESS. 'the stream exists', 'the stream "
+            "is playing', 'the texture path resolves', 'the resource has the "
+            "expected dimensions', 'the signal exists', 'the file is there' are "
+            "ALL TRUE IN BROKEN BUILDS. Every one of those was a passing check "
+            "on a build that was wrong. For anything integrated, ask the five "
+            "questions a presence check cannot: is there exactly ONE owner (a "
+            "duplicated wire passes every existence check twice)? is it CURRENT "
+            "(asset_verify's `freshness` says whether the engine is serving the "
+            "bytes on disk, or an older import)? is the CORRECT consumer using "
+            "it (asset_verify's `unreferenced` + `dangling` name the "
+            "filename-contract mismatch)? does the RUNTIME show it "
+            "(godot_screenshot, and sample the pixels — not the resource)? does "
+            "it happen EXACTLY ONCE (count, do not assert non-zero)? Then ask "
+            "the two that kill a test rather than a build: would this test "
+            "still pass if the feature were DUPLICATED, and would it still pass "
+            "if the consumer were reading STALE data? If yes to either, the "
+            "test is not testing.\n"
+            "7c. MEASURE THE ARTIFACT, NOT THE PRODUCER'S REPORT. A claim about "
+            "a wav is settled by ffmpeg astats / volumedetect on the file, a "
+            "claim about a palette by sampling pixels out of a real screenshot "
+            "against the bible's values, a claim that code is new by git diff, "
+            "a claim that an effect cleans up by counting nodes back to "
+            "baseline. This is the seat's whole job: the report is the thing "
+            "under review, never the evidence for it.\n"
+            "7d. NEVER VERIFY A DERIVED VALUE AGAINST THE CONSTANT THAT "
+            "CREATED IT. If Scale.COUNTER sets the counter height, reading "
+            "Scale.COUNTER back proves the constant equals itself - the "
+            "assertion is green whatever the positioning code does with it, "
+            "and it stays green when that code is wrong. MEASURED: a whole "
+            "block of scale assertions compared against the same constant the "
+            "buggy placement used. Measure the INSTANTIATED thing instead - "
+            "the mesh AABB, the collider bounds, the world transform "
+            "(godot_inspect_resource) - and compare THAT against the "
+            "contract. Then prove the test can fail: feed it a deliberately "
+            "wrong control value and watch it go red.\n"
+            "7e. A TEST MUST NOT DEPEND ON THE BEHAVIOUR IT IS TRYING TO "
+            "PROVE. MEASURED: the camera-steering bug had passing tests "
+            "because the tests drove the camera through the body coupling "
+            "that was itself broken - one of them would have measured a "
+            "single orientation four times and passed without testing "
+            "anything. Test from an INDEPENDENT frame of reference; do not "
+            "drive the same state the suspected bug mutates; hold the "
+            "dependent state fixed while you vary the target; and add a "
+            "control that BREAKS the expected coupling, so a test that only "
+            "works because the coupling exists is exposed as one.\n"
+            "7f. A LABEL IS EVIDENCE AND IT MUST NAME THE THING MEASURED. "
+            "MEASURED: an assertion read `owner CAN guard bedroom (dresser) "
+            "within 2m` while measuring a task marker 2.75 m from the "
+            "dresser. That sentence was relayed into a director report, a "
+            "filed work item and a dispatched agent's brief before anybody "
+            "checked the coordinate - three pieces of work aimed at a problem "
+            "that did not exist. Every human-readable label carries the "
+            "actual node/resource identifier, its path or stable id, and the "
+            "measured world coordinate; if the prose and the measured target "
+            "disagree, the label is the bug. Stale prose that nobody "
+            "re-derives becomes trusted evidence faster than anything else "
+            "in this pipeline.\n"
+            "7g. THE FIVE CHECKS THAT CAUGHT WHAT HUNDREDS OF ASSERTIONS "
+            "MISSED. Run them where they apply, every time: (1) CAPTURE THE "
+            "DEFAULT SCENE - godot_evidence with NO scene argument, because "
+            "every gate that names its own scene cannot notice the one the "
+            "game boots into; (2) RUN asset_verify and read "
+            "`delivered_but_unwired`, `dangling`, `freshness` - delivered is "
+            "not integrated; (3) DRIVE THE THING - traversal_prove, real "
+            "input through the real controller, terminating SETTLED inside "
+            "the destination's own volume; (4) MEASURE THE ACTUAL GEOMETRY, "
+            "with a deliberately wrong control (7d); (5) LOOK AT THE PICTURE "
+            "AND ASSERT WHAT IS IN IT - evidence_assert, all four cardinal "
+            "views for a character. Capturing evidence is NOT examining it: a "
+            "character shipped with two tails for a full day while its "
+            "turnaround renders sat on disk unopened. A presentation finding "
+            "is never overridden by a structural green check.\n"
+            "7h. IF THE BRIEF'S PREMISE IS FALSE, SAY SO AND PROVE IT. A "
+            "brief can carry a measured claim that is simply not true - twice "
+            "in the benchmark the director wrote one. Measure before you act "
+            "on a number somebody else took. When it does not hold, do NOT "
+            "make the change you were asked for: report it with "
+            "queue_complete(premise_refuted={claim, measured, did_instead}) "
+            "and fix the real thing. This is a first-class outcome on the "
+            "board, not a caveat in prose.\n"
             "8. VERDICT: return PASS only if it genuinely matches the ref and "
             "every check is clean. Otherwise FAIL with a blunt, specific, ranked "
             "nitpick list — each item names the exact problem and the fix. "
@@ -1903,6 +2075,41 @@ TOOLING_RULE = (
 )
 
 
+def _stage_block(root: str | os.PathLike[str], role: str) -> dict:
+    """The production stage as one block of a seat brief.
+
+    Best-effort: a greenlight doc that will not read must not fail a brief, and
+    an absent block reads as "no stage machine here" rather than as an error a
+    seat has to interpret.
+    """
+    try:
+        from . import greenlight as _greenlight
+
+        state = _greenlight.state(root)
+    except Exception:                                             # noqa: BLE001
+        return {}
+    ok, why = _greenlight.allows(root, role)
+    thesis = state.get("thesis") or {}
+    return {
+        "stage": state["stage"],
+        "meaning": state["label"],
+        "your_seat_dispatches": ok,
+        "why_held": why,
+        "mechanical_thesis": thesis.get("sentence") or "",
+        "the_decision": ({"options": thesis.get("options") or [],
+                          "stakes": thesis.get("stakes") or "",
+                          "tension": thesis.get("tension") or "",
+                          "cadence": thesis.get("cadence") or ""}
+                         if thesis else {}),
+        "dominant_strategy_to_watch_for": thesis.get("dominant_strategy") or "",
+        "held_seats": state.get("held_seats") or [],
+        "blocking_the_next_stage": state.get("blockers") or [],
+        "note": ("greenlight_status is the long answer, including the enemy "
+                 "roster, the objective shapes, the scale contract and the "
+                 "room reviews"),
+    }
+
+
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
     """Everything a seat needs to start, BOUNDED.
 
@@ -2024,6 +2231,12 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                             MAX_LOCKS, "asset_status (others)"),
         "notes": notes,
         "board": cap(board, MAX_BOARD, "queue_list"),
+        # WHAT THE PROJECT IS ALLOWED TO BE DOING YET, and the sentence the
+        # whole game is built on. In the brief rather than left for a refusal
+        # to teach: a seat that discovers the stage by being held reads it as
+        # the board being broken, and the observed response to a board that
+        # looks broken is to work around it.
+        "stage": _stage_block(root, role),
         "truncated": truncated,
         # Bugs that have already been paid for, gated to this seat and this
         # project's dimension. See TRAPS for why they are in the brief and not
@@ -2055,6 +2268,18 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
             "picture) and judge the PICTURE. Stats, tree dumps, byte checks "
             "and passing tests are one check, never the full check.",
             "Narrative writes go through canon_check before they land.",
+            # THE THESIS RULE. Night Shift reached full production against a
+            # loop nobody could describe as a decision, and every seat in that
+            # run was working correctly against a feature list. A feature list
+            # is buildable and a decision structure is not derivable from it,
+            # so the sentence has to travel with the work.
+            "BUILD AGAINST THE DECISION, NOT THE FEATURE LIST. `stage."
+            "mechanical_thesis` in this brief is the one sentence naming what "
+            "the player is repeatedly choosing. If what you are about to make "
+            "does not change that choice, sharpen it, or make its stakes "
+            "legible, say so on the item rather than making it - and if this "
+            "project has no thesis yet, that is why your seat may not be "
+            "dispatching (greenlight_status).",
             # "Check scope_check(rank) before building anything new." was the
             # next line for a long time. The tool it named answered off a cut
             # line hardly any project drew, so it always said yes — a rule

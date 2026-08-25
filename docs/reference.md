@@ -113,6 +113,53 @@ absorbed. Locked files are expected to differ and are not drift.
 layer; enforcement is the PreToolUse hook described in [setup.md](setup.md).
 Verify makes violations visible without it.
 
+**Delivered is not integrated.** `asset_verify` also answers the three questions
+a presence check cannot: `dangling` (a reference to a file that is not there),
+`delivered_but_unwired` (the artifact ledger says a seat produced it and nothing
+consumes it, named with the item that paid for it), and `freshness` (whether the
+engine is serving the bytes on disk or an older import). The release gate now
+runs it and refuses on those findings; it used to be a tool nobody called.
+Where a project builds resource paths at run time, `dynamic_load_sites` is
+non-zero and an unwired asset is reported as a **candidate**, not a verdict — no
+static scan follows a path built at run time.
+
+## The release gate
+
+`greenlight_status(section='presentation')` reconciles five sections, and a
+release candidate cannot close around any of them (`webbuild` calls
+`release_guard`; there is no waiver for this gate).
+
+```text
+default_scene  godot_evidence with NO scene argument, then an assertion about
+               what is IN the frame (evidence_assert)
+assets         asset_verify: dangling, delivered_but_unwired, stale imports
+rooms          a full-room composition review per playable room
+scale          every delivered asset measured BY A TOOL COMPETENT FOR THIS
+               PROJECT'S DIMENSION
+audio          cues heard in a gameplay capture, not file metrics
+```
+
+Every row carries the tool that produced it, its inputs, and the measurement
+behind it. Rows come in four kinds and the distinction is about *who acts*:
+
+| kind | means | who clears it |
+|---|---|---|
+| `blocking` | ordinary work, and it names a runnable action | whoever owns the path |
+| `judgement` | a person has to look. Correct, not a defect | a human, or the QA seat |
+| `unfinished` | nobody has done it yet | backlog |
+| `impossible` | **no valid action clears it — a harness bug** | fix the tool, then supersede the row |
+
+The gate audits its own rows for satisfiability before it refuses anything. A
+row no correct action can clear is worse than no row: it teaches operators to
+route around the gate.
+
+**Retracting a false finding.** `greenlight_supersede(finding_id, why, ...)`
+withdraws a row a later, authoritative measurement has disproved. The retraction
+is itself recorded: the finding stops blocking and stays readable, carrying what
+replaced it, with what tool, and why. Fixing the tool is not enough on its own —
+the bad finding is already in the ledger.
+`greenlight_status(section='findings')` lists them with ids.
+
 ## The Blender to Godot round trip
 
 An agent models in Blender, exports glTF, and the asset lands usable in Godot,

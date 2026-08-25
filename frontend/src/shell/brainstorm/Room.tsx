@@ -11,6 +11,15 @@ import { usePoll, useViewActive } from "../../hooks";
 import { useStickyBottom } from "../sticky";
 import "./room.css";
 
+/* WHICH SEATS HAVE A DRAWN PORTRAIT (frontend/public/img/floor/<seat>/face.png,
+ * generated from that seat's own floor sprite). Named rather than probed: a
+ * missing <img> renders as a broken-image glyph in the middle of a
+ * conversation, which is worse than the icon it replaced, and there is no
+ * cheap way to ask the browser whether a file exists before drawing it. A seat
+ * added to the cast is added here in the same commit as its art. */
+const FACED = new Set(["director", "narrative", "gameplay", "tech",
+                       "art", "audio", "cinematic", "qa"]);
+
 /* 11 · ONE ROOM, SEATS JOIN IT.
  *
  * This replaces 9 — the two-room version, where narrative got a room of its
@@ -946,14 +955,23 @@ export function Room({ seat }: { seat?: string } = {}) {
                  style={l.m.seat
                    ? { ["--voice" as any]: SEAT_COLOR[l.m.seat] || "var(--text-3)" }
                    : undefined}
-                 className={`bg4-msg ${l.m.role === "user" ? "you" : "them"}`
+                 className={`bg4-roommsg ${l.m.role === "user" ? "you" : "them"}`
                    + (l.m.seat ? " seated" : "")}>
               <div className="head">
                 {l.m.role !== "user" && (
+                  /* THE FACE, WHERE A LETTERBOX USED TO BE. Five seats
+                     arguing were five identical blocks distinguished by a
+                     10px word - the seat's own portrait is the thing a
+                     reader recognises without reading. It is the same
+                     character that walks around the floor, drawn front on;
+                     a seat with no portrait keeps the icon, which is what
+                     the room's own partner and any invented seat get. */
                   <span className="av" aria-hidden="true">
-                    <Ti name={l.m.seat ? (SEAT_ICON[l.m.seat] || "user")
-                                       : "message-2"} size={12}
-                        color={l.m.seat ? SEAT_COLOR[l.m.seat] : undefined} />
+                    {l.m.seat && FACED.has(l.m.seat)
+                      ? <img src={`/static/img/floor/${l.m.seat}/face.png`} alt="" />
+                      : <Ti name={l.m.seat ? (SEAT_ICON[l.m.seat] || "user")
+                                           : "message-2"} size={12}
+                            color={l.m.seat ? SEAT_COLOR[l.m.seat] : undefined} />}
                   </span>
                 )}
                 {/* '' on a message means the room's own partner — see migration
@@ -1277,24 +1295,41 @@ export function Room({ seat }: { seat?: string } = {}) {
                 : th.readonly ? "read-only argv" : "tool set unobserved"}
             </div>
           </div>
+          {/* Parity with the guest rows below: the room total already sums
+              this in, so leaving it off the partner's own row was the one
+              inconsistency in an otherwise per-seat ledger. */}
+          {!!th.spent_usd && (
+            <span className="spend" title="the partner has spent this much answering in this room">
+              ${th.spent_usd.toFixed(2)}
+            </span>
+          )}
         </div>
 
         {/* THE GUESTS. Each one is a real spawned CLI with the room's own
             read-only argv, so each one carries its own turn count and its own
             spend — which is the whole reason the design put a number on a
-            participant row rather than one number on the room. */}
+            participant row rather than one number on the room. Turns and
+            spend sit in their own stat column now rather than tacked onto the
+            end of the runtime sentence — four rows all ending "...· N turns"
+            read as one repeated sentence; four numbers stacked on the right
+            read as a column you can compare down at a glance. */}
         {guests.map((p) => (
           <div className="bg4-part" key={p.seat}>
-            <Ti name={SEAT_ICON[p.seat] || "user"} size={15} color={SEAT_COLOR[p.seat]} />
+            {FACED.has(p.seat)
+              ? <img className="bg4-face" src={`/static/img/floor/${p.seat}/face.png`} alt="" />
+              : <Ti name={SEAT_ICON[p.seat] || "user"} size={15} color={SEAT_COLOR[p.seat]} />}
             <div className="w">
               <div className="l">
                 <span className="nm">{p.seat}</span>
                 {/* BOTH MEANINGS, because they disagree and the difference is
                     actionable: "in the room, not running" is normal and self-
                     healing; "invited" means nothing ever started. */}
-                <span className={p.live ? "st live" : "st"}>
+                <span className={p.live ? "st live" : "st"}
+                      title={p.state === "invited" ? "invited — nothing has run yet"
+                        : p.live ? "live — answering now"
+                        : "in the room, not currently running"}>
                   {p.state === "invited" ? "invited"
-                    : p.live ? "live" : "in the room · not running"}
+                    : p.live ? "live" : "not running"}
                 </span>
               </div>
               <div className="note">
@@ -1305,20 +1340,25 @@ export function Room({ seat }: { seat?: string } = {}) {
                 {(p.thinker?.tools?.length || 0) > 0
                   ? `${p.thinker?.tools?.length} tools observed`
                   : "read-only argv"}
-                {p.turns ? ` · ${p.turns} turn${p.turns === 1 ? "" : "s"}` : ""}
               </div>
             </div>
-            {/* EACH REPLY COSTS, AND THE COST IS PER SEAT. Every guest is its
-                own spawned CLI, so one number on the room would hide which
-                invitation is the expensive one — which is the only version of
-                this number anybody can act on. Drawn only once something has
-                been spent: "$0.00" beside a seat that has not answered yet
-                reads as a measurement rather than as an absence. */}
-            {!!p.spent_usd && (
-              <span className="spend" title={`${p.seat} has spent this much answering in this room`}>
-                ${p.spent_usd.toFixed(2)}
-              </span>
-            )}
+            <div className="stats">
+              {!!p.turns && (
+                <span className="turns">{p.turns} turn{p.turns === 1 ? "" : "s"}</span>
+              )}
+              {/* EACH REPLY COSTS, AND THE COST IS PER SEAT. Every guest is
+                  its own spawned CLI, so one number on the room would hide
+                  which invitation is the expensive one — which is the only
+                  version of this number anybody can act on. Drawn only once
+                  something has been spent: "$0.00" beside a seat that has not
+                  answered yet reads as a measurement rather than as an
+                  absence. */}
+              {!!p.spent_usd && (
+                <span className="spend" title={`${p.seat} has spent this much answering in this room`}>
+                  ${p.spent_usd.toFixed(2)}
+                </span>
+              )}
+            </div>
             <button className="x" title={`${p.seat} leaves the room`}
                     onClick={() => leave(p.seat)}>×</button>
           </div>

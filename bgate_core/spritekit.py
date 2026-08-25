@@ -513,6 +513,76 @@ def parts(path: Any, *, part_frac: float = 0.02,
         return {"parts": 1, "speckles": 0, "largest_frac": 1.0}
 
 
+def islands(path: Any, *, min_px: int = 4, pad: int = 0) -> list[dict]:
+    """Every connected blob of ink, full resolution, as bounding boxes.
+
+    :func:`parts` answers "is it one figure" on a thumbnail and throws the
+    geometry away; this keeps it, because the geometry IS the answer when the
+    input is an irregular sheet - a generator that drew five sprites wherever
+    it felt like it, a hand-assembled atlas with uneven gutters. Eight-way
+    connectivity (Better Slicer's rule, so a hand-authored slice pass and
+    this one agree on what a sprite is), blobs under ``min_px`` dropped as
+    speckle, boxes grown by ``pad`` and clamped to the canvas.
+
+    Reading order, not discovery order: boxes are banded into rows by
+    vertical overlap, bands top-to-bottom, boxes left-to-right within a band
+    - the order a sheet is meant to be read, and the order frames land in a
+    master built from the result.
+    """
+    img = _open(path)
+    mask = _on_mask(img)
+    w, h = mask.size
+    px = mask.load()
+    seen = bytearray(w * h)
+    found: list[dict] = []
+    for y0 in range(h):
+        for x0 in range(w):
+            i0 = y0 * w + x0
+            if seen[i0] or not px[x0, y0]:
+                continue
+            seen[i0] = 1
+            stack = [(x0, y0)]
+            n = 0
+            xmin = xmax = x0
+            ymin = ymax = y0
+            while stack:
+                x, y = stack.pop()
+                n += 1
+                if x < xmin: xmin = x
+                if x > xmax: xmax = x
+                if y < ymin: ymin = y
+                if y > ymax: ymax = y
+                for nx in (x - 1, x, x + 1):
+                    for ny in (y - 1, y, y + 1):
+                        if 0 <= nx < w and 0 <= ny < h:
+                            j = ny * w + nx
+                            if not seen[j] and px[nx, ny]:
+                                seen[j] = 1
+                                stack.append((nx, ny))
+            if n >= min_px:
+                found.append({
+                    "x": max(0, xmin - pad), "y": max(0, ymin - pad),
+                    "w": min(w - 1, xmax + pad) - max(0, xmin - pad) + 1,
+                    "h": min(h - 1, ymax + pad) - max(0, ymin - pad) + 1,
+                    "ink": n,
+                })
+    # Band into rows by vertical overlap, then read each band left to right.
+    found.sort(key=lambda b: b["y"])
+    bands: list[list[dict]] = []
+    band_bottom = -1
+    for box in found:
+        if not bands or box["y"] > band_bottom:
+            bands.append([box])
+            band_bottom = box["y"] + box["h"] - 1
+        else:
+            bands[-1].append(box)
+            band_bottom = max(band_bottom, box["y"] + box["h"] - 1)
+    ordered: list[dict] = []
+    for band in bands:
+        ordered.extend(sorted(band, key=lambda b: b["x"]))
+    return ordered
+
+
 # ---------------------------------------------------------------------------
 # 4. Motion — what silhouette overlap says about a sequence
 # ---------------------------------------------------------------------------

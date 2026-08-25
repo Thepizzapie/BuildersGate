@@ -172,6 +172,7 @@ def init(root: str | os.PathLike[str], name: str, pitch: str = "",
         raise ValueError(f"dimension must be one of {DIMENSIONS}, got {dimension!r}")
 
     Path(root).mkdir(parents=True, exist_ok=True)
+    fresh = not _exists(root)
     with db.tx(root) as conn:
         conn.execute(
             """
@@ -188,7 +189,110 @@ def init(root: str | os.PathLike[str], name: str, pitch: str = "",
             (name, slugify(name), pitch, engine, dimension),
         )
     register(root, slugify(name))
+    _seed_doctrine(root)
+    if fresh:
+        _seed_budget_default(root)
     return get(root)
+
+
+def _exists(root: str | os.PathLike[str]) -> bool:
+    try:
+        return db.connect(root).execute(
+            "SELECT 1 FROM project WHERE id = 1").fetchone() is not None
+    except Exception:
+        return False
+
+
+def _seed_budget_default(root: str | os.PathLike[str]) -> None:
+    """A NEW project starts with budgets OFF, which is what the product says.
+
+    THE DECLARED DEFAULT AND THE STORED ONE DISAGREED. settings.py has said
+    since 2026-08-19 that budget enforcement is "OFF by default, and
+    deliberately: shipped on, every project silently enforced a $5/item,
+    $25/day ceiling nobody chose". The Setting's `default=False` never reached
+    the database, because that key STORES to the spend_budget row and the
+    schema's own column default is 1 - so every project created since has been
+    enforcing the ceiling the note says was removed, and the panel read it back
+    as ON.
+
+    Fixed HERE and not in a migration on purpose: a migration would reach into
+    projects whose owners may have turned enforcement on deliberately, and
+    "your budget stopped being enforced" is not a change to make on somebody
+    else's behalf. Only a project being created for the first time is touched.
+
+    Never raises. The per-RUN ceiling (an item's own max_cost_usd) is
+    unaffected either way - spend.item_ceiling honours that whether or not the
+    budget is enforced, and that is the ceiling agents were measured breaking.
+    """
+    try:
+        with db.tx(root) as conn:
+            conn.execute("UPDATE spend_budget SET enforced = 0 WHERE id = 1")
+    except Exception:
+        pass
+
+
+# THE ONE RULE THAT WORKED, SHIPPED AS A DEFAULT INSTEAD OF BEING REDISCOVERED.
+#
+# In the first of three benchmark games every sound effect shipped TWICE: two
+# seats independently wired the same four SFX, both implementations valid, and
+# the QA gate passed the duplicated build because it verified each stream was
+# non-null and playing - true, twice. The two later games opened with a short
+# ownership paragraph in the bible and it did not recur; in both, a producer
+# seat that found a mismatched or unwired asset FILED it against the consumer
+# seat instead of silently editing that seat's integration code.
+#
+# It is a bible SECTION and not only prompt text on purpose, and the two are not
+# duplicates: seats.OWNERSHIP_RULE is the board-wide default that reaches every
+# dispatched agent, and it says the bible wins. This is where a project states
+# ITS answer - who owns the audio wire in THIS game - by editing one section
+# somebody can read, diff and disagree with. A constraint nobody can find is a
+# constraint nobody applies.
+_OWNERSHIP_SECTION = (
+    "Producing an artifact does not grant ownership of its INTEGRATION. The "
+    "producer creates the asset; the declared consumer owns the wire that puts "
+    "it in the game. Every cross-seat integration has exactly ONE owner, and a "
+    "second valid implementation of the same wire is a defect - it passes every "
+    "existence check twice.\n"
+    "\n"
+    "Default owners, until this project says otherwise:\n"
+    "- audio file -> the seat that owns the gameplay EVENT wires it\n"
+    "- art asset -> the seat that owns the scene/resource consuming it\n"
+    "- animation -> the seat that owns the state machine\n"
+    "- simulation value -> the seat that owns the UI reading it\n"
+    "- death / despawn -> the seat that owns occupancy and state cleanup\n"
+    "- ability -> the seat that owns the VFX it triggers\n"
+    "- narrative content -> the seat that owns the gameplay trigger\n"
+    "\n"
+    "A producer that finds the consumer side wrong routes the work "
+    "(queue_add(<owning seat>, ..., depends_on=<its own item>)) rather than "
+    "fixing it in another seat's file. Edit this section to name real owners "
+    "for this game; the seats read it."
+)
+
+
+def _seed_doctrine(root: str | os.PathLike[str]) -> None:
+    """Put the ownership constraint in a new project's bible, once.
+
+    Idempotent by TITLE, so re-running init (which is documented as safe) does
+    not stack copies, and a project that deleted the section on purpose does not
+    get it handed back on the next re-init... it does, and that is the accepted
+    trade: re-init is rare and a duplicate title is not, so the check is cheap
+    and the failure mode is one section a human deletes again.
+
+    Never raises. A project that cannot be created because a default paragraph
+    would not insert is a worse product than one with no paragraph.
+    """
+    try:
+        from . import bible
+
+        existing = {str(row.get("title") or "").strip().lower()
+                    for row in bible.list_sections(root, "constraint")}
+        if "integration ownership" in existing:
+            return
+        bible.add(root, "constraint", "Integration ownership",
+                  _OWNERSHIP_SECTION, rank=0)
+    except Exception:
+        pass
 
 
 def get(root: str | os.PathLike[str]) -> dict:

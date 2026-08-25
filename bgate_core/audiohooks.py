@@ -276,3 +276,127 @@ def orphans(root: str | os.PathLike[str], events: list[dict]) -> list[str]:
             if rel.lower() not in used:
                 found.add(rel)
     return sorted(found)
+
+
+# ── in-game listening ───────────────────────────────────────────────────────
+#
+# EVERYTHING ABOVE THIS LINE IS STATIC. The hook table proves a cue is wired,
+# loudness proves it is normalised, the duplicate check proves it is not the
+# same file twice. None of it proves it SOUNDS RIGHT, and all three can pass on
+# a cue that is wrong for the moment it fires, mixed under the music, or three
+# frames late. Night Shift's audio passed every file metric it had; the first
+# time anybody heard the cues in context was after release.
+#
+# So the last audio gate is a person (or a QA seat) listening to a GAMEPLAY
+# CAPTURE with the cues firing, and saying which ones they heard. Stored per
+# capture, so re-recording after a mix change starts the coverage over — which
+# is correct, and was not what a file-metric pass did.
+
+LISTEN_SEAT = "audio"
+LISTEN_KEY = "in_game_listen"
+
+#: What a gameplay capture can be. A .wav of the bus is accepted: the point is
+#: that the cues were heard IN CONTEXT, not that there was a picture.
+CAPTURE_SUFFIXES = frozenset({".mp4", ".mkv", ".webm", ".mov", ".ogv",
+                              ".wav", ".ogg", ".mp3"})
+
+
+def _listen_doc(root: str | os.PathLike[str]) -> dict:
+    from bgate_core import workspace as _ws
+
+    try:
+        got = _ws.get(root, LISTEN_SEAT, LISTEN_KEY, {}) or {}
+    except Exception:
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def listen_record(root: str | os.PathLike[str], *, capture: str,
+                  cues: list[str], verdict: str, notes: str,
+                  by: str = "") -> dict:
+    """Record an in-game listening pass over a gameplay capture.
+
+    ``capture`` must exist and must be a recording — the check is the point,
+    because "I listened to it" with nothing behind it is what a file-metric
+    pass already was.
+    """
+    import time
+
+    from bgate_core import activity as _activity, workspace as _ws
+
+    capture = str(capture or "").strip()
+    path = Path(capture)
+    if not path.is_absolute():
+        path = Path(root) / capture
+    if not path.is_file():
+        raise ValueError(
+            f"{capture!r} is not a file under this project — an in-game "
+            "listening pass is a pass over a RECORDING, and without one this "
+            "is the file-metric review again")
+    if path.suffix.lower() not in CAPTURE_SUFFIXES:
+        raise ValueError(
+            f"{capture} is not a capture ({', '.join(sorted(CAPTURE_SUFFIXES))})")
+    verdict = str(verdict or "").strip().lower()
+    if verdict not in ("pass", "fail"):
+        raise ValueError("verdict is 'pass' or 'fail'")
+    notes = " ".join(str(notes or "").split())[:2000]
+    if len(notes) < 20:
+        raise ValueError(
+            "say what you heard. A cue can be perfectly normalised and still "
+            "be wrong for the moment it fires, and that sentence is the only "
+            "place that ever gets written down.")
+    heard = sorted({str(c).strip() for c in (cues or []) if str(c).strip()})
+    if not heard:
+        raise ValueError(
+            "name the cues you heard firing — a listening pass that covers no "
+            "cue covers nothing")
+    doc = _listen_doc(root)
+    passes = doc.get("passes")
+    doc["passes"] = passes if isinstance(passes, dict) else {}
+    row = {"capture": capture, "cues": heard, "verdict": verdict,
+           "notes": notes, "by": by or _activity.current_actor(),
+           "at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())}
+    doc["passes"][capture] = row
+    _ws.set(root, LISTEN_SEAT, LISTEN_KEY,
+            {k: v for k, v in doc.items() if k != _ws.VERSION_KEY})
+    _activity.log(root, "audio",
+                  f"in-game listen {verdict}: {len(heard)} cue(s) over "
+                  f"{capture}", seat=LISTEN_SEAT, ref=capture)
+    return row
+
+
+def listened(root: str | os.PathLike[str]) -> set[str]:
+    """Every cue covered by a PASSING listening pass."""
+    out: set[str] = set()
+    for row in (_listen_doc(root).get("passes") or {}).values():
+        if isinstance(row, dict) and row.get("verdict") == "pass":
+            out.update(str(c) for c in row.get("cues") or [])
+    return out
+
+
+def in_game_unreviewed(root: str | os.PathLike[str]) -> list[str]:
+    """Wired cues nobody has heard in context. The release gate's question.
+
+    Only WIRED events count. An unbound event is a different bug with a
+    different fix (it is silence, not a bad mix) and the hook table already
+    reports it; making the listening gate refuse on it would put one failure in
+    two places and let fixing either one look like fixing both.
+    """
+    try:
+        found = scan(root)
+    except Exception as exc:                                      # noqa: BLE001
+        return [f"the audio hook scan could not run ({type(exc).__name__}: "
+                f"{exc}), so no cue can be shown as heard"]
+    wired = [e for e in found.get("events") or []
+             if str(e.get("state")) == "wired"]
+    if not wired:
+        return []
+    heard = listened(root)
+    missing = sorted({str(e.get("event")) for e in wired} - heard)
+    if not missing:
+        return []
+    shown = ", ".join(missing[:8]) + ("…" if len(missing) > 8 else "")
+    return [f"{len(missing)} of {len(wired)} wired cue(s) have never been "
+            f"heard in a gameplay capture ({shown}) — peaks, RMS and wiring "
+            "all pass on a cue that sounds wrong in context. "
+            "audio_listen_record(capture=..., cues=[...])"]

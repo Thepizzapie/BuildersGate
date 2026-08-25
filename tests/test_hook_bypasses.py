@@ -36,7 +36,11 @@ class TestMultilineCommands:
         # the tracked directory, or line two's relative write is judged in the
         # wrong tree.
         got = hook.analyse_bash("cd ../other\necho x > game/foo.gd")
-        assert got["writes"] == [os.path.join("../other", "game/foo.gd")]
+        # Forward slashes, on every platform: the analyser normalises what it
+        # joins (hook._join) because the lane globs, the write log and the
+        # containment check are all written in one separator, and `a/b/../c`
+        # matched none of them.
+        assert got["writes"] == ["../other/game/foo.gd"]
 
     def test_commands_after_a_heredoc_are_still_read(self):
         got = hook.analyse_bash(
@@ -105,11 +109,11 @@ class TestUnresolvableTargets:
 class TestCd:
     def test_a_resolvable_cd_shifts_relative_writes(self):
         got = _writes("cd ../other-game && echo x > game/foo.gd")
-        assert got == [os.path.join("../other-game", "game/foo.gd")]
+        assert got == ["../other-game/game/foo.gd"]
 
     def test_two_cds_compound(self):
         got = _writes("cd sub && cd deeper && touch a.txt")
-        assert got == [os.path.join("sub", "deeper", "a.txt")]
+        assert got == ["sub/deeper/a.txt"]
 
     def test_an_absolute_write_ignores_the_cd(self):
         target = "C:/elsewhere/x.gd" if os.name == "nt" else "/elsewhere/x.gd"

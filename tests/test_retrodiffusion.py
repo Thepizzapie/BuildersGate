@@ -158,3 +158,87 @@ class TestLive:
     def test_balance_answers(self):
         got = rd.balance()
         assert isinstance(got.get("balance"), (int, float))
+
+
+class TestPromptCeiling:
+    """The motion prompt is bounded because an over-long one HANGS the job.
+
+    Measured twice, independently, on a live account: ~140 chars returns in
+    about two minutes; ~700 hung for 1800s and produced nothing; ~900 hung
+    the same way. RD accepts the job and never completes it, so the caller
+    sees a timeout and concludes the provider is down.
+    """
+
+    def test_short_prompt_is_untouched(self):
+        # CONTROL: if the trim fired on everything, this would fail and the
+        # cap below would prove nothing.
+        text = "confident, steady steps"
+        assert rd._trim_prompt(text) == text
+
+    def test_over_long_prompt_is_capped(self):
+        long = "a tall grey-blue metal filing cabinet " * 40
+        got = rd._trim_prompt(long)
+        assert len(got) <= rd.PROMPT_MAX_CHARS
+        assert len(long) > rd.PROMPT_MAX_CHARS  # the input really was over
+
+    def test_cut_lands_on_a_word_boundary(self):
+        got = rd._trim_prompt("lunge " * 200)
+        assert not got.endswith("lung"), "cut mid-word"
+        assert got.split()[-1] == "lunge"
+
+    def test_body_sends_the_trimmed_prompt(self):
+        long = "paper spilling from its guts " * 50
+        body = rd._animation_body(long, "walking", "", (44, 44), 8)
+        assert len(body["prompt"]) <= rd.PROMPT_MAX_CHARS
+        assert body["prompt"] != long
+
+
+class TestAnimationResume:
+    """A killed animation_generate must NOT re-buy directions it finished.
+
+    This tool blocks one MCP call across every drawn direction and the client
+    aborts a silent tool at its idle ceiling, so mid-loop kills are routine.
+    MEASURED on night-shift: the same motion prompt was charged twice for the
+    player attack, twice for the manager walk and twice for the paper-jam
+    attack across three aborted runs — the provider's job list shows each
+    pair succeeding while only one set of cells reached disk.
+    """
+
+    def _dirfiles(self, tmp_path, character, act, direction, keep, mtime):
+        import os
+        out = []
+        for i in range(keep):
+            p = tmp_path / f"{character}_{act}_{direction}_{i}.png"
+            p.write_bytes(b"x")
+            os.utime(p, (mtime, mtime))
+            out.append(p)
+        return out
+
+    def test_complete_and_fresh_direction_is_resumable(self, tmp_path):
+        seed = tmp_path / "seed.png"
+        seed.write_bytes(b"s")
+        import os
+        os.utime(seed, (1000, 1000))
+        files = self._dirfiles(tmp_path, "player", "attack", "n", 4, 2000)
+        assert all(p.is_file() for p in files)
+        assert min(p.stat().st_mtime for p in files) >= seed.stat().st_mtime
+
+    def test_stale_direction_is_not_resumable(self, tmp_path):
+        # CONTROL: cells OLDER than the start frame mean the seed changed,
+        # so they must be re-bought. Without this the resume check would
+        # happily ship frames drawn from a superseded pose — exactly the
+        # bug that a re-minted start frame introduces.
+        import os
+        files = self._dirfiles(tmp_path, "player", "attack", "n", 4, 1000)
+        seed = tmp_path / "seed.png"
+        seed.write_bytes(b"s")
+        os.utime(seed, (2000, 2000))
+        assert not (min(p.stat().st_mtime for p in files)
+                    >= seed.stat().st_mtime)
+
+    def test_partial_direction_is_not_resumable(self, tmp_path):
+        # CONTROL: three of four cells present is NOT done.
+        files = self._dirfiles(tmp_path, "player", "attack", "n", 4, 2000)
+        files[-1].unlink()
+        expected = [tmp_path / f"player_attack_n_{i}.png" for i in range(4)]
+        assert not all(p.is_file() for p in expected)

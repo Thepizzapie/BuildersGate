@@ -75,7 +75,22 @@ CANDIDATE_DIR = Path(".bgate_out") / "audio"
 # Where a KEPT track is installed. The first directory that already exists wins,
 # so a project that files audio at <root>/audio does not suddenly grow a second
 # tree; both are in the audio seat's write lane (bgate_core.seats).
-INSTALL_ROOTS = (Path("game") / "assets" / "audio", Path("audio"))
+# WHERE A KEPT TRACK LANDS, most specific layout first. The list is tried
+# against directories that ALREADY EXIST, so it reads as "which shape is
+# this project" rather than as a preference.
+#
+# `assets/audio` WAS MISSING AND IT IS THE COMMON ONE. It is what `bgate
+# adopt` finds in an existing Godot repo (project.godot at the root, assets
+# beside it), it is what all three benchmark games used, and it is what the
+# hosted-audio control run used. With only the scaffold layout listed,
+# _install_dir fell through to CREATING `game/assets/audio/music/` - a
+# directory no scene, script or resource in the project names. The tool then
+# reported `installed: true` with a path, a byte count and a hash, all of
+# them true, about a file the game does not load. Presence, not integration,
+# in the one step whose whole job is integration.
+INSTALL_ROOTS = (Path("game") / "assets" / "audio",
+                 Path("assets") / "audio",
+                 Path("audio"))
 INSTALL_SUBDIR = "music"
 
 PRODUCER = "kie_music"

@@ -55,9 +55,19 @@ def test_an_agent_cannot_switch_off_its_own_reviewer(root, as_agent):
     assert settings.get(root, "gate.mode") == "agent"
 
 
-def test_an_agent_cannot_turn_the_budget_into_a_report(root, as_agent):
+def test_an_agent_cannot_turn_the_budget_into_a_report(root, as_agent,
+                                                       monkeypatch):
     """budget.enforced off makes every ceiling advisory — which is how the
-    worst overruns in the run got past $16 against a $5 ceiling."""
+    worst overruns in the run got past $16 against a $5 ceiling.
+
+    Turned ON by a human first, because a new project now starts with it OFF
+    (the declared default finally reaching the spend_budget row it stores to).
+    Without that step this asserts nothing: the value the agent is refused
+    permission to write is the value already stored.
+    """
+    from bgate_core import spend
+
+    spend.set_budget(root, enforced=1)
     with pytest.raises(settings.SettingError):
         settings.set(root, "budget.enforced", False)
     assert settings.get(root, "budget.enforced") is True

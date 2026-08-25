@@ -62,6 +62,16 @@ KINDS = (
     "item.approved",     # the human released a held item
     "item.rejected",     # the human sent it back with a reason
     "item.aging",        # heartbeat: nobody has looked at a 'review' item
+    # A MID-RUN CORRECTION, ON THE ITEM'S OWN RECORD. The steer inbox is a
+    # spool that is consumed and deleted, so before this a correction existed
+    # only until it was read - and a later reader could not tell which
+    # corrections shaped a result, or that any had. The most influential input
+    # to a run was the one input the run did not record.
+    "item.steered",      # a running agent was corrected mid-run
+    # A brief whose premise was MEASURED FALSE by the agent working it. The
+    # most valuable thing agents did in the benchmark, and it survived only as
+    # prose in a result note - see queue.premise_refuted.
+    "item.premise_refuted",
     "artifact.candidate",# a generated candidate is waiting on a human decision
     "artifact.reviewed", # that decision was made — approved, rejected, integrated
     "chain.filed",       # a dependent group was queued as one ordered chain
@@ -71,6 +81,13 @@ KINDS = (
     "settings.guard",    # a switch that widens a safety guard was changed
     "style.trained",     # a project trained a style from its pinned anchors
     "budget.refused",    # a dispatch was refused for spend
+    # A FLOOR refusal — one that stops the WHOLE board rather than one
+    # item. Today that is the dirty-tree gate, which was pull-only
+    # (board_digest.blocked) and so went unnoticed for an hour at a time
+    # while two seats idled. Same channel as budget.refused, for the same
+    # reason: a board that stopped has to be as loud as a board that
+    # failed.
+    "dispatch.blocked",  # the board cannot dispatch at all, and why
     "director.question", # ask_human: the director wants a human answer
     "agent.spawned",
     "agent.exited",

@@ -399,6 +399,35 @@ _NODES: list[ToolNode] = [
                                    label="Corridor"),
         }),
     ToolNode(
+        type="tool.tileset.describe", tool="tileset_describe",
+        label="Describe a hand-built tileset", category="level", glyph="▤",
+        accent="var(--c-design)", produces="manifest",
+        summary="Write the sidecar that says where this sheet's tiles are - "
+                "once per sheet, then every level reads it.",
+        args={
+            "godot_project": _project_arg(),
+            "tileset": _arg(required=True, label="TileSet",
+                            help="res:// path to the .tres"),
+            "floor_layout": _arg(default="solid", label="Floor layout"),
+            "floor_source": _arg(cast="int", default=0, widget="number",
+                                 label="Floor source"),
+            "floor_atlas_x": _arg(cast="int", default=0, widget="number",
+                                  label="Floor atlas x"),
+            "floor_atlas_y": _arg(cast="int", default=0, widget="number",
+                                  label="Floor atlas y"),
+            "wall_layout": _arg(default="blob47", label="Wall layout"),
+            "wall_source": _arg(cast="int", default=0, widget="number",
+                                label="Wall source"),
+            "wall_atlas_x": _arg(cast="int", default=0, widget="number",
+                                 label="Wall atlas x"),
+            "wall_atlas_y": _arg(cast="int", default=0, widget="number",
+                                 label="Wall atlas y"),
+            "wall_columns": _arg(cast="int", default=8, widget="number",
+                                 label="Wall columns"),
+            "overwrite": _arg(cast="bool", default=False, widget="toggle",
+                              label="Overwrite"),
+        }),
+    ToolNode(
         type="tool.level.generate", tool="level_generate",
         label="Generate a level scene", category="level", glyph="▦",
         accent="var(--c-design)", produces="scene",
@@ -413,7 +442,11 @@ _NODES: list[ToolNode] = [
             "height": _arg(cast="int", default=32, widget="number",
                            label="Height"),
             "seed": _arg(cast="int", default=0, widget="number", label="Seed"),
-            "wall_layout": _arg(default="blob47", label="Wall layout"),
+            # The wall LAYOUT is a fact about the sheet and lives in its
+            # sidecar now; what is left here is whether this level wants walls
+            # at all, which is a fact about the level.
+            "walls": _arg(cast="bool", default=True, widget="toggle",
+                          label="Walls"),
             "create": _arg(cast="bool", default=False, widget="toggle",
                            label="Create scene"),
             "dry_run": _arg(cast="bool", default=True, widget="toggle",

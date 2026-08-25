@@ -189,3 +189,153 @@ class TestMachineDefaults:
 
     def test_no_file_means_everything_on(self):
         assert modules.machine_defaults() == set()
+
+
+class TestEveryToolIsClassified:
+    """The accident P0 exists to forbid.
+
+    CRAFTS is a prefix table, so a tool whose name matched no prefix joined the
+    shared spine SILENTLY — nobody decided it was universal, nobody noticed it
+    was not. `sidescroll_generate` (27 params) and `godot_deliver_asset` (713
+    docstring words) rode in the audio seat's context that way. The registry is
+    read from source rather than from a live FastMCP instance on purpose:
+    registration is itself gated by seat and module env, so an imported
+    registry answers "what does THIS process serve", and the question here is
+    "what does this repo declare".
+    """
+
+    @staticmethod
+    def _declared() -> list[str]:
+        import ast
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent / "bgate_mcp"
+        names = []
+        for path in sorted(root.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for dec in node.decorator_list:
+                    got = (dec.id if isinstance(dec, ast.Name) else
+                           dec.func.id if isinstance(dec, ast.Call)
+                           and isinstance(dec.func, ast.Name) else None)
+                    if got == "_tool":
+                        names.append(node.name)
+        return names
+
+    def test_the_source_of_truth_is_findable(self):
+        # A guard on the guard: an AST walk that silently found nothing would
+        # make every assertion below vacuously true.
+        assert len(self._declared()) > 200
+
+    def test_no_tool_falls_through_both_tables(self):
+        missing = modules.unclassified(self._declared())
+        assert not missing, (
+            "these MCP tools match no craft prefix and are not on the SPINE "
+            "allowlist, so they joined the shared spine by accident and now "
+            "cost every seat context on every turn — add each to "
+            "modules.CRAFTS or modules.SPINE: " + ", ".join(missing))
+
+    def test_the_spine_allowlist_has_no_ghosts(self):
+        # The other direction: a renamed or deleted tool left behind in SPINE
+        # is a lie about what is universal, and nothing else would catch it.
+        declared = set(self._declared())
+        ghosts = sorted(n for n in modules.SPINE if n not in declared)
+        assert not ghosts, (
+            "SPINE names tools that no longer exist: " + ", ".join(ghosts))
+
+    def test_spine_and_crafts_do_not_both_claim_a_tool(self):
+        both = sorted(n for n in modules.SPINE if modules.crafts_owning(n))
+        assert not both, (
+            "these are on SPINE but a craft prefix also claims them, so the "
+            "allowlist disagrees with the scoping that actually runs: "
+            + ", ".join(both))
+
+    def test_the_tools_p0_reclassified_reach_the_right_seats(self):
+        # The specific miscategorisations, asserted by seat rather than by
+        # table, because the table is the mechanism and this is the point.
+        assert modules.seat_tool_enabled("sidescroll_generate", "gameplay")
+        assert not modules.seat_tool_enabled("sidescroll_generate", "audio")
+        assert modules.seat_tool_enabled("sprite_sheet_check", "art")
+        assert modules.seat_tool_enabled("sprite_sheet_check", "qa")  # verdict
+        assert not modules.seat_tool_enabled("sprite_sheet_check", "audio")
+        assert modules.seat_tool_enabled("godot_deliver_asset", "art")
+        assert modules.seat_tool_enabled("godot_deliver_asset", "tech")
+        assert not modules.seat_tool_enabled("godot_deliver_asset", "narrative")
+        assert modules.seat_tool_enabled("causal_chains", "qa")
+        assert not modules.seat_tool_enabled("causal_chains", "art")
+
+    def test_kie_status_stays_universal(self):
+        # Filing it under `image` would hide the music path's own key check
+        # from the audio seat. Named here so a later tidy-up cannot quietly
+        # "finish the job".
+        for seat in ("audio", "art", "cinematic", "qa"):
+            assert modules.seat_tool_enabled("kie_status", seat)
+
+
+class TestTheDirectorOnlySplit:
+    """The spine is not one thing.
+
+    `SPINE` means "not a craft"; it never meant "everyone needs this". Nine of
+    its tools are the top-level session's job by construction and rode in every
+    dispatched seat's context anyway, because no other category existed.
+    """
+
+    def test_a_dispatched_seat_cannot_see_the_directors_own_tools(self):
+        for seat in ("art", "gameplay", "tech", "audio", "narrative", "qa"):
+            assert not modules.seat_tool_enabled("seat_configure", seat)
+            assert not modules.seat_tool_enabled("project_init", seat)
+            assert not modules.seat_tool_enabled("agent_steer", seat)
+            assert not modules.seat_tool_enabled("decision_settle", seat)
+
+    def test_the_human_session_keeps_all_of_them(self):
+        for name in modules.DIRECTOR_ONLY:
+            assert modules.seat_tool_enabled(name, "")
+
+    def test_an_invented_seat_is_still_a_dispatched_one(self):
+        # Craft scoping fails OPEN for an unknown seat because its surface is
+        # unknowable. This gate does not: the question is "was this process
+        # dispatched", and a seat env var is that answer whatever it says.
+        assert not modules.seat_tool_enabled("seat_configure", "mystery-seat")
+        assert modules.seat_tool_enabled("image_generate", "mystery-seat")
+
+    def test_the_workers_lifelines_are_not_in_it(self):
+        # Considered and rejected — hiding any of these breaks a workflow
+        # silently, which costs more than the docstring words save.
+        for name in ("ask_human", "queue_claim_next", "queue_add",
+                     "queue_complete", "board_digest", "plan_status",
+                     "bgate_doctor", "seat_brief", "handoff_note"):
+            assert name not in modules.DIRECTOR_ONLY
+            assert modules.seat_tool_enabled(name, "art")
+
+    def test_director_only_tools_are_still_classified(self):
+        # They are spine members, not a third table that dodges P0's rule.
+        for name in modules.DIRECTOR_ONLY:
+            assert name in modules.SPINE
+        assert not modules.unclassified(modules.DIRECTOR_ONLY)
+
+    def test_no_seat_brief_tells_a_worker_to_call_a_tool_it_cannot_see(self):
+        """The silent breakage this whole split has to avoid.
+
+        A brief that says "call project_init" while the tool is hidden is
+        worse than either the tool being there or the sentence being absent.
+        """
+        import re
+        from pathlib import Path
+
+        from bgate_core import seats
+
+        source = Path(seats.__file__).read_text(encoding="utf-8")
+        # The director's own protocol may name them: it is only ever shown to
+        # a seatless session, which has them all.
+        director_text = seats.DIRECTOR_PROTOCOL
+        for name in modules.DIRECTOR_ONLY:
+            for match in re.finditer(re.escape(name), source):
+                line_start = source.rfind("\n", 0, match.start()) + 1
+                line = source[line_start:source.find("\n", match.start())]
+                if line.lstrip().startswith("#"):
+                    continue          # a comment is not something an agent reads
+                assert name in director_text, (
+                    f"{name} is named in seat-facing prose but a dispatched "
+                    f"seat cannot call it: {line.strip()}")

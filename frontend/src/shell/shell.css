@@ -190,6 +190,19 @@ body:has(.bg4) {
 .bg4-runtitle b { font: 500 11px var(--mono); color: var(--text-3) }
 .bg4-runage { font: 500 10px var(--mono); color: var(--text-3) }
 
+/* WHY THE ELLIPSIS ABOVE WAS NOT HAPPENING. A menu item is a flex row -
+   icon, label, age - and a flex child's default `min-width: auto` refuses to
+   shrink below its own content. So a long brief did not truncate: it pushed
+   the label wider than the 320px dropdown and ran out past its right edge,
+   under the age and off the panel. `text-overflow` cannot fire on a box that
+   was never made narrow enough to overflow.
+   The label has to be allowed to be small; the age must not be squeezed to
+   make room for it, because a run's age is two characters that mean
+   something and the title is a sentence that is already being cut. */
+.bg4-runmenu .mantine-Menu-item { overflow: hidden }
+.bg4-runmenu .mantine-Menu-itemLabel { min-width: 0 }
+.bg4-runmenu .mantine-Menu-itemSection { flex: none }
+
 /* ── the stage, which is still every existing view ────────────────────────── */
 body:has(.bg4) .deck { display: contents }
 body:has(.bg4) .stage {
@@ -232,13 +245,31 @@ body:has(.bg4) .statusbar { display: none }
   text-transform: uppercase; color: var(--text-3);
 }
 .bg4-insp-title { margin-top: 8px; font: 450 14px/1.35 var(--sans) }
-.bg4-meter { display: flex; align-items: center; gap: 12px; margin-top: 12px }
+.bg4-meter { display: flex; align-items: baseline; gap: 6px; margin-top: 12px }
 .bg4-meter .big { font: 400 20px/1 var(--mono); color: var(--accent) }
-.bg4-meter .track {
-  flex: 1; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden;
+/* The unit, beside the number rather than implied by a bar next to it. */
+.bg4-meter .unit { font: 500 10px var(--mono); color: var(--text-3); flex: 1 }
+/* THE STATE, IN WORDS AND IN COLOUR. It replaced a bar that filled to 100%
+   while the run was going and emptied when it ended - the exact opposite of
+   what a full progress bar means anywhere else. A run whose length is not
+   knowable has no progress to draw, so this says which of the two states it
+   is in and stops claiming to measure something. */
+.bg4-meter .state {
+  font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-3); white-space: nowrap;
 }
-.bg4-meter .fill { display: block; height: 100%; background: var(--accent) }
-.bg4-meter .small { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-meter .state.live { color: var(--good) }
+/* THE FAILURE, AS A CONTROL. A forty-step run holds its one red step
+   wherever it happened, which on a rail this narrow is several screens away
+   from the header that knows it exists. */
+.bg4-jumpfail {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  color: var(--bad); border-radius: 9999px; padding: 2px 8px;
+  font: 500 10px var(--mono); white-space: nowrap;
+}
+.bg4-jumpfail:hover { background: color-mix(in srgb, var(--bad) 22%, transparent) }
 .bg4-insp-body { padding: 14px 16px 6px; flex: 1; min-height: 0; overflow-y: auto }
 .bg4-insp-foot {
   display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); flex: none;
@@ -395,6 +426,75 @@ body:has(.bg4) .statusbar { display: none }
 }
 .bg4-task .bg4-bar { margin-left: 0 }
 
+/* A CARD THAT NEEDS A PERSON LOOKS DIFFERENT FROM ONE THAT IS JUST WAITING.
+   `waiting` is the board working and nobody should touch it; `blocked`, `held`
+   and `exhausted` each need somebody, and all three used to render exactly
+   like an ordinary queued row. The border is the tell, because a badge alone
+   is the thing people were already not reading. */
+.bg4-task .badge.needs {
+  color: var(--warn, #ffbb45);
+  background: color-mix(in srgb, var(--warn, #ffbb45) 14%, transparent);
+}
+.bg4-task .note.wait {
+  display: flex; align-items: center; gap: 6px;
+  white-space: normal; line-height: 1.45;
+}
+.bg4-task .note.wait i { flex: none; font-size: 12px }
+.bg4-task .note.wait.needs { color: var(--warn, #ffbb45) }
+
+/* ── the execution path ───────────────────────────────────────────────────
+   DEPENDENCY DIRECTION IS THE DOMINANT AXIS. The chain runs down the panel
+   with an arrow between each link, so the order is read off the arrows and
+   never off the ids — which is the whole point: #43 running after #45 is
+   correct, and a numeric reading of the same three rows says it is a bug.
+   The id is set small and dim on purpose; it identifies a row, it does not
+   order one. */
+.bg4-execpath { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line) }
+.bg4-execwait {
+  display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 10px;
+  font: 500 11px var(--mono); line-height: 1.5;
+  color: var(--warn, #ffbb45);
+}
+.bg4-execwait i { flex: none; margin-top: 1px }
+.bg4-execchain { list-style: none; margin: 0; padding: 0 }
+.bg4-execchain li { display: flex; flex-direction: column; gap: 2px }
+.bg4-execchain .arrow {
+  font: 400 13px var(--sans); line-height: 1;
+  color: var(--text-3); padding-left: 13px; margin: 1px 0;
+}
+.bg4-execchain .node {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--solid-2); padding: 7px 9px;
+}
+.bg4-execchain .node i { flex: none }
+.bg4-execchain .id {
+  flex: none; font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-execchain .ttl {
+  flex: 1; min-width: 0; font: 400 11px var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-execchain .st {
+  flex: none; font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase;
+}
+/* THE ITEM YOU ARE LOOKING AT, and the one predecessor actually holding it.
+   With several parents, "which of these is blocking me right now" is the
+   question, and the other two are context. */
+.bg4-execchain li.self .node { border-color: color-mix(in srgb, var(--accent) 45%, transparent) }
+.bg4-execchain li.holds .node { border-color: color-mix(in srgb, var(--warn, #ffbb45) 55%, transparent) }
+.bg4-execchain .holdsnow {
+  flex: none; font: 500 9px var(--mono); letter-spacing: .08em;
+  text-transform: uppercase; color: var(--warn, #ffbb45);
+  background: color-mix(in srgb, var(--warn, #ffbb45) 14%, transparent);
+  padding: 2px 6px; border-radius: 9999px;
+}
+.bg4-execnote {
+  margin: 10px 0 0; font: 400 10px var(--mono); line-height: 1.6;
+  color: var(--text-3);
+}
+
 .bg4-empty {
   padding: 28px 16px; font: 500 11px var(--mono); color: var(--text-3);
 }
@@ -472,6 +572,54 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-msg.dir.live { border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
 .bg4-msg.dir.bad { border-color: color-mix(in srgb, var(--bad) 45%, transparent) }
 .bg4-msg.dir.live .txt, .bg4-msg.dir .txt.thinking { color: var(--text-2) }
+
+/* RENDERED AGENT PROSE. The director and the seats write GFM; this styles the
+   React elements Markdown.tsx builds from it, wherever agent text is read
+   (the chat, the inspector's say/steer rows). The host `.txt` sets pre-wrap
+   for plain strings - rendered markdown carries its own structure, so undo
+   it or every <p> gap doubles. */
+.bg-md { white-space: normal }
+.bg-md p { margin: 0 0 8px }
+.bg-md > :last-child { margin-bottom: 0 }
+.bg-md .mdh {
+  font-weight: 600; margin: 10px 0 6px;
+  border-bottom: 1px solid var(--line); padding-bottom: 3px;
+}
+.bg-md > .mdh:first-child { margin-top: 0 }
+.bg-md code {
+  font: 400 11px var(--mono); background: rgba(128, 128, 128, .14);
+  border-radius: 3px; padding: 1px 4px; overflow-wrap: anywhere;
+}
+.bg-md pre {
+  background: rgba(128, 128, 128, .1); border: 1px solid var(--line);
+  border-radius: 5px; padding: 8px 10px; margin: 0 0 8px; overflow-x: auto;
+}
+.bg-md pre code { background: none; padding: 0 }
+.bg-md ul, .bg-md ol { margin: 0 0 8px; padding-left: 20px }
+.bg-md li { margin: 2px 0 }
+.bg-md blockquote {
+  border-left: 2px solid var(--line-strong); margin: 0 0 8px; padding: 0 0 0 10px;
+  color: var(--text-2);
+}
+.bg-md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0 }
+.bg-md a { color: var(--accent) }
+.bg-md .tblwrap { overflow-x: auto; margin: 0 0 8px }
+.bg-md table { border-collapse: collapse; font-size: 11.5px }
+.bg-md th, .bg-md td {
+  border: 1px solid var(--line); padding: 3px 8px; text-align: left;
+  vertical-align: top;
+}
+.bg-md th { background: rgba(128, 128, 128, .08); font-weight: 600 }
+
+/* THE SEAT PILL — which agent ran this, at a glance, in the same colour the
+   floor and the graph already use for that seat. A card's title says WHAT
+   happened; the SeatStamp beside it says WHO and WHEN. */
+.bg4-seatpill {
+  font: 600 10px var(--mono); letter-spacing: .04em; text-transform: uppercase;
+  color: var(--seat); background: color-mix(in srgb, var(--seat) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--seat) 35%, transparent);
+  border-radius: 3px; padding: 1px 6px;
+}
 
 /* ONE TOOL CALL, ONE LINE — what a terminal session shows while it works. It
    is deliberately not a card: a turn that reads six files would otherwise be

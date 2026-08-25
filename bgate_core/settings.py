@@ -93,8 +93,17 @@ EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.stopped",
                "artifact.candidate", "artifact.reviewed",
                "chain.filed", "chain.advanced",
                "chain.stalled", "gate.mode", "settings.guard", "style.trained",
-               "budget.refused",
+               "budget.refused", "dispatch.blocked",
                "director.question", "agent.spawned", "agent.exited",
+               # A mid-run correction, and a brief whose measured premise an
+               # agent DISPROVED. Both are notifiable: the first is the most
+               # influential input a run gets and used to leave no trace on the
+               # item, and the second is the signal that stopped several wrong
+               # fixes shipping. See events.KINDS, which this must mirror —
+               # test_settings asserts the two sets are equal, because a kind
+               # the bus can emit and the panel cannot offer is a notification
+               # nobody can switch on.
+               "item.steered", "item.premise_refuted",
                "file.edited")
 
 
@@ -631,7 +640,12 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         key="notify.kinds", group="Notifications", kind=LIST,
         default=("item.done", "item.failed", "item.review", "chain.stalled",
-                 "director.question", "budget.refused"),
+                 "director.question", "budget.refused",
+                 # A FLOOR refusal stops the whole board. On by default for the
+                 # same reason budget.refused is: a board that stopped looks
+                 # exactly like a board with nothing to do, and two seats idled
+                 # for an hour inside that ambiguity.
+                 "dispatch.blocked"),
         choices=EVENT_KINDS, store=("registry", "notify.kinds"),
         help="Which events are worth telling you about. The rest are still "
              "recorded and still readable in the drawer, they just do not "

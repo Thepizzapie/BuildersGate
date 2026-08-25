@@ -2027,6 +2027,98 @@ _MIGRATIONS: list = [
     """
     ALTER TABLE work_item ADD COLUMN auto_retries INTEGER NOT NULL DEFAULT 0;
     """,
+    # 0042 — MONEY THAT IS ABOUT TO BE SPENT, so a ceiling can be a ceiling.
+    #
+    # THE MEASURED FAILURE. `max_cost_usd` was exceeded in all three benchmark
+    # games — $6.40, $9.49 and $5.16 against a $5 cap — while the RUNTIME
+    # ceiling stopped work every time. Two bugs, one table closes both:
+    #
+    #   1. The dollar gate compared ONE CALL's estimate against the ceiling
+    #      ("is this image batch under $5?"), never the run's running total, so
+    #      eighteen calls of forty cents each passed a five dollar cap
+    #      individually and blew it collectively. The fix needs a number for
+    #      "what has this item spent already", which spend_event has, plus...
+    #   2. ...a number for "what is in flight right now", which nothing had.
+    #      Every paid tool runs in its own MCP server process; two of them
+    #      reading the committed total before either records is the classic
+    #      check-then-act race, and both are correctly told there is room.
+    #
+    # A HOLD IS AN INTENT TO SPEND, taken inside the same transaction as the
+    # check and counted by every later check until it is released or expires.
+    # Reservation rather than a lock: the alternative is serialising every
+    # paid call project-wide, which would make a fan-out of four art agents
+    # take four times as long to protect a number that is usually not near its
+    # ceiling.
+    #
+    # EXPIRY IS LOAD-BEARING, NOT HOUSEKEEPING. The releasing process can be
+    # killed by the runtime ceiling mid-generation, and a hold that outlived
+    # its holder would refuse spending forever — the same "a lock outliving its
+    # holder is indistinguishable from a permanent block" rule path_lease
+    # follows. Reaped on read; nothing has to run a sweeper.
+    """
+    CREATE TABLE spend_hold (
+        id           INTEGER PRIMARY KEY,
+        token        TEXT    NOT NULL UNIQUE,
+        work_item_id INTEGER,
+        usd          REAL    NOT NULL DEFAULT 0,
+        what         TEXT    NOT NULL DEFAULT '',
+        seat         TEXT    NOT NULL DEFAULT '',
+        -- A CEILING IN DOLLARS CANNOT BOUND A PROVIDER THAT BILLS IN CREDITS,
+        -- and kie is that provider. Measured on the control run: seven image
+        -- calls, 52 credits, and seven ledger rows reading usd = 0.00, because
+        -- record_unpriced deliberately refuses to invent a dollar rate the
+        -- human has not declared (BGATE_KIE_USD_PER_CREDIT). So "what has this
+        -- run spent" stayed at zero forever and the run ceiling never moved -
+        -- exactly the hole the per-call comparison had, one layer down.
+        --
+        -- THE FIX INVENTS NO RATE. A hold already carries the ESTIMATE the gate
+        -- compared against the ceiling. `baseline_usd` is the item's recorded
+        -- api total at the moment the hold was taken, so release() can see
+        -- whether a REAL dollar figure landed during the call: if one did, the
+        -- hold is dropped and the real number is the truth; if none did, the
+        -- hold SETTLES at its estimate and keeps counting. That is exactly as
+        -- honest as the estimate the gate was already using, and strictly more
+        -- correct than counting the spend as zero.
+        --
+        -- A FAILED CALL MUST NOT CONSUME THE CEILING EITHER, which is why the
+        -- baseline is a PAIR. Dollars alone cannot tell "the provider charged
+        -- credits and reported no price" from "the call died before billing" -
+        -- both leave the dollar total unmoved - and settling the second would
+        -- shrink a run's budget for work that never happened. The row count
+        -- separates them: an unpriced charge still writes a ledger row.
+        settled       INTEGER NOT NULL DEFAULT 0,
+        baseline_usd  REAL    NOT NULL DEFAULT 0,
+        baseline_rows INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        expires_at   TEXT    NOT NULL
+    );
+    CREATE INDEX idx_spend_hold_item ON spend_hold(work_item_id);
+    CREATE INDEX idx_spend_hold_expiry ON spend_hold(expires_at);
+    """,
+    # 0043 — EXHAUSTED IS A STATE, NOT A COUNTER SOMEBODY HAS TO ADD UP.
+    #
+    # MEASURED. An item that had spent its automatic retry budget sat on the
+    # board indistinguishable from work that was next in line: same 'queued'
+    # in queue_list, same row in queue_next, same colour on the floor. The only
+    # way to tell "this is waiting for a director to decide" from "this is
+    # ready to run" was to read auto_retries and attempts off the row by hand
+    # and compare them to a setting.
+    #
+    # The counters stay — they are the budget's storage and 0041 explains why
+    # there are two. What they could not carry is the DECISION: that the
+    # harness has stopped buying rounds for this item and a person now owns it.
+    # A number a reader has to interpret is not a state; two readers
+    # interpreted it differently on the same board.
+    #
+    # exhausted_why is the sentence, not a code: whoever reads this row next is
+    # deciding whether to reopen it, and "the automatic retry budget is spent
+    # (1 of 1 rounds used, 3 attempts in total)" is what that decision is made
+    # on. Cleared by reopen(), because a reopen IS the human action this column
+    # exists to require.
+    """
+    ALTER TABLE work_item ADD COLUMN exhausted_at TEXT;
+    ALTER TABLE work_item ADD COLUMN exhausted_why TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

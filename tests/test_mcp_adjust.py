@@ -329,7 +329,7 @@ async def test_an_affordable_run_passes_the_gate(wired, monkeypatch,
     monkeypatch.setattr(imagegen, "generate", generate)
 
     got = await call("image_sprites", character_prompt="a fighter", poses=POSES,
-                     name="tommy", max_cost_usd=5.0)
+                     name="tommy", limits={"max_cost_usd": 5.0})
 
     assert got["stage"] == "reference"      # got past the gate, into the work
     assert reached == [300.0]               # and the call carried a timeout
@@ -348,12 +348,12 @@ async def test_max_cost_usd_overrides_the_configured_ceiling(wired, monkeypatch,
         bought.append(1), {"ok": False, "error": "no API key"})[1])
 
     tight = await call("image_sprites", character_prompt="a fighter", poses=POSES,
-                       name="tommy", max_cost_usd=0.01)
+                       name="tommy", limits={"max_cost_usd": 0.01})
     assert tight["ok"] is False and tight["ceiling_usd"] == 0.01
     assert not bought                       # refused before anything was bought
 
     loose = await call("image_sprites", character_prompt="a fighter", poses=POSES,
-                       name="tommy", max_cost_usd=50.0)
+                       name="tommy", limits={"max_cost_usd": 50.0})
     assert loose["stage"] == "reference" and bought
 
 

@@ -6,7 +6,8 @@ import { Ti } from "../Ti";
 import { SEAT_COLOR, SEAT_ICON } from "../nav";
 import { useViewActive, usePoll } from "../../hooks";
 import { setSelection } from "../selection";
-import { notifyUpdate, mutate, readJSON, toast } from "../../bridge";
+import { askText, notifyUpdate, mutate, readJSON, toast } from "../../bridge";
+import { ago } from "../seats/api";
 import { DirectorChat } from "./DirectorChat";
 import { FloorPane } from "./FloorPane";
 import { moduleOff } from "../../bridge";
@@ -188,6 +189,37 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
   const responses = (state.items || []).filter((i) => i.result)
     .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
 
+  /* THE FAILURES, WITH THE TWO VERBS A HUMAN HAS FOR THEM. Failed items used
+     to exist only as a red number in the floor tally: the automatic
+     escalation paths see recent failures only (the event batch, the sweep's
+     12-hour window), so anything that failed while the server was down aged
+     out with no surface anywhere to act on it. */
+  const failed = (state.items || []).filter((i) => i.status === "failed")
+    .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+
+  async function escalate(i: Item) {
+    const r = await mutate("/api/console/escalate",
+                           { body: { item_id: i.id }, quiet: true });
+    toast(r.ok ? `#${i.id} escalated to the director` : r.error || "refused",
+          r.ok ? "ok" : undefined);
+    if (r.ok) onRefresh();
+  }
+
+  async function reopenFailed(i: Item) {
+    const reason = await askText({
+      title: `reopen #${i.id}`,
+      body: "What should change before it runs again? The next agent reads this.",
+      ok: "reopen",
+    });
+    if (!reason) return;
+    const r = await mutate("/api/console/signoff",
+                           { body: { item_id: i.id, verdict: "reopen", reason },
+                             quiet: true });
+    toast(r.ok ? `#${i.id} is back in the queue` : r.error || "refused",
+          r.ok ? "ok" : undefined);
+    if (r.ok) onRefresh();
+  }
+
   /* Deploy what is READY, one at a time. A chain link whose predecessor has not
      landed refuses, and firing twenty at once turns one concurrency refusal
      into twenty toasts — so this is sequential, stops at the first real
@@ -229,6 +261,7 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
             <Tabs.Tab value="asked">Asked you</Tabs.Tab>
             <Tabs.Tab value="approve">Approve {state.gates.length || ""}</Tabs.Tab>
             <Tabs.Tab value="responses">Responses</Tabs.Tab>
+            <Tabs.Tab value="failed">Failed {state.floor?.failed || ""}</Tabs.Tab>
             {streamer && <Tabs.Tab value="chat">Chat</Tabs.Tab>}
             {streamer && <Tabs.Tab value="stream">Stream</Tabs.Tab>}
           </Tabs.List>
@@ -276,11 +309,36 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
           {tab === "chat" && <ChatHost />}
           {tab === "stream" && <Streamer />}
 
+          {tab === "failed" && (failed.length
+            ? failed.map((i) => (
+                <Paper key={i.id} p="xs" withBorder className="bg4-sidecard"
+                       onClick={() => setSelection({ key: `i${i.id}`, kind: "item",
+                                                     itemId: i.id, title: i.title, seat: i.seat })}>
+                  <SeatStamp item={i} verb="failed" />
+                  <Text size="xs" fw={500} lineClamp={1}>{i.title}</Text>
+                  {!!i.result && (
+                    <Text size="xs" c="dimmed" lineClamp={2}>{i.result}</Text>
+                  )}
+                  <Group gap={6} mt={4} wrap="nowrap"
+                         onClick={(e) => e.stopPropagation()}>
+                    <div style={{ flex: 1 }} />
+                    {i.escalated
+                      ? <Badge size="xs" variant="light">escalated</Badge>
+                      : <Button size="compact-xs" variant="default"
+                                onClick={() => escalate(i)}>escalate</Button>}
+                    <Button size="compact-xs" variant="default"
+                            onClick={() => reopenFailed(i)}>reopen</Button>
+                  </Group>
+                </Paper>
+              ))
+            : <Empty>nothing has failed — or the window has moved on</Empty>)}
+
           {tab === "responses" && (responses.length
             ? responses.slice(0, 30).map((i) => (
                 <Paper key={i.id} p="xs" withBorder className="bg4-sidecard"
                        onClick={() => setSelection({ key: `i${i.id}`, kind: "item",
                                                      itemId: i.id, title: i.title, seat: i.seat })}>
+                  <SeatStamp item={i} />
                   <Text size="xs" fw={500} lineClamp={1}>{i.title}</Text>
                   <Text size="xs" c="dimmed" lineClamp={3}>{i.result}</Text>
                 </Paper>
@@ -324,13 +382,26 @@ function QueueCard({ item, items }: { item: Item; items: Item[] }) {
   const stuck = !!item.stuck
     || (!!blocker && (blocker.status === "failed" || blocker.status === "cancelled"));
   const more = (item.waiting_count || 0) > 1 ? ` +${item.waiting_count! - 1}` : "";
-  const line = item.held
-    ? "held for you — no auto-dispatcher takes this"
-    : stuck && blocker
-      ? `stuck: #${blocker.id} is ${blocker.status} — reopen it or cut the dependency`
-      : waiting && blocker
-        ? `blocked until #${blocker.id}${more} closes`
-        : item.seat;
+  /* EXHAUSTED IS ITS OWN STATE. The harness has stopped buying rounds for this
+     item and a person now owns it; before the row carried it, this rendered as
+     an ordinary queued card and the only tell was reading auto_retries off the
+     database and comparing it to a setting by hand. Two readers did that
+     arithmetic differently on the same board. */
+  const exhausted = item.execution_state === "exhausted" || !!item.exhausted_at;
+  /* THE SERVER WRITES THE SENTENCE, and it names the blocker's TITLE. The
+     local fallback below says `blocked until #45 closes`, which still sends
+     the reader off to look #45 up — and the defect this fixes is precisely
+     that they were not looking it up: `#43 QUEUED` beside a running #45 and a
+     done #42 read as a scheduler that skipped an item, when #45 had been
+     inserted between them on purpose and the order was right. */
+  const line = item.waiting_line
+    ?? (item.held
+      ? "held for you — no auto-dispatcher takes this"
+      : stuck && blocker
+        ? `stuck: #${blocker.id} is ${blocker.status} — reopen it or cut the dependency`
+        : waiting && blocker
+          ? `blocked until #${blocker.id}${more} closes`
+          : item.seat);
   return (
     <Paper p="xs" withBorder className="bg4-sidecard"
            onClick={() => setSelection({ key: `i${item.id}`, kind: "item",
@@ -341,15 +412,15 @@ function QueueCard({ item, items }: { item: Item; items: Item[] }) {
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <Text size="xs" fw={500} lineClamp={2}>{item.title}</Text>
-          <Text size="xs" c="dimmed" ff="var(--mono)" lineClamp={1}>
+          <Text size="xs" c="dimmed" ff="var(--mono)" lineClamp={2}>
             {item.chain_pos != null ? `lane ${item.chain_pos} · ` : ""}
             {line}
           </Text>
         </div>
         <Badge size="xs" variant="default"
-               color={stuck ? "red" : item.held ? "grape"
+               color={exhausted ? "red" : stuck ? "red" : item.held ? "grape"
                       : waiting ? "yellow" : undefined}>
-          {stuck ? "stuck" : item.held ? "held"
+          {exhausted ? "exhausted" : stuck ? "stuck" : item.held ? "held"
            : waiting ? "waiting" : item.status}
         </Badge>
       </Group>
@@ -542,6 +613,34 @@ function RailGrip() {
  *  a sentence and not an icon: every one of these names what would fill it. */
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="bg4-empty">{children}</div>;
+}
+
+/** WHICH AGENT, WHICH TASK, WHEN — a card's identity line. A title alone
+ *  ("prop_whiteboard ships its _ne and _se views swapped") reads as one
+ *  more unlabeled result in a pile of thirty; the seat that ran it and the
+ *  item number that ties it to the board (the graph, the inspector, a
+ *  reopen) were pushed into a dim trailing line nobody scanned. This puts
+ *  both first: a coloured, iconed seat pill (the same colour the floor and
+ *  the graph use for that seat, so a reader learns one mapping and reuses
+ *  it everywhere), the item id, and a relative time whose title attribute
+ *  carries the full UTC stamp for whoever needs it exactly. */
+function SeatStamp({ item, verb = "" }: { item: Item; verb?: string }) {
+  const color = SEAT_COLOR[item.seat] || "var(--line-strong)";
+  return (
+    <Group gap={6} mb={2} wrap="nowrap">
+      <Group gap={4} wrap="nowrap" className="bg4-seatpill"
+             style={{ "--seat": color } as React.CSSProperties}>
+        <Ti name={SEAT_ICON[item.seat] || "point"} size={11} />
+        <span>{item.seat || "—"}</span>
+      </Group>
+      <Text size="xs" c="dimmed">#{item.id}</Text>
+      {!!item.updated_at && (
+        <Text size="xs" c="dimmed" title={item.updated_at} style={{ flex: 1 }}>
+          {verb ? `${verb} ` : ""}{ago(item.updated_at)} ago
+        </Text>
+      )}
+    </Group>
+  );
 }
 
 /** The viewer-chat island. chatlive.js mounts itself into a host id and owns

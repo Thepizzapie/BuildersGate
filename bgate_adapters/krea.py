@@ -334,12 +334,32 @@ class KreaError(RuntimeError):
 
 
 def api_key(root: Any = None) -> str:
-    """The token, from the project's .env or the environment. Never logged."""
-    if root:
-        try:
-            envfile.load_project_env(root)
-        except Exception:
-            pass
+    """The token, from the project's .env, ~/.bgate/.env, or the shell.
+    Never logged.
+
+    THE GLOBAL LAYER USED NOT TO BE READ HERE, and that was the actual
+    cause of the provider disagreement three benchmark games reported:
+    `bgate doctor` said the art providers were configured while the
+    generation gateway said "no key" and offered no alternatives. Both were
+    reading the same machine. The difference was that providers.status()
+    calls envfile.load_env(), which loads ~/.bgate/.env into os.environ as a
+    SIDE EFFECT, and this function did not - so whether generation was
+    routable depended on whether a status panel had happened to run first.
+    On a machine set up the documented way (`bgate key set <p> --global`,
+    which CLAUDE.md recommends as the default) the gateway, the paid tools'
+    provider gate and the billing redirect all believed this provider was
+    unkeyed.
+
+    load_env is the whole precedence - shell > project .env > ~/.bgate/.env -
+    and it is what retrodiffusion always used, which is why RD was the one
+    provider the gateway could see. root=None is a supported call: it loads
+    the machine-wide layer alone, which is exactly the case the gateway asks
+    from (it probes without a project).
+    """
+    try:
+        envfile.load_env(root)
+    except Exception:
+        pass
     return (os.environ.get("KREA_API_KEY") or "").strip()
 
 

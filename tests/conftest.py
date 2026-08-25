@@ -129,12 +129,40 @@ def _seed_project(tmp_path_factory):
 
 @pytest.fixture()
 def root(tmp_path, _seed_project):
-    """A fresh project per test, copied from the session's seed.
+    """A fresh project per test, copied from the session's seed, AT PRODUCTION.
 
     Same shape as building one from scratch: its own directory, its own file, no
     state carried from another test. Connections are per-path, so the cache is
     dropped afterward to keep tmp dirs from leaking handles on Windows.
+
+    THE STAGE IS STAMPED TO 'production' HERE, and it is the fixture's job
+    rather than each test's. A real new project starts at `thesis`, where
+    greenlight holds the art, audio and cinematic seats until a graybox has
+    been proved — which is the point of the whole mechanism and is exercised
+    in tests/test_greenlight.py against `fresh_root` below. Every OTHER test in
+    this suite is about something else and was written against a board with no
+    stage on it; making 1,600 of them settle a mechanical thesis first would
+    test the fixture. So the fixture answers the question once, out loud.
     """
     shutil.copytree(_seed_project, tmp_path, dirs_exist_ok=True)
+    from bgate_core import greenlight, workspace
+
+    workspace.set(tmp_path, greenlight.SEAT, greenlight.DOC_KEY,
+                  {"stage": greenlight.PRODUCTION})
     yield tmp_path
     db.close_all()
+
+
+@pytest.fixture()
+def fresh_root(root):
+    """A project with NO production stage stored — a genuinely new one.
+
+    For the tests of the stage machine itself, which have to see what a new
+    project sees rather than what the `root` fixture arranges above.
+    """
+    from bgate_core import db as _db, greenlight
+
+    with _db.tx(root) as conn:
+        conn.execute("DELETE FROM workspace_doc WHERE seat = ? AND key = ?",
+                     (greenlight.SEAT, greenlight.DOC_KEY))
+    return root

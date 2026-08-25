@@ -533,6 +533,301 @@ def release_path_leases(root: str | os.PathLike[str], owner: str) -> int:
 # ---------------------------------------------------------------------------
 # Drift detection
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Is it WIRED? (presence is not integration)
+# ---------------------------------------------------------------------------
+#
+# THE FAILURE, three benchmark games running: an art seat delivered
+# `projectile.png` to exactly the right directory, at the right size, importing
+# cleanly - and the gameplay code still loaded `bolt_sheet.png`, a placeholder
+# sitting under the name the consumer expected. Every structural check passed.
+# In another project three correctly delivered assets were referenced by no
+# gameplay code at all. `verify()` above could not have caught any of it: it
+# compares tracked files against their hashes, which answers "did anyone stomp
+# this" and never "does the game use this".
+#
+# So this asks the two halves of the same question from both ends:
+#
+#   unreferenced   a file is in the project and nothing names it
+#   dangling       something names a file that is not in the project
+#
+# Read together they are the filename-contract mismatch: `projectile.png` is
+# unreferenced and `bolt_sheet.png` is dangling, and those two lines say
+# "producer delivered X, consumer expects Y" without anything having to guess.
+#
+# CANDIDATES, NOT VERDICTS, AND THE WORD IS DELIBERATE. Godot can build a path
+# at run time - `load("res://assets/" + name + ".png")` - and no static scan can
+# follow that. So the report counts the dynamic-load sites it saw and says so;
+# a QA seat weighs it. Claiming certainty here would be the same class of lie
+# as claiming a resource that imports cleanly is integrated.
+
+# What ships INTO the running game. Deliberately not every binary: .aseprite
+# masters, .blend files and .psd sources are inputs to the pipeline and are
+# expected to be referenced by nothing.
+SHIPPED_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".svg", ".wav", ".ogg",
+                    ".mp3", ".ogv", ".glb", ".gltf", ".ttf", ".fnt")
+
+# What can NAME one. `.import` is excluded on purpose - it is the sidecar of the
+# asset itself, so counting it as a reference would make every file in the
+# project reference itself and the check would find nothing, ever.
+CONSUMER_SUFFIXES = (".gd", ".tscn", ".tres", ".cs", ".godot", ".cfg", ".json",
+                     ".gdshader")
+
+# Directories whose contents are not the shipped game: version control, the
+# engine's own cache, this harness's bookkeeping and staging areas. A leading
+# underscore is the convention every one of the benchmark projects used for
+# scratch (`_preview`, `_test`, `_qa_scratch`) and it costs nothing to honour.
+_SKIP_DIRS = {".git", ".godot", ".bgate", ".bgate_out", ".import",
+              "node_modules", "__pycache__", "venv", ".venv", "addons",
+              # Build output. The web export copies icons in beside the wasm;
+              # they are not assets anybody wires, and reporting them as
+              # orphans is exactly the noise that gets a report ignored.
+              "export", "builds", "dist"}
+
+_MAX_SCAN_BYTES = 4 << 20      # a source file past this is generated data
+_MAX_REPORT = 60
+
+_RES_REF = None                # compiled lazily; see _references
+
+
+def _walk(root: Path, suffixes: tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # `.gdignore` IS THE ENGINE'S OWN ANSWER to "is this part of the game",
+        # and honouring it beats inventing a directory-name convention here. The
+        # art seat that staged 28 preview PNGs under `art/preview/` had already
+        # dropped one in `art/` - Godot does not import that tree, so nothing in
+        # it can be wired, so reporting all 28 as orphans was noise the check
+        # had the answer to and was not reading.
+        if ".gdignore" in filenames:
+            dirnames[:] = []
+            continue
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS
+                       and not d.startswith("_") and not d.startswith(".")]
+        for name in filenames:
+            if name.lower().endswith(suffixes):
+                rel = os.path.relpath(os.path.join(dirpath, name), root)
+                out.append(rel.replace("\\", "/"))
+    return out
+
+
+def _references(root: Path, consumers: list[str]) -> tuple[set[str], set[str], int]:
+    """What the project's own files NAME: (basenames, res:// paths, dynamic sites).
+
+    Basenames as well as full paths because a moved asset is still the same
+    asset to a reader, and a check that only matched exact paths would report an
+    asset as orphaned the moment somebody used a relative reference.
+    """
+    global _RES_REF
+    if _RES_REF is None:
+        import re
+        _RES_REF = (re.compile(r'res://([^"\'\s\)]+)'),
+                    re.compile(r'\b(?:load|preload)\s*\(\s*[^"\')]'))
+    res_re, dynamic_re = _RES_REF
+    names: set[str] = set()
+    paths: set[str] = set()
+    dynamic = 0
+    for rel in consumers:
+        target = root / rel
+        try:
+            if target.stat().st_size > _MAX_SCAN_BYTES:
+                continue
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for hit in res_re.findall(text):
+            hit = hit.split("::", 1)[0].strip()
+            if not hit:
+                continue
+            paths.add(hit.lstrip("/"))
+            names.add(os.path.basename(hit).lower())
+        dynamic += len(dynamic_re.findall(text))
+        # A bare filename in a string is a reference too - a manifest naming
+        # "player_sheet.png", a script joining a directory to a name.
+        for suffix in SHIPPED_SUFFIXES:
+            start = 0
+            lowered = text.lower()
+            while True:
+                at = lowered.find(suffix, start)
+                if at < 0:
+                    break
+                head = at
+                while head > 0 and (lowered[head - 1].isalnum()
+                                    or lowered[head - 1] in "-_."):
+                    head -= 1
+                names.add(lowered[head:at + len(suffix)])
+                start = at + len(suffix)
+    return names, paths, dynamic
+
+
+def _templates(paths: set[str]):
+    """Split res:// references into (compiled templates, literal paths).
+
+    A reference carrying a format hole - `%s`, `%d`, `{name}`, or a `*` - names
+    a family of files rather than one, and both halves of this check have to
+    know that: it is not a dangling path, and the files it covers are not
+    orphans.
+    """
+    import re
+
+    compiled, literal = [], set()
+    for ref in paths:
+        if not any(mark in ref for mark in ("%", "{", "*")):
+            literal.add(ref)
+            continue
+        pattern = ""
+        index = 0
+        while index < len(ref):
+            char = ref[index]
+            if char == "%":
+                index += 1
+                while index < len(ref) and ref[index] not in "sdfgxv":
+                    index += 1
+                index += 1
+                pattern += "[^/]*"
+                continue
+            if char == "{":
+                close = ref.find("}", index)
+                index = len(ref) if close < 0 else close + 1
+                pattern += "[^/]*"
+                continue
+            if char == "*":
+                index += 1
+                pattern += "[^/]*"
+                continue
+            pattern += re.escape(char)
+            index += 1
+        try:
+            compiled.append(re.compile(pattern + "$", re.I))
+        except re.error:
+            continue
+    return compiled, literal
+
+
+def integration(root: str | os.PathLike[str]) -> dict:
+    """Which shipped assets nothing uses, and which references point at nothing.
+
+    Scoped to the ENGINE project when there is one (the directory holding
+    project.godot), because that is what the game loads; a repo whose art
+    pipeline lives beside it should not have its staging PNGs reported as
+    orphans.
+    """
+    base = Path(root)
+    engine = base
+    if not (base / "project.godot").exists():
+        found = sorted(base.glob("*/project.godot"))
+        if found:
+            engine = found[0].parent
+    shipped = _walk(engine, SHIPPED_SUFFIXES)
+    consumers = _walk(engine, CONSUMER_SUFFIXES)
+    names, paths, dynamic = _references(engine, consumers)
+
+    # A PATH WITH A HOLE IN IT IS A REFERENCE TO A WHOLE FAMILY. Godot code
+    # legitimately writes `load("res://assets/sprites/%s.png" % unit)`, and the
+    # first draft of this check reported that literal string as a dangling
+    # reference AND every one of the nine sprites it loads as an orphan - which
+    # is the report being confidently wrong in both directions at once. A
+    # templated reference is a dynamic load site with a KNOWN shape, so it is
+    # matched as one.
+    templates, literal_paths = _templates(paths)
+    unreferenced, templated = [], []
+    for rel in shipped:
+        if rel in literal_paths or os.path.basename(rel).lower() in names:
+            continue
+        if any(pattern.match(rel) for pattern in templates):
+            templated.append(rel)
+            continue
+        unreferenced.append(rel)
+
+    on_disk = {r.lower() for r in shipped}
+    dangling = []
+    for ref in sorted(literal_paths):
+        if not ref.lower().endswith(SHIPPED_SUFFIXES):
+            continue
+        if ref.lower() in on_disk or (engine / ref).exists():
+            continue
+        dangling.append(ref)
+    dynamic += len(templates)
+
+    note = ("unreferenced/dangling are CANDIDATES, not verdicts: "
+            f"{dynamic} dynamic load site(s) in this project build a resource "
+            "path at run time, and no static scan follows those. Read a pair "
+            "(one unreferenced file + one dangling reference) as the likely "
+            "filename-contract mismatch it usually is."
+            if dynamic else
+            "no dynamic load sites were seen, so an unreferenced shipped asset "
+            "here is very likely genuinely unwired.")
+    return {
+        "ok": not unreferenced and not dangling,
+        "engine_project": str(engine),
+        "shipped": len(shipped),
+        "consumers": len(consumers),
+        "dynamic_load_sites": dynamic,
+        "unreferenced": sorted(unreferenced)[:_MAX_REPORT],
+        "unreferenced_count": len(unreferenced),
+        # Named by a templated path rather than by a literal one. Not orphans,
+        # but not proof of use either: the template says a family is loaded,
+        # never which member. A QA gate that needs certainty about ONE of these
+        # has to see it in the running game.
+        "template_matched": sorted(templated)[:_MAX_REPORT],
+        "template_matched_count": len(templated),
+        "dangling": dangling[:_MAX_REPORT],
+        "dangling_count": len(dangling),
+        "note": note,
+    }
+
+
+def delivered_but_unwired(root: str | os.PathLike[str]) -> list[dict]:
+    """Orphans this project's OWN records say a seat produced. The strong half.
+
+    :func:`integration` reads the filesystem and has to hedge. This joins its
+    answer against the artifact ledger, which knows the producing item, the
+    tool and the logical name - so an orphan here is not "a file nobody
+    mentions", it is "item #12's art seat delivered this and nothing consumes
+    it", which is a sentence somebody can act on.
+    """
+    report = integration(root)
+    orphans = {r.lower() for r in report["unreferenced"]}
+    if not orphans:
+        return []
+    try:
+        conn = db.connect(root)
+        # BOTH LEDGERS, because a delivered file is usually in the second one.
+        # artifact_revision holds the candidate as it was GENERATED - which for
+        # music and painted art is a path under .bgate_out - while the copy the
+        # game loads is registered by the install step through assets.track.
+        # Joining only the first missed every installed asset, which is exactly
+        # the class this function exists to name: the hosted-audio control run
+        # installed a track nothing plays and this returned nothing.
+        rows_ = list(conn.execute(
+            "SELECT logical_name, path, producer, work_item_id, created_at "
+            "FROM artifact_revision ORDER BY id DESC").fetchall())
+        rows_ += list(conn.execute(
+            "SELECT path AS logical_name, path, 'tracked' AS producer, "
+            "work_item_id, updated_at AS created_at FROM asset "
+            "ORDER BY id DESC").fetchall())
+    except Exception:
+        return []
+    seen: set[str] = set()
+    out: list[dict] = []
+    for row in rows_:
+        rel = str(row["path"] or "").replace("\\", "/")
+        tail = rel.lower()
+        match = next((o for o in orphans
+                      if o == tail or tail.endswith("/" + o)
+                      or o.endswith("/" + os.path.basename(tail))), "")
+        if not match or match in seen:
+            continue
+        seen.add(match)
+        out.append({"path": match, "logical_name": row["logical_name"],
+                    "producer": row["producer"],
+                    "work_item_id": row["work_item_id"],
+                    "delivered_at": row["created_at"],
+                    "why": "delivered by this project's own pipeline and named "
+                           "by no scene, script or resource"})
+    return out
+
+
 def verify(root: str | os.PathLike[str]) -> dict:
     """Compare every tracked asset against disk. Names what changed and how.
 
@@ -572,6 +867,30 @@ def verify(root: str | os.PathLike[str]) -> dict:
                           "or an outside edit; re-track if intentional",
             })
 
+    # WIRED IS A SEPARATE QUESTION FROM INTACT, and it rides here rather than in
+    # its own tool because a second asset surface is how two answers about one
+    # project start to disagree. `ok` above is deliberately unchanged: it means
+    # "nothing was stomped", and an orphan is not a stomp. The integration block
+    # carries its own `ok`, and the QA seat is told to read it.
+    try:
+        wiring = integration(root)
+        wiring["delivered_but_unwired"] = delivered_but_unwired(root)
+        # IS THE ENGINE SERVING THESE BYTES? The third claim in the chain, and
+        # the one a structural check cannot make: a new PNG written straight
+        # into the project resolves, measures and references correctly while
+        # Godot keeps drawing the old placeholder out of its import cache.
+        # Twice in the benchmark games; a screenshot caught it both times and
+        # nothing else could have. Godot records the digest it imported, so the
+        # answer is on disk and costs no engine spawn.
+        from bgate_adapters import godot as _godot
+
+        wiring["freshness"] = _godot.import_freshness(wiring["engine_project"])
+        if not wiring["freshness"].get("ok", True):
+            wiring["ok"] = False
+    except Exception as exc:  # noqa: BLE001 - a scan must not take the audit down
+        wiring = {"ok": True, "error": f"{type(exc).__name__}: {exc}",
+                  "unreferenced": [], "dangling": []}
+
     return {
         "ok": not modified and not missing and not pending,
         "clean": clean,
@@ -579,7 +898,10 @@ def verify(root: str | os.PathLike[str]) -> dict:
         "modified": modified,
         "missing": missing,
         "untracked_hash": pending,
+        "integration": wiring,
         "counts": {"clean": len(clean), "locked": len(locked),
                    "modified": len(modified), "missing": len(missing),
-                   "pending": len(pending)},
+                   "pending": len(pending),
+                   "unreferenced": wiring.get("unreferenced_count", 0),
+                   "dangling": wiring.get("dangling_count", 0)},
     }

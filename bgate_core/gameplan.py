@@ -365,11 +365,37 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
         "spend": {"today_usd": money.get("today_usd"),
                   "week_usd": money.get("week_usd"),
                   "agent_runs": money.get("agent_runs"),
+                  # THE COMBINED FIGURE, FIRST. `today_usd` on its own silently
+                  # excluded 84 credits across 11 kie calls on the benchmark
+                  # board - invisible to every spend figure AND to the budget
+                  # ceilings. A total that omits a channel reads as complete,
+                  # which is worse than no total. spend.spend_line is the one
+                  # formatter, so no surface has to remember the footnote.
+                  "line": money.get("spend_line"),
+                  "today_line": money.get("today_spend_line"),
+                  "complete": money.get("complete", True),
                   # Real charges with no dollar figure (unpriced kie credits).
                   # NOT inside today_usd/week_usd — see spend.record_unpriced.
                   "unaccounted": money.get("unaccounted")},
+        # PREMISE REFUTATIONS, on the morning report. The most valuable thing
+        # agents did in the benchmark and the one that died with the item.
+        "premise_refuted": _refutations(root),
         "coverage": status(root)["slice"] if _has_plan(root) else None,
     }
+
+
+def _refutations(root: str | os.PathLike[str]) -> list[dict]:
+    """Briefs whose measured premise an agent DISPROVED. Never raises."""
+    try:
+        from . import queue as _queue
+
+        return [{"item": r.get("item"), "claim": str(r.get("claim") or "")[:200],
+                 "measured": str(r.get("measured") or "")[:200],
+                 "did_instead": str(r.get("did_instead") or "")[:200],
+                 "at": r.get("at")}
+                for r in _queue.refutations(root, limit=10)]
+    except Exception:                                             # noqa: BLE001
+        return []
 
 
 def _has_plan(root: str | os.PathLike[str]) -> bool:

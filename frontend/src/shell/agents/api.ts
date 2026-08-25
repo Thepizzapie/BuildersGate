@@ -36,6 +36,30 @@ export type Item = {
   /** Queued, but no auto-dispatcher will ever take it (escalations, chat):
    *  a human acts on it. Without the flag it looked like any queued item. */
   held?: boolean;
+  /** ONE WORD FOR WHAT IS ACTUALLY HAPPENING, from the server rather than
+   *  recombined here from four booleans:
+   *    ready | running | waiting | blocked | held | exhausted | <status>
+   *  `waiting` is the board working and nobody should touch it; `blocked`,
+   *  `held` and `exhausted` each need a person, and all three used to render
+   *  as an ordinary queued row. */
+  execution_state?: string;
+  /** The sentence — "WAITING ON #45 Swap in furniture". It names the
+   *  blocker's TITLE on purpose: `blocked until #45 closes` still makes the
+   *  reader go and look #45 up, and the whole defect is that they were not
+   *  looking things up. #43 queued next to a running #45 read as a skipped
+   *  item when the order #42 -> #45 -> #43 was correct all along. */
+  waiting_line?: string;
+  /** Every predecessor, both dependency stores merged. Which table holds a
+   *  link is a fact about the database, not a question a reader should have. */
+  depends_on_all?: number[];
+  unresolved?: number[];
+  /** The harness has stopped buying rounds for this item; only a reopen
+   *  starts it again. It used to be two counters somebody had to add up. */
+  exhausted_at?: string | null;
+  exhausted_why?: string | null;
+  /** Failed items only: a director escalation already exists for this failure
+   *  (the once-per-item cap), so the rail shows a badge instead of a button. */
+  escalated?: boolean;
 };
 export type Question = { id: number; seat?: string; text?: string; asked_at?: string };
 /** `blocking` IS THE FIELD THAT DECIDES WHETHER A HUMAN IS NEEDED, and it was

@@ -316,6 +316,45 @@ async def call(tool: str, /, **kwargs) -> dict:
     return json.loads(block.text) if hasattr(block, "text") else block
 
 
+def write_sidecar(tres, layout: str = "grid16", source: int = 0,
+                  columns: int = 4, origin=(0, 0)) -> None:
+    """The sidecar `tileset_describe` would write, for a SYNC fixture.
+
+    The tool itself is async and exercised by `describe` below; a pytest
+    fixture cannot await it, and a platformer fixture still needs its sheet
+    described because sidescroll_generate refuses one that is not.
+    """
+    from bgate_core import autotile
+
+    terrain = getattr(autotile.Terrain, layout)(
+        source, columns=columns, origin=origin, name="Solid")
+    tres.with_name(tres.stem + ".tiles.json").write_text(json.dumps({
+        "kind": "bgate-tileset", "version": 1, "described": True,
+        "bits": terrain.bits,
+        "floor": {"source": source, "layout": layout,
+                  "table": {str(m): list(c)
+                            for m, c in sorted(terrain.table.items())},
+                  **({"solid": list(terrain.fallback)}
+                     if terrain.fallback else {})},
+    }), encoding="utf-8")
+
+
+async def describe(game, tileset: str, **kw) -> dict:
+    """Give a hand-built .tres the sidecar level_generate now requires.
+
+    These used to be floor_*/wall_* arguments on every level_generate call.
+    The defaults here are that tool's own former defaults, so a test that does
+    not care about the sheet's layout still does not have to.
+    """
+    out = await call("tileset_describe", godot_project=str(game),
+                     tileset=tileset, overwrite=True,
+                     **{"floor_layout": "solid", "floor_source": 0,
+                        "wall_layout": "blob47", "wall_source": 0,
+                        "wall_columns": 8, **kw})
+    assert out["ok"], out.get("error")
+    return out
+
+
 @pytest.fixture()
 def game(root, monkeypatch):
     """A Godot project with one tileset in it, inside a bgate root."""
@@ -341,6 +380,7 @@ class TestLevelTools:
         assert out["ok"] is False and "min_leaf" in out["error"]
 
     async def test_generate_writes_the_layers_into_a_new_scene(self, game):
+        await describe(game, "tiles/dungeon.tres")
         out = await call("level_generate", godot_project=str(game),
                          scene="scenes/level.tscn", tileset="tiles/dungeon.tres",
                          width=40, height=32, seed=5, create=True)
@@ -350,6 +390,7 @@ class TestLevelTools:
         assert out["created"] is True
 
     async def test_regenerating_leaves_one_floor_and_one_walls(self, game):
+        await describe(game, "tiles/dungeon.tres")
         kw = dict(godot_project=str(game), scene="scenes/level.tscn",
                   tileset="tiles/dungeon.tres", create=True)
         await call("level_generate", seed=1, **kw)
@@ -360,18 +401,22 @@ class TestLevelTools:
         assert out["backup"], "the previous scene is still on disk"
 
     async def test_a_source_the_tileset_does_not_have_is_refused(self, game):
-        out = await call("level_generate", godot_project=str(game),
-                         scene="scenes/level.tscn", tileset="tiles/dungeon.tres",
-                         wall_source=9, create=True)
-        assert out["ok"] is False and "no source" in out["error"]
-        assert not (game / "scenes" / "level.tscn").exists()
+        """The refusal moved to where the claim is now made. A source id is a
+        fact about the SHEET, so it is checked when the sheet is described -
+        once - rather than on every level call that reads the description."""
+        out = await call("tileset_describe", godot_project=str(game),
+                         tileset="tiles/dungeon.tres", wall_source=9)
+        assert out["ok"] is False and "draw nothing" in out["error"]
+        assert not (game / "tiles" / "dungeon.tiles.json").exists()
 
     async def test_a_missing_scene_is_refused_unless_create_is_asked_for(self, game):
+        await describe(game, "tiles/dungeon.tres")
         out = await call("level_generate", godot_project=str(game),
                          scene="scenes/level.tscn", tileset="tiles/dungeon.tres")
         assert out["ok"] is False and "create=true" in out["error"]
 
     async def test_dry_run_reports_the_edit_and_writes_nothing(self, game):
+        await describe(game, "tiles/dungeon.tres")
         out = await call("level_generate", godot_project=str(game),
                          scene="scenes/level.tscn", tileset="tiles/dungeon.tres",
                          create=True, dry_run=True)
@@ -391,9 +436,10 @@ class TestLevelTools:
         hardest, which is the last place anyone looks."""
         (game / "tiles" / "small.tres").write_text(_tileset(columns=4, rows=4),
                                                    encoding="utf-8")
+        await describe(game, "tiles/small.tres", wall_layout="blob47")
         out = await call("level_generate", godot_project=str(game),
                          scene="scenes/level.tscn", tileset="tiles/small.tres",
-                         wall_layout="blob47", create=True)
+                         create=True)
         assert out["ok"] is False
         assert "does not define these atlas tiles" in out["error"]
         assert not (game / "scenes" / "level.tscn").exists()
@@ -402,9 +448,11 @@ class TestLevelTools:
         """The same 16-tile sheet with grid16, which is what it is for."""
         (game / "tiles" / "small.tres").write_text(_tileset(columns=4, rows=4),
                                                    encoding="utf-8")
+        await describe(game, "tiles/small.tres", wall_layout="grid16",
+                       wall_columns=4)
         out = await call("level_generate", godot_project=str(game),
                          scene="scenes/level.tscn", tileset="tiles/small.tres",
-                         wall_layout="grid16", wall_columns=4, create=True)
+                         create=True)
         assert out["ok"] and out["written"]
 
     async def test_a_side_scroller_project_is_refused_the_top_down_geometry(
@@ -500,7 +548,9 @@ class TestTheViewRoutesTheGeometry:
                                                  encoding="utf-8")
         # the sidecar is what says source 1 holds the blocks
         (game / "tiles" / "iso.tiles.json").write_text(
-            json.dumps({"interior": [3, 3], "variants": [],
+            json.dumps({"kind": "bgate-tileset", "bits": 8,
+                        "floor": {"source": 0, "solid": [3, 3], "table": {}},
+                        "interior": [3, 3], "variants": [],
                         "blocks": {"wall": [0, 0]}, "lift": 32}),
             encoding="utf-8")
         out = await call("level_generate", godot_project=str(game),
@@ -527,7 +577,9 @@ class TestTheViewRoutesTheGeometry:
         (game / "tiles" / "iso.tres").write_text(ISO_TILESET_BLOCKS,
                                                  encoding="utf-8")
         (game / "tiles" / "iso.tiles.json").write_text(_json.dumps(
-            {"interior": [3, 3], "variants": [],
+            {"kind": "bgate-tileset", "bits": 8,
+             "floor": {"source": 0, "solid": [3, 3], "table": {}},
+             "interior": [3, 3], "variants": [],
              "blocks": {"wall": [0, 0], "terrace": [1, 0],
                         "ramp_n": [2, 0], "ramp_e": [3, 0],
                         "ramp_s": [4, 0], "ramp_w": [5, 0]},
@@ -554,6 +606,10 @@ class TestTheViewRoutesTheGeometry:
         gameview.save(root, "isometric")
         (game / "tiles" / "iso.tres").write_text(ISO_TILESET,
                                                  encoding="utf-8")
+        # Described as floor-only, which is all this sheet can honestly claim:
+        # it defines source 0 and nothing else, so there are no wall blocks
+        # for the isometric routing to find.
+        await describe(game, "tiles/iso.tres", wall_layout="none")
         out = await call("level_generate", godot_project=str(game),
                          scene="scenes/level.tscn", tileset="tiles/iso.tres",
                          seed=5, create=True)
@@ -649,15 +705,21 @@ class TestTheViewRoutesTheGeometry:
         text = (game / "scenes" / "level.tscn").read_text(encoding="utf-8")
         assert '[node name="Floor"' in text
 
-        # An explicit layout argument switches the manifest OFF - an override
-        # half-applied would be worse than either authority whole.
+        # THERE IS NO OVERRIDE ANY MORE, and that is the point of the phase.
+        # This used to assert that an explicit floor_layout/floor_atlas_x
+        # switched the manifest off; those parameters are gone, because a
+        # coordinate typed per call is exactly the thing the sidecar exists to
+        # replace. `walls=False` is the only shape left that changes what gets
+        # drawn, and it changes the LEVEL, not the sheet.
         out2 = await call("level_generate", godot_project=str(game),
                           scene="scenes/level2.tscn",
                           tileset="tiles/handoff.tres",
-                          floor_layout="solid", floor_atlas_x=1,
-                          wall_layout="none", seed=3, create=True)
+                          walls=False, seed=3, create=True)
         assert out2["ok"], out2.get("error")
-        assert out2["manifest_used"] is False
+        assert out2["manifest_used"] is True
+        text2 = (game / "scenes" / "level2.tscn").read_text(encoding="utf-8")
+        assert '[node name="Floor"' in text2
+        assert '[node name="Walls"' not in text2
 
     async def test_an_isometric_project_gets_an_isometric_tileset(
             self, root, game, monkeypatch):
@@ -714,6 +776,10 @@ class TestThePlayerCarriesItsOwnJump:
     def platformer(self, root, game):
         from bgate_core import gameview
         gameview.save(root, "side_scroller")
+        # The sheet describes itself now; these were solid_* arguments on
+        # every sidescroll_generate call, and grid16/source 0 was their
+        # default.
+        write_sidecar(game / "tiles" / "dungeon.tres")
         (game / "scripts").mkdir()
         (game / "scripts" / "player.gd").write_text(PLAYER_GD,
                                                     encoding="utf-8")
@@ -753,7 +819,10 @@ class TestThePlayerCarriesItsOwnJump:
         """A sidecar beside the tileset scatters interior cells across the
         variant tiles, deterministically — same seed, same bytes."""
         (platformer / "tiles" / "dungeon.tiles.json").write_text(
-            json.dumps({"interior": [3, 3], "variants": [[4, 0], [5, 0]]}),
+            json.dumps({"kind": "bgate-tileset", "bits": 8,
+                        "floor": {"source": 0, "solid": [3, 3], "table": {}},
+                        "interior": [3, 3],
+                        "variants": [[4, 0], [5, 0]]}),
             encoding="utf-8")
         kw = dict(godot_project=str(platformer), scene="scenes/level.tscn",
                   tileset="tiles/dungeon.tres", player_scene="player.tscn",
@@ -914,3 +983,102 @@ class TestTerrace:
         got = levelgen.terrace(flat, seed=5, levels=2)
         assert got["floor"] == flat["floor"]
         assert got["walls"] == flat["walls"]
+
+
+@pytest.mark.anyio
+class TestNoLevelToolTakesAnAtlasCoordinate:
+    """P3's acceptance test, asserted against the signatures themselves.
+
+    The cross-seat hole this closes: art holds the sheet and knows every
+    atlas coordinate; gameplay and tech build the levels and need them; the
+    only channel between the two was a string retyped per call. A sidecar
+    beside the .tres is that channel now, so the parameters are gone - and
+    a test on the signature is the only thing that keeps them gone, because
+    re-adding one is a two-line change that no behaviour test would notice.
+    """
+
+    BANNED = ("floor_source", "floor_atlas_x", "floor_atlas_y",
+              "floor_columns", "floor_layout", "floor_sources",
+              "wall_source", "wall_atlas_x", "wall_atlas_y", "wall_columns",
+              "solid_source", "solid_atlas_x", "solid_atlas_y",
+              "solid_columns", "solid_layout",
+              "prop_atlas", "prop_types", "prop_source")
+
+    @staticmethod
+    def _params(name: str) -> list[str]:
+        import inspect
+
+        fn = getattr(server, name)
+        fn = getattr(fn, "__wrapped__", fn)
+        return list(inspect.signature(fn).parameters)
+
+    @pytest.mark.parametrize("tool", ["level_generate", "sidescroll_generate",
+                                      "level_reskin"])
+    def test_the_generators_take_no_atlas_coordinates(self, tool):
+        leaked = sorted(set(self._params(tool)) & set(self.BANNED))
+        assert not leaked, (
+            f"{tool} takes {leaked} again. Those live in the tileset's "
+            "sidecar - tileset_generate writes it, tileset_describe writes "
+            "one for a hand-built sheet.")
+
+    def test_the_generators_stayed_small(self):
+        # 40 and 27 before this phase.
+        assert len(self._params("level_generate")) <= 20
+        assert len(self._params("sidescroll_generate")) <= 18
+
+    def test_describe_is_where_the_coordinates_went(self):
+        # The knowledge is not deleted, it MOVED - and to a tool called once
+        # per sheet rather than once per level.
+        params = self._params("tileset_describe")
+        for name in ("floor_layout", "floor_source", "floor_atlas_x",
+                     "wall_layout", "wall_source", "wall_columns"):
+            assert name in params
+
+    async def test_a_sheet_with_no_sidecar_is_refused_by_name(self, game):
+        """The refusal has to name the tool that fixes it. A generator that
+        just says "no manifest" sends the agent back to guessing."""
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres", create=True)
+        assert out["ok"] is False
+        assert "tileset_describe" in out["error"]
+        assert not (game / "scenes" / "level.tscn").exists()
+
+    async def test_describing_a_generated_set_needs_overwrite(self, game):
+        """A tileset_generate sidecar holds a real mask table; replacing it
+        with a description is how a working level starts drawing at (0, 0)."""
+        await describe(game, "tiles/dungeon.tres")
+        again = await call("tileset_describe", godot_project=str(game),
+                           tileset="tiles/dungeon.tres")
+        assert again["ok"] is False and "overwrite=True" in again["error"]
+
+    async def test_props_without_a_manifest_are_refused_not_guessed(self, game):
+        await describe(game, "tiles/dungeon.tres")
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres",
+                         props=True, create=True)
+        assert out["ok"] is False and "prop_generate" in out["error"]
+
+    async def test_an_unknown_tuning_key_is_refused_by_name(self, game):
+        await describe(game, "tiles/dungeon.tres")
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres",
+                         tuning={"min_rooms": 3}, create=True)
+        assert out["ok"] is False
+        assert "min_rooms" in out["error"] and "min_leaf" in out["error"]
+
+    async def test_tuning_actually_reaches_the_partition(self, game):
+        """Grouping the knobs must not quietly stop them working."""
+        await describe(game, "tiles/dungeon.tres")
+        kw = dict(godot_project=str(game), tileset="tiles/dungeon.tres",
+                  width=48, height=32, seed=4, create=True)
+        few = await call("level_generate", scene="scenes/a.tscn",
+                         tuning={"min_leaf": 20}, **kw)
+        many = await call("level_generate", scene="scenes/b.tscn",
+                          tuning={"min_leaf": 6}, **kw)
+        assert few["ok"] and many["ok"], few.get("error") or many.get("error")
+        assert many["rooms"] > few["rooms"], (
+            f"min_leaf did not reach the partition: {few['rooms']} vs "
+            f"{many['rooms']}")

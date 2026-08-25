@@ -119,58 +119,104 @@
 .bg4-roomscroll { flex: 1; min-height: 0; padding: 12px 16px }
 
 /* A turn. `them` is anyone who is not you — one partner today, a roster
-   tomorrow — which is why the class is not named after the partner. */
-.bg4-msg { margin: 0 0 16px; max-width: 78ch }
-.bg4-msg .head { display: flex; align-items: center; gap: 9px; margin-bottom: 5px }
-
-/* TELLING THE VOICES APART.
-   --voice is set inline per message from SEAT_COLOR, the same table the roster
-   and the invite chips use. Everything below is that one variable: a rail, a
-   tinted avatar and a tinted name. The rail is what does the work when you are
-   skimming — colour at the left edge is readable at a glance in a way a 10px
-   uppercase label at the top of a block is not. Messages with no seat (you, and
-   the room's own partner) keep the old flat look on purpose, so a guest's turn
-   is visibly a guest's. */
-.bg4-msg.seated {
-  border-left: 2px solid var(--voice, var(--line));
-  padding-left: 11px; margin-left: -13px;
+   tomorrow — which is why the class is not named after the partner.
+   `.bg4-roommsg` on purpose, NOT `.bg4-msg`: the director chat (shell.css)
+   used that name first for an unrelated bubble, and because CSS classes are
+   global the two components' rules fought at equal specificity — this room
+   inherited the chat's padding, radius and a hardcoded `.you` background,
+   none of which this design ever asked for. Same bug, different symptom, in
+   whichever page's bundle happened to cascade last. */
+.bg4-roommsg {
+  margin: 0 0 14px; max-width: 78ch;
+  border: 1px solid transparent; border-radius: 8px;
+  padding: 9px 12px;
 }
-.bg4-msg.seated .txt { color: var(--text) }
-.bg4-msg .av {
+/* SIDE IS THE FIRST SIGNAL, before colour and before reading the label — a
+   transcript scanned at a glance separates "mine" from "everyone else's" by
+   position the way any chat surface does, and colour alone (the earlier fix)
+   still left every turn in one left-hung column. Only YOU move: a room can
+   hold several other voices, and pinning all of THEM to the left keeps the
+   thread of who-said-what-to-whom readable the way alternating sides across
+   five participants would not. */
+.bg4-roommsg.you { margin-left: auto; max-width: min(78ch, 620px) }
+.bg4-roommsg .head { display: flex; align-items: center; gap: 9px; margin-bottom: 5px }
+
+/* TELLING THE VOICES APART AT A GLANCE, not by reading the label first.
+   Three distinct fills, all mixed from the app's own tokens (never a hex —
+   there are four themes): the room's own voice (the partner) sits on a
+   plain panel, a seated guest's turn is tinted by --voice — the same
+   SEAT_COLOR the roster and the invite chips use, so the mapping is learned
+   once — and yours is the one tinted by --accent, because it is the one
+   colour on this screen that means "you" everywhere else in the app too. */
+.bg4-roommsg.them:not(.seated) {
+  background: var(--solid-2); border-color: var(--line);
+}
+.bg4-roommsg.seated {
+  background: color-mix(in srgb, var(--voice, var(--text-3)) 7%, var(--solid-2));
+  border-color: color-mix(in srgb, var(--voice, var(--line)) 30%, var(--line));
+  border-left: 2px solid var(--voice, var(--line));
+}
+.bg4-roommsg.you {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.bg4-roommsg .txt { color: var(--text) }
+.bg4-roommsg .av {
   display: inline-flex; align-items: center; justify-content: center;
   width: 19px; height: 19px; border-radius: 5px;
   border: 1px solid var(--line);
   background: var(--surface-2);
+  overflow: hidden; flex: none;
 }
-.bg4-msg.seated .av {
+/* THE PORTRAIT FILLS ITS BOX. Bigger than the 19px the icon sat in, because a
+   face at 19px is a smudge and the whole point of drawing one is that it is
+   recognised at a glance. `pixelated` is not optional: these are pixel art
+   downscaled from 1024, and the browser's default smooth filter turns a hard
+   two-colour outline into grey mush. */
+.bg4-roommsg .av:has(img) {
+  width: 30px; height: 30px; border-radius: 6px; padding: 0;
+  background: color-mix(in srgb, var(--voice, var(--line)) 14%, var(--surface-2));
+}
+.bg4-roommsg .av img,
+.bg4-face {
+  display: block; width: 100%; height: 100%; object-fit: cover;
+  object-position: top center; image-rendering: pixelated;
+}
+/* The roster's own copy, at the size that row gives its icon. */
+.bg4-face {
+  width: 26px; height: 26px; flex: none; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--surface-2);
+}
+.bg4-roommsg.seated .av {
   border-color: color-mix(in srgb, var(--voice) 45%, transparent);
-  background: color-mix(in srgb, var(--voice) 12%, transparent);
+  background: color-mix(in srgb, var(--voice) 14%, transparent);
 }
-/* The partner's turns are the room's own voice and are the ones you read most,
-   so they get the quietest treatment of the three: an avatar, no rail. */
-.bg4-msg.them:not(.seated) .av { opacity: .7 }
-.bg4-msg .who {
-  font: 500 10px var(--mono); letter-spacing: .12em;
-  text-transform: uppercase; color: var(--text-2);
+/* WHO IS SPEAKING is the first thing read on a crowded transcript, so it
+   carries more weight than any other label on the row — the model tag and
+   the timestamp are metadata about the turn, not its identity. */
+.bg4-roommsg .who {
+  font: 600 11px var(--mono); letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text);
 }
-.bg4-msg.you .who { color: var(--accent) }
-.bg4-msg .tag {
-  padding: 1px 6px; border: 1px solid var(--line); border-radius: 9999px;
+.bg4-roommsg.you .who { color: var(--accent) }
+.bg4-roommsg.seated .who { color: var(--voice, var(--text)) }
+/* The model name is metadata, not a second identity pill sitting next to the
+   real one — plain dim text reads as a footnote instead of competing. */
+.bg4-roommsg .tag {
   font: 500 9px var(--mono); color: var(--text-3);
 }
-.bg4-msg .when {
+.bg4-roommsg .when {
   margin-left: auto; font: 500 10px var(--mono); color: var(--text-3);
 }
-.bg4-msg .txt {
-  font: 400 12px/1.65 var(--sans); color: var(--text);
+.bg4-roommsg .txt {
+  font: 400 12px/1.65 var(--sans);
   white-space: pre-wrap;
 }
-.bg4-msg.you .txt { color: var(--text-2) }
 
 /* The promote control. Deliberately quiet: promotion is a decision, not the
    obvious next click, and a loud button next to every reply would read as one
    the room expects you to press. */
-.bg4-msg .acts { display: flex; align-items: center; gap: 10px; margin-top: 8px }
+.bg4-roommsg .acts { display: flex; align-items: center; gap: 10px; margin-top: 8px }
 .bg4-promote {
   display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
   border: 1px solid var(--line); border-radius: 5px; background: transparent;
@@ -178,24 +224,24 @@
   font: 500 10px var(--mono);
 }
 .bg4-promote:hover { color: var(--accent); border-color: var(--accent) }
-.bg4-msg .acts .done {
+.bg4-roommsg .acts .done {
   display: inline-flex; align-items: center; gap: 6px;
   font: 500 10px var(--mono); color: var(--accent);
 }
-.bg4-msg .acts .hint,
-.bg4-msg .acts .touch {
+.bg4-roommsg .acts .hint,
+.bg4-roommsg .acts .touch {
   font: 500 10px var(--mono); color: var(--text-3);
 }
 /* The lane bound, in the design's place: quiet mono beside the control. It is
    long — a real glob list — so it takes the remaining width and truncates
    rather than wrapping the row into two lines. */
-.bg4-msg .acts .touch {
+.bg4-roommsg .acts .touch {
   flex: 1; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
 }
 /* Once promoted, the lane IS the hint — the generic sentence would be saying
    "an opinion until you promote it" about something already promoted. */
-.bg4-msg .acts .done ~ .hint { display: none }
+.bg4-roommsg .acts .done ~ .hint { display: none }
 
 /* The seat's lane, under its name in the promote menu. Block-level so the entry
    is two lines — the seat you are choosing and the ground it may write on. */
@@ -345,20 +391,49 @@
 }
 .bg4-part:first-of-type { border-top: 0 }
 .bg4-part .w { flex: 1; min-width: 0 }
-.bg4-part .l { display: flex; align-items: center; gap: 7px }
+/* THE ROW THAT WAS WRAPPING ITS OWN BADGE. `.st` carried no `white-space`,
+   so "in the room · not running" line-broke INSIDE the pill, turning one
+   status marker into a two-line block that crowded the spend figure beside
+   it. Copy is shorter now (the section this sits in is already headed
+   "IN THE ROOM" — a badge repeating that said nothing new) and nowrap is
+   the backstop so a translation or a longer status can never do this again. */
+.bg4-part .l { display: flex; align-items: center; gap: 7px; flex-wrap: wrap }
 .bg4-part .nm { font: 450 11px var(--sans); color: var(--text) }
 .bg4-part .st {
-  padding: 1px 6px; border: 1px solid var(--line); border-radius: 9999px;
+  flex: none; white-space: nowrap;
+  padding: 1px 7px; border: 1px solid var(--line); border-radius: 9999px;
   font: 500 9px var(--mono); letter-spacing: .1em;
   text-transform: uppercase; color: var(--text-3);
 }
-.bg4-part .st.own { color: var(--accent); border-color: var(--accent) }
+/* A PERMISSION READS DIFFERENTLY FROM A PROCESS STATE. "owns the room" is a
+   standing fact about who may open the door — filled, so it outweighs the
+   row the way a permission should. "live"/"not running"/"invited" are a
+   process ticking over between three ordinary states, and stayed outline —
+   before this they were the same pill and a permanent fact sat at the same
+   visual weight as "this CLI has not run yet", which is not remotely the
+   same kind of true. */
+.bg4-part .st.own {
+  color: var(--solid-1); background: var(--accent); border-color: var(--accent);
+}
 .bg4-part .st.live { color: var(--good); border-color: var(--good) }
 .bg4-part .note {
   margin-top: 3px; font: 500 10px/1.5 var(--mono); color: var(--text-3);
 }
-.bg4-part .spend { font: 500 10px var(--mono); color: var(--text-2) }
 .bg4-part.empty { opacity: .8 }
+/* THE NUMBERS, AS A COLUMN. Turns and spend used to live at two different
+   places — one buried at the end of the runtime sentence, one floating on
+   its own — so four rows of "...· N turns" read as the same sentence
+   repeated and the actual differences (which seat is expensive, which has
+   answered the most) took real effort to compare. Stacked and right-aligned,
+   they read the way a ledger does: down the column, not across the prose. */
+.bg4-part .stats {
+  flex: none; display: flex; flex-direction: column; align-items: flex-end;
+  gap: 2px; margin-left: 6px;
+}
+.bg4-part .turns, .bg4-part .spend {
+  font: 500 10px var(--mono); color: var(--text-3); white-space: nowrap;
+}
+.bg4-part .spend { color: var(--text-2) }
 
 .bg4-invite { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 12px 12px }
 .bg4-invite .chip {
@@ -473,13 +548,6 @@
    this room live" and "who is in it" are different questions. */
 .bg4-roomrow .g { display: flex; gap: 3px; margin: 4px 0 0 }
 .bg4-roomrow .g i { width: 5px; height: 5px; border-radius: 50%; flex: none }
-
-/* Per-seat spend on a roster row. Right-aligned against the leave button so a
-   column of numbers lines up and the expensive guest is findable by shape. */
-.bg4-part .spend {
-  flex: none; align-self: flex-start; font: 500 10px var(--mono);
-  color: var(--text-3); white-space: nowrap; margin-left: 6px;
-}
 
 /* ── the voice toggles ────────────────────────────────────────────────────
    Two buttons, because the mic and the speaker are separate permissions and
