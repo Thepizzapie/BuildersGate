@@ -113,3 +113,10 @@ func _physics_process(delta: float) -> void:
 		_air_cause = ""
 
 	_was_on_floor = now_on_floor
+# THE TRAVERSAL CONTRACT. traversal_prove refuses any controller that cannot
+# say whether a scripted move (mantle, vault, cutscene) owns the body right
+# now - sampling one naively is how a mantle's midpoint passed as an arrival.
+# This controller has no scripted moves, so the honest answer is a constant;
+# a project that adds one must return true for its duration.
+func is_in_scripted_move() -> bool:
+	return false

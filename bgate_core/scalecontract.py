@@ -397,6 +397,76 @@ def record(root: str | os.PathLike[str], path: str | os.PathLike[str],
     return got
 
 
+def record_3d(root: str | os.PathLike[str], path: str | os.PathLike[str],
+              klass: str, *, longest_axis_m: float, height_m: float = 0.0,
+              tool: str = "godot_inspect_resource",
+              player_height_m: float = 1.8) -> dict:
+    """The AFFIRMATIVE 3D path the refusal left missing.
+
+    ``check`` correctly REFUSES a pixel measurement on a 3D asset and its gate
+    row says "measure with godot_inspect_resource and compare" — but nothing
+    RECORDED that comparison, so on a 3D project every delivered mesh blocked
+    release forever unless a director hand-retracted each row. A gate whose
+    only exit is supersession is the unclearable-row failure one layer up.
+
+    Takes the ENGINE'S numbers (AABB metres, from inspect_resource or a
+    collider read) — never pixels — and grades height-in-players against the
+    same class band the 2D path uses, players being metres/player_height_m.
+    Records under the same CHECK_KEY the release gate reads, and retracts the
+    standing "no measurement" finding exactly as the 2D path does.
+    """
+    from . import artifacts as _artifacts
+
+    if klass not in DEFAULT_CLASSES:
+        raise ValueError(f"unknown scale class {klass!r}; classes are {CLASSES}")
+    if float(longest_axis_m) <= 0:
+        raise ValueError("longest_axis_m must be a real engine measurement — "
+                         "godot_inspect_resource's size_check.longest_axis_m")
+    player = max(0.1, float(player_height_m))
+    height = float(height_m or longest_axis_m) / player
+    band = contract(root)["classes"][klass]
+    flags: list[str] = []
+    if height < band["low"]:
+        flags.append(f"{height:.2f} player-heights tall; {klass} starts at "
+                     f"{band['low']:.2f} ({height_m or longest_axis_m:g} m "
+                     f"against a {player:g} m player)")
+    if height > band["high"]:
+        flags.append(f"{height:.2f} player-heights tall; {klass} tops out at "
+                     f"{band['high']:.2f}")
+    got = {
+        "ok": not flags, "klass": klass, "path": str(path), "flags": flags,
+        "tool": tool, "dimension": "3d",
+        "measured": {"longest_axis_m": float(longest_axis_m),
+                     "height_m": float(height_m or longest_axis_m),
+                     "player_height_m": player,
+                     "height_players": round(height, 3)},
+        "band": band,
+    }
+    try:
+        _artifacts.record_check(root, path, CHECK_KEY, got)
+        got["recorded"] = True
+    except Exception as exc:                                      # noqa: BLE001
+        got["recorded"] = False
+        got["record_error"] = f"{type(exc).__name__}: {exc}"
+        return got
+    activity.log(root, "scale",
+                 f"{'ok' if got['ok'] else 'OFF-SCALE'} (3d): {path} as {klass}",
+                 seat="qa", ref=str(path))
+    if got["ok"]:
+        try:
+            from . import findings as _findings
+
+            _findings.supersede_key(
+                root, "scale", str(path),
+                why=(f"measured in the engine as {klass}: "
+                     f"{got['measured']['height_players']} player-heights "
+                     f"({got['measured']['height_m']:g} m)"),
+                tool=tool, measured=got["measured"])
+        except Exception:                                         # noqa: BLE001
+            pass
+    return got
+
+
 # ── the release gate's question ─────────────────────────────────────────────
 
 #: Artifact statuses that mean the asset is in the game. A candidate nobody

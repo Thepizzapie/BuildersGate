@@ -233,6 +233,19 @@ def _escalate(root: str, item: dict, ref: str, rounds: int) -> None:
                  f"item {item['id']} hit the QA round cap ({rounds}) — escalated "
                  "to the director instead of re-dispatching",
                  seat="qa", ref=ref)
+    # EXHAUSTED, ON THE ROW. The failure router's escalation stamps this; the
+    # QA path did not, so an item the gate had stopped retrying still looked
+    # like ordinary claimable work - the exact ambiguity the state exists to
+    # end. Only a reopen clears it, which is the decision this escalation asks
+    # the director to make.
+    try:
+        _queue.mark_exhausted(
+            root, int(item["id"]),
+            f"failed {rounds} QA round(s) — the gate stopped buying reviews "
+            "and escalated to the director. Only a reopen (with a changed "
+            "brief, or after the QA complaint is addressed) starts it again.")
+    except Exception:                                             # noqa: BLE001
+        pass                       # the escalation landed; that is the payload
 
 
 def open_round(root: str | os.PathLike[str], item: dict) -> dict:

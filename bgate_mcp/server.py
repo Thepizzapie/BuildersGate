@@ -7959,6 +7959,25 @@ def board_digest(hours: int = 12) -> dict:
                         "blockers": state["blockers"]}
     except Exception:                                             # noqa: BLE001
         pass
+    # IS THE AGENT YOU ARE WATCHING RUNNING THE CODE YOU ARE READING? Every
+    # run stamps the harness fingerprint it spawned against; Python caches
+    # modules per process, so a fix landing mid-run reaches the NEXT agent and
+    # not this one. drift() existed and nothing called it - the answer to "my
+    # fix did nothing" was computable and never computed.
+    try:
+        from bgate_core import harness as _harness
+
+        live = _harness.recently_edited(within_s=120.0)
+        if live:
+            out["harness_editing"] = {
+                "files": live[:6],
+                "why": ("the harness source was written in the last two "
+                        "minutes. Agents already running still execute the "
+                        "old copy; agents spawned mid-save can import a "
+                        "half-written module. See bgate_core.harness."),
+            }
+    except Exception:                                             # noqa: BLE001
+        pass
     try:
         from bgate_core import inflight as _inflight
 
@@ -8350,6 +8369,34 @@ def scale_contract_set(player_height_px: Optional[int] = None,
 
     return _scale.set_contract(_root(), player_height_px=player_height_px,
                                tile_px=tile_px, classes=classes, by=_actor())
+
+
+@_tool
+def scale_record_3d(path: str, klass: str, longest_axis_m: float,
+                    height_m: float = 0.0,
+                    player_height_m: float = 1.8) -> dict:
+    """Record a 3D asset's ENGINE-MEASURED scale against the contract.
+
+    THE AFFIRMATIVE HALF scale_check's 3D refusal left missing. scale_check
+    correctly refuses to measure a mesh (or any world-space asset on a 3D
+    project) in pixels, and its gate row says "measure with
+    godot_inspect_resource and compare" — but nothing RECORDED that
+    comparison, so a 3D asset could never actually CLEAR the scale row; the
+    only exit was a director retracting it by hand. That is the
+    unclearable-row failure, one layer up.
+
+    Pass the numbers the ENGINE gave you — godot_inspect_resource's
+    size_check.longest_axis_m, and the vertical extent as height_m. Never a
+    pixel count. Grades against the same class band the 2D path uses
+    (players = metres / player_height_m), records under the same key the
+    release gate reads, and retracts the standing "no measurement" finding
+    when it passes. A failing measurement blocks exactly as a 2D one does.
+    """
+    from bgate_core import scalecontract as _scale
+
+    return _scale.record_3d(_root(), path, klass,
+                            longest_axis_m=longest_axis_m, height_m=height_m,
+                            player_height_m=player_height_m)
 
 
 @_tool

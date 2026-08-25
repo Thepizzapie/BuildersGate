@@ -11,7 +11,7 @@ size = Vector2(640, 32)
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_ledge"]
 size = Vector2(96, 16)
 
-[node name="Main" type="Node2D"]
+[node name="BGateDemo" type="Node2D"]
 
 [node name="Camera2D" type="Camera2D" parent="."]
 position = Vector2(320, 180)

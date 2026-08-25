@@ -231,7 +231,7 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  # craft; art and audio get their own copies below, because
                  # the seat that made the thing has to be able to check it
                  # before it hands it over.
-                 "room_review", "room_override", "scale_check",
+                 "room_review", "room_override", "scale_check", "scale_record_3d",
                  "audio_listen_record",
                  # THE TWO THE PRESENTATION GATE GAINED. `evidence_assert` is
                  # the verdict a captured frame never had — recording what
