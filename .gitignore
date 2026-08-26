@@ -117,6 +117,17 @@ bgate_shot_*.png
 # The feed files a panel's Load button writes: a cache of what the dashboard
 # said thirty seconds ago, rewritten on every press. Never reviewable.
 .pulsiron/feeds/
+# A PANEL SHIPS ONLY IF IT IS PORTABLE, and these two were not. Both pointed at
+# absolute paths on one developer's machine, which is a username published in a
+# public repo and a panel that resolves to nothing in anyone else's checkout.
+# bgate-viewer-probe is a scratch panel that was never meant to ship at all —
+# its own notes read "Which of these shows a BIG picture?".
+# tests/test_streamer.py::TestTheSuiteIsNotTheLeak catches the class and caught
+# these; it stays the guard for the next one. Untracked rather than rewritten,
+# because a machine-local path is not something to invent a fictional value for
+# — it is something not to commit.
+.pulsiron/panels/bgate-gallery.panel.json
+.pulsiron/panels/bgate-viewer-probe.panel.json
 
 # ── frontend: one source tree, one generated tree ──────────────────────────
 # SOURCE is frontend/. Everything a human edits lives there — frontend/src for
