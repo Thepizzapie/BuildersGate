@@ -254,6 +254,25 @@ repository at first publication. There is no earlier release history to record.
   what hundreds of assertions missed.
 
 ### Fixed
+- **`python -m bgate_cli` failed with an error that reads like a broken
+  install.** The package had no `__main__.py`, so the documented fallback for a
+  missing console script died with *"'bgate_cli' is a package and cannot be
+  directly executed"*. Nothing was broken: `[project.scripts]` points at
+  `bgate_cli.main:main` and always did. The console script only exists on PATH,
+  and PATH is precisely what is absent in every case where someone reaches for
+  `python -m` — a Git Bash session, a CI step on a bare interpreter, an editor
+  terminal with its own environment. Measured: two attempts to start the
+  dashboard were lost to that message before anyone read `pyproject.toml`.
+- **Two invalid escape sequences, both Windows paths written as prose.**
+  `bgate_core/plumbing.py`'s `_walk` docstring spells out
+  `...\AppData\Local\Temp\...` to explain why the skip list is matched against
+  the path *inside* the project — three invalid escapes in one sentence. And
+  `tests/test_aegis.py` carried a skipif reason reading `"On POSIX
+  \\server\share is not a path at all"`, in which the string explaining UNC
+  spelling was itself misspelling it: one backslash pair escaped, the next not.
+  Python has warned on these since 3.6 and they become a `SyntaxError`, so the
+  suite printing `SyntaxWarning: invalid escape sequence '\A'` on every run was
+  a deadline, not noise.
 - **`bg_apply` cannot silently no-op.** `bpy.ops.object.transform_apply` returns
   `{'CANCELLED'}` rather than raising when its poll fails, and three identical
   "rotated" exports were paid for before anybody read the return value. It is
