@@ -155,12 +155,29 @@ def _unmeasured(reason: str, **extra) -> dict:
 
 
 def dominance(path: str | Path, *, min_weight: float = 0.5,
+              min_distance_fraction: float = 0.12,
               sample: int = 0) -> dict:
     """How far each vertex's dominant bone is, against the nearest available.
 
     `min_weight` (0.5) restricts the check to vertices a single bone actually
     OWNS. Below half, no bone is dominant and the vertex is a genuine blend —
     calling its "dominant" bone wrong would be meaningless.
+
+    `min_distance_fraction` (0.12 of model height) is a NEAR-JOINT FLOOR, and
+    it exists because the ratio alone has a failure mode that this check hit on
+    its own first real fix. Where two bone segments nearly meet — a paw against
+    a shin, a shoulder against a chest — the distance to the NEAREST bone
+    collapses toward zero, so the ratio explodes for a vertex that is
+    perfectly well painted. Measured, on a re-skinned cat whose actual defect
+    had just been repaired: a vertex 0.023 m from `backpaw_R` on a 0.272 m
+    model scored 9.0, purely because `shin_R` happened to pass 0.0026 m away.
+    2 cm from its own bone on a 27 cm animal is not a fault.
+
+    The defect this tool exists to catch does not hide down there. The original
+    mis-binding's worst vertices sat 0.076-0.116 m from their bone — 28% to 43%
+    of model height — so a floor at 12% keeps every one of them and drops the
+    joint-boundary noise. A vertex nearer its bone than that is not evidence of
+    anything either way.
 
     `sample` caps the vertices examined (0 = all). Every mesh in this pipeline
     is small enough to run whole; the cap exists for imported assets that are
@@ -202,6 +219,7 @@ def dominance(path: str | Path, *, min_weight: float = 0.5,
 
     ys = [v[1] for v in verts]
     height = (max(ys) - min(ys)) or 1.0
+    floor = height * max(min_distance_fraction, 0.0)
 
     per_bone: dict[str, dict] = {
         n: {"owns": 0, "misbound": 0, "worst_ratio": 0.0} for n in names}
@@ -251,10 +269,16 @@ def dominance(path: str | Path, *, min_weight: float = 0.5,
                 d_near = d
                 near_j = j
         checked += 1
-        ratio = d_dom / d_near if d_near > 1e-9 else 1.0
-        ratios.append(ratio)
         b = per_bone[names[dom]]
         b["owns"] += 1
+        # too close to its own bone to be evidence either way — see
+        # min_distance_fraction. Counted as owned, but it cannot raise a flag.
+        if d_dom < floor:
+            b["near_joint"] = b.get("near_joint", 0) + 1
+            ratios.append(1.0)
+            continue
+        ratio = d_dom / d_near if d_near > 1e-9 else 1.0
+        ratios.append(ratio)
         if ratio > b["worst_ratio"]:
             b["worst_ratio"] = round(ratio, 2)
         worst.append((ratio, i, names[dom], names[near_j],
@@ -279,6 +303,7 @@ def dominance(path: str | Path, *, min_weight: float = 0.5,
         "checked": checked,
         "bones": len(names),
         "model_height": round(height, 4),
+        "near_joint_floor": round(floor, 4),
         "median_ratio": round(ratios[len(ratios) // 2], 3),
         "p95_ratio": round(ratios[int(len(ratios) * 0.95)], 3),
         "max_ratio": round(ratios[-1], 3),
