@@ -141,7 +141,7 @@ class TestWindowsSpellings:
         assert verdict("\\\\?\\" + str(game), game / "player.gd") == aegis.ALLOW
 
     @pytest.mark.skipif(sys.platform != "win32", reason=(
-        "UNC is a Windows spelling. On POSIX \\server\share is not a path at "
+        "UNC is a Windows spelling. On POSIX \\server\\share is not a path at "
         "all, it is one filename containing backslashes, so there is no "
         "containment question here to answer."))
     def test_unc_paths_compare_as_one_location(self):
