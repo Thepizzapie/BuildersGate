@@ -35,6 +35,27 @@ datas = [
     # fallback bgate_ui/webview2.py reads when the resource lookup fails.
     (str(ROOT / "packaging" / "icon.ico"), "."),
 ]
+# THE ADAPTERS THAT ARE READ AS SOURCE, NOT IMPORTED AS MODULES — and this is
+# the same disease as the two exclusions documented further down, one level
+# over. `collect_submodules` makes a module IMPORTABLE; it compiles it into the
+# archive and puts no .py on disk. These four are never imported for their
+# behaviour: three are handed to another interpreter by PATH (Blender's
+# `--python`, a whisper subprocess) and the fourth has its text spliced into a
+# generated script. `Path(__file__).with_name(...)` has to find a real file.
+#
+# Verified against a shipped bundle before this list existed: dist/BuildersGate/
+# _internal contained no bgate_adapters directory at all, so RUNNER resolved to
+# a path that did not exist and EVERY Blender-backed feature in the packaged
+# app — modelling, rigging, sprite baking — plus whisper transcription failed
+# at run time. Nothing caught it because nothing ran the frozen binary.
+#
+# tests/test_packaging.py::test_every_adapter_read_from_disk_is_shipped scans
+# for the `with_name` calls and fails if one is added without landing here.
+datas += [
+    (str(ROOT / "bgate_adapters" / name), "bgate_adapters")
+    for name in ("_blender_runner.py", "_blender_sprites.py",
+                 "_whisper_runner.py", "bodymeasure.py")
+]
 # Pillow ships binary plugins it loads dynamically.
 datas += collect_data_files("PIL", include_py_files=False)
 

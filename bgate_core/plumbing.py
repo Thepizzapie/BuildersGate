@@ -48,7 +48,7 @@ _TILE_TYPES = {"TileMap", "TileMapLayer"}
 
 
 def _walk(root: Path, suffix: str):
-    """Every file with `suffix` under `root`, skipping the trees we never audit.
+    r"""Every file with `suffix` under `root`, skipping the trees we never audit.
 
     THE SKIP LIST IS MATCHED AGAINST THE PATH *INSIDE* THE PROJECT, and that is
     the whole of this function's care. Matching the absolute path's parts meant

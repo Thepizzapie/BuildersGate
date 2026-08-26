@@ -175,7 +175,11 @@ def doctor_row_enabled(row_name: str, off: set[str]) -> bool:
 # wrong about the spine breaks a workflow silently.
 CRAFTS: dict[str, tuple[str, ...]] = {
     "image": ("image_", "item_", "cutout_", "vfx_animate",
-              "animation_curves", "art_tournament_standings",
+              # animation_contacts is its sibling — same files, same
+              # question one layer down — so it is held by both crafts for
+              # the same reason sprite_sheet_check is.
+              "animation_curves", "animation_contacts",
+              "art_tournament_standings",
               "aseprite_", "palette_pin",
               "animation_generate", "sprite_contract_", "tileset_",
               "game_view_", "prop_generate",
@@ -197,6 +201,16 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                 # craft prefix (most godot_ tools really are spine), so these
                 # two had to be named one at a time.
                 "godot_deliver_asset", "godot_import_asset",
+                # THE TWO RIG GATES THAT CARRY NO `blender_` PREFIX, because
+                # neither one spawns Blender — both read a .glb directly. That
+                # is why they fell through: the prefix above is a proxy for
+                # "3D rig work", and it stopped being one the moment a gate
+                # answered the question without the engine. skin_dominance
+                # asks whether a vertex is driven by a bone anywhere near it;
+                # animation_contacts runs forward kinematics and asks what the
+                # feet actually do. Both are the 3D seat's own checks on a rig
+                # it just changed.
+                "skin_dominance", "animation_contacts",
                 "local_status"),
     "music": ("music_", "audio_listen_record"),
     "cinematic": ("cinematic_", "storyboard_", "kie_video_"),
@@ -231,7 +245,7 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  # craft; art and audio get their own copies below, because
                  # the seat that made the thing has to be able to check it
                  # before it hands it over.
-                 "room_review", "room_override", "scale_check",
+                 "room_review", "room_override", "scale_check", "scale_record_3d",
                  "audio_listen_record",
                  # THE TWO THE PRESENTATION GATE GAINED. `evidence_assert` is
                  # the verdict a captured frame never had — recording what

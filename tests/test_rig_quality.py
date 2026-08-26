@@ -124,10 +124,63 @@ def _tdev(ref, cand):
 
 
 def test_template_deviation_passes_an_identical_skeleton():
-    bones = {"Hips": [0.06, "Root"], "Head": [0.13, "Neck"]}
+    # EVERY FIXTURE BELOW GIVES ITS COMPARED BONES A CHILD, because glTF stores
+    # no bone tail and a leaf's length is the importer repeating its parent's.
+    # A two-bone table where both bones are leaves is not a skeleton any file
+    # in this pipeline can hold; see _invented_tails.
+    bones = {"Root": [0.54, ""], "Hips": [0.06, "Root"],
+             "Spine": [0.11, "Hips"]}
     verdict = blender.template_deviation_verdict(_tdev(bones, dict(bones)))
     assert verdict["passed"] is True
     assert verdict["checked"] == 2
+    assert verdict["excluded"] == ["Spine"]
+
+
+def test_template_deviation_will_not_compare_an_invented_leaf_length():
+    """GLTF STORES NO TAILS. The importer hands a leaf its parent's length, so
+    a leaf's row is a duplicate of the row above it and cannot disagree with
+    the template on its own. Counting it inflated `checked` from 18 to 23 on
+    the shipped 23-bone rig — five echoes reported as five measurements."""
+    ref = {"LeftLowerArm": [0.146, "LeftUpperArm"],
+           "LeftHand": [0.146, "LeftLowerArm"]}
+    # A candidate whose hand row says something wild. It cannot happen in a
+    # real file — the importer would have copied LeftLowerArm — and if it is
+    # handed to us anyway it is not evidence about this rig.
+    cand = {"LeftLowerArm": [0.146, "LeftUpperArm"],
+            "LeftHand": [0.900, "LeftLowerArm"]}
+    verdict = blender.template_deviation_verdict(_tdev(ref, cand))
+    assert verdict["passed"] is True
+    assert verdict["checked"] == 1
+    assert verdict["excluded"] == ["LeftHand"]
+    assert "LeftHand" not in verdict["deviations"]
+
+
+def test_template_deviation_still_checks_an_invented_leafs_parent():
+    """The tail is invented; the PARENT is stored. A leaf that hangs off the
+    wrong bone is still caught, and that is why leaves are dropped from the
+    length comparison rather than from the report.
+
+    It also costs a second bone, and that is not a bug. Every leaf in the
+    shipped 23-bone rig is an only child, so moving one leaves ITS OLD PARENT
+    childless — and a childless bone's length is the next invented one. Here
+    LeftLowerArm drops out of the comparison because LeftHand was taken off it.
+    """
+    ref = {"Root": [0.54, ""], "Hips": [0.06, "Root"], "Spine": [0.11, "Hips"],
+           "LeftLowerArm": [0.146, "LeftUpperArm"],
+           "LeftHand": [0.146, "LeftLowerArm"]}
+    cand = dict(ref, LeftHand=[0.146, "Hips"])
+    verdict = blender.template_deviation_verdict(_tdev(ref, cand))
+    assert verdict["passed"] is False
+    assert verdict["issues"][0]["bone"] == "LeftHand"
+    assert verdict["issues"][0]["kind"] == "hierarchy"
+    # Hips goes with it: reparenting LeftHand leaves LeftLowerArm childless,
+    # and Hips carries both Root's chain and Spine, so it is a fork and forks
+    # have no single length either. Two bones leave the comparison for two
+    # different reasons and the count says 1.
+    assert verdict["checked"] == 1, verdict["excluded"]
+    assert verdict["hierarchy_checked"] == 5
+    assert "LeftLowerArm" in verdict["excluded"]
+    assert "LeftLowerArm" not in verdict["deviations"]
 
 
 def test_template_deviation_survives_a_stance_difference():
@@ -143,27 +196,32 @@ def test_template_deviation_survives_a_stance_difference():
 
 
 def test_template_deviation_names_a_misproportioned_bone():
-    ref = {"Hips": [0.06, "Root"], "LeftHand": [0.04, "LeftLowerArm"]}
-    # A hand bone stretched to a quarter of body height — no fit produces this.
-    cand = {"Hips": [0.06, "Root"], "LeftHand": [0.25, "LeftLowerArm"]}
+    ref = {"LeftLowerArm": [0.146, "LeftUpperArm"],
+           "LeftHand": [0.146, "LeftLowerArm"]}
+    # A forearm stretched to a quarter of body height — no fit produces this.
+    cand = {"LeftLowerArm": [0.250, "LeftUpperArm"],
+            "LeftHand": [0.250, "LeftLowerArm"]}
     verdict = blender.template_deviation_verdict(_tdev(ref, cand))
     assert verdict["passed"] is False
-    assert verdict["issues"][0]["bone"] == "LeftHand"
+    assert verdict["issues"][0]["bone"] == "LeftLowerArm"
     assert verdict["issues"][0]["kind"] == "proportion"
 
 
 def test_template_deviation_catches_a_rewired_chain():
     """Same 23 names, different hierarchy — nothing retargets onto that."""
-    ref = {"LeftHand": [0.04, "LeftLowerArm"]}
-    cand = {"LeftHand": [0.04, "Hips"]}
+    ref = {"LeftLowerArm": [0.146, "LeftUpperArm"],
+           "LeftHand": [0.146, "LeftLowerArm"]}
+    cand = {"LeftLowerArm": [0.146, "Hips"],
+            "LeftHand": [0.146, "LeftLowerArm"]}
     verdict = blender.template_deviation_verdict(_tdev(ref, cand))
     assert verdict["passed"] is False
     assert verdict["issues"][0]["kind"] == "hierarchy"
 
 
 def test_template_deviation_only_compares_shared_bones():
-    ref = {"Hips": [0.06, "Root"], "Tail": [0.2, "Hips"]}
-    cand = {"Hips": [0.06, "Root"]}
+    ref = {"Hips": [0.06, "Root"], "Spine": [0.11, "Hips"],
+           "Tail": [0.2, "Spine"]}
+    cand = {"Hips": [0.06, "Root"], "Spine": [0.11, "Hips"]}
     verdict = blender.template_deviation_verdict(_tdev(ref, cand))
     assert verdict["checked"] == 1
     assert verdict["passed"] is True
@@ -413,17 +471,48 @@ def test_flex_renders_one_frame_per_pose(bound_glb, tmp_path):
 
 @needs_blender
 def test_template_deviation_of_a_real_bind(bound_glb):
+    """bg_human IS the template, adopted and rebound, so against the shipped
+    skeleton its own bones keep the shipped proportions. It is rigged in an
+    A-pose and the reference is a T-pose, which is exactly the difference
+    lengths are immune to and joint positions were not.
+
+    THE REFERENCE IS PASSED EXPLICITLY HERE, and that is the point of the next
+    test rather than an oversight.
+    """
     out, _ = bound_glb
-    got = blender.template_deviation(str(out), timeout=900)
+    got = blender.template_deviation(str(out), reference=str(blender.HUMANOID_SKELETON),
+                                     timeout=900)
     assert got["ok"] is True, got.get("error")
     assert got["candidate_bones"]
+    assert got["reference_from"] == "file"
     verdict = blender.template_deviation_verdict(got)
-    # bg_human IS the template, adopted and rebound — its own bones should
-    # keep the shipped skeleton's proportions. It is rigged in an A-pose and
-    # the template is a T-pose, which is exactly the difference lengths are
-    # immune to and joint positions were not.
     assert verdict["checked"] >= 10
     assert verdict["passed"] is True, verdict["issues"]
+
+
+@needs_blender
+def test_a_figure_with_no_crotch_gap_gets_no_proportion_check_at_all(bound_glb):
+    """AND THAT IS A REAL LIMITATION, NOT A BUG — worth a test so it is not
+    rediscovered as one.
+
+    Without an explicit reference the gate now derives the candidate's own
+    height, head count and limb ratio and builds the canon at those. `limbs`
+    comes from the measured crotch, and bg_human at its default build has
+    thighs wider than their separation — hip_x 0.048 of chin height against
+    thigh_r 0.062 — so it has no crotch gap anywhere and nothing can be
+    derived. A skirt or a long coat does the same to a generated character.
+
+    The gate REFUSES rather than quietly falling back to judging the figure as
+    a 7.5-head adult, which is the behaviour it was just taken off. A caller
+    who wants that comparison asks for it by name, as the test above does.
+    """
+    out, _ = bound_glb
+    got = blender.template_deviation(str(out), timeout=900)
+    assert got["ok"] is False
+    assert "crotch" in got["error"] or "calf" in got["error"], got["error"]
+    verdict = blender.template_deviation_verdict(got)
+    assert verdict["passed"] is False
+    assert verdict["issues"][0]["kind"] == "unmeasured"
 
 
 @needs_blender
@@ -463,23 +552,40 @@ def test_weight_islands_does_not_flag_every_bone_of_a_clean_bind(bound_glb):
 
 
 @needs_blender
-def test_weight_islands_finds_the_chest_split_in_the_shipped_template(bound_glb):
-    """A REAL PROPERTY OF bg_human's BIND, not a measurement artifact, and
-    recorded here so a future change to bind() shows up as a diff rather than
-    as a silent improvement or regression.
+def test_the_chest_split_in_the_shipped_template_is_gone(bound_glb):
+    """THE SPLIT THIS TEST WAS WRITTEN TO PIN NO LONGER EXISTS, and the way it
+    went is the reason the test is kept rather than deleted.
 
-    Chest's weights fall into two separate regions of ONE connected piece of
-    mesh — 22 vertices and 15 — and they stay separate as the membership
-    threshold is raised from 0.02 all the way to 0.2, so this is not the
-    near-zero fringe a low threshold invents. Whether it is worth fixing in
-    the template is a rigging question this test does not answer; that it is
-    genuinely there is what it pins.
+    It used to record Chest's weights falling into two separate regions of one
+    connected piece of mesh, surviving every membership threshold from 0.02 to
+    0.2, and said plainly that whether it was worth fixing was a rigging
+    question it did not answer. The answer turned out to be that Chest was not
+    the patient. `landmarks` put each Shoulder joint on the bicep, which left
+    the Shoulder bone spanning the whole ribcage and holding the middle of the
+    chest; Chest kept the scraps either side of it, and two scraps are two
+    islands. Measured on this same fixture, before and after that fix:
+
+        Chest          16 vertices, 2 islands (8 and 8), 8 bleed  ->
+                       72 vertices, 1 island,             0 bleed
+        LeftShoulder  170 vertices -> 127
+        Spine          80 vertices -> 108
+        UpperChest     29 vertices -> 49
+
+    So the split was a symptom one level up, the trunk chain has four and a
+    half times the chest it had, and this now pins the healthy state. If it
+    ever reads 2 again, the shoulder has moved back down the arm.
+
+    CHEST WAS NEVER THE PATIENT. The numbers say what changed; this says why a
+    Chest test was really a Shoulder test, which is the part worth carrying:
+    when a bone crosses a region it does not belong to, the bone it displaces
+    is the one that shows the symptom, and the gate names the wrong bone.
     """
     out, _ = bound_glb
     got = blender.weight_islands(str(out), threshold=0.1, timeout=900)
     chest = got["bones"]["Chest"]
     assert chest["shells"] == 1
-    assert chest["islands"] == 2, chest
+    assert chest["islands"] == 1, chest
+    assert chest["bleed_vertices"] == 0, chest
 
 
 # ---------------------------------------------------------------------------

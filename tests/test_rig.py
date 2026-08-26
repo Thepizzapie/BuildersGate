@@ -72,18 +72,18 @@ class TestScriptContract:
         round trip sits in a different space and heat finds nothing to weight.
         Both calls must appear in the SAME script.
         """
-        src = blender._RIG_SCRIPT
+        src = blender._rig_script()
         assert "bg_adopt(" in src and "bg_human(" in src
         assert src.index("bg_adopt(") < src.index("bg_human(")
         assert "import_scene.gltf" in src
         assert src.count("import_scene.gltf") == 1
 
     def test_heat_is_tried_before_envelope(self):
-        src = blender._RIG_SCRIPT
+        src = blender._rig_script()
         assert src.index("ARMATURE_AUTO") < src.index("ARMATURE_ENVELOPE")
 
     def test_the_verdict_counts_vertices_without_groups(self):
-        assert "if not v.groups" in blender._RIG_SCRIPT
+        assert "if not v.groups" in blender._rig_script()
 
 
 class TestHumanoidTemplate:

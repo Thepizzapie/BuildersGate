@@ -434,3 +434,62 @@ def test_the_core_dependencies_actually_declare_what_they_claim(cfg):
             f"{name} is listed as a core dependency in ALLOWED_UNGUARDED but "
             f"[project.dependencies] does not name it — declared: "
             f"{sorted(declared)}")
+
+
+# ---------------------------------------------------------------------------
+# The frozen bundle, which has its own way of not containing the product
+# ---------------------------------------------------------------------------
+
+SPEC = REPO / "packaging" / "bgate.spec"
+
+# `Path(__file__).with_name("x.py")` in an adapter means "there is a real file
+# beside me". Nothing about being importable provides that.
+_SIBLING = re.compile(r"""with_name\(\s*["']([^"']+\.py)["']\s*\)""")
+
+
+def _adapter_siblings() -> dict[str, list[str]]:
+    """Every .py an adapter resolves beside itself at run time, and where."""
+    out: dict[str, list[str]] = {}
+    for source in sorted((REPO / "bgate_adapters").glob("*.py")):
+        for name in _SIBLING.findall(source.read_text(encoding="utf-8")):
+            out.setdefault(name, []).append(source.name)
+    return out
+
+
+def test_every_adapter_read_from_disk_is_shipped_in_the_frozen_bundle():
+    """A module PyInstaller can import is not a file PyInstaller wrote down.
+
+    `collect_submodules` compiles bgate_adapters into the archive and puts no
+    .py on disk, and four adapters are never imported for their behaviour —
+    three are handed to another interpreter by PATH (Blender's `--python`, a
+    whisper subprocess) and one has its text spliced into a generated script.
+
+    Verified against a shipped bundle before the spec listed them:
+    dist/BuildersGate/_internal held no bgate_adapters directory at all, so
+    every `Path(__file__).with_name(...)` in that package resolved to nothing
+    and all of modelling, rigging, sprite baking and transcription were dead in
+    the packaged app. Nothing caught it because nothing ran the frozen binary —
+    the same reason the wheel shipped without its own static/ and templates/,
+    which is what the rest of this file exists for.
+    """
+    spec = SPEC.read_text(encoding="utf-8")
+    missing = {name: readers for name, readers in _adapter_siblings().items()
+               if name not in spec}
+    assert not missing, (
+        "these files are resolved beside their module at run time but are not "
+        "named in packaging/bgate.spec, so the frozen app will not have them: "
+        + "; ".join(f"{name} (read by {', '.join(readers)})"
+                    for name, readers in sorted(missing.items()))
+        + ". Add them to the `datas` list that ships bgate_adapters sources, "
+          "with destination 'bgate_adapters' so with_name() resolves.")
+
+
+def test_the_shipped_adapter_sources_still_exist():
+    """The other direction: a spec naming a file nobody kept is a build that
+    fails late, on a machine that is not the developer's."""
+    spec = SPEC.read_text(encoding="utf-8")
+    block = spec.split("datas += [", 1)[-1].split("]", 1)[0]
+    for name in re.findall(r"""["']([^"']+\.py)["']""", block):
+        assert (REPO / "bgate_adapters" / name).is_file(), (
+            f"packaging/bgate.spec ships bgate_adapters/{name} and no such "
+            "file exists")

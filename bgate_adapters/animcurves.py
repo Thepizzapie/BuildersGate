@@ -88,6 +88,44 @@ def _accessor_values(gltf: dict, bin_data: bytes, accessor_index: int):
     return out
 
 
+def canonicalise_quaternions(values: list) -> tuple[list, int]:
+    """Remove the double-cover sign flips from a rotation track.
+
+    THE BUG THIS EXISTS TO KILL, AND IT WAS SHIPPING FALSE POSITIVES ON REAL
+    CHARACTERS. A quaternion and its negation are the SAME rotation — q and -q
+    put a bone in an identical pose — and glTF stores whichever one the
+    exporter's maths happened to produce. Every speed measurement in this
+    module differences consecutive samples as plain 4-vectors, so the frame
+    where the sign flips reports a jump of |q - (-q)| = 2 over one frame: a
+    24 fps track sees roughly 48 units/second of "motion" on a bone that did
+    not move at all.
+
+    Measured, on the two shipped characters of the project this was found in:
+    15 flips across the owner's six clips and 18 across the cat's, every one
+    of them on an UpperLeg. Those were exactly the bones `sparc` was reporting
+    as the roughest in the file — the gate was ranking an encoding detail as
+    the worst jitter in the animation, on both characters, in every clip.
+
+    A flip is NOT a defect in the clip. It is a legal encoding, and no
+    exporter is doing anything wrong by producing it. So this corrects the
+    samples rather than raising an issue, and returns the count so a caller
+    can still see that it happened.
+
+    Returns (values, flips). Non-VEC4 input is handed straight back.
+    """
+    if not values or not isinstance(values[0], (tuple, list)) or len(values[0]) != 4:
+        return values, 0
+    out = [tuple(values[0])]
+    flips = 0
+    for current in values[1:]:
+        if sum(a * b for a, b in zip(out[-1], current)) < 0.0:
+            out.append(tuple(-c for c in current))
+            flips += 1
+        else:
+            out.append(tuple(current))
+    return out, flips
+
+
 def extract_animations(path: str | Path) -> dict:
     """Every animation clip in a GLB, as plain time/value channel data.
 
@@ -116,10 +154,19 @@ def extract_animations(path: str | Path) -> dict:
             node_name = (nodes[node_index].get("name", f"node{node_index}")
                         if node_index is not None and node_index < len(nodes)
                         else "?")
+            values = list(values)
+            # CORRECTED HERE, ONCE, rather than in each metric. Every consumer
+            # of this function differences these samples; a rotation track that
+            # crosses the double cover breaks all of them the same way, and a
+            # metric that had to remember to ask is a metric that will forget.
+            flips = 0
+            if target.get("path") == "rotation":
+                values, flips = canonicalise_quaternions(values)
             channels.append({
                 "node": node_name, "path": target.get("path"),
                 "interpolation": sampler.get("interpolation", "LINEAR"),
-                "times": list(times), "values": list(values),
+                "times": list(times), "values": values,
+                "sign_flips": flips,
             })
         animations.append({"name": anim.get("name", ""), "channels": channels})
     return {"ok": True, "animations": animations}
@@ -129,17 +176,101 @@ def extract_animations(path: str | Path) -> dict:
 # Shared derivative primitive
 # ---------------------------------------------------------------------------
 
+def _looks_like_rotation(values) -> bool:
+    """Four components, every one of them a unit quaternion.
+
+    The unit-norm test is the point. glTF's only VEC4 animation target IS
+    `rotation`, but these functions are public and take plain arrays, so a
+    caller can hand in any 4-vector. A rotation track is self-identifying —
+    every sample lies on the unit 3-sphere — and treating a non-unit 4-vector
+    as an angle would be worse than the euclidean fallback it replaces.
+    """
+    if not values or not isinstance(values[0], (tuple, list)):
+        return False
+    if len(values[0]) != 4:
+        return False
+    for q in values:
+        if abs(sum(c * c for c in q) - 1.0) > 1e-3:
+            return False
+    return True
+
+
+def _geodesic_angle(a, b) -> float:
+    """Radians of rotation between two unit quaternions. Sign-blind."""
+    dot = min(1.0, abs(sum(x * y for x, y in zip(a, b))))
+    return 2.0 * math.acos(dot)
+
+
+def _static_travel(values, speed: list[float], times: list[float]) -> Optional[str]:
+    """Is this track's whole motion smaller than the noise its own encoding
+    carries — and if so, why to say so.
+
+    AN ABSOLUTE FLOOR IS THE WRONG TEST AGAINST A FLOAT32 EXPORT, and every
+    guard in this module used one. glTF stores samples as float32, so a bone
+    that was never animated comes back as a scale of 1.0 at one key and
+    0.9999999403953552 at the next — one unit in the last place. That is a
+    speed of about 4e-8, which clears a `peak <= 1e-9` dead-channel guard
+    comfortably, and the track is then judged as motion. Measured on a shipped
+    character: 34 of a walk cycle's 69 channels were flagged as un-eased
+    linear motion, every one of them a static bone whose entire travel was
+    float32 rounding.
+
+    Rotation is absolute — radians — so it gets a fixed floor of 1e-4 rad,
+    about six thousandths of a degree. Everything else is compared against the
+    magnitude of its own values at 1e-6 relative, which is a handful of ULPs
+    at float32's roughly seven significant digits.
+
+    Returns the reason to refuse with, or None when there is real motion.
+    """
+    duration = (times[-1] - times[0]) if len(times) > 1 else 0.0
+    travel = sum(speed) / max(len(speed), 1) * duration
+    if _looks_like_rotation(values):
+        if travel < 1e-4:
+            return ("this track turns less than a hundredth of a degree across "
+                    "its whole duration — that is float32 rounding on a bone "
+                    "nobody animated, not motion")
+        return None
+    scale = 1.0
+    for v in values:
+        for c in (v if isinstance(v, (tuple, list)) else (v,)):
+            scale = max(scale, abs(c))
+    if travel < scale * 1e-6:
+        return ("this track's entire travel is smaller than the last digit "
+                "float32 can hold at its own magnitude — a bone nobody "
+                "animated, exported as noise rather than as a constant")
+    return None
+
+
 def _speed(times: list[float], values: list) -> list[float]:
     """Central-difference speed magnitude per sample.
 
     `values` is a list of scalars or a list of equal-length component tuples
     (VEC3 translation, VEC4 rotation quaternion). Endpoints use a
     one-sided difference since they have no symmetric neighbour.
+
+    A ROTATION TRACK IS DIFFERENCED AS AN ANGLE, NOT AS A 4-VECTOR, and the
+    difference is not cosmetic. Component-wise |q(t+1) - q(t)| is a chord
+    across the unit 3-sphere, and it is worst exactly where this project's
+    rigs live: a bone whose local rotation sits near 180 degrees — which is
+    every thigh on a skeleton whose leg bones point down from the hip — has a
+    quaternion with w near zero, where a few degrees of real motion swings the
+    representation across the sphere and the chord reports motion that the
+    bone did not make. Measured on two shipped characters, the four UpperLeg
+    bones ranked as the roughest tracks in every clip of both files, on rigs
+    whose thighs were swinging a smooth ten degrees. The geodesic angle is
+    invariant to the representation, immune to the q/-q double cover, and
+    stable at the antipode.
+
+    Units for a rotation track are therefore radians/second. Both verdicts
+    downstream — `cruising_fraction` and SPARC — are scale-invariant, so the
+    change of unit moves no threshold; `peak_speed` becomes a real angular
+    rate instead of an arbitrary one.
     """
     n = len(times)
     if n < 2:
         return [0.0] * n
     vec = isinstance(values[0], (tuple, list))
+    quat = _looks_like_rotation(values)
     out = []
     for i in range(n):
         lo, hi = max(0, i - 1), min(n - 1, i + 1)
@@ -147,7 +278,9 @@ def _speed(times: list[float], values: list) -> list[float]:
         if dt <= 1e-9:
             out.append(0.0)
             continue
-        if vec:
+        if quat:
+            out.append(_geodesic_angle(values[lo], values[hi]) / dt)
+        elif vec:
             d = [(values[hi][k] - values[lo][k]) / dt for k in range(len(values[i]))]
             out.append(sum(x * x for x in d) ** 0.5)
         else:
@@ -254,8 +387,16 @@ def velocity_profile(times: list[float], values: list, *,
                            peak_speed=0.0, cruising_fraction=0.0)
     speed = _speed(times, values)
     n = len(speed)
-    if n < 2 or len(times) < 2:
-        return _unmeasured(f"{len(times)} samples — too few for a speed profile",
+    # FOUR, NOT TWO. A two-sample track is a single interval, and a single
+    # interval is trivially "near its own peak" for its whole duration — so
+    # cruising_fraction is 1.0 for every one of them, whatever they do, and
+    # the verdict then calls every static bone in the file un-eased linear
+    # motion. Three samples is two intervals and can only score 0, 0.5 or 1.
+    # There is no profile to read until there is a shape to read it from.
+    if n < 4 or len(times) < 4:
+        return _unmeasured(f"{len(times)} samples — a speed PROFILE needs a "
+                           "shape, and fewer than four samples is one or two "
+                           "intervals with no shape to have",
                            peak_speed=0.0, cruising_fraction=0.0)
     duration = times[-1] - times[0]
     if duration <= 1e-9:
@@ -267,10 +408,11 @@ def velocity_profile(times: list[float], values: list, *,
     # threshold 8.5e-10, which no speed of exactly 0.0 clears, so a track of 60
     # identical samples reported cruising_fraction 0.0 and sailed through the
     # gate. A bone that never moves is not an eased bone.
-    if peak <= 1e-9:
-        return _unmeasured("nothing on this track moves — a dead channel has "
-                           "no easing to judge, and 0.0 here is absence, not "
-                           "a clean result",
+    static = _static_travel(values, speed, times)
+    if peak <= 1e-9 or static:
+        return _unmeasured(static or "nothing on this track moves — a dead "
+                           "channel has no easing to judge, and 0.0 here is "
+                           "absence, not a clean result",
                            peak_speed=0.0, cruising_fraction=0.0)
     threshold = near_peak_ratio * peak
     near_peak_time = 0.0
@@ -296,6 +438,120 @@ def velocity_profile_verdict(profile: dict, *, max_cruising_fraction: float = 0.
                                "weighted curve"})
     return {"passed": not issues, "issues": issues,
             "threshold": max_cruising_fraction}
+
+
+# ---------------------------------------------------------------------------
+# Bursts: the opposite tail of the same profile velocity_profile reads
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. `velocity_profile` asks whether a track holds a near-constant
+# speed, and a track that does reads as un-eased linear interpolation. That is
+# one failure. THE OTHER ONE IS ITS MIRROR IMAGE and nothing here was asking
+# about it: a clip whose whole pose change is crammed into two frames and whose
+# remaining nine tenths are a drift. It passes `velocity_profile` easily —
+# 4% cruising, about as far from constant-speed as a curve can get — and SPARC
+# calls it rough without saying why or where.
+#
+# Measured on two shipped characters, on every clip in both files. A thigh in
+# the human's `pursue_walk`, in degrees per second per frame:
+#
+#     1 3 10 180 491 485 150 45 45 5 58 58 18 17 50 98 142 165 166 160 157 ...
+#
+# 491 deg/s is more than twenty degrees in a single frame at 24 fps, twice,
+# then a stall at 5, then a wobble, then a smooth ramp. That is not a walk
+# cycle; it is a snap followed by a drift, and it is what the character does.
+#
+# The number is the share of the clip's TOTAL travel that lands in its fastest
+# tenth of frames, divided by the share an evenly paced clip would put there.
+# Dividing by the even-pacing share is what makes the threshold hold across
+# sample counts — the fastest tenth of 25 frames and of 91 frames are different
+# fractions of the clip, and a raw share would need a different bound for each.
+#
+#     evenly paced motion   1.0
+#     a clean sine swing    1.5      (a limb accelerating and decelerating)
+#     every clip measured   4.2 - 8.0
+#
+# Reported alongside, as information rather than as gate conditions:
+# `peak_over_median` (infinite when the bone is motionless for more than half
+# the clip, which is itself worth seeing) and `worst_step`, the largest
+# single-frame change in speed as a fraction of the peak — 1.0 means the track
+# went from rest to its fastest in one frame.
+
+def motion_concentration(times: list[float], values: list) -> dict:
+    """How much of this track's travel lands in its fastest tenth of frames.
+
+    See the note above for what the numbers mean and where they came from.
+    A track with nothing on it is unmeasured, not smooth.
+    """
+    if not _finite(values) or not _finite(times):
+        return _unmeasured("this track carries NaN or infinity — no speed "
+                           "profile can be taken of it")
+    speed = _speed(times, values)
+    n = len(speed)
+    if n < 10:
+        return _unmeasured(f"{n} samples — a fastest TENTH needs at least ten "
+                           "frames to mean anything")
+    total = sum(speed)
+    static = _static_travel(values, speed, times)
+    if total <= 1e-9 or static:
+        return _unmeasured(static or "nothing on this track moves — a "
+                           "motionless bone has no pacing to judge, and "
+                           "calling it evenly paced would be the cleanest "
+                           "score this returns")
+    k = max(1, n // 10)
+    ordered = sorted(speed, reverse=True)
+    share = sum(ordered[:k]) / total
+    even = k / n
+    median = sorted(speed)[n // 2]
+    worst_step = max(abs(speed[i] - speed[i - 1]) for i in range(1, n))
+    return {"burst_ratio": round(share / even, 3),
+            "top_decile_share": round(share, 4),
+            "even_share": round(even, 4),
+            "peak_speed": round(max(speed), 5),
+            "peak_over_median": (round(max(speed) / median, 2)
+                                 if median > 1e-9 else None),
+            "worst_step": round(worst_step / max(speed), 3),
+            "samples": n}
+
+
+def motion_concentration_verdict(result: dict, *,
+                                 max_burst_ratio: float = 3.0) -> dict:
+    """The judgement over `motion_concentration`.
+
+    `max_burst_ratio` (3.0) is a GROSS-ERROR line and sits deliberately in the
+    empty band between a clean swing at 1.5 and the least concentrated real
+    clip measured at 4.2. A snappy attack or an impact frame is a legitimate
+    style and lives above a sine swing; what this refuses is a clip whose
+    motion is a discontinuity with padding around it. Raise it for a
+    deliberately snappy library rather than switch the check off.
+    """
+    refusal = _refuse(result, threshold=max_burst_ratio)
+    if refusal:
+        return refusal
+    issues = []
+    ratio = result.get("burst_ratio", 1.0)
+    if ratio > max_burst_ratio:
+        pct = result.get("top_decile_share", 0.0) * 100
+        issues.append({"kind": "burst", "value": ratio,
+                       "note": f"{pct:.0f}% of this track's whole travel "
+                               f"happens in its fastest tenth of frames "
+                               f"({ratio:.1f}x what even pacing would put "
+                               "there) — the motion is a snap with a drift "
+                               "around it, not a movement"})
+    # WORST_STEP IS RATE-DEPENDENT and burst_ratio is not, which is why only
+    # one of them carries the tunable threshold. A single frame's share of the
+    # speed range necessarily grows as the sample rate falls — the same sine
+    # swing reads 0.50 at 11 samples and 0.05 at 121 — so this is pinned at
+    # the one value that means something at any rate: 0.9 says a single frame
+    # spans essentially the track's whole speed range, which is a step, not a
+    # coarse sample of a curve.
+    if result.get("worst_step", 0.0) >= 0.9:
+        issues.append({"kind": "step_start", "value": result["worst_step"],
+                       "note": "one frame carries the track's entire speed "
+                               "range — it starts or stops instantly, with no "
+                               "frame of acceleration between rest and full "
+                               "speed"})
+    return {"passed": not issues, "issues": issues,
+            "threshold": max_burst_ratio}
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +599,15 @@ def sparc(times: list[float], values: list, *, freq_cutoff: float = 10.0,
     if n < 4 or not times:
         return _unmeasured(f"{n} samples — too few for a spectrum",
                            sparc=0.0, samples=n)
+    # THE SAME FLOAT32 GUARD ITS TWO SIBLINGS CARRY, and leaving it out here
+    # was worse than in either of them: SPARC normalises the spectrum by its
+    # own peak, so a track of pure last-digit rounding is normalised UP into a
+    # full-amplitude noise spectrum and scores about -9.6 — past the -8.0
+    # bound, and reported as the roughest track in the file. A bone nobody
+    # animated cannot be the jitteriest thing in a clip.
+    static = _static_travel(values, speed, times)
+    if static:
+        return _unmeasured(static, sparc=0.0, samples=n)
     duration = max(times) - min(times)
     if duration <= 1e-9:
         return _unmeasured("every sample carries the same timestamp — there is "
@@ -408,6 +673,20 @@ def foot_skate(times: list[float], positions: list, *, ground_axis: int = 1,
                contact_band: float = 0.03, skate_tolerance: float = 0.02) -> dict:
     """Frames where a foot sits within `contact_band` of its lowest point in
     this clip but still moves horizontally more than `skate_tolerance`.
+
+    THIS IS ALMOST NEVER THE FUNCTION YOU WANT, and the reason is structural
+    rather than a matter of taste. It takes LOCAL channel positions, and a
+    foot bone on a skinned humanoid has no translation channel at all — it
+    moves because a hip and a knee rotate above it. Verified on two shipped
+    characters, in every clip of both: the foot carries a `rotation` channel
+    and nothing else, so this read one constant key and refused, every time.
+    It has never once run on a real character.
+    `bonepaths.contact_slide` is the one that can: it runs forward kinematics
+    first, so it has a foot to look at, and it judges against the clip's own
+    convention — an IN-PLACE locomotion clip is supposed to slide its planted
+    foot, at a steady speed, because there the foot is the ground.
+    Kept because it is correct for a track that really does carry world
+    positions, which is what a caller with baked-out trajectories has.
 
     Kovar et al.'s footskate signature, from the mocap-cleanup literature.
     `ground_axis` defaults to 1 (glTF is Y-up by convention); pass 2 for a
@@ -642,10 +921,18 @@ def anticipation_verdict(times: list[float], values: list[float], *,
                 "issues": [{"kind": "unmeasured",
                             "note": f"{n} samples after resampling — too few "
                                     "to tell a shaped transition from a corner"}]}
-    if max(abs(x) for x in resp) < 1e-12:
+    # THE ABSOLUTE FLOOR HERE WAS THE THIRD COPY OF THE SAME MISTAKE. 1e-12
+    # catches a track of exact constants and misses a track of float32
+    # rounding, whose curvature is around 1e-8 — so a bone nobody animated
+    # sailed past this guard and was reported as having two un-anticipated
+    # transitions. The scale-relative test is the one that knows the
+    # difference; see _static_travel.
+    static = _static_travel(values, _speed(times, values), times)
+    if static or max(abs(x) for x in resp) < 1e-12:
         return {"passed": False, "events": 0, "sigma": lr["sigma"],
                 "issues": [{"kind": "unmeasured",
-                            "note": "this track has no curvature anywhere — it "
+                            "note": static or
+                                    "this track has no curvature anywhere — it "
                                     "holds a constant value, and there is no "
                                     "transition here to have been shaped"}]}
     peaks = _peaks(resp, min_prominence_frac=min_prominence_frac)
