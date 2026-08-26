@@ -10,6 +10,7 @@ caller and test.
 """
 from bgate_adapters import animcurves as _animcurves
 from bgate_adapters import blender as _blender
+from bgate_adapters import bonepaths as _bonepaths
 from bgate_adapters import skinweights as _skinweights
 from bgate_mcp.server import (  # noqa: F401
     Optional, _Path, _archive_preview, _contained_path,
@@ -728,7 +729,8 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                      ground_axis: int = 1, max_cruising_fraction: float = 0.6,
                      min_sparc: float = -8.0, max_skating_frames: int = 0,
                      check_anticipation: bool = True,
-                     min_anticipation_width: float = 6.0) -> dict:
+                     min_anticipation_width: float = 6.0,
+                     max_burst_ratio: float = 3.0) -> dict:
     """Measure an exported animation clip's curves - no Blender/Godot needed.
 
     Reads a GLB's animation channels directly (glTF is a public format, so
@@ -744,6 +746,15 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                          its own peak speed. High means the motion travels
                          at near-constant speed rather than easing in/out - the curve-math signature of raw linear-interpolated
                          keyframes.
+      concentration      THE OPPOSITE TAIL OF THAT SAME PROFILE, and
+                         velocity_profile is blind to it: what share of a
+                         track's whole travel lands in its fastest tenth of
+                         frames, against what even pacing would put there.
+                         1.0 is evenly paced, 1.5 a clean sine swing; a clip
+                         whose entire pose change happens in two frames with
+                         a drift around it runs 4x and up. A snap is about as
+                         far from constant-speed as a curve gets, so it sails
+                         through the check above.
       sparc              spectral arc length of the speed profile - a
                          smoothness/jitter measure from the mocap-cleanup
                          literature. Its threshold is a starting point
@@ -792,6 +803,11 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                 sp = _animcurves.sparc(times, values)
                 entry["sparc"] = {**sp, "verdict": _animcurves.sparc_verdict(
                     sp, min_sparc=min_sparc)}
+                burst = _animcurves.motion_concentration(times, values)
+                entry["concentration"] = {
+                    **burst,
+                    "verdict": _animcurves.motion_concentration_verdict(
+                        burst, max_burst_ratio=max_burst_ratio)}
                 if check_anticipation:
                     axis_values = (list(zip(*values)) if values
                                   and isinstance(values[0], (tuple, list))
@@ -816,16 +832,47 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                             **skate, "verdict": _animcurves.foot_skate_verdict(
                                 skate, max_skating_frames=max_skating_frames)}
             channels.append(entry)
-        failed = [c["node"] for c in channels
-                 if not c.get("velocity", {}).get("verdict", {}).get("passed", True)
-                 or not c.get("sparc", {}).get("verdict", {}).get("passed", True)
-                 or not c.get("foot_skate", {}).get("verdict", {}).get("passed", True)
-                 or not c.get("anticipation", {}).get("verdict", {}).get("passed", True)]
+        # A BONE NOBODY ANIMATED IS NOT A BONE WITH BAD CURVES, and until this
+        # split existed the tool said otherwise about every one of them. The
+        # metrics below each refuse rather than pass when they cannot measure
+        # - correctly, an unknown is not a clean bill of health - and a real
+        # humanoid clip animates a dozen bones and leaves the other ten
+        # holding two constant keys. Folding those refusals into `failed`
+        # flagged all 23 bones of all six clips on both characters of the
+        # project this was written against: a tool that flags everything says
+        # nothing, and its headline `passed` could never be True on any rig.
+        #
+        # So a channel is FLAGGED only for a defect that was actually seen,
+        # and the refusals are counted separately rather than swallowed -
+        # `unmeasured_channels` is how a caller still learns that most of this
+        # clip could not be judged.
+        def _defects(entry: dict) -> list[str]:
+            out = []
+            for metric in ("velocity", "sparc", "concentration",
+                           "foot_skate", "anticipation"):
+                verdict = (entry.get(metric) or {}).get("verdict") or {}
+                if verdict.get("passed", True):
+                    continue
+                if all(i.get("kind") == "unmeasured"
+                       for i in verdict.get("issues") or [{}]):
+                    continue
+                out.append(metric)
+            return out
+
+        failed, unmeasured = [], 0
+        for c in channels:
+            hits = _defects(c)
+            if hits:
+                failed.append(c["node"])
+            elif any((c.get(m) or {}).get("measured") is False
+                     for m in ("sparc", "concentration")):
+                unmeasured += 1
         measured = [c for c in channels if "velocity" in c]
         clips.append({"name": anim["name"], "channels": channels,
                      "measured_channels": len(measured),
+                     "unmeasured_channels": unmeasured,
                      "passed": bool(measured) and not failed,
-                     "flagged_bones": failed})
+                     "flagged_bones": sorted(set(failed))})
     # A FILE WITH NO CLIPS IS NOT A FILE WITH CLEAN CLIPS. `failed` never
     # evaluates on an empty channel list, so every aggregate here reported
     # a pass for a model carrying no animation at all - which is exactly
@@ -1444,3 +1491,135 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
         return _fail(exc)
 
 
+
+
+@_tool
+def animation_contacts(model: str, feet: Optional[list[str]] = None,
+                       gait: Optional[str] = None,
+                       clip: Optional[str] = None,
+                       ground_axis: int = 1,
+                       band_fraction: float = 0.25,
+                       max_slide: float = 0.02,
+                       max_variation: float = 0.20,
+                       floor: Optional[float] = None) -> dict:
+    """Where a character's feet ACTUALLY are, frame by frame - the question
+    animation_curves structurally cannot answer.
+
+    Every metric in animation_curves reads a channel's raw local values, which
+    is right for "is this curve smooth" and wrong for anything about where a
+    body part IS. A foot bone on a skinned humanoid has no translation channel
+    at all - it moves because a hip and a knee rotate above it - so the foot
+    skate check over there has never run on a real character. It read a
+    constant and honestly said so.
+
+    This runs forward kinematics off the file, composing each joint onto its
+    parent per frame, and then measures what only world positions can show:
+
+      support      how many feet are down on each frame, and FLIGHT - frames
+                   with nothing down at all. Judged only against a DECLARED
+                   `gait`, because the identical number is correct for a run
+                   and impossible for a walk; an undeclared gait returns the
+                   measurement with a refusal rather than a pass.
+      contact      the planted foot's ground-plane speed. Judged against the
+                   clip's own convention, which the evaluator detects: a
+                   ROOT-MOTION clip should hold its planted foot still, an
+                   IN-PLACE clip must slide it at a STEADY speed, because
+                   there the foot is the ground. Judging in-place clips
+                   against zero would fail every correct locomotion loop in
+                   the project.
+      clearance    frames where a foot passes below the floor. Pass `floor`
+                   (usually 0.0) for the real one; the default asks the weaker
+                   question of whether it dips below its own resting contact.
+
+    `feet` names the contact joints exactly (LeftFoot/RightFoot on this
+    project's humanoids, the four paws on a quadruped). Without it, joints
+    whose names look like feet are used and the guess is reported.
+
+    `gait` is one of walk, run, stand, any. It is a declaration about what the
+    clip was MEANT to be, and there is deliberately no default - see the
+    support verdict.
+    """
+    src = _Path(model)
+    paths = _bonepaths.joint_paths(src, clip=clip)
+    if not paths.get("ok"):
+        return {"ok": False, "error": paths.get("reason", "no trajectories")}
+    height = paths.get("model_height")
+    guessed = False
+    clips = []
+    for entry in paths["clips"]:
+        if not entry.get("measured"):
+            clips.append({"name": entry["name"], "measured": False,
+                          "reason": entry.get("reason")})
+            continue
+        positions = entry["positions"]
+        names = feet
+        if not names:
+            names = [n for n in positions
+                     if any(tag in n.lower()
+                            for tag in ("foot", "feet", "paw", "toe"))]
+            guessed = True
+        names = [n for n in names if n in positions]
+        if not names:
+            clips.append({"name": entry["name"], "measured": False,
+                          "reason": ("no contact joints named or found in "
+                                     f"{sorted(positions)[:8]} - pass `feet`")})
+            continue
+        support = _bonepaths.support_phases(
+            {n: positions[n] for n in names}, entry["times"],
+            up_axis=ground_axis, band_fraction=band_fraction,
+            model_height=height)
+        # JUDGE FIRST, THEN TRIM. The per-frame counts are the raw trace and
+        # can run to hundreds of entries, so they do not belong in a tool
+        # result — but the "stand" verdict reads them, and popping them first
+        # turned every standing clip into a tool error.
+        support_verdict = _bonepaths.support_verdict(support, gait)
+        support.pop("counts", None)
+        per_foot = {}
+        for name in names:
+            slide = _bonepaths.contact_slide(
+                positions[name], entry["times"],
+                root_motion=entry["root_motion"], up_axis=ground_axis,
+                band_fraction=band_fraction, model_height=height)
+            clear = _bonepaths.ground_clearance(
+                positions[name], up_axis=ground_axis, floor=floor)
+            per_foot[name] = {
+                "contact": {**slide, "verdict":
+                            _bonepaths.contact_slide_verdict(
+                                slide, max_slide=max_slide,
+                                max_variation=max_variation)},
+                "clearance": {**clear, "verdict":
+                              _bonepaths.ground_clearance_verdict(clear)},
+            }
+        # DEFECTS SEEN, NOT QUESTIONS UNANSWERED — the same split animation
+        # _curves needed. A standing clip's foot is correctly planted and
+        # correctly not receding, so its contact trace is unmeasurable rather
+        # than faulty; folding that into the flag list marked both feet of
+        # every idle in the project as defective.
+        def _real(verdict: dict) -> bool:
+            if verdict.get("passed", True):
+                return False
+            return not all(i.get("kind") == "unmeasured"
+                           for i in verdict.get("issues") or [{}])
+
+        failed = [n for n, f in per_foot.items()
+                  if _real(f["contact"]["verdict"])
+                  or _real(f["clearance"]["verdict"])]
+        unmeasured = sorted(n for n, f in per_foot.items()
+                            if n not in failed
+                            and f["contact"].get("measured") is False)
+        clips.append({
+            "name": entry["name"], "measured": True,
+            "frames": len(entry["times"]),
+            "convention": "root_motion" if entry["root_motion"] else "in_place",
+            "root_travel": entry["root_travel"],
+            "support": {**support, "verdict": support_verdict},
+            "feet": per_foot,
+            "flagged_feet": sorted(failed),
+            "unmeasured_feet": unmeasured,
+            "passed": support_verdict.get("passed", False) and not failed,
+        })
+    _log("blender", f"animation-contacts {model} -> "
+         f"{sum(1 for c in clips if c.get('passed'))}/{len(clips)} clips clean",
+         ref=str(model))
+    return {"ok": True, "model_height": height, "gait": gait,
+            "feet_guessed": guessed, "clips": clips}
