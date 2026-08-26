@@ -501,6 +501,23 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
              exit_code, seconds}. A failing SCRIPT is a normal result with
      ok=False — not an exception. A failing BLENDER (missing binary, timeout,
      unparseable result) raises or reports ok=False with a reason.
+
+    ONLY THE LAST 4000 CHARACTERS OF STDOUT COME BACK, AND THAT IS THE TRAP
+    EVERY SCRIPT IN THIS MODULE HAS FALLEN INTO. The marked-report convention
+    — print MARK + json.dumps(...) and read it with _marked — needs the mark
+    still at the start of its line, so a report bigger than the window arrives
+    truncated and _marked returns {}. There is then NO error and NO traceback:
+    an oversized success is indistinguishable from a crashed run, and the
+    caller reports "no report from Blender" about a script that did everything
+    right. It has cost this file twice — _TDEV_SCRIPT printed two joint tables
+    at 3580 characters on a 23-bone rig and was three bones from silence, and
+    the known-figure harness printed ten cells of landmarks and got nothing
+    back at all.
+
+    So a script either keeps its report SMALL, as _TDEV_SCRIPT now does, or it
+    writes the report to a FILE whose path the payload carries and prints only
+    a short acknowledgement, as the harness and the rig capture do. Do not
+    print a report whose size depends on the model.
     """
     if engine not in ENGINES:
         raise ValueError(f"engine must be one of {ENGINES}, got {engine!r}")
@@ -2677,51 +2694,181 @@ _RIG_MARK = "BGATE_RIG:"
 # 22 vertex groups and fills NONE of them while reporting success. Measured:
 # 64,878 of 64,878 unweighted through a round trip, 3 of 19,556 in one session,
 # same mesh both times.
+MEASURE = Path(__file__).with_name("bodymeasure.py")
+
+
+def _measured(script: str) -> str:
+    """A Blender script with the pure measurement module spliced in ahead of it.
+
+    BY SOURCE, NOT BY COPY. bodymeasure.py is imported by tests as ordinary
+    Python and pasted into the Blender script here, so a change to the crease
+    finder or the parameter derivation cannot land in one world and miss the
+    other. Same pattern as _RIG_SOURCE and _blender_kit.KIT, which are also
+    text prepended to a script — the difference is that this one is a real
+    module on both sides.
+
+    READ AT CALL TIME, NOT AT IMPORT. bgate_adapters ships no .py on disk in a
+    frozen build unless the spec says so, and reading this at import would turn
+    a Blender feature that cannot run into an application that cannot start. It
+    fails here instead, at the same boundary RUNNER already fails at, and says
+    why.
+    """
+    try:
+        return MEASURE.read_text(encoding="utf-8") + "\n\n" + script
+    except OSError as exc:
+        raise BlenderNotFound(
+            "the measurement module %s is not on disk, so no measuring script "
+            "can be built — this is a build that shipped bgate_adapters "
+            "without its source, the same way it would ship without %s (%s)"
+            % (MEASURE.name, RUNNER.name, exc)) from exc
+
+
+def _rig_script() -> str:
+    """The rig script, measurement module and all."""
+    return _measured(_RIG_SCRIPT)
+
+
 _RIG_SCRIPT = '''
 import bpy, json
 from mathutils import Vector
 
 def landmarks(mesh):
-    """Where the body actually is, measured off the mesh instead of assumed."""
+    """Where the body actually is — the bpy adapter over bodymeasure.
+
+    THREE LINES ON PURPOSE. Everything this used to do now lives in
+    bgate_adapters/bodymeasure.py, which is plain Python a test can import;
+    this is only the part that needs a mesh. The module's own source is
+    spliced in above by _rig_script(), so what runs here and what a unit test
+    runs are the same bytes rather than two copies that drift.
+    """
     mw = mesh.matrix_world
-    vs = [mw @ v.co for v in mesh.data.vertices]
-    zs = [v.z for v in vs]
-    lo, hi = min(zs), max(zs)
-    h = hi - lo
-    half_w = max(abs(v.x) for v in vs)
-    out = {"floor": lo, "top": hi, "height": h, "half_width": half_w}
-    # ARM CLOUD: everything past 55% of the half-width is arm, not torso.
-    for side, sgn in (("Left", -1.0), ("Right", 1.0)):
-        cloud = [v for v in vs if sgn * v.x > half_w * 0.55]
-        if not cloud:
+    return body_landmarks([tuple(mw @ v.co) for v in mesh.data.vertices])
+
+
+def fit_trunk(eb, L):
+    """Hang the spine between two MEASURED heights instead of assuming both.
+
+    THE TRUNK WAS THE LAST THING IN THIS FUNCTION STILL TAKEN ON FAITH. Arms,
+    shoulders, legs, feet and toes were moved onto landmarks; Hips, Spine,
+    Chest, UpperChest, Neck and Head came from bg_human_chain, which places
+    every one of them at a fraction of CHIN HEIGHT on a 7.5-head figure scaled
+    by total height alone. On a 4.44-head character 1.75 m tall that put the
+    crotch 34 cm above the one its mesh has, the thigh bones 37.6 cm above
+    their own joint, and the Neck and Head bones inside the skull — while every
+    rig gate stayed green, because each of them compares the trunk against the
+    same template that placed it.
+
+    So: crotch below, shoulder line above, crown for the head, and the
+    template's own proportions applied WITHIN those spans (bodymeasure's TRUNK_SPAN
+    and HEAD_SPAN). The canon is kept; the assumption that the span
+    it divides belongs to an adult is dropped.
+
+    RETURNS WHAT IT DID, and says so when it did nothing. A trunk that could
+    not be measured is left exactly where the template put it and reported as
+    assumed — a caller must be able to tell a measured spine from an inherited
+    one, which is the whole disease this sequence has been treating.
+    """
+    trunk = L.get("trunk") or {}
+    if not trunk.get("fitted"):
+        return {"fitted": False, "moved": [],
+                "why": (trunk.get("crotch", {}).get("why")
+                        or trunk.get("shoulder_line", {}).get("why")
+                        or "no trunk anchors were measured"),
+                "note": "TRUNK ASSUMED — these bones are the template's, "
+                        "placed by total height, not this body's"}
+    crotch = trunk["crotch"]["value"]
+    shoulder = trunk["shoulder_line"]["value"]
+    crown = trunk["crown"]["value"]
+    span = shoulder - crotch
+    at = {name: crotch + span * ratio
+          for name, ratio in TRUNK_SPAN.items()}
+    head_span = crown - shoulder
+    # THE HEAD PIVOTS AT THE NECK, MEASURED WHERE THE NECK CAN BE FOUND. The
+    # template's own shoulder-to-crown ratio is the fallback and it is only
+    # right for a figure whose head is a seventh of it: on a 4.44-head
+    # character it put the Neck bone 13 cm low, left UpperChest owning nothing
+    # at all, and handed the Head bone 21.9% of the body.
+    neck_mark = (L.get("trunk") or {}).get("neck_base") or {}
+    if neck_mark.get("measured") and shoulder < neck_mark["value"] < crown:
+        neck_top = neck_mark["value"]
+        neck_from = "measured"
+    else:
+        neck_top = shoulder + head_span * HEAD_SPAN["neck"]
+        neck_from = "derived from the template ratio: " + (
+            neck_mark.get("why") or "no neck was measured")
+    crown_inset = crown - head_span * HEAD_SPAN["crown_inset"]
+
+    chain = (("Hips", at["hips"], at["waist"]),
+             ("Spine", at["waist"], at["chest"]),
+             ("Chest", at["chest"], at["upperchest"]),
+             ("UpperChest", at["upperchest"], shoulder),
+             ("Neck", shoulder, neck_top),
+             ("Head", neck_top, crown_inset))
+    moved = []
+    for name, head_z, tail_z in chain:
+        bone = eb.get(name)
+        if bone is None:
             continue
-        tip = max(cloud, key=lambda v: sgn * v.x)
-        inner = sorted(cloud, key=lambda v: sgn * v.x)[:max(20, len(cloud)//40)]
-        sh = sum(inner, Vector((0, 0, 0))) / len(inner)
-        # THE SHOULDER JOINT IS WHERE THE TORSO ENDS, not where the arm cloud
-        # starts. Taking the innermost slice of "everything past 55% of the
-        # half-width" lands out at the bicep: measured on this character the
-        # joint went to x=0.39 against a torso half-width of 0.198, so the arm
-        # hung correctly from a shoulder 20 cm outside her body and every pose
-        # read as a zombie holding buckets. Width is sampled BELOW the armpit,
-        # where a T-pose has no arm to contaminate the band, and shoulders sit
-        # a little wider than the ribcage.
-        band = [abs(v.x) for v in vs if abs(v.z - (lo + h * 0.62)) < h * 0.03]
-        torso = (max(band) if band else abs(sh.x)) * 1.12
-        sh.x = sgn * min(abs(sh.x), torso)
-        out[side] = {"shoulder": list(sh), "tip": list(tip), "torso_w": torso}
-    # LEGS: below the hip line, split by side; the foot is the lowest cluster.
-    hip_z = lo + h * 0.52
+        bone.head = Vector((0.0, 0.0, head_z))
+        bone.tail = Vector((0.0, 0.0, tail_z))
+        moved.append(name)
+    # THE SHOULDER BONES HANG OFF UpperChest, so their heads belong on the
+    # measured shoulder line too. Left where the template put them they span
+    # from inside the neck down to the joint, which is the 0.643 m "shoulder"
+    # this whole sequence started from.
     for side, sgn in (("Left", -1.0), ("Right", 1.0)):
-        leg = [v for v in vs if v.z < hip_z and sgn * v.x > 0.01]
-        if not leg:
+        bone = eb.get(f"{side}Shoulder")
+        if bone is None:
             continue
-        foot = [v for v in leg if v.z < lo + h * 0.06]
-        fc = (sum(foot, Vector((0, 0, 0))) / len(foot)) if foot else min(
-            leg, key=lambda v: v.z)
-        out.setdefault(side, {})["foot"] = list(fc)
-        out[side]["hip_x"] = sum(abs(v.x) for v in leg) / len(leg) * 0.55
-    return out
+        bone.head = Vector((sgn * abs(bone.head.x), bone.head.y, shoulder))
+        moved.append(f"{side}Shoulder")
+    # THE ROOT IS LEFT ALONE ON PURPOSE. It is the engine's transform handle
+    # rather than a body part, glTF overwrites a parent's tail with its child's
+    # head on the way out, and moving it changes nothing any gate can see. A
+    # bone this function has no measurement for is a bone it does not touch.
+    return {"fitted": True, "moved": moved, "why": "",
+            "crotch": crotch, "shoulder_line": shoulder, "crown": crown,
+            "heights": {name: round(value, 5) for name, value in at.items()},
+            "neck": neck_top, "neck_from": neck_from,
+            "head_tail": crown_inset,
+            "anchors": anchor_rows(L.get("trunk") or {})}
+
+
+# What template_deviation calls a gross error, in body heights. Named here so
+# the row below says which bound it is straddling rather than just "a gate".
+TDEV_BOUND = 0.08
+
+
+def anchor_rows(trunk, bound=TDEV_BOUND):
+    """Each anchor with its error bar, and whether that bar reaches the bound.
+
+    ON THE ROW, NOT IN A SUMMARY. Two of these landmarks have error bars wider
+    than the threshold a downstream gate judges against — the shoulder line is
+    worth 0.134 of body height against 0.08, the crotch 0.111 — so a bone hung
+    off either can fail template_deviation on measurement error alone, with
+    nothing wrong with the rig. That is a different fact from "this character
+    is mis-proportioned", and a reader who cannot tell them apart goes looking
+    for a fault that is not there.
+
+    `straddles` is the flag for it: measured, and this measurement cannot tell.
+    The _unmeasured doctrine one step along — not unmeasured, but measured to a
+    tolerance coarser than the question being asked of it.
+
+    KEPT SHORT ON PURPOSE. This rides home inside the rig report, and
+    run_script hands back 4000 characters of stdout. The first version of this
+    function wrote a sentence per row and the whole rig came back as "no report
+    from Blender" — see run_script's own docstring for the rule it broke.
+    """
+    rows = {}
+    for name in ("crotch", "shoulder_line", "neck_base", "crown"):
+        row = trunk.get(name) or {}
+        if not row:
+            continue
+        worst = row.get("worst_error") or 0.0
+        rows[name] = {"value": row.get("value"),
+                      "measured": row.get("measured", False),
+                      "bar": worst, "straddles": worst >= bound}
+    return rows
 
 
 def fit_bones(arm, mesh):
@@ -2732,6 +2879,8 @@ def fit_bones(arm, mesh):
     bpy.ops.object.mode_set(mode="EDIT")
     eb = arm.data.edit_bones
     moved = []
+    trunk = fit_trunk(eb, L)
+    moved += trunk["moved"]
     for side in ("Left", "Right"):
         d = L.get(side) or {}
         if "shoulder" in d and "tip" in d:
@@ -2753,8 +2902,14 @@ def fit_bones(arm, mesh):
         if "foot" in d:
             foot = Vector(d["foot"])
             hip_x = d.get("hip_x", abs(foot.x))
-            hip = Vector((foot.x if abs(foot.x) > 0.01 else hip_x,
-                          0.0, L["floor"] + L["height"] * 0.52))
+            # THE HIP JOINT IS THE CROTCH'S HEIGHT, MEASURED. It used to be
+            # 52% of total height, which on this character's own mesh put the
+            # thigh bones 37.6 cm above its crotch, inside the belly — and left
+            # them 3.3 cm below the Hips bone's head, so the two disagreed
+            # about where the leg starts. Both now read the same number.
+            hip_z = (trunk["crotch"] if trunk["fitted"]
+                     else L["floor"] + L["height"] * 0.52)
+            hip = Vector((foot.x if abs(foot.x) > 0.01 else hip_x, 0.0, hip_z))
             hip.x = hip_x * (-1 if side == "Left" else 1)
             knee = hip.lerp(Vector((foot.x, 0.0, L["floor"])), 0.5)
             ankle = Vector((foot.x, foot.y * 0.4, L["floor"] + L["height"] * 0.055))
@@ -2772,8 +2927,20 @@ def fit_bones(arm, mesh):
                 t.tail = Vector((toe.x, toe.y - L["height"] * 0.03, toe.z))
                 moved.append(f"{side}Toes")
     bpy.ops.object.mode_set(mode="OBJECT")
-    return {"moved": moved, "landmarks": {k: v for k, v in L.items()
-                                          if not isinstance(v, dict)}}
+    # THE PER-SIDE MEASUREMENTS RIDE ALONG. They used to be dropped on the
+    # floor by the isinstance filter, which is how a shoulder sitting on the
+    # bicep stayed invisible in every report this ever wrote: the number that
+    # was wrong was the one number nobody could see. `why` is present only when
+    # something could not be measured, and its presence is the refusal.
+    arms = {}
+    for side in ("Left", "Right"):
+        d = L.get(side) or {}
+        arms[side] = {k: v for k, v in d.items()
+                      if k in ("shoulder", "tip", "torso_w", "armpit_z",
+                               "shoulder_z", "arm_verts", "why")}
+    return {"moved": moved, "arms": arms, "trunk": trunk,
+            "landmarks": {k: v for k, v in L.items()
+                          if not isinstance(v, dict)}}
 
 def shells(mesh):
     """Connected components, largest first.
@@ -2932,7 +3099,9 @@ for o in list(bpy.context.scene.objects):
 bpy.ops.import_scene.gltf(filepath=PAY["model"])
 meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
 if not meshes:
-    print("__MARK__" + json.dumps({"ok": False, "error": "no mesh in " + PAY["model"]}))
+    with open(PAY["dump"], "w") as _handle:
+        json.dump({"ok": False, "error": "no mesh in " + PAY["model"]}, _handle)
+    print("__MARK__" + json.dumps({"ok": False, "dumped": True}))
 else:
     mesh = max(meshes, key=lambda o: len(o.data.polygons))
     out = {"ok": True, "imported_objects": len(meshes)}
@@ -2964,11 +3133,23 @@ else:
     half_w = max(abs(v.x) for v in _bb) or 0.01
     height_m = max(mesh.dimensions[2], 0.01)
 
+    # THE HEAD COUNT IS THE CHARACTER'S, NOT AN ADULT'S, and until now there
+    # was no way to say so: rig() took `height` and never `heads`, so every
+    # character started from a 7.5-head skeleton whatever its own proportions
+    # were. It is derived from the mesh's own neck-base-to-crown unless the
+    # caller pins it. fit_bones moves most of these bones afterwards, but not
+    # all of them, and the ones it leaves are exactly the ones nobody was
+    # looking at.
+    _marks = body_landmarks([mesh.matrix_world @ v.co
+                             for v in mesh.data.vertices])
+    _axes = derive_parameters(_marks, heads_pin=PAY.get("heads"))
+    heads_m = _axes["heads"]["value"] or 7.5
+
     def _build(limbs):
         for stray in [x for x in bpy.context.scene.objects if x is not mesh]:
             bpy.data.objects.remove(stray, do_unlink=True)
-        bg_human(height=height_m, limbs=limbs, rig=True, name="RigBase",
-                 pose=PAY["pose"], finish=False)
+        bg_human(height=height_m, heads=heads_m, limbs=limbs, rig=True,
+                 name="RigBase", pose=PAY["pose"], finish=False)
         found = next((o for o in bpy.context.scene.objects
                       if o.type == "ARMATURE"), None)
         for stray in [x for x in bpy.context.scene.objects
@@ -3121,12 +3302,21 @@ else:
             out["unweighted_pct"] = round(
                 100.0 * after / max(len(mesh.data.vertices), 1), 3)
             out["symmetrised"] = report
-    print("__MARK__" + json.dumps(out, default=str))
+    # TO A FILE. This report grew past run_script's 4000-character stdout
+    # window the moment the trunk fit and its anchors joined it, and the mark
+    # at the start of its line went with the head of the string — so a rig that
+    # had done everything right came back as "no report from Blender" with no
+    # error and no traceback, and a perfectly good .glb on disk. Third time in
+    # this file. See run_script's own docstring for the rule.
+    with open(PAY["dump"], "w") as _handle:
+        json.dump(out, _handle, default=str)
+    print("__MARK__" + json.dumps({"ok": out.get("ok", False), "dumped": True}))
 '''.replace("__MARK__", _RIG_MARK)
 
 
 def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
-        kind: str = "humanoid", height: float = 1.8, budget: int = 0,
+        kind: str = "humanoid", height: float = 1.8,
+        heads: Optional[float] = None, budget: int = 0,
         orient: bool = True, armature_name: str = "Skeleton", pose: str = "a",
         tolerance: float = 0.01, symmetrize: str = "auto",
         sym_limit: float = 0.02, timeout: int = 900) -> dict:
@@ -3153,6 +3343,9 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
         return {"ok": False, "error": f"no model at {src}"}
     payload = {"model": str(src).replace("\\", "/"), "kind": kind,
                "height": float(height), "budget": int(budget),
+               # None means MEASURE it. A project whose character is adult
+               # canon pins 7.5 and gets the strict starting skeleton.
+               "heads": float(heads) if heads else None,
                "orient": bool(orient), "armature_name": armature_name,
                # A-POSE BY DEFAULT, not bg_human's T. Measured against a real
                # generation: the template's A-pose hand sits 8.9 cm from the
@@ -3165,13 +3358,31 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
                "symmetrize": (symmetrize if symmetrize in
                               ("auto", "off", "force") else "auto"),
                "sym_limit": float(sym_limit)}
-    script = _RIG_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
-    result = run_script(script, export_glb=str(out_path), timeout=timeout,
-                        record=False)
-    report = _marked(result, _RIG_MARK)
-    if not report:
-        return {"ok": False, "error": result.get("error") or "no report from Blender",
-                "traceback": (result.get("traceback") or "")[-800:]}
+    with tempfile.TemporaryDirectory(prefix="bgate_rig_") as tmp:
+        dump = Path(tmp) / "rig.json"
+        payload["dump"] = str(dump).replace("\\", "/")
+        script = _rig_script().replace("__PAYLOAD__", json.dumps(payload))
+        result = run_script(script, export_glb=str(out_path), timeout=timeout,
+                            record=False)
+        marked = _marked(result, _RIG_MARK)
+        if not marked:
+            return {"ok": False,
+                    "error": result.get("error") or "no report from Blender",
+                    "traceback": (result.get("traceback") or "")[-800:]}
+        # THE ACK SAYS WHERE THE REPORT IS. `dumped` means the script wrote a
+        # file and the marked line is only an acknowledgement; without it the
+        # marked line IS the report, which is what a caller who replaced
+        # run_script hands back and what a small enough report can still do.
+        # Guarding on the flag rather than on the file existing is what keeps
+        # an ack from ever being mistaken for the thing it acknowledges.
+        if marked.get("dumped"):
+            if not dump.is_file():
+                return {"ok": False,
+                        "error": "Blender acknowledged a report it did not "
+                                 "write to " + str(dump)}
+            report = json.loads(dump.read_text(encoding="utf-8"))
+        else:
+            report = marked
     report["out_path"] = str(out_path)
     report["seconds"] = result.get("seconds")
     if report.get("ok") and kind == "humanoid":
@@ -3556,6 +3767,28 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
     Thresholds are a policy and a caller may reasonably disagree with them; the
     measurement is a fact and it is expensive. Separating them means a project
     can re-judge a stored report without re-rendering a character.
+
+    DEFERRED, LABELLED SO IT IS NOT LATER FILED AS A BUG: THE INTERSECT BUDGET
+    MAY BE THE WRONG SHAPE RATHER THAN THE WRONG VALUE. It is
+    max(8, faces * 0.004) — a function of mesh density with no term for how far
+    the pose actually moved the mesh. Contacts scale with displacement, and a
+    pose that moves more geometry making more contacts is not obviously a
+    defect. Measured when the shoulder joint was moved off the bicep and onto
+    the shoulder: shoulder_raise went from 0 to 122 new face pairs and
+    elbow_bend from 128 to 166, on a rig that had just got better, because the
+    same rotation now swings the whole arm instead of the forearm — mean vertex
+    displacement 2.910%h -> 7.099%h and 1.356%h -> 3.754%h. Giving the budget a
+    displacement term is a DESIGN change and must not be done as a threshold
+    tweak: retuning a threshold inside the change that moved the numbers
+    destroys the evidence that the retune was justified.
+
+    PRE-TRUNK BASELINE, and this is the control for the next change rather than
+    a curiosity. In that same measurement two poses moved their intersection
+    count with their displacement UNCHANGED — spine_twist 0 -> 33 new pairs at
+    9.075%h -> 9.005%h, and knee_bend 40 -> 44 at 2.5268%h -> 2.5268%h,
+    identical to four decimals. Neither pose drives an arm. That is the bind
+    redistributing across bones the trunk work is about to move, so those four
+    numbers are what the trunk change has to be read against.
     """
     rest = report.get("rest") or {}
     faces = int(rest.get("faces") or 0)
@@ -3949,120 +4182,247 @@ import bpy, json
 P = json.loads(r"""__PAYLOAD__""")
 
 
-def proportions(path):
+def lengths_of(armature, height):
     """Every bone's LENGTH as a fraction of body height, plus its parent.
 
     LENGTHS, NOT HEAD POSITIONS, AND THE DIFFERENCE IS THE ENTIRE CHECK.
 
     A head position is stance-dependent, and the two sides of this comparison
-    are never in the same stance: rig() defaults to pose="a" (BG_A_POSE_DROP,
-    0.42 rad) while the shipped HUMANOID_SKELETON is a T-pose. The first run
-    of this check reported both hands 0.154 body-heights out against a 0.08
-    threshold, perfectly mirrored left to right, with every non-arm bone at
-    exactly 0.0 — it was measuring the arm swing, not a fit fault, and it
-    failed every correctly-rigged character in the pipeline.
+    are never in the same stance: rig() defaults to pose="a" while a reference
+    is built in whatever stance it was asked for. The first version of this
+    check reported both hands 0.154 body-heights out against a 0.08 threshold,
+    perfectly mirrored left to right, with every non-arm bone at exactly 0.0 —
+    it was measuring the arm swing, not a fit fault, and it failed every
+    correctly-rigged character in the pipeline.
 
     Bone length is invariant under both stance and translation: rotating a
     joint does not change the length of the bone below it, and neither does
-    moving the whole rig off the origin (which the positional version also
-    counted, on every bone at once). That makes it the thing this docstring
-    always claimed to compare — PROPORTIONS — measurable without requiring the
-    reference and the candidate to be posed alike. `parent` rides along so a
-    rig that kept the 23 names but rewired the chain is still caught.
+    moving the whole rig off the origin. `parent` rides along so a rig that
+    kept the 23 names but rewired the chain is still caught.
+
+    ONE RULE FOR BOTH SIDES: a bone with children is measured to its FIRST
+    CHILD'S HEAD, not to its own tail. That is what glTF can carry — it stores
+    joints, not tails — so it is what an imported candidate's length already
+    is, and applying it to a generated reference too is what keeps the two
+    comparable. Measured when it was not applied: bg_human authors Root's tail
+    at 0.1 of chin height while its child Hips sits at 0.26, so the reference
+    read 0.0789 against a candidate's 0.3393 and the gate reported a quarter of
+    a body height of "deviation" that was entirely the two sides measuring
+    different things.
     """
+    world = armature.matrix_world
+    kids = {}
+    for bone in armature.data.bones:
+        if bone.parent is not None:
+            kids.setdefault(bone.parent.name, []).append(bone)
+    out = {}
+    for bone in armature.data.bones:
+        head = world @ bone.head_local
+        mine = kids.get(bone.name)
+        tail = (world @ mine[0].head_local) if mine else (
+            world @ bone.tail_local)
+        out[bone.name] = [round((tail - head).length / height, 5),
+                          bone.parent.name if bone.parent else ""]
+    return out
+
+
+def from_file(path):
     for o in list(bpy.context.scene.objects):
         bpy.data.objects.remove(o, do_unlink=True)
     bpy.ops.import_scene.gltf(filepath=path)
     arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
     meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     if not arms:
-        return None, 0.0, "no armature in %s" % path
+        return None, 0.0, None, "no armature in %s" % path
     if not meshes:
         # NOT a fallback to height 1.0. That silently left one side of the
-        # comparison in metres while the other was height-normalised, so every
-        # bone read as wildly displaced and the report still said ok.
-        return None, 0.0, ("no mesh in %s — body height is what every length "
-                           "here is a fraction of, and without one the two "
-                           "sides of this comparison are in different units"
-                           % path)
-    arm = arms[0]
+        # comparison in metres while the other was height-normalised.
+        return None, 0.0, None, ("no mesh in %s — body height is what every "
+                                 "length here is a fraction of" % path)
     mesh = max(meshes, key=lambda o: len(o.data.polygons))
     height = max(mesh.dimensions[2], 1e-6)
-    out = {}
-    for b in arm.data.bones:
-        head = arm.matrix_world @ b.head_local
-        tail = arm.matrix_world @ b.tail_local
-        out[b.name] = [round((tail - head).length / height, 5),
-                       b.parent.name if b.parent else ""]
-    return out, height, ""
+    world = mesh.matrix_world
+    marks = body_landmarks([tuple(world @ v.co) for v in mesh.data.vertices])
+    return lengths_of(arms[0], height), height, marks, ""
 
 
-# KEEP THIS REPORT SMALL. run_script hands back only the LAST 4000 characters
-# of stdout and _marked needs the mark still at the start of its line, so an
-# oversized report is indistinguishable from a crashed run. The two full joint
-# tables this used to print came to 3580 characters on a 23-bone rig — three
-# more bones and a working run would have reported "no report from Blender".
-ref, ref_height, ref_error = proportions(P["reference"])
-cand, cand_height, cand_error = proportions(P["candidate"])
+def from_canon(axes):
+    """A reference skeleton built at the candidate's OWN derived proportions.
+
+    THE GATE NO LONGER JUDGES EVERY CHARACTER AGAINST AN ADULT. A 4.44-head
+    figure is an art choice, and a gate that fires on style gets switched off
+    inside a week, which is worse than never having shipped it. bg_human
+    already takes the axes; this check simply was not using them.
+    """
+    for o in list(bpy.context.scene.objects):
+        bpy.data.objects.remove(o, do_unlink=True)
+    bg_human(height=axes["height"], heads=axes["heads"], build=axes["build"],
+             limbs=axes["limbs"], shoulders=axes["shoulders"], rig=True,
+             name="Canon", pose="t", finish=True)
+    arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+    meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    if not arms or not meshes:
+        return None, 0.0, "bg_human built no %s" % (
+            "armature" if not arms else "mesh")
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    return lengths_of(arms[0], max(mesh.dimensions[2], 1e-6)), \
+        max(mesh.dimensions[2], 1e-6), ""
+
+
+cand, cand_height, cand_marks, cand_error = from_file(P["candidate"])
+axes = None
+ref = ref_height = None
+ref_error = ""
+if cand_marks is not None:
+    axes = derive_parameters(cand_marks, heads_pin=P.get("heads_pin"))
+    if P.get("limbs_pin"):
+        axes["limbs"] = {"value": float(P["limbs_pin"]), "measured": False,
+                         "from": "pinned by the project", "why": ""}
+if P.get("reference"):
+    ref, ref_height, _ref_marks, ref_error = from_file(P["reference"])
+elif axes is not None and axes["complete"]:
+    ref, ref_height, ref_error = from_canon(
+        {k: axes[k]["value"] for k in ("height", "heads", "limbs",
+                                       "build", "shoulders")})
+else:
+    ref_error = ("the candidate's own proportions could not be derived, so "
+                 "there is nothing to build a reference at: "
+                 + ((axes or {}).get("heads", {}).get("why")
+                    or (axes or {}).get("limbs", {}).get("why")
+                    or "no landmarks"))
+
 out = {"ok": bool(ref and cand),
-       "reference_height": ref_height, "candidate_height": cand_height,
-       "reference_bones": ref or {}, "candidate_bones": cand or {}}
+       "reference_height": ref_height or 0.0, "candidate_height": cand_height,
+       "reference_bones": ref or {}, "candidate_bones": cand or {},
+       "axes": axes or {},
+       "reference_from": "file" if P.get("reference") else "canon"}
 if not out["ok"]:
-    out["error"] = ref_error or cand_error or "reference or candidate has no armature"
-print("__MARK__" + json.dumps(out))
+    out["error"] = cand_error or ref_error or "nothing to compare"
+# TO A FILE. Two bone tables came to 3580 characters on a 23-bone rig and were
+# three bones from silence; the derivation pushes it past run_script's 4000.
+with open(P["dump"], "w") as handle:
+    json.dump(out, handle)
+print("__MARK__" + json.dumps({"ok": out["ok"], "dumped": True}))
 '''.replace("__MARK__", _TDEV_MARK)
 
 
 def template_deviation(model: str | os.PathLike[str], *,
                        reference: Optional[str | os.PathLike[str]] = None,
+                       heads: Optional[float] = None,
+                       limbs: Optional[float] = None,
                        timeout: int = 300) -> dict:
-    """How far a rigged character's proportions sit from the shipped template's.
+    """How far a rigged character's proportions sit from the canon's — at ITS
+    OWN head count, not an adult's.
 
-    Every generated humanoid is meant to share ONE skeleton's proportions —
-    that is the entire point of conditioning the plate on HUMANOID_SKELETON
-    (see humanoid_template) rather than inventing a rig per character. This
-    is the check that claim actually holds: bone LENGTHS, matched by NAME
-    (both rigs use the same 23-name schema, so there is no correspondence
-    problem to solve — the harder Chamfer-distance matching the rigging
-    literature needs for unlabeled skeletons does not apply here), each as a
-    fraction of its own file's body height so two characters of different
-    heights are not penalised for that alone.
+    WHAT CHANGED AND WHY. This used to compare every character against one
+    shipped 7.5-head skeleton, so a stylised figure failed for being stylised.
+    A 4.44-head character is an art choice, and a gate that fires on style gets
+    switched off inside a week, which is worse than never having shipped it.
+    bg_proportions has always taken height, heads, build and limbs; the
+    reference is now built at the candidate's own values for them.
+
+    DERIVED, NEVER SOLVED. The axes come from landmarks measured off the
+    candidate's MESH — crown, neck base, crotch — and never from whatever
+    values would minimise the deviation. The safety property is structural
+    rather than careful: the parameters come from the mesh and the comparison
+    is of BONES, so moving a bone cannot move the reference it is judged
+    against. See bodymeasure.derive_parameters, and the acceptance test that
+    breaks a rig and checks the derivation does not absorb it.
+
+    Two axes are deliberately NOT derived — `build`, which changes no length
+    this compares, and `shoulders`, which changes only the single row it would
+    be fitted to. Deriving that one would be solving.
+
+    heads / limbs pin an axis: a project whose character IS adult canon says so
+    and gets the strict comparison. A pin beats the measurement; the default is
+    to measure.
+
+    reference= still takes a file and then no derivation is used at all, which
+    is the way to compare two specific rigs against each other.
 
     LENGTHS RATHER THAN JOINT POSITIONS because the two skeletons are never
-    posed alike — see the script's own note. Positions reported the A-pose
-    this pipeline rigs in as a fault against the T-pose template, which
-    failed every correctly-rigged character it was shown.
-
-    NOT a weight comparison. RigNet-style weight-L1 needs the reference and
-    the candidate to share mesh topology — vertex 4000 on one is vertex 4000
-    on the other — which is never true here: the template skeleton and a
-    generated character are different meshes entirely. Only the skeleton is
-    comparable across them.
-
-    Returns {ok, reference_height, candidate_height, reference_bones,
-    candidate_bones}, each bone mapping to [length_fraction, parent_name].
-    Judge with template_deviation_verdict.
+    posed alike. NOT a weight comparison: RigNet-style weight-L1 needs both
+    sides to share mesh topology, which is never true here.
     """
     src = Path(model)
     if not src.is_file():
         return {"ok": False, "error": f"no model at {src}"}
-    ref = Path(reference) if reference else HUMANOID_SKELETON
-    if not ref.is_file():
+    ref = Path(reference) if reference else None
+    if ref is not None and not ref.is_file():
         return {"ok": False, "error": f"no reference skeleton at {ref}"}
-    # No "model" key: the script reads only reference/candidate, and the dead
-    # third copy was also the one path that skipped the separator normalisation
-    # the other two get — a backslash in a Windows path is an escape once it is
-    # inside the script's JSON payload.
-    payload = {"reference": str(ref).replace("\\", "/"),
-               "candidate": str(src).replace("\\", "/")}
-    script = _TDEV_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
-    result = run_script(script, timeout=timeout, kit=False, record=False)
-    report = _marked(result, _TDEV_MARK)
-    if not report:
-        return {"ok": False, "error": result.get("error") or "no report from Blender",
-                "traceback": (result.get("traceback") or "")[-800:]}
+    with tempfile.TemporaryDirectory(prefix="bgate_tdev_") as tmp:
+        dump = Path(tmp) / "tdev.json"
+        payload = {"candidate": str(src).replace("\\", "/"),
+                   "reference": str(ref).replace("\\", "/") if ref else "",
+                   "heads_pin": heads, "limbs_pin": limbs,
+                   "dump": str(dump).replace("\\", "/")}
+        script = _measured(
+            _TDEV_SCRIPT.replace("__PAYLOAD__", json.dumps(payload)))
+        result = run_script(script, timeout=timeout, record=False)
+        marked = _marked(result, _TDEV_MARK)
+        if not marked or not dump.is_file():
+            return {"ok": False,
+                    "error": result.get("error") or "no report from Blender",
+                    "traceback": (result.get("traceback") or "")[-800:]}
+        report = json.loads(dump.read_text(encoding="utf-8"))
     report["seconds"] = result.get("seconds")
     return report
+
+
+def _invented_tails(*tables: dict) -> set:
+    """The bones whose LENGTH in these reports is an importer's invention.
+
+    GLTF DOES NOT STORE BONE TAILS. It stores joint nodes — translation,
+    rotation, scale, children — and nothing else; read straight out of the JSON
+    chunk of the files this compares, the joint nodes carry exactly
+    ['children', 'name', 'rotation', 'scale', 'translation'] and the files
+    declare no extensions at all. So there is no field a tail could hide in.
+
+    For a bone with children the importer's guess is not a guess: the tail goes
+    to the child's head, which is the right answer and is what every rigger
+    means by that bone's length. For a LEAF there is no child, and the importer
+    hands it its parent's length. Measured on both sides at once: Head = Neck =
+    0.0117, each Hand = its LowerArm, each Toes = its Foot. A leaf's row is
+    therefore a DUPLICATE of its parent's row, and a duplicate is not a second
+    measurement.
+
+    That matters because of what it did to `checked`. Five of 23 rows carried
+    no information of their own and every one read dev 0.0000, so a verdict
+    reported 23 bones compared when 18 were compared and 5 were echoes —
+    coverage overstated by 28%. An unknown is not a pass, and a number derived
+    from an importer's guess is not a measurement; neither gets counted.
+
+    A REFERENCE BUILT BY bg_human RATHER THAN IMPORTED still gets the same
+    treatment, and deliberately so. Its leaves have real authored tails, but
+    the candidate's do not, and comparing a real length against an invented one
+    is worse than comparing two inventions. The rule is a property of what can
+    be known about the CANDIDATE.
+
+    Comparing leaf POSITIONS instead is not the way out. That is the version
+    that reported both hands 0.154 body-heights out on a correctly-rigged
+    character because the two skeletons were in different stances.
+
+    AND THE SAME ARGUMENT RETIRES A FORK. A bone with SEVERAL children has no
+    single length either: Hips carries Spine and both UpperLegs, so "how long
+    is Hips" is "to the spine" (a torso length) or "to a hip joint" (half a
+    pelvis width) depending only on which child gets picked, and the two are
+    different quantities that happen to share a row. Whichever rule picks one,
+    the number it produces is not a measurement of a named thing. Measured on a
+    real character the choice moved that row by 0.078 of body height, most of
+    the way to the bound it is judged against. Hips and UpperChest come out
+    with the leaves.
+
+    Returns every name whose length is not one well-defined quantity.
+    """
+    out = set()
+    for table in tables:
+        children = {}
+        for name, row in table.items():
+            if row[1]:
+                children.setdefault(row[1], []).append(name)
+        out |= {name for name in table if name not in children}      # leaves
+        out |= {name for name, kids in children.items() if len(kids) > 1}
+    return out
 
 
 def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> dict:
@@ -4076,33 +4436,73 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
     stretched across the body), not a proportional-fidelity one, and it has not
     been validated against a corpus of known-good characters. Fitting is MEANT
     to adapt the template to each body; only a length that no fit would produce
-    should trip this.
+    should trip this. That admission stands: changing WHAT this compares
+    against and changing HOW MUCH deviation it tolerates are two decisions, and
+    only the first has been made.
+
+    LEAF BONES ARE EXCLUDED FROM THE LENGTH COMPARISON — see _invented_tails
+    for why their lengths are an importer's echo of their parents rather than a
+    second measurement. Their PARENT is stored, so their hierarchy is still
+    checked; `checked` counts only the lengths actually compared, and
+    `excluded` names the rest.
+
+    WHAT THIS DELIBERATELY LEAVES DARK, so it is not filed as a bug: with the
+    leaves out, the gate says nothing about hand size, foot size or head size.
+    It never honestly did — those five rows only ever repeated the forearm, the
+    foot and the neck.
+
+    DEFERRED, LABELLED: THERE IS NO FLOOR UNDER `checked`, AND IT NOW MOVES.
+    Excluding the leaves turned coverage into a quantity that varies with the
+    candidate, and nothing here refuses a nearly-empty comparison. `passed:
+    True, checked: 2` is reachable two ways — a candidate sharing only a
+    handful of names with the template, or a cascade of the only-child knock-off
+    above, where reparenting one leaf costs its old parent too. Either way the
+    verdict reads as "proportions verified" on a twelfth of a skeleton.
+
+    This is the same padded-collection family as the invented tails, one step
+    along: the EMPTY case refuses correctly through _unmeasured, and the nearly
+    empty one sails through. Zero bones checked is not zero bones wrong, and
+    neither is two.
+
+    The fix is to report coverage as a ratio beside `checked` and refuse below
+    a justified floor. It is deliberately NOT done here: it is small, and small
+    is exactly why it must land alone rather than riding along with a change
+    that moves the skeleton — every step in this sequence has been provable
+    because only one thing moved at a time.
     """
     ref = report.get("reference_bones") or {}
     cand = report.get("candidate_bones") or {}
-    shared = sorted(set(ref) & set(cand))
-    issues = _unmeasured(report, shared,
-                         "the two skeletons share no bone name — a candidate "
-                         "on a different naming scheme (mixamorig:Hips and "
-                         "friends) is not one this can compare, and zero bones "
-                         "checked is not zero bones wrong")
-    if issues:
-        return {"passed": False, "issues": issues, "checked": 0,
-                "deviations": {}, "threshold": max_deviation}
+    both = sorted(set(ref) & set(cand))
+    invented = _invented_tails(ref, cand)
+    shared = [name for name in both if name not in invented]
+    excluded = sorted(name for name in both if name in invented)
+    if not report.get("ok", False):
+        return {"passed": False, "checked": 0, "excluded": excluded,
+                "deviations": {}, "threshold": max_deviation,
+                "issues": _unmeasured(report, shared, "")}
+    # THE HIERARCHY PASS RUNS EVEN WHEN NO LENGTH DOES. An early return here
+    # meant a rig whose every shared bone was a leaf reported "unmeasured" and
+    # never looked at the chain — but a leaf's PARENT is stored, so a rewired
+    # skeleton was going unreported by the one check that could still see it.
+    issues = []
     deviations = {}
-    for name in shared:
+    for name in both:
         ref_len, ref_parent = ref[name][0], ref[name][1]
         cand_len, cand_parent = cand[name][0], cand[name][1]
-        diff = abs(ref_len - cand_len)
-        deviations[name] = round(diff, 4)
-        if diff > max_deviation:
-            issues.append({"bone": name, "kind": "proportion",
-                           "value": round(diff, 4),
-                           "reference": ref_len, "candidate": cand_len,
-                           "note": f"{name} is {cand_len:.3f} body-heights long "
-                                   f"where the template makes it {ref_len:.3f} "
-                                   "— a fit that mis-solved this limb rather "
-                                   "than scaling it to the character"})
+        if name not in invented:
+            diff = abs(ref_len - cand_len)
+            deviations[name] = round(diff, 4)
+            if diff > max_deviation:
+                issues.append({"bone": name, "kind": "proportion",
+                               "value": round(diff, 4),
+                               "reference": ref_len, "candidate": cand_len,
+                               "note": f"{name} is {cand_len:.3f} body-heights "
+                                       f"long where the template makes it "
+                                       f"{ref_len:.3f} — a fit that mis-solved "
+                                       "this limb rather than scaling it to "
+                                       "the character"})
+        # THE PARENT IS STORED even when the tail is not, so a leaf is still
+        # held to the chain it hangs off.
         if ref_parent != cand_parent:
             issues.append({"bone": name, "kind": "hierarchy",
                            "reference": ref_parent, "candidate": cand_parent,
@@ -4111,7 +4511,18 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
                                    f"{ref_parent or '(root)'} in the template "
                                    "— same names, different chain, so nothing "
                                    "retargeted onto this rig will land right"})
+    issues = _unmeasured(report, shared,
+                         "no bone here has a length worth comparing — either "
+                         "the two skeletons share no name (a candidate on a "
+                         "different scheme, mixamorig:Hips and friends), or "
+                         "every name they do share is a leaf whose tail the "
+                         "importer invented. Zero bones checked is not zero "
+                         "bones wrong") + issues
     return {"passed": not issues, "issues": issues, "checked": len(shared),
+            "excluded": excluded, "hierarchy_checked": len(both),
+            "excluded_note": "leaf bones — glTF stores no tail for them, so "
+                             "their length is the importer repeating their "
+                             "parent's and not a measurement of this rig",
             "deviations": deviations, "threshold": max_deviation}
 
 
