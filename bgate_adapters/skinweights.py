@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Optional
 
 from .animcurves import _accessor_values, _read_glb
 
@@ -221,12 +220,17 @@ def dominance(path: str | Path, *, min_weight: float = 0.5,
     height = (max(ys) - min(ys)) or 1.0
     floor = height * max(min_distance_fraction, 0.0)
 
+    # `misbound` WAS A FIELD HERE AND A COUNTER BELOW IT, AND NEITHER WAS EVER
+    # INCREMENTED. Every bone in every report this has ever produced carried
+    # "misbound": 0 — a number that looks like a measurement, sits next to two
+    # real ones, and is a placeholder. `worst_ratio` is the per-bone signal
+    # that actually exists; see dominance_verdict for why the fraction the
+    # counter was meant to feed cannot be computed from what is kept.
     per_bone: dict[str, dict] = {
-        n: {"owns": 0, "misbound": 0, "worst_ratio": 0.0} for n in names}
+        n: {"owns": 0, "worst_ratio": 0.0} for n in names}
     worst: list[tuple] = []
     influences: dict[int, int] = {}
     checked = 0
-    misbound = 0
     ratios: list[float] = []
 
     # ONLY DEFORM BONES ARE CANDIDATES FOR "NEAREST".
@@ -320,7 +324,6 @@ def dominance(path: str | Path, *, min_weight: float = 0.5,
 
 
 def dominance_verdict(report: dict, *, max_ratio: float = 3.0,
-                      max_misbound_fraction: float = 0.05,
                       max_rigid_fraction: float = 0.50,
                       flag_dead_bones: bool = False) -> dict:
     """Pass/fail over a `dominance` report.
@@ -367,7 +370,6 @@ def dominance_verdict(report: dict, *, max_ratio: float = 3.0,
 
     checked = report.get("checked", 0)
     issues: list[dict] = []
-    misbound = 0
     for name, stats in (report.get("per_bone") or {}).items():
         if stats.get("worst_ratio", 0.0) > max_ratio:
             issues.append({
@@ -379,11 +381,15 @@ def dominance_verdict(report: dict, *, max_ratio: float = 3.0,
                            f"{stats['worst_ratio']}x farther from it than the "
                            f"nearest bone to that vertex"),
             })
-    for w in report.get("worst") or []:
-        if w["ratio"] > max_ratio:
-            misbound += 1
-
-    frac = misbound / max(len(report.get("worst") or []), 1)
+    # THERE WAS A `max_misbound_fraction` PARAMETER HERE AND IT NEVER DID
+    # ANYTHING — the fraction was computed and then compared to nothing, so a
+    # caller tuning it changed no verdict. It is removed rather than wired up,
+    # because the number it would have been computed from cannot answer the
+    # question it implies: `worst` is a TRUNCATED top-N list of offenders, so
+    # "how many of `worst` exceed the ratio" is a fraction of the SAMPLE and
+    # not of the model. Twenty bad vertices out of twenty reported reads 1.0
+    # whether the mesh has twenty of them or twenty thousand. A real
+    # model-wide share needs a count `dominance` does not currently keep.
     rigid = report.get("rigid_fraction", 0.0)
     if rigid > max_rigid_fraction:
         issues.append({
