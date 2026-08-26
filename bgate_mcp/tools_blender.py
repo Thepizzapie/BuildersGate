@@ -10,6 +10,7 @@ caller and test.
 """
 from bgate_adapters import animcurves as _animcurves
 from bgate_adapters import blender as _blender
+from bgate_adapters import skinweights as _skinweights
 from bgate_mcp.server import (  # noqa: F401
     Optional, _Path, _archive_preview, _contained_path,
     _fail, _json, _log, _paid_gate,
@@ -840,6 +841,84 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
          f"{sum(1 for c in clips if c['passed'])}/{len(clips)} clips clean",
          ref=str(model))
     return {"ok": True, "clips": clips}
+
+
+@_tool
+def skin_dominance(model: str, max_ratio: float = 3.0,
+                   max_rigid_fraction: float = 0.50,
+                   flag_dead_bones: bool = False,
+                   min_weight: float = 0.5, sample: int = 0) -> dict:
+    """Is each vertex driven by a bone that is anywhere NEAR it - no Blender needed.
+
+    A FIFTH RIG PROOF, and the one that catches a character which tears when
+    it animates while every other gate reports it clean. Found on a shipped
+    cat whose walk and run were reported as tearing, with the idle tail wag
+    the only motion that read as smooth. At that moment:
+
+      blender_rig            passed - `unweighted` was 0, every vertex had weight
+      weights summed to 1.0  on every single vertex
+      blender_weights        passed - the guilty bone's paint was ONE connected
+                             patch; it just ran too far down the legs, and a
+                             patch that is too big is not a patch that split
+      blender_flex           passed - its six poses did not open the seam far
+                             enough to trip the volume/pinch bounds
+      blender_template_dev.  passed - the SKELETON was correct. Names, lengths
+                             and parenting were all fine. Only the paint was wrong
+
+    The defect: 42% of the vertices in the lower third of the model - the legs
+    and paws - had their dominant weight on `spine`, `hips`, `chest` or `neck`.
+    The worst sat at y=0.005, ON THE FLOOR, driven by a bone 0.15 m up inside
+    the body. That geometry cannot follow the leg it belongs to, so the leg
+    stretches away from the body as soon as the leg swings. It is invisible in
+    bind pose, which is what every stand-up photograph in this pipeline
+    captures, and invisible to every check above.
+
+    Measures, per vertex, the distance to the BONE SEGMENT that dominates it
+    against the distance to the nearest deform bone segment available. Segments
+    rather than joint origins because a vertex halfway down a thigh is far from
+    both the hip and the knee. A ratio rather than a distance because a
+    tolerance in metres would need retuning per asset, which means it would not
+    get run.
+
+    ONLY DEFORM BONES ARE CANDIDATES for "nearest" - a root or an IK target
+    skins nothing and is often parked at the origin, and comparing against one
+    inflated this check's own first run to a 6.91x false positive.
+
+    Defaults are set from two rigs measured in the same project, one known-good
+    and one known-bad:
+
+                        median   p95    max    rigid
+        good rig          1.00   1.06   1.56      9%
+        the torn cat      1.00   2.32   3.76     57%
+
+    THE MEDIAN IS 1.00 FOR BOTH. Most vertices in a broken bind are painted
+    correctly; the defect lives entirely in the tail, so any average hides it.
+    That is why the verdict reads the maximum and the rigid share.
+
+    `flag_dead_bones` is off by default: every rig legitimately carries bones
+    that deform nothing, and the good rig above fails on exactly that when it
+    is on. They are always listed in the report as information.
+
+    `verdict.passed` False names the bones that reach too far and, separately,
+    a bind with no falloff at all. It is False rather than True when nothing
+    could be measured - an unrigged file refuses instead of passing empty.
+    """
+    path = _contained_path(model, "model")
+    report = _skinweights.dominance(path, min_weight=min_weight, sample=sample)
+    if report.get("measured"):
+        verdict = _skinweights.dominance_verdict(
+            report, max_ratio=max_ratio,
+            max_rigid_fraction=max_rigid_fraction,
+            flag_dead_bones=flag_dead_bones)
+        report["verdict"] = verdict
+        _log("blender",
+             f"skin-dominance {model} -> "
+             f"{'passed' if verdict.get('passed') else 'FAILED'} "
+             f"(max ratio {report.get('max_ratio')}, "
+             f"{report.get('rigid_fraction', 0.0):.0%} rigid, "
+             f"{len(verdict.get('issues') or [])} issues)",
+             ref=str(model))
+    return report
 
 
 @_tool
