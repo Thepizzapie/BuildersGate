@@ -10,6 +10,109 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **The rig and animation gates now measure the thing they are named after.**
+  A full pass over the 3D character path, driven by the benchmark game's own
+  human character. Almost every defect found was a gate reporting confidently
+  about something it had never actually looked at, and several had been
+  shipping that answer since the day they were written.
+
+  - **Forward kinematics, so a foot can be measured at all**
+    (`bgate_adapters/bonepaths.py`, `animation_contacts`). Every curve metric
+    read a channel's raw local values, which is right for "is this smooth" and
+    structurally wrong for anything about where a body part IS. A foot bone on
+    a skinned humanoid has no translation channel — it moves because a hip and
+    a knee rotate above it — so `foot_skate` read one constant key and refused,
+    in every clip of both shipped characters. It had never once run. The
+    evaluator composes each joint onto its parent per frame (SLERP on LINEAR
+    rotation, as the spec requires) and the new gate reads support phases,
+    contact slide and ground clearance off the result. Judgement is against the
+    clip's own convention: an IN-PLACE locomotion clip is *supposed* to slide
+    its planted foot, at a steady speed, because there the foot is the ground —
+    judging those against zero would fail every correct locomotion loop in a
+    project. A gait must be DECLARED before flight is judged, because the same
+    flight fraction is correct for a run and impossible for a walk.
+  - **Rotation was being differenced as a 4-vector.** `q` and `-q` are one
+    rotation, so a sign flip read as a jump of 2 in a single frame: 251 of them
+    in one character and 551 in the other, which is why every `UpperLeg` ranked
+    as the roughest track in every clip of both files. Speed is now the
+    geodesic angle in rad/s, which is also stable at the antipode — where every
+    thigh bone on a normal skeleton lives.
+  - **Four gates read float32 rounding as motion.** A scale of 1.0 comes back
+    from a GLB as 0.9999999403953552, which cleared every absolute dead-channel
+    floor in the module: 34 of a walk cycle's 69 channels were flagged as
+    un-eased linear motion, every one a bone nobody animated. SPARC was the
+    worst of them — it normalises by its own peak, so pure rounding became a
+    full-amplitude noise spectrum scoring past the roughness bound. The guard
+    is now scale-relative and covers all four.
+  - **`velocity_profile` could only ever see one of its two failure modes.** It
+    asks whether a track holds a near-constant speed; nothing asked the mirror
+    question. `motion_concentration` reports what share of a track's travel
+    lands in its fastest tenth of frames against what even pacing would put
+    there — 1.0 evenly paced, 1.5 a clean sine swing, and 4.2 to 8.0 for every
+    clip in both characters. A snap with a drift around it is as far from
+    constant-speed as a curve gets, so it sailed through the old check.
+  - **A tool that flags everything says nothing.** `animation_curves` folded
+    "could not measure" into its flagged list, so it named all 23 bones of all
+    6 clips on both characters and its headline `passed` could never be True on
+    any real rig. Defects seen and questions unanswered are now counted apart.
+
+  - **The trunk was assumed, never measured** (`bgate_adapters/bodymeasure.py`,
+    `fit_trunk`). `fit_bones` moved arms, shoulders, legs and feet onto
+    landmarks measured off the mesh and left Hips/Spine/Chest/UpperChest/Neck/
+    Head wherever a 7.5-head idealised figure scaled by total height put them.
+    The benchmark's human measures 4.44 heads: its thigh bones started 37.6 cm
+    above its own crotch, inside the belly, and its Neck bone sat inside its
+    skull. Every gate read green on the trunk, because they all compared it
+    against the same template that had placed it. The trunk now hangs between a
+    measured crotch and a measured shoulder line by the template's own ratios
+    WITHIN that span, and refuses — reporting `TRUNK ASSUMED` — when either
+    anchor cannot be measured. Trunk vertex ownership on that character went
+    from 2.1% of the body to 15.1%.
+  - **The shoulder joint was landing on the bicep.** Width was sampled at 62%
+    of height, which on an A-posed mesh is forearm, so the clamp never bit and
+    each Shoulder bone ran 36.7% of body height diagonally across the ribcage —
+    holding the middle of the chest, and leaving `Chest` the two scraps either
+    side that a weights gate had been pinning as a Chest defect for months.
+    Joints are now found at the CREASE between limb and body, measured.
+  - **glTF stores no bone tails, and `template_deviation` compared lengths.**
+    The importer hands a leaf its parent's length, on both sides of the
+    comparison, so five of 23 rows were duplicates of the row above them and
+    the verdict reported 23 bones checked when 18 were. Leaves are excluded
+    from the length comparison and named in the report; their PARENT is stored,
+    so their hierarchy is still checked.
+  - **Proportions are now compared against the character's own axes.** A gate
+    that fires on style gets switched off, and a 4.44-head figure is a style.
+    Height, head count and limb length are DERIVED from independent landmark
+    measurements — never solved for, which would make the gate pass everything
+    — and a regression pins that a rig damaged by 20% of body height still
+    fails after the derivation runs on the damaged rig itself.
+  - **A known-answer harness, because a plausible number is not a measurement**
+    (`tests/test_rig_known_figure.py`). The template's own figure has every
+    landmark known by construction, so the measurement can be checked against
+    the truth at several head counts and builds. Its first run corrected its
+    author's own hand-run validation, which had compared metres across two
+    different heights and cancelled two errors into something believable. The
+    honest envelope is now published per landmark and reported beside the
+    values, flagged where it straddles the gate's own threshold — the
+    difference between "this rig is wrong" and "this method cannot tell".
+
+  - **Every Blender-backed feature was dead in the packaged app**
+    (`packaging/bgate.spec`). `collect_submodules` makes a module importable
+    and writes no `.py` to disk, and four adapters are never imported for their
+    behaviour — three are handed to another interpreter by PATH and one has its
+    source spliced into a generated script. The shipped bundle contained no
+    `bgate_adapters` directory at all, so modelling, rigging, sprite baking and
+    transcription all failed at run time. Nothing caught it because nothing ran
+    the frozen binary. A test now scans for the pattern and fails on a new one.
+  - **Two MCP tools were being carried by every seat.** `skin_dominance` and
+    `animation_contacts` matched no craft prefix, because that table keys on
+    `blender_` as a proxy for 3D rig work and both gates answer without the
+    engine. Classified, and `tests/test_modules.py` was failing until they were.
+  - **`dominance_verdict` declared a threshold it never applied**, and every
+    per-bone row carried a `misbound` count that was initialised and never
+    incremented. Both removed rather than wired up: the fraction they implied
+    is a share of a truncated top-N sample, not of the model.
+
 - **Every important gate now terminates at the actual player-facing runtime.**
   A 3D benchmark game (Catnip Fiend) was built through the harness end to end.
   Generation was cheap and mostly worked; what cost money was verification
