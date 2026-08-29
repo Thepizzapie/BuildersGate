@@ -121,3 +121,51 @@ def test_waiters_are_cleared_with_the_row(root):
         "SELECT COUNT(*) AS n FROM asset_waiter WHERE asset_path = ?",
         ("assets/queued.glb",)).fetchone()["n"]
     assert left == 0
+
+
+# ---------------------------------------------------------------------------
+# delivered_but_unwired: a superseded artifact is not an orphan
+# ---------------------------------------------------------------------------
+
+def test_a_superseded_artifact_is_not_reported_as_an_orphan(root):
+    """The gate offers two ways out and only one of them used to work.
+
+    Its text is "wire it, or mark the artifact rejected if it is not going in".
+    Marking it changed nothing, because the join never read status — so the
+    second option did not clear the blocker and the row returned every run.
+
+    Found on two raw synthesis sources whose processed siblings are what the
+    game loads.
+    """
+    from bgate_core import artifacts
+
+    _make(root, "assets/audio/hum_raw.wav")
+    artifacts.register(root, "sfx_hum_raw", "assets/audio/hum_raw.wav",
+                       producer="sfx_generate")
+    assets.track(root, "assets/audio/hum_raw.wav")
+
+    # nothing in the project references it, so it starts out an orphan
+    before = assets.delivered_but_unwired(root)
+    assert any("hum_raw" in r["path"] for r in before), before
+
+    art = [a for a in artifacts.list_revisions(root)
+           if a["logical_name"] == "sfx_hum_raw"][0]
+    artifacts.review(root, art["id"], "superseded",
+                     note="the processed hum.wav is what ships",
+                     actor="a-human")
+
+    after = assets.delivered_but_unwired(root)
+    assert not any("hum_raw" in r["path"] for r in after), after
+
+
+def test_an_ordinary_orphan_is_still_reported(root):
+    """CONTROL: the filter must not swallow orphans that ARE a problem."""
+    from bgate_core import artifacts
+
+    _make(root, "assets/audio/forgotten.wav")
+    artifacts.register(root, "sfx_forgotten", "assets/audio/forgotten.wav",
+                       producer="sfx_generate")
+    assets.track(root, "assets/audio/forgotten.wav")
+
+    rows = assets.delivered_but_unwired(root)
+    assert any("forgotten" in r["path"] for r in rows), rows
