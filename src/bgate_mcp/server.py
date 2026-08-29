@@ -7488,6 +7488,38 @@ def asset_track(path: str) -> dict:
 
 
 @_tool
+def asset_untrack(path: str, force: bool = False) -> dict:
+    """Stop tracking an asset - the other half of `asset_track`.
+
+    THE GAP THIS CLOSES. The presentation gate reports a tracked file that is
+    gone from disk and tells the reader to "restore the file, or asset_release
+    it from tracking". `asset_release` releases a LOCK; it has never removed a
+    row. So the second half of that instruction named an operation that did not
+    exist, and rows for intermediates which were converted and then deleted sat
+    on the gate permanently - the only real remedy being to hand-edit SQLite.
+
+    Found on the benchmark game with five of them at once: four .mp3 masters
+    superseded by the .ogg files the game actually preloads, and a stand-in
+    .glb superseded by the rigged character that shipped.
+
+    REFUSES A FILE THAT IS STILL ON DISK unless `force`. Untracking something
+    present drops it out of verify(), out of the drift check and out of the
+    lock discipline while leaving it in the build - the one direction this
+    gate cannot see. Delete it first; that order is the honest one.
+
+    REFUSES A LOCKED ASSET outright, force or not: a lock means some seat
+    believes it is mid-edit, and removing the row turns their release into a
+    LookupError.
+
+    Returns the row that was removed, so it can be logged or put back.
+    """
+    row = _assets.untrack(_root(), path, force=force)
+    _log("asset", f"untracked {path} (was {row.get('bytes', 0)} bytes, "
+                  f"kind={row.get('kind', '?')})", ref=str(path))
+    return row
+
+
+@_tool
 def asset_status(kind: Optional[str] = None, locked_only: bool = False,
                   prefix: Optional[str] = None, offset: int = 0,
                   limit: int = 200) -> dict:

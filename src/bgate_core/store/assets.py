@@ -166,6 +166,50 @@ def track(root: str | os.PathLike[str], path: str | os.PathLike[str]) -> dict:
     return get(root, rel)
 
 
+def untrack(root: str | os.PathLike[str], path: str | os.PathLike[str],
+            force: bool = False) -> dict:
+    """Stop tracking an asset. The other half of `track`, which never existed.
+
+    THE GAP THIS CLOSES. The presentation gate reports a tracked file that is
+    gone from disk as a blocker and tells the reader to "restore the file, or
+    asset_release it from tracking" — and `release` releases a LOCK. It has
+    never removed a row, so the second half of that instruction named an
+    operation the product did not have. Rows for intermediates that were
+    converted and deleted (four .mp3 masters superseded by the .ogg the game
+    actually preloads, a stand-in .glb superseded by the rigged one) therefore
+    sat on the gate permanently, with the only real remedy being to hand-edit
+    SQLite.
+
+    REFUSES A FILE THAT IS STILL THERE, unless `force`. Untracking something
+    present on disk is almost always a mistake — it silently drops the asset
+    out of verify(), out of the drift check and out of the lock discipline
+    while leaving it in the build, which is the one direction this gate cannot
+    see. Deleting the file first and then untracking is the honest order.
+
+    REFUSES A LOCKED ASSET outright, force or not. A lock means a seat believes
+    it is mid-edit; removing the row under it turns their release into a
+    LookupError and loses whatever the lock was protecting.
+
+    Returns the row that was removed, so a caller can log or restore it.
+    """
+    rel = _norm(root, path)
+    row = get(root, rel)                      # raises LookupError if untracked
+    if row.get("lock_seat"):
+        raise ValueError(
+            f"{rel} is locked by seat '{row['lock_seat']}' — release the lock "
+            "before untracking, or force_release it if the holder is gone")
+    if (Path(root) / rel).exists() and not force:
+        raise ValueError(
+            f"{rel} is still on disk. Untracking a file that exists drops it "
+            "out of verify() and the drift check while it stays in the build. "
+            "Delete it first, or pass force=True if that is genuinely what "
+            "you mean.")
+    with db.tx(root) as conn:
+        conn.execute("DELETE FROM asset_waiter WHERE asset_path = ?", (rel,))
+        conn.execute("DELETE FROM asset WHERE path = ?", (rel,))
+    return row
+
+
 def get(root: str | os.PathLike[str], path: str | os.PathLike[str]) -> dict:
     rel = _norm(root, path)
     row = db.connect(root).execute(

@@ -65,6 +65,7 @@ CORE: tuple[str, ...] = (
     "bible_read", "decision_list", "decision_add", "pending_decisions",
     "not_building_list", "recall", "ask_human",
     "asset_status", "asset_lock", "asset_release", "asset_track", "asset_verify",
+    "asset_untrack",
     "agent_activity", "provider_status", "bgate_doctor", "decide",
     # EVERY SEAT PLANS ITS OWN DISCIPLINE. The domain plan is the end state
     # the seat builds toward; a seat that cannot read or revise it is back
