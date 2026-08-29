@@ -342,6 +342,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # craft: the branch review and merge belong beside the queue.
         "worktree_integrations", "worktree_merge",
         "asset_lock", "asset_release", "asset_status", "asset_track",
+        "asset_untrack",
         "asset_verify", "bgate_doctor", "board_digest",
         "godot_run", "godot_screenshot", "godot_status",
         # engine_status and engine_screenshot are the same answers for
