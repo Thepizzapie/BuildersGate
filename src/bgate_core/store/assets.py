@@ -924,6 +924,33 @@ def delivered_but_unwired(root: str | os.PathLike[str]) -> list[dict]:
             "SELECT path AS logical_name, path, 'tracked' AS producer, "
             "work_item_id, updated_at AS created_at FROM asset "
             "ORDER BY id DESC").fetchall())
+        # DELIBERATELY NOT IN THE BUILD IS NOT AN ORPHAN.
+        #
+        # The gate that reads this tells the reader to "wire it, or mark the
+        # artifact rejected if it is not going in" — and marking it changed
+        # nothing, because this join never looked at status. So the second
+        # option the blocker offers did not clear the blocker, and the row came
+        # back every run.
+        #
+        # Found on two raw synthesis sources whose PROCESSED siblings are the
+        # files the game loads: assets/audio/cat/purr_loop_raw.wav next to the
+        # purr_loop.wav cat.gd preloads, and appliance_hum_raw.wav next to the
+        # appliance_hum.wav graybox_house.tscn wires. Each keeps its
+        # .synth.json recipe beside it, so the pair is what REGENERATES the
+        # shipped file; wiring the raw would ship pre-processing audio and
+        # deleting it would lose the source.
+        #
+        # `superseded` and `rejected` are exactly the two statuses that mean
+        # "this is not going into the build", which is the question being
+        # asked. Filtered by PATH rather than by ledger, because a delivered
+        # file is usually in both tables and excluding it from one leaves the
+        # other reporting it.
+        excused = {
+            str(r["path"] or "").replace("\\", "/").lower()
+            for r in conn.execute(
+                "SELECT path FROM artifact_revision "
+                "WHERE status IN ('superseded', 'rejected')").fetchall()
+        }
     except Exception:
         return []
     seen: set[str] = set()
@@ -935,6 +962,11 @@ def delivered_but_unwired(root: str | os.PathLike[str]) -> list[dict]:
                       if o == tail or tail.endswith("/" + o)
                       or o.endswith("/" + os.path.basename(tail))), "")
         if not match or match in seen:
+            continue
+        if tail in excused or any(e.endswith("/" + os.path.basename(tail))
+                                  or os.path.basename(e) == os.path.basename(tail)
+                                  for e in excused):
+            seen.add(match)      # settled: do not report it from the other ledger either
             continue
         seen.add(match)
         out.append({"path": match, "logical_name": row["logical_name"],
