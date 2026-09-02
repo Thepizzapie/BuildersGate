@@ -1337,12 +1337,50 @@ class TestTheClaudeRunnerRegistersTheServer:
         cfg = json.loads(args[args.index("--mcp-config") + 1])
         assert runners.MCP_SERVER_NAME in cfg["mcpServers"]
 
-    def test_it_does_not_evict_the_humans_own_servers(self):
+    def test_it_serves_ONLY_the_declared_servers(self):
+        """REVERSED, and the old assertion is quoted rather than deleted.
+
+        This used to assert `"--strict-mcp-config" not in args`, on the
+        reasoning that dropping the servers a human registered for their own
+        work is a worse surprise than the one being fixed. Sound argument,
+        no number behind it.
+
+        The number: 76 dispatched runs, ZERO calls to any non-bgate MCP
+        server. Meanwhile each run's init event listed 203-229 tools, ~110 of
+        them from a dozen user-scope servers, every schema re-read on all 200
+        turns of the worst item. The surprise being protected against had
+        never once occurred; its price was most of the context window.
+        """
         from bgate_ui import runners
         args = runners._claude_args("claude", permission_mode="acceptEdits",
                                     model=None, cwd=".", native_images=False)
-        # --strict-mcp-config would drop every server the user configured.
-        assert "--strict-mcp-config" not in args
+        assert "--strict-mcp-config" in args
+        # The point is that ours is still there — strict must not mean bare.
+        cfg = json.loads(args[args.index("--mcp-config") + 1])
+        assert runners.MCP_SERVER_NAME in cfg["mcpServers"]
+
+    def test_a_dispatched_agent_cannot_spawn_subagents(self):
+        """The hole this pair of flags closed.
+
+        `--allowedTools` reads like a restriction and is a PERMISSION list;
+        availability is `--tools`, which was never passed. Dispatch asked for
+        six tools and the CLI handed over 203-229 — including Task and
+        Workflow, so every seated agent could spawn subagents, and Workflow can
+        open dozens in one call. Nothing in the dispatch path could see it.
+        """
+        from bgate_ui import runners
+        args = runners._claude_args("claude", permission_mode="acceptEdits",
+                                    model=None, cwd=".", native_images=False)
+        assert "--tools" in args, "--allowedTools does not limit availability"
+        available = args[args.index("--tools") + 1].split(",")
+        for forbidden in ("Task", "Workflow", "CronCreate", "RemoteTrigger",
+                          "ScheduleWakeup", "SendMessage", "WebSearch"):
+            assert forbidden not in available, (
+                f"{forbidden} is available to a dispatched agent")
+        # and the control: the tools they were measured actually using survive
+        for needed in ("Read", "Edit", "Write", "Glob", "Grep", "Bash",
+                       "ToolSearch", "PowerShell"):
+            assert needed in available, f"{needed} was measured in use, 76 runs"
 
     def test_the_allow_list_still_names_the_prefix(self):
         from bgate_ui import runners

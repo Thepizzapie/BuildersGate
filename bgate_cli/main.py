@@ -12,6 +12,15 @@
     bgate app [--port N]        run the dashboard in a native desktop window
                                 (needs: pip install "builders-gate[desktop]")
     bgate publish [--out DIR]   build the arcade: every game, as a static site
+    bgate connect [CLIENT...] [--all] [--check] [--show] [--remove] [--json]
+                                wire your coding agent to the Builders Gate MCP
+                                server, pinned to THIS interpreter. With no
+                                argument it writes nothing and reports every
+                                client it knows: claude, codex, gemini, vscode,
+                                cursor, windsurf, opencode.
+                                --show prints the config block for clients that
+                                have no `mcp add` of their own, and for any MCP
+                                client not on that list.
     bgate doctor [DIR] [--json] check every external dependency in one pass
     bgate key [--json]          show every provider key and which layer supplies it
     bgate key set PROVIDER [--global]
@@ -801,6 +810,133 @@ def panic(project_dir: str = "", as_json: bool = False) -> int:
     return 0
 
 
+def connect(targets: list[str], *, check: bool = False, show: bool = False,
+            remove: bool = False, as_json: bool = False) -> int:
+    """Wire your coding agent to the Builders Gate MCP server, or say why not.
+
+    THE COMMAND THAT USED TO BE A PARAGRAPH IN THE README. Setup told the user
+    to type
+
+        claude mcp add builders-gate --scope user -- <ABSOLUTE-python-path> -m bgate_mcp.server
+
+    and then explained, correctly, that getting the interpreter wrong produces
+    a registration that looks fine, fails at the first tool call, and reports
+    "failed to connect" pointing nowhere near the cause. Asking a new user to
+    hand-assemble the one argument the docs admit is the most common failure on
+    the supported platform is the papercut; this fills it in for them, because
+    the interpreter it should name is the one running this process.
+
+    Dashboard parity is deliberate: Settings → Agent CLIs does exactly this,
+    through the same :mod:`bgate_ui.agentcli`. Nobody should have to start a
+    server to finish an install, and nobody should get a different answer from
+    the two places.
+
+    WITH NO ARGUMENT IT WRITES NOTHING. A bare `bgate connect` is the report —
+    every client, whether it is installed, and whether its registration is the
+    good one. Registering is a named target or `--all`, because it changes what
+    every future session of that client can do on this whole machine.
+    """
+    try:
+        from bgate_ui import agentcli
+    except Exception as exc:                                     # noqa: BLE001
+        print(f"error: the wiring registry is unavailable: {exc}")
+        return 1
+
+    known = agentcli.ids()
+    unknown = [t for t in targets if t not in known]
+    if unknown:
+        print(f"error: unknown client(s): {', '.join(unknown)}")
+        print(f"known: {', '.join(known)}")
+        return 1
+
+    applied: dict[str, dict] = {}
+    if remove:
+        for one in targets:
+            applied[one] = agentcli.unregister(one)
+    elif targets:
+        for one in targets:
+            got = agentcli.register(one)
+            # VERIFY EVERY WRITE, because "registered" is precisely the claim
+            # that has been wrong before. The interpreter the config now names
+            # is asked whether it can import the server; that is the difference
+            # between a registration and a working one.
+            if got.get("ok"):
+                got["verified"] = agentcli.verify(one)
+            applied[one] = got
+    elif check:
+        for one in known:
+            row = [r for r in agentcli.status() if r["id"] == one][0]
+            if row["mcp"].get("found"):
+                applied[one] = agentcli.verify(one)
+
+    data = {**agentcli.payload(), "applied": applied}
+    if as_json:
+        print(json.dumps(data, indent=2))
+    else:
+        _print_connect(data, show=show)
+    rows = data["runners"]
+    if applied:
+        return 0 if all(v.get("ok") for v in applied.values()) else 1
+    # A bare report exits 0 when ANY client is correctly wired. Zero is the
+    # honest failure: nothing on this machine can call the tools.
+    return 0 if any(r["installed"] and r["mcp"].get("ok") for r in rows) else 1
+
+
+def _print_connect(data: dict, *, show: bool = False) -> None:
+    rows = data["runners"]
+    applied = data.get("applied") or {}
+    print(f"MCP server : {data['server']}")
+    print(f"interpreter: {data['interpreter']}")
+    print()
+    width = max(len(r["label"]) for r in rows)
+    for row in rows:
+        mcp = row["mcp"]
+        if not row["installed"]:
+            mark, detail = "----", "not found on this machine"
+            if row["install_hint"]:
+                detail += f"  ({row['install_hint']})"
+        elif mcp.get("ok"):
+            mark, detail = "ok  ", "wired, pinned to this interpreter"
+        else:
+            mark, detail = "MISS", mcp.get("verdict", "")
+        print(f"{mark}  {row['label'].ljust(width)}  {detail}")
+        got = applied.get(row["id"])
+        if got:
+            note = got.get("error") or got.get("verdict") or got.get("output") or ""
+            print(f"      {' ' * width}  -> {note.strip()[:400]}")
+            checked = got.get("verified") or {}
+            if checked:
+                print(f"      {' ' * width}  -> "
+                      + (checked.get("detail") or checked.get("error") or ""))
+    print()
+    todo = [r for r in rows if r["installed"] and not r["mcp"].get("ok")]
+    writable = [r["id"] for r in todo if r["mcp"].get("can_register")]
+    manual = [r for r in todo if not r["mcp"].get("can_register")]
+    if writable:
+        print(f"to wire them:  bgate connect {' '.join(writable)}")
+    for row in manual:
+        # NO BUTTON AND NO COMMAND, ON PURPOSE: these clients keep their MCP
+        # servers in a JSON file the human also hand-edits, and this tool does
+        # not merge into one. The block is printed with the interpreter already
+        # correct, which is the part that goes wrong.
+        print(f"{row['label']}: add this to {row['mcp']['config_path']}")
+        if show:
+            print(_indent(row["mcp"].get("block") or ""))
+        else:
+            print("      (re-run with --show to print the block)")
+    if show:
+        print()
+        print("any other MCP client:")
+        print(_indent(data.get("generic_block") or ""))
+    print()
+    print("restart the client after wiring it — a running session does not "
+          "pick up a new MCP server.")
+
+
+def _indent(text: str, pad: str = "      ") -> str:
+    return "\n".join(pad + line for line in (text or "").splitlines())
+
+
 def doctor(project_dir: str = "", as_json: bool = False) -> int:
     """Print the dependency report. Exit 1 if anything is unavailable.
 
@@ -997,6 +1133,23 @@ def main() -> int:
     args = sys.argv[1:]
     cmd = args[0] if args else "help"
 
+    # ASKING A COMMAND WHAT IT DOES MUST NEVER DO IT.
+    #
+    # `bgate serve --help` used to START THE DASHBOARD. Every subcommand below
+    # reads its own flags positionally, so an unrecognised one is not an error,
+    # it is simply ignored — and `serve` ignoring `--help` means it binds the
+    # port and blocks forever. Someone asking for usage instead got a server
+    # they did not know was running, on a terminal that never came back, and
+    # the next person to start one hit "address already in use" from a process
+    # nobody had meant to launch.
+    #
+    # This is checked once, here, ahead of every command, because the bug is
+    # not in `serve` — it is in the shape all of them share. `app`, `publish`
+    # and `preview` all block the same way.
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        return 0
+
     if cmd == "init":
         rest = args[1:]
 
@@ -1105,6 +1258,23 @@ def main() -> int:
     if cmd == "doctor":
         positional = [a for a in args[1:] if not a.startswith("-")]
         return doctor(positional[0] if positional else "", as_json="--json" in args)
+
+    if cmd in ("connect", "wire"):
+        rest = args[1:]
+        positional = [a.lower() for a in rest if not a.startswith("-")]
+        if "--all" in rest:
+            # --all means every client we can WRITE to, not every client we can
+            # name: a file-kind row has no write, and listing it here would put
+            # a guaranteed failure in the exit code of a command the user was
+            # told to run.
+            from bgate_ui import agentcli as _ac
+            positional = [r["id"] for r in _ac.status()
+                          if r["installed"] and r["mcp"].get("can_register")]
+        return connect(positional,
+                       check="--check" in rest,
+                       show="--show" in rest,
+                       remove="--remove" in rest,
+                       as_json="--json" in rest)
 
     if cmd in ("key", "keys"):
         rest = args[1:]
