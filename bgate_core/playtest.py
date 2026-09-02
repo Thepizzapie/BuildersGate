@@ -244,12 +244,23 @@ def preflight(mic_device: Optional[int] = None, window_title: Optional[str] = No
         from bgate_adapters import godot
         try:
             executable = godot.find_godot()
-            project = Path(root or ".") / "game" / "project.godot"
+            # BOTH LAYOUTS, BECAUSE THE PRODUCT SHIPS BOTH. `bgate init`
+            # scaffolds the engine project into a `game/` subdirectory;
+            # `bgate adopt` points at a project that already exists and leaves
+            # project.godot exactly where it is, which is normally the root.
+            # This only looked in `game/`, so every ADOPTED project — the whole
+            # point of adopt, and the path the setup docs call the most common
+            # one — was told "no game yet: create or open a game project
+            # first" while sitting on 16 scenes, 41 scripts and 47MB of assets.
+            base = Path(root or ".")
+            candidates = [base / "game" / "project.godot", base / "project.godot"]
+            project = next((p for p in candidates if p.is_file()), candidates[0])
             checks["native_game"] = {
                 "ok": project.is_file(),
                 "godot": executable,
                 "project": str(project),
-                "reason": "" if project.is_file() else "no game/project.godot",
+                "reason": "" if project.is_file() else (
+                    "no project.godot at %s or %s" % tuple(str(c) for c in candidates)),
             }
         except Exception as exc:
             checks["native_game"] = {"ok": False, "reason": str(exc)}
