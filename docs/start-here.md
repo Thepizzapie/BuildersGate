@@ -128,16 +128,23 @@ approval gate (does it finish without you).
 ### 3. Register the server and install the hook
 
 ```bash
-python -c "import sys; print(sys.executable)"    # prints <absolute-python-path>
-claude mcp add builders-gate --scope user -- <absolute-python-path> -m bgate_mcp.server
+bgate connect claude          # or codex, gemini, vscode — `bgate connect` lists them
 bgate hook-install .
 bgate hook-status .
 ```
 
-Use the **absolute** python path, from the same environment where
-`pip install -e .` ran. The Claude CLI resolves a bare `python` differently
-than your shell does and reports "failed to connect" for a server that runs
-fine. This is the most common failure on Windows.
+`bgate connect` with no argument writes nothing and reports every client it
+knows about: whether it is installed, whether Builders Gate is registered with
+it, and — the state nothing else can see — whether that registration names the
+right interpreter. Cursor, Windsurf and opencode have no `mcp add` subcommand
+and keep their servers in a file you also hand-edit, so `bgate connect --show`
+prints the block to paste rather than merging into it.
+
+A registration naming a bare `python` resolves against whatever is first on
+PATH when the client launches the server, which is routinely not the
+environment `pip install -e .` ran in. It then reports "failed to connect" and
+the message points nowhere near the cause. This is the most common failure on
+Windows, which is why `connect` always pins the absolute path.
 
 **Restart Claude Code before you look for the tools.** A running session does
 not pick up a newly registered server. Confirm by asking Claude to call
@@ -284,7 +291,7 @@ Four habits that cost the most when skipped:
 
 ## What dispatch does
 
-When you dispatch a work item, `bgate_ui/dispatch.py`:
+When you dispatch a work item, `src/bgate_ui/agents/dispatch.py`:
 
 1. Refuses a chain link whose predecessor has not landed.
 2. Checks the concurrency cap (default 4).

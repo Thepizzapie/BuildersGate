@@ -55,13 +55,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from _floorpaths import sandbox  # noqa: E402
+
 from PIL import Image  # noqa: E402
 
 from bgate_adapters import kie  # noqa: E402
 from gen_floor_rooms import AT, DEST, RATIO  # noqa: E402
 from slice_floor_cast import despeckle  # noqa: E402
 
-ART_ROOT = Path.home() / "Desktop" / "bg-testbed"
+ART_ROOT = sandbox()
 # The finished single-layer rooms. These are the anchor for both layers and are
 # not thrown away: a room whose split fails still has one to fall back to.
 WHOLE = ROOT / "frontend" / "public" / "img" / "floor" / "rooms"
@@ -651,6 +653,6 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    from bgate_core import envfile
+    from bgate_core.store import envfile
     envfile.load_env(str(ART_ROOT))
     sys.exit(main(sys.argv[1:]))

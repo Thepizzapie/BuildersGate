@@ -86,12 +86,12 @@ jobs:
           # Two things came out of triaging that first pass, which is the
           # argument for narrowing rather than deleting:
           #
-          #   REAL      py/redos in bgate_core/feedback.py. Exponential on a run
+          #   REAL      py/redos in src/bgate_core/feedback.py. Exponential on a run
           #             of one letter — 41 m's took 26 seconds, and is_noise
           #             runs on every whisper segment, so humming into the mic
           #             was enough. Fixed.
           #   NOT REAL  py/command-line-injection, "Critical", in
-          #             bgate_adapters/recorder.py. The command is a list, there
+          #             src/bgate_adapters/recorder.py. The command is a list, there
           #             is no shell, and the executable comes from
           #             shutil.which("ffmpeg") — the tainted value lands inside
           #             one argv element as `title=<name>` and cannot become an

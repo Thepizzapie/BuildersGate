@@ -55,12 +55,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from _floorpaths import sandbox  # noqa: E402
 
 from PIL import Image  # noqa: E402
 
 from bgate_adapters import kie  # noqa: E402
 
-ART_ROOT = Path.home() / "Desktop" / "bg-testbed"
+ART_ROOT = sandbox()
 CONCEPT = ART_ROOT / ".bgate" / "refs" / "floor-concept.r1.png"
 
 # public/, not static/: the build copies public -> bgate_ui/static, so art
@@ -330,6 +333,6 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    from bgate_core import envfile
+    from bgate_core.store import envfile
     envfile.load_env(str(ART_ROOT))
     sys.exit(main(sys.argv[1:]))

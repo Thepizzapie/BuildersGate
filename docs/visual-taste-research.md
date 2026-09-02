@@ -169,7 +169,7 @@ One pattern per discipline, not three bespoke systems:
    only fail is autonomous. Judging cuts raw generations down to a finalist set
    so human attention goes on judgment, not triage.
 5. **Winners close the loop as exemplars.** Done for art (`ref_pin` to LoRA
-   training in `bgate_core/styles.py`). No analogue exists for rigs or animation
+   training in `src/bgate_core/art/styles.py`). No analogue exists for rigs or animation
    clips. Options worth exploring: few-shot exemplar conditioning at generation
    time, or calibrating the deterministic proxies against this project's own
    approved output instead of fixed thresholds.

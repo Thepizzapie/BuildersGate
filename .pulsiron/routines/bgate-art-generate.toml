@@ -50,5 +50,5 @@ default = ''
 
 [[step]]
 name = 'generate'
-run = 'python {repo}/tools/panel_api.py art --prompt "{prompt}" --filename "{filename}" --kind "{kind}" --size "{size}" --quality "{quality}" --provider "{provider}" --transparent "{transparent}" --tileable "{tileable}" --refs "{ref}"'
+run = 'python {repo}/scripts/panel_api.py art --prompt "{prompt}" --filename "{filename}" --kind "{kind}" --size "{size}" --quality "{quality}" --provider "{provider}" --transparent "{transparent}" --tileable "{tileable}" --refs "{ref}"'
 timeout_secs = 900

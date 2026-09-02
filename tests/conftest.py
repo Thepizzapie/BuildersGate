@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 
-from bgate_core import db, project
+from bgate_core.store import db, project
 
 
 @pytest.fixture(autouse=True)
@@ -13,7 +13,7 @@ def _no_dashboard_auth(monkeypatch):
 
     The guard is an origin-level concern; making all ~350 tests plumb a bearer
     token would test the fixture, not the feature. The guard itself is exercised
-    for real in tests/test_auth_guard.py — that is the only place it should be.
+    for real in tests/ui/test_auth_guard.py — that is the only place it should be.
     """
     monkeypatch.setenv("BGATE_NO_AUTH", "1")
 
@@ -93,7 +93,7 @@ def routable_gateway(monkeypatch):
     before the stubbed adapter was ever consulted, testing the gate instead
     of the subject. Tests OF the gate must not use this.
     """
-    from bgate_core import gateway
+    from bgate_core.runtime import gateway
 
     monkeypatch.setattr(gateway, "pick", lambda root, cap: {
         "provider": "stub", "alternatives": [], "why": "test stub"})
@@ -139,13 +139,14 @@ def root(tmp_path, _seed_project):
     rather than each test's. A real new project starts at `thesis`, where
     greenlight holds the art, audio and cinematic seats until a graybox has
     been proved — which is the point of the whole mechanism and is exercised
-    in tests/test_greenlight.py against `fresh_root` below. Every OTHER test in
+    in tests/level/test_greenlight.py against `fresh_root` below. Every OTHER test in
     this suite is about something else and was written against a board with no
     stage on it; making 1,600 of them settle a mechanical thesis first would
     test the fixture. So the fixture answers the question once, out loud.
     """
     shutil.copytree(_seed_project, tmp_path, dirs_exist_ok=True)
-    from bgate_core import greenlight, workspace
+    from bgate_core.design import greenlight
+    from bgate_core.store import workspace
 
     workspace.set(tmp_path, greenlight.SEAT, greenlight.DOC_KEY,
                   {"stage": greenlight.PRODUCTION})
@@ -160,7 +161,8 @@ def fresh_root(root):
     For the tests of the stage machine itself, which have to see what a new
     project sees rather than what the `root` fixture arranges above.
     """
-    from bgate_core import db as _db, greenlight
+    from bgate_core.store import db as _db
+    from bgate_core.design import greenlight
 
     with _db.tx(root) as conn:
         conn.execute("DELETE FROM workspace_doc WHERE seat = ? AND key = ?",

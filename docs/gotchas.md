@@ -23,7 +23,7 @@ its version string**. The known-good binary here is a gyan build too.
 **Fix.** Install a different build (BtbN's gpl release on Windows, your
 distribution's package on Linux) and point Builders Gate at it with
 `BGATE_FFMPEG`, or drop it at `~/.bgate/bin/ffmpeg[.exe]`. Resolution order in
-`bgate_core/ffmpegbin.py`, most specific first: an explicit argument,
+`src/bgate_core/runtime/ffmpegbin.py`, most specific first: an explicit argument,
 `BGATE_FFMPEG`, `~/.bgate/bin`, PATH. A `BGATE_FFMPEG` naming something that is
 not there refuses rather than falling back to the binary you were escaping.
 
@@ -61,7 +61,7 @@ Body reads `error code: 1010` / `browser_signature_banned`, and
 **Cause.** Cloudflare fronts both kie hosts and refuses urllib's default
 User-Agent. Measured: identical POST with no UA gives 1010, with a UA the
 endpoint answers normally. It was already fixed on the download path
-(`DOWNLOAD_UA` in `bgate_adapters/kie.py`) and never applied to the API path.
+(`DOWNLOAD_UA` in `src/bgate_adapters/kie.py`) and never applied to the API path.
 
 **Fix.** Applied: `_request` sends a User-Agent on every call. The 403 arrives at
 the transport layer with no `code` in the body, so it never reached kie's
@@ -201,7 +201,7 @@ symptom is identical to a hang: both sit there, neither prints, and the timeout
 reports "the game did not exit". Three agents were killed after 25 minutes of
 silence having written nothing, and some of that was this.
 
-`bgate_core/enginelock.py` now serialises engine spawns per project. A second
+`src/bgate_core/runtime/enginelock.py` now serialises engine spawns per project. A second
 call waits, reports that it waited and on what, and refuses with an explicit
 message rather than racing. A lock left by a killed run expires and is broken by
 the next caller, which says so.

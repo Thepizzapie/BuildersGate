@@ -5,5 +5,5 @@ keywords = ['deploy', 'dispatch', 'queue', 'board']
 
 [[step]]
 name = 'deploy'
-run = 'python {repo}/tools/panel_api.py deploy'
+run = 'python {repo}/scripts/panel_api.py deploy'
 timeout_secs = 300

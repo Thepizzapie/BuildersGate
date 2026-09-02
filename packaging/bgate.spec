@@ -6,7 +6,7 @@
 #  1. Data trees are resolved RELATIVE TO THE SOURCE TREE, not via
 #     importlib.resources:
 #         bgate_ui/app.py      Path(__file__).with_name("static")
-#         bgate_core/scaffold  Path(__file__).resolve().parent.parent / "templates"
+#         bgate_core/store/scaffold  Path(__file__).resolve().parents[2] / "templates"
 #     PyInstaller unpacks modules under sys._MEIPASS keeping package paths, so
 #     `templates/` has to land at the BUNDLE ROOT (sibling of bgate_core) and
 #     `static/` inside bgate_ui/. Get this wrong and the dashboard 404s every
@@ -22,17 +22,19 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 SPECDIR = Path(SPECPATH).resolve()
 ROOT = SPECDIR.parent
+# The importable packages live under src/; the bundle keeps them at its own
+# root, which is what the module paths inside them already assume.
+SRC = ROOT / "src"
 
 # ── data ────────────────────────────────────────────────────────────────────
 # (source, destination-inside-bundle)
 datas = [
-    (str(ROOT / "bgate_ui" / "static"), "bgate_ui/static"),
-    (str(ROOT / "bgate_site" / "theme"), "bgate_site/theme"),
+    (str(SRC / "bgate_ui" / "static"), "bgate_ui/static"),
+    (str(SRC / "bgate_site" / "theme"), "bgate_site/theme"),
     # Sibling of bgate_core, because scaffold.py walks up two parents to find it.
-    (str(ROOT / "templates"), "templates"),
-    (str(ROOT / "bgate_engine"), "bgate_engine"),
+    (str(SRC / "templates"), "templates"),
     # Also embedded as resource id 1 by EXE(icon=...) below. This copy is the
-    # fallback bgate_ui/webview2.py reads when the resource lookup fails.
+    # fallback bgate_ui/window/webview2.py reads when the resource lookup fails.
     (str(ROOT / "packaging" / "icon.ico"), "."),
 ]
 # THE ADAPTERS THAT ARE READ AS SOURCE, NOT IMPORTED AS MODULES — and this is
@@ -49,10 +51,10 @@ datas = [
 # app — modelling, rigging, sprite baking — plus whisper transcription failed
 # at run time. Nothing caught it because nothing ran the frozen binary.
 #
-# tests/test_packaging.py::test_every_adapter_read_from_disk_is_shipped scans
+# tests/packaging/test_packaging.py::test_every_adapter_read_from_disk_is_shipped scans
 # for the `with_name` calls and fails if one is added without landing here.
 datas += [
-    (str(ROOT / "bgate_adapters" / name), "bgate_adapters")
+    (str(SRC / "bgate_adapters" / name), "bgate_adapters")
     for name in ("_blender_runner.py", "_blender_sprites.py",
                  "_whisper_runner.py", "bodymeasure.py")
 ]
@@ -60,7 +62,7 @@ datas += [
 datas += collect_data_files("PIL", include_py_files=False)
 
 # WebView2Loader.dll — the native window loads this directly (see
-# bgate_ui/webview2.py). pywebview vendors it under
+# bgate_ui/window/webview2.py). pywebview vendors it under
 # webview/lib/runtimes/<arch>/native/, and collect_data_files keeps that layout
 # so the same relative lookup works frozen. Without it the app silently loses
 # its window and falls back to the browser.
@@ -116,7 +118,7 @@ hiddenimports = [
 #
 # `recorder` was cut, and an earlier version of this file filtered it on
 # the reasoning that it "belongs to the record extra and is spawned out of
-# process". Both halves were wrong: bgate_core.playtest imports it IN PROCESS
+# process". Both halves were wrong: bgate_core.qa.playtest imports it IN PROCESS
 # for every preflight, and it is how playtest audio is actually captured. Cutting
 # it took numpy with it and left the Playtests screen permanently unable to
 # record. See VENV_INSTALL in build_exe.py.
@@ -131,7 +133,7 @@ hiddenimports += [
 
 a = Analysis(
     [str(SPECDIR / "launcher.py")],
-    pathex=[str(ROOT)],
+    pathex=[str(SRC)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -182,7 +184,7 @@ a = Analysis(
         # `cryptography` reaches the bundle through exactly one caller:
         # pywebview's __generate_ssl_cert(), which builds a self-signed
         # certificate for its own bottle server when a window is created with
-        # ssl=True. bgate_ui.desktop never passes ssl — the window points at
+        # ssl=True. bgate_ui.window.desktop never passes ssl — the window points at
         # loopback uvicorn — and pywebview's import is inside that function and
         # already wrapped in try/ImportError with a message telling you to
         # install pywebview[ssl]. So the only way to reach it is to add an

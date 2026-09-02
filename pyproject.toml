@@ -8,74 +8,21 @@ authors = [{ name = "Thepizzapie" }]
 keywords = ["gamedev", "mcp", "godot", "blender", "agents"]
 requires-python = ">=3.11"
 dependencies = [
-    # PINNED BELOW 2. The MCP SDK's 2.0 removed `mcp.server.fastmcp` — the whole
-    # of bgate_mcp/server.py is built on FastMCP, and 2.0 replaces it with
-    # `mcp.server.mcpserver` under a different API. A floor with no ceiling meant
-    # a clean install resolved to 2.0.0 and every MCP tool failed to import, on a
-    # machine where nothing had changed but the date. Lifting this is a port,
-    # not a version bump.
     "mcp>=1.2.0,<2",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "Pillow>=10.0",
-    # THE SAME STORY AS comtypes BELOW, one release later. numpy was declared
-    # only by the `record` extra, and the art pipeline grew a hard dependency
-    # on it: propsheet's conform and border measure, retrodiffusion's
-    # background keying, the wall tile's tone match. Every one of those is
-    # core — a prop sheet is not an optional feature of a 2D game — and every
-    # one worked on the machines this was written on, because sounddevice or
-    # an unrelated package had already pulled numpy in. A clean install
-    # without [record] would have raised ImportError the first time an agent
-    # generated a prop. Linux CI is what finally said so out loud.
     "numpy>=1.26",
     "openai>=1.30",
 ]
 
 [project.optional-dependencies]
-# ruff is here rather than installed loose in CI so that the lint job and a
-# contributor's local run cannot disagree about the version — a rule that fires
-# only on the runner is a rule nobody can fix before pushing. The ceiling is
-# because ruff adds checks in minor releases, and a lint gate that goes red on
-# an unchanged tree teaches everyone to ignore it.
 dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.12,<0.13"]
 stt = ["faster-whisper>=1.0"]
-# Talking to the brainstorm agent — Deepgram realtime STT and Aura TTS.
-#
-# `websockets` is needed in BOTH directions and neither is covered by the pins
-# above: the server needs a client to reach wss://api.deepgram.com, and uvicorn
-# needs a websocket protocol implementation before FastAPI's own @websocket
-# routes can accept a connection at all. It looks pinned because it is usually
-# present — it is an extra of uvicorn[standard], mcp[ws] and openai[realtime] —
-# but a clean `pip install -e .` resolves none of those and voice would fail
-# with an import error rather than a sentence. deepgram.available() reports its
-# absence explicitly for the same reason.
 voice = ["websockets>=13"]
-# numpy is NOT repeated here: it moved into the core dependencies above, and
-# an extra that re-declares it is a second place to keep a version floor in
-# step with the first.
 record = ["sounddevice>=0.4"]
-# `bgate app` — the dashboard in a native window. On Windows this renders
-# through the Edge WebView2 runtime that ships with 11, so there is no bundled
-# browser here either way.
-#
-# comtypes IS NOT OPTIONAL AND WAS MISSING. bgate_ui/webview2.py is the primary
-# window on Windows — the hand-written Win32 + COM host that desktop.py tries
-# FIRST and that pywebview only backs up — and its available() check begins by
-# importing comtypes. Nothing declared it. It was present on the machine this
-# was written on because an unrelated package (pyttsx3) depends on it, so the
-# native path worked there and silently failed everywhere else: every clean
-# install and every shipped .exe answered "comtypes is not installed", fell
-# through to pywebview, and nobody saw an error because the fallback opens a
-# window too. The frameless title bar lives on that primary path, which is what
-# finally made the absence visible.
 desktop = ["pywebview>=5.0", "comtypes>=1.2"]
-# The studio floor's paintings and ambience — ~30MB that used to ride in EVERY
-# wheel whether or not a project ever opened the floor. Now a separate
-# distribution (packaging/build_floor_assets.py builds it from this repo's own
-# trees); without it the floor draws its procedural fallback and stays silent.
-# A source checkout has the files either way and never needs this.
 floor = ["builders-gate-floor-assets"]
-# Building the downloadable BuildersGate.exe — see packaging/build_exe.py.
 build = ["pyinstaller>=6.14", "pywebview>=5.0"]
 
 [project.urls]
@@ -90,12 +37,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["."]
-# bgate_engine and templates carry no .py at all — they are pure data trees that
-# scaffold.py / godot_templates resolve RELATIVE TO THE INSTALL ROOT
-# (bgate_core/../templates), so they must land next to the code packages in
-# site-packages. namespaces = true is what lets those __init__-less dirs be
-# collected; their contents come in via package-data below.
+where = ["src"]
 include = [
     "bgate_core*",
     "bgate_mcp*",
@@ -103,34 +45,17 @@ include = [
     "bgate_cli*",
     "bgate_site*",
     "bgate_ui*",
-    "bgate_engine",
     "templates",
 ]
 exclude = ["tests*", "docs*", "*.__pycache__"]
 namespaces = true
 
 [tool.setuptools.package-data]
-# A wheel with no JS is a dashboard where every /static/**/*.js 404s, and a
-# wheel with no templates/ is a scaffolder that raises FileNotFoundError. Both
-# shipped that way until CI started asserting otherwise (see .github/workflows).
 bgate_ui = ["static/**/*"]
-# Same failure mode as the dashboard's JS: a wheel with no theme/ is a publish
-# that writes an index.html with no stylesheet next to it.
 bgate_site = ["theme/*"]
-bgate_engine = ["*.md", "schemas/**/*"]
-# `**/*` DOES NOT MATCH DOTFILES, and templates/shared/.gitignore is the file
-# that stops a user committing their API key in the project this scaffolds.
-# It has to be named explicitly or the wheel ships without it and the fix
-# only works from a source checkout -- the same class of bug as the wheel
-# that shipped with no JavaScript.
 templates = ["**/*", "**/.gitignore"]
 
 [tool.setuptools.exclude-package-data]
-# The floor's paintings and ambience are the OPTIONAL assets pack (the `floor`
-# extra; packaging/build_floor_assets.py). ~30MB of a 39MB static tree, paid
-# by every install for one decorative pane. The dashboard serves these paths
-# from the assets package when it is installed and the floor degrades to its
-# procedural surface when it is not — bgate_ui.app's fallback mounts.
 bgate_ui = ["static/img/floor/*", "static/img/floor/**/*",
             "static/audio/floor/*", "static/audio/floor/**/*"]
 
@@ -141,17 +66,6 @@ markers = [
 ]
 
 [tool.ruff]
-# Deliberately NOT ruff's default rule set. All rules on reports 1000+ findings
-# here, most of them style opinions this codebase has already decided against
-# (Optional[] over X|None, broad excepts that are load-bearing around
-# subprocesses). A lint gate nobody can make green is a lint gate everyone
-# learns to ignore.
-#
-# E9 + F is the subset that catches BUGS rather than taste: syntax errors,
-# undefined names, unused imports, shadowed definitions. Turning it on found a
-# function defined twice in items.py (the second silently winning) and an
-# `Optional` that only survived because `from __future__ import annotations`
-# makes annotations lazy strings.
 line-length = 100
 target-version = "py311"
 
@@ -159,7 +73,4 @@ target-version = "py311"
 select = ["E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-# Importing a pytest fixture and then naming it as a test parameter is the
-# documented way to share fixtures across modules, and it looks exactly like a
-# redefinition to a linter.
 "tests/*" = ["F811"]

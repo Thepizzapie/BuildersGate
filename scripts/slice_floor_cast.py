@@ -172,28 +172,10 @@ from pathlib import Path
 from PIL import Image
 
 # Where the sheets are generated (the sandbox) and where they are installed.
-REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _floorpaths import REPO, sandbox  # noqa: E402
 
-# WHERE THE SANDBOX IS, ASKED FOR RATHER THAN HARDCODED.
-#
-# This was an absolute path to one machine's Desktop, which is three separate
-# problems in one line: it only ran for the person who wrote it, it put a home
-# directory and an account name into a public repository, and the leak test that
-# guards against exactly that (tests/test_streamer.py) failed on main because of
-# it.
-#
-# BGATE_CAST_PROJECT is the env var, --project is the flag, and the default is
-# a sibling `bg-testbed` beside this checkout - which is where it actually lives
-# for the person who wrote it, so the convenience is kept without the address.
-def _sandbox() -> Path:
-    from os import environ
-    asked = environ.get("BGATE_CAST_PROJECT", "").strip()
-    if asked:
-        return Path(asked).expanduser().resolve()
-    return (REPO.parent / "bg-testbed").resolve()
-
-
-CAST = _sandbox() / ".bgate_out" / "art" / "cast"
+CAST = sandbox() / ".bgate_out" / "art" / "cast"
 ANIM = CAST / "anim"
 INSTALL = REPO / "frontend" / "public" / "img" / "floor"
 CAST_FRAMES_TS = REPO / "frontend" / "src" / "shell" / "agents" / "castFrames.ts"

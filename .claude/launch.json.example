@@ -13,7 +13,7 @@
       ],
       "port": 7788,
       "env": {
-        "BGATE_ROOT": "C:\\path\to\\your\\game\\project"
+        "BGATE_ROOT": "C:\\path\\to\\your\\game\\project"
       }
     },
     {
@@ -28,7 +28,7 @@
       ],
       "port": 7799,
       "env": {
-        "BGATE_ROOT": "C:\\path\to\\your\\game\\project"
+        "BGATE_ROOT": "C:\\path\\to\\your\\game\\project"
       }
     }
   ]

@@ -3,7 +3,7 @@
 # Runs on every tag, and on demand. It also runs on pull requests that touch
 # the packaging or the data trees — because the way this build breaks is silent:
 # PyInstaller reports success and produces an exe that starts fine and 404s
-# every asset, since bgate_ui/app.py and bgate_core/scaffold.py locate their
+# every asset, since src/bgate_ui/app.py and src/bgate_core/store/scaffold.py locate their
 # data by walking up from __file__. Only the smoke test catches that, so the
 # smoke test is the actual point of this job.
 name: release-exe
@@ -14,15 +14,18 @@ on:
   pull_request:
     paths:
       - "packaging/**"
-      - "bgate_ui/static/**"
-      - "templates/**"
-      - "bgate_engine/**"
+      - "src/bgate_ui/static/**"
+      - "src/templates/**"
       - "pyproject.toml"
       - ".github/workflows/release-exe.yml"
   workflow_dispatch:
 
+# READ BY DEFAULT. Only the job that attaches artefacts to a release needs to
+# write, and this workflow also runs on pull_request — where the checked-out
+# code is the PR's. A workflow-wide `contents: write` hands that code a token
+# that can push, for the sake of one step that only ever runs on a tag.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # THE JOB THAT SHOULD HAVE EXISTED TWO RELEASES AGO. v0.1.28 and v0.1.29 were
@@ -81,6 +84,15 @@ jobs:
     needs: [guard]
     runs-on: windows-latest
     timeout-minutes: 30
+    # The one job that writes, and only because "Attach to the release" lives
+    # here. That step is gated on a tag; the permission cannot be, so on a
+    # pull_request run this job holds a write token while running the PR's own
+    # code. A fork's token is downgraded to read by GitHub whatever this says,
+    # which leaves branch PRs from collaborators. Moving the attach step into
+    # its own `needs: [build]` job that downloads the artifact would close it
+    # properly.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +102,7 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # THE EXE BUNDLES bgate_ui/static WHOLESALE, and a fresh checkout does not
+      # THE EXE BUNDLES src/bgate_ui/static WHOLESALE, and a fresh checkout does not
       # have one: that tree is generated and only its dist/ is committed. Without
       # this the exe ships a dashboard with no index.html, which build_exe.py now
       # refuses before spending the PyInstaller run.

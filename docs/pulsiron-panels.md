@@ -30,7 +30,7 @@ which is the single most common thing to go wrong. On a non-default port, set
 terminals with.
 
 **Python must be on `PATH`**, the same interpreter that has Builders Gate
-installed. The routines call `python {repo}/tools/panel_api.py`.
+installed. The routines call `python {repo}/scripts/panel_api.py`.
 
 **Authentication is automatic.** Mutating endpoints require the dashboard token;
 the panels read it from `<project>/.bgate/ui-token`, the same file the browser's
@@ -86,14 +86,14 @@ is found. Point the Pulsiron project profile at the checkout itself.
 .pulsiron/panels/*.panel.json    the three panels
 .pulsiron/routines/*.toml        the routines their buttons run
 .pulsiron/feeds/                 what Load writes; gitignored, rewritten per press
-tools/panel_api.py               the CLI the routines call
+scripts/panel_api.py               the CLI the routines call
 ```
 
-`tools/panel_api.py` is usable on its own, which is the quickest way to tell a
+`scripts/panel_api.py` is usable on its own, which is the quickest way to tell a
 broken panel from a broken dashboard:
 
 ```bash
-python tools/panel_api.py board
-python tools/panel_api.py art --prompt "a chipped enamel mug" --kind prop
-python tools/panel_api.py music --prompt "tense corporate ambience" --name tension
+python scripts/panel_api.py board
+python scripts/panel_api.py art --prompt "a chipped enamel mug" --kind prop
+python scripts/panel_api.py music --prompt "tense corporate ambience" --name tension
 ```

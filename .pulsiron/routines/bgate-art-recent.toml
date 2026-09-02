@@ -10,7 +10,7 @@ default = '12'
 
 [[step]]
 name = 'recent'
-run = 'python {repo}/tools/panel_api.py art-recent --limit {limit} --out ".pulsiron/feeds/art-recent.json"'
+run = 'python {repo}/scripts/panel_api.py art-recent --limit {limit} --out ".pulsiron/feeds/art-recent.json"'
 timeout_secs = 30
 
 [outputs]

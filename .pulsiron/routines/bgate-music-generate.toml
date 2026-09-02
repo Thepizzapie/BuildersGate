@@ -35,5 +35,5 @@ default = 'true'
 
 [[step]]
 name = 'generate'
-run = 'python {repo}/tools/panel_api.py music --prompt "{prompt}" --name "{name}" --style "{style}" --model "{model}" --duration "{duration}" --instrumental "{instrumental}"'
+run = 'python {repo}/scripts/panel_api.py music --prompt "{prompt}" --name "{name}" --style "{style}" --model "{model}" --duration "{duration}" --instrumental "{instrumental}"'
 timeout_secs = 1200
