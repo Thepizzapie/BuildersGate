@@ -53,31 +53,13 @@ from pathlib import Path
 
 # The repo this script lives in, so `bgate_adapters` imports without the
 # caller having installed anything.
-REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _floorpaths import REPO, sandbox  # noqa: E402
 sys.path.insert(0, str(REPO))
 
 from bgate_adapters import krea  # noqa: E402
 
-# WHERE THE SANDBOX IS, ASKED FOR RATHER THAN HARDCODED.
-#
-# This was an absolute path to one machine's Desktop, which is three separate
-# problems in one line: it only ran for the person who wrote it, it put a home
-# directory and an account name into a public repository, and the leak test that
-# guards against exactly that (tests/test_streamer.py) failed on main because of
-# it.
-#
-# BGATE_CAST_PROJECT is the env var, --project is the flag, and the default is
-# a sibling `bg-testbed` beside this checkout - which is where it actually lives
-# for the person who wrote it, so the convenience is kept without the address.
-def _sandbox() -> Path:
-    from os import environ
-    asked = environ.get("BGATE_CAST_PROJECT", "").strip()
-    if asked:
-        return Path(asked).expanduser().resolve()
-    return (REPO.parent / "bg-testbed").resolve()
-
-
-ROOT = _sandbox()
+ROOT = sandbox()
 CAST = ROOT / ".bgate_out" / "art" / "cast"
 OUT = CAST / "anim"
 
@@ -241,7 +223,7 @@ def one(name: str, anim: str, provider: str) -> dict:
     refs = [str(CAST / f"{name}-sheet.png")]
     started = time.monotonic()
     if provider == "kie":
-        from bgate_core import chroma
+        from bgate_core.art import chroma
         # Through chroma rather than the kie adapter, because kie's reference
         # field is a URI and chroma is what uploads a local anchor to get one.
         res = chroma.generate(prompt, str(out), provider="kie",
@@ -299,6 +281,6 @@ if __name__ == "__main__":
     # "KREA_API_KEY not set" for a key that was there the whole time. Two of the
     # three did not even fail cleanly - the adapter's error path went looking for
     # a 'reason' the half-built availability dict did not have yet.
-    from bgate_core import envfile
+    from bgate_core.store import envfile
     envfile.load_env(str(ROOT))
     sys.exit(main())

@@ -48,7 +48,7 @@ tab opened, and refused again if a seat holds a lock on it. The previous bytes
 land under `.bgate_out/edits/` either way.
 
 The header carries a bell fed by the event table the follow-up router drives
-(`bgate_core/events.py`). It reaches you only while the page is open. `bgate app`
+(`src/bgate_core/store/events.py`). It reaches you only while the page is open. `bgate app`
 puts the count in the window title, and one optional https webhook is the only
 channel that leaves the machine.
 
@@ -63,13 +63,13 @@ localhost. Every mutation must be same-origin and carry a per-project bearer
 token from `.bgate/ui-token`, which is gitignored and 0600. The page is served
 with the token injected and `fetch` wrapped to send it same-origin only.
 `BGATE_NO_AUTH=1` opts out for a scripted run. See
-[SECURITY.md](../SECURITY.md).
+[SECURITY.md](../.github/SECURITY.md).
 
 No CDN, and no build step for anyone installing it. The dashboard's source is
 `frontend/` — `frontend/public/` for the classic pages, stylesheet and modules,
 `frontend/src/` for the React parts — and `npm run build` in that directory
-writes `bgate_ui/static/`, which is committed. A wheel install and the packaged
-`.exe` therefore need nothing but Python. `bgate_ui/static/` is build output:
+writes `src/bgate_ui/static/`, which is committed. A wheel install and the packaged
+`.exe` therefore need nothing but Python. `src/bgate_ui/static/` is build output:
 editing it is editing a file the next build overwrites.
 
 ## Seats
@@ -295,7 +295,7 @@ providers:
 | `nano-banana-pro`, `z-image` | failed: background bleed |
 | `ideogram-3` | rejects 1536x1024 outright |
 
-Why a style reference loses is in `bgate_adapters/krea.py` and in
+Why a style reference loses is in `src/bgate_adapters/krea.py` and in
 [sprite-animation-research.md](sprite-animation-research.md): asked for four back
 views out of eight, `krea-2-medium` drew a face in seven.
 
@@ -435,7 +435,7 @@ of a reachable exit or a room count, and it can fail and need restarting.
 
 The level generator writes terrain. Everything else in a scene (a prop, a
 camera, a script, a texture swap) is node-level surgery on the `.tscn`.
-`bgate_core.scenewire` does it as text with no engine involved: `load_steps`
+`bgate_core.level.scenewire` does it as text with no engine involved: `load_steps`
 accounting, `ext_resource` ids, name uniquing, a dry run on every mutation, and
 a timestamped backup on every write.
 
@@ -544,7 +544,7 @@ URL and the size, rather than discovered from a failed deploy.
 deployment. A plain `python -m http.server` would hand the browser gzip bytes
 labelled `application/wasm` and the game would die at the loader.
 
-The shipped Web preset (`templates/shared/export_presets.cfg`) exports without
+The shipped Web preset (`src/templates/shared/export_presets.cfg`) exports without
 threads. Threaded builds need cross-origin isolation on the host, which free
 static hosts and iOS Safari do not reliably give you. `_headers` still sets
 COOP/COEP, so flipping `variant/thread_support=true` later is a re-export, not a
@@ -587,7 +587,7 @@ the causal history.
 
 ## Tool index
 
-226 MCP tools are registered (the count is easy to let rot; tests/test_seat_briefs.py reads the real surface off the source). The families, so you know what to look for:
+226 MCP tools are registered (the count is easy to let rot; tests/mcp/test_seat_briefs.py reads the real surface off the source). The families, so you know what to look for:
 
 | Family | Prefix | Covers |
 |---|---|---|
@@ -609,22 +609,38 @@ the causal history.
 ## Repository layout
 
 ```text
-bgate_cli/        the `bgate` console script: init, adopt, use, projects, serve,
-                  app, publish, doctor, key, panic, hook-install, hook-uninstall,
-                  hook-status, un-adopt
-bgate_core/       db, project, bible, lore, canon, scope, spend, queue,
-                  workflows, artifacts, playtest, iterations, git, search
-bgate_mcp/        FastMCP server (stdio), 226 registered tools
-bgate_adapters/   blender, godot, imagegen, krea, kie, localgen, sprites,
+src/              every importable package, and the data tree that must sit
+                  beside them in site-packages:
+  bgate_cli/      the `bgate` console script: init, adopt, use, projects,
+                  serve, app, publish, doctor, key, panic, hook-*, un-adopt
+  bgate_core/     ten subpackages, one per craft, and nothing at the top level:
+                  store/    db, project, settings, assets, artifacts, events
+                  board/    seats, queue, workflows, spend, gates, gitwork
+                  design/   bible, lore, canon, decisions, greenlight, brainstorm
+                  runtime/  providers, doctor, external binaries, proc
+                  art/      chroma, sprites, tiles, items, props, styles
+                  three_d/  cutout rigs, mesh sidecars, the scale contract
+                  audio/    music, sfx, audiolab, loudness
+                  cine/     cinematic, storyboard, the cut and its check
+                  level/    levelgen, traversal, scenes, controls
+                  qa/       playtest, feedback, chat feedback
+  bgate_mcp/      FastMCP server (stdio), 251 registered tools
+  bgate_adapters/ blender, godot, imagegen, krea, kie, localgen, sprites,
                   recorder, transcribe
-bgate_ui/         dashboard backend + routes/, and static/, which is the built
-                  front end and is generated, not edited
+  bgate_ui/       dashboard backend: app.py and api.py at the top, then
+                  routes/ (one auto-registered module per endpoint group),
+                  agents/ (dispatch, runners, follow-up, the QA gate),
+                  pumps/ (the background loops), window/ (`bgate app`), and
+                  static/, which is the built front end and is generated
+  bgate_site/     `bgate publish`: the static arcade + its theme/
+  templates/      Godot project skeletons (2d, 3d, cutout, humanoid, shared)
 frontend/         the front end's only source: public/ (the classic page,
                   app.css and its modules) and src/ (the React shell)
-bgate_site/       `bgate publish`: the static arcade + its theme/
-templates/        Godot project skeletons (2d, 3d, cutout, humanoid, shared)
-bgate_engine/     a design proposal + JSON schemas. No runtime code, nothing
-                  imports it. See bgate_engine/README.md for its actual status
-docs/             onboarding, findings from real production runs, and the audits
-tests/
+packaging/        the PyInstaller spec, the installer script, the icons
+scripts/          one-off and repeatable generators (the dashboard's floor art,
+                  the Pulsiron panel CLI, the build-dependency lock)
+docs/             onboarding, findings from real production runs, the audits,
+                  and engine/, a design proposal that ships nothing
+tests/            grouped to mirror the packages above (store/, board/, art/,
+                  ui/, adapters/, mcp/, packaging/, ...)
 ```

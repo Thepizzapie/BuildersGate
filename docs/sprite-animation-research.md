@@ -14,7 +14,7 @@ still looked wrong in play.
 | 3 | Godot has carried per-frame `duration` all along; the emitter wrote `1.0`. | `timing` with per-animation `holds`, `order`, `loop`, `fps` |
 | 4 | Ping-pong is "derive the rest" applied to timing. | Baked frame order (`0,1,2,1`) |
 | 5 | Four cross-frame faults nothing could see: duplicate, pop, open_loop, detached. | Motion report, advisory |
-| 6 | Nothing knew how a walk is built. | `bgate_core/animspec.py`, ten archetypes; `sprite_plan` |
+| 6 | Nothing knew how a walk is built. | `src/bgate_core/art/animspec.py`, ten archetypes; `sprite_plan` |
 | 7 | A long sheet was a texture that would not upload. | Grid wrap past 4096px, `sheet_padding` |
 | 8 | Video in-betweening is the one continuity technique per-frame generation cannot buy. | Not built. Three blockers below. |
 | 9 | The pose prompt breaks this project's own rule 5 (negation summons the thing). | Not changed. A cheap A/B nobody has run. |
@@ -57,7 +57,7 @@ twelve-pose set goes from 13 calls to 15 before it prevents a single re-roll.
 ### The model matters as much as the references
 
 Character work on Krea is pinned to `nano-banana-2`
-(`bgate_adapters/krea.py:CHARACTER_MODEL`). `krea-2-large` and `krea-2-medium`
+(`src/bgate_adapters/krea.py:CHARACTER_MODEL`). `krea-2-large` and `krea-2-medium`
 condition on a reference as **style**, following a look and owing nothing to a
 pose. A second group takes references as **edit** inputs.
 
@@ -137,7 +137,7 @@ dragged it back inside, and the body landed off centre by exactly that amount.
 Nine of the surviving 12.5px in an early measurement were the clamp.
 
 `spritekit.anchor_x`, `spritekit.place_offset`, the reach-based fit in
-`sprites.from_pose_images`. `tests/test_spritekit.py::TestRegistration` rebuilds
+`sprites.from_pose_images`. `tests/art/test_spritekit.py::TestRegistration` rebuilds
 the synthetic and fails if the ordering of those four numbers inverts.
 
 ## Finding 2: detection is the expensive option
@@ -165,7 +165,7 @@ palette, and black wins the nearest-colour vote for anything mid-tone. Measured
 on a red reference and a drifted green frame: green sits 206 from black and 226
 from the red it should have snapped to. "Lock this frame to the character's
 colours" turned it black. The padding now repeats the last real colour;
-`tests/test_spritekit.py::TestPaletteLock` covers it.
+`tests/art/test_spritekit.py::TestPaletteLock` covers it.
 
 ## Finding 3: per-frame timing
 
@@ -243,7 +243,7 @@ decided by whether the driving agent remembered how a walk cycle works.
 - A **jump** holds longest at the apex, which is physically true and is what
   makes a jump feel like it hangs.
 
-`bgate_core/animspec.py` encodes ten archetypes as pose descriptions plus timing,
+`src/bgate_core/art/animspec.py` encodes ten archetypes as pose descriptions plus timing,
 naming limb positions and weight rather than adjectives. "Leaning back" is a
 pose; "more dynamic" is not, and returns a different character. `sprite_plan`
 hands back the plan and its price for free; `archetypes=[...]` on `image_sprites`
@@ -395,8 +395,8 @@ SHOULD ramp. It says nothing about whether it is the right *character*, which is
   call.
 - **Grid generation** (a 3x3 of poses in one image). The most-recommended
   technique in current tooling literature, banned here on measured evidence:
-  `bgate_adapters/imagegen.py:_reject_multi_pose` refuses it, and
-  `bgate_core/vfx.py` records the faults it produces: a mug that shatters over
+  `src/bgate_adapters/imagegen.py:_reject_multi_pose` refuses it, and
+  `src/bgate_core/art/vfx.py` records the faults it produces: a mug that shatters over
   three frames and is intact again in the fourth, a palette that pops between
   frames 2 and 3, a "fading" effect that ends at full opacity, trails pointing in
   different directions, registration that walks a growing burst across the
@@ -414,12 +414,12 @@ SHOULD ramp. It says nothing about whether it is the right *character*, which is
 
 | File | Change |
 |---|---|
-| `bgate_core/spritekit.py` | New. Anchor registration, palette locking, connected components, silhouette overlap, motion report, sheet layout. Later: row and sheet auditing (`row_report`, `draw_guides`). |
-| `bgate_core/animspec.py` | New. Ten archetypes with key poses, holds, loop and ping-pong. |
-| `bgate_adapters/sprites.py` | Anchor registration, reach-based fit, per-frame durations, ping-pong order, per-animation loop and fps, grid layout and padding, motion report, histogram-based mass. |
-| `bgate_mcp/server.py` | `sprite_plan` and `sprite_sheet_check` (new, free). `image_sprites` gains `anchor_views`, `archetypes`, `view`, `palette_lock`, `palette_colors`, `sheet_padding`; reports and logs `motion` and `palette`. |
-| `bgate_core/seats.py` | Art brief: the model sheet, `ideogram-3`'s character-reference field, call `sprite_plan` first, read the `motion` block, rule 2 corrected. |
-| `tests/test_spritekit.py` | New. 35 tests, including the registration table above. |
+| `src/bgate_core/art/spritekit.py` | New. Anchor registration, palette locking, connected components, silhouette overlap, motion report, sheet layout. Later: row and sheet auditing (`row_report`, `draw_guides`). |
+| `src/bgate_core/art/animspec.py` | New. Ten archetypes with key poses, holds, loop and ping-pong. |
+| `src/bgate_adapters/sprites.py` | Anchor registration, reach-based fit, per-frame durations, ping-pong order, per-animation loop and fps, grid layout and padding, motion report, histogram-based mass. |
+| `src/bgate_mcp/server.py` | `sprite_plan` and `sprite_sheet_check` (new, free). `image_sprites` gains `anchor_views`, `archetypes`, `view`, `palette_lock`, `palette_colors`, `sheet_padding`; reports and logs `motion` and `palette`. |
+| `src/bgate_core/board/seats.py` | Art brief: the model sheet, `ideogram-3`'s character-reference field, call `sprite_plan` first, read the `motion` block, rule 2 corrected. |
+| `tests/art/test_spritekit.py` | New. 35 tests, including the registration table above. |
 
 **Rule 2 of the art brief was wrong.** It said "NEVER CONDITION FRAME N ON FRAME
 N-1", while `image_sprites` has conditioned on the previous frame, on top of the

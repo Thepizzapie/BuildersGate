@@ -1,168 +1,57 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-# ROOT-ANCHORED, and the leading slash is the whole point. As a bare `build/`
-# this matched a build directory at ANY depth, which silently swallowed
-# bgate_ui/static/vendor/three/build/ — three.js's actual library file. The
-# feature shipped with 18 vendored files tracked and the one the import map
-# points at missing, so a fresh clone got a 3D viewer that could not load its
-# own engine, and tests/test_modeledit_api caught it only after the fact.
-# Python's build output is at the repository root; nothing else here wants a
-# `build/` ignored.
 /build/
 /dist/
 .venv/
 venv/
 
-# Per-project game store — never commit the DB itself (it also holds the
-# dashboard's auth token)
 .bgate/
 
-# API keys. The README tells people to put OPENAI_API_KEY in a "gitignored
-# .env at the game project's root" — it was never actually ignored here, so
-# following the documented instructions committed the key.
 .env
 .env.*
 !.env.example
 
-# Adapter scratch output (renders, playtest captures, logs)
 .bgate_out/
 
-# QA gate vendored deps (installed cache, not source)
 .qa_deps/
-# ...and the throwaway project the QA gate runs those deps against.
 .qa_run_project/
 
-# The virtualenvs the local CI rehearsal builds. `.qa_deps/` was ignored and
-# these two were not, which is 230MB of site-packages sitting one `git add -A`
-# away from the index — the same accident the .env rule above exists to stop,
-# with a bigger blast radius.
 .ci-venv/
 .ci-clean/
 
-# Generated asset work directory
 .asset_work/
 
-# `bgate publish` output. Its default target is ./arcade in whatever directory
-# you ran it from, which is this one often enough to matter — and it contains a
-# whole Godot web export.
 arcade/
 
 .pytest_cache/
 .ruff_cache/
 .coverage
 
-# Godot
 .godot/
-# Export presets are per-machine (they carry absolute template paths once the
-# editor touches them), so a game project's own is ignored — but the one the
-# scaffold STAMPS OUT is source, and ignoring it shipped a wheel that could not
-# export anything.
-#
-# The negation below is NOT what makes that file tracked, and cannot be: git
-# resolves .gitignore files deepest-first, and templates/shared/.gitignore —
-# which is itself shipped, and rightly ignores export_presets.cfg inside the
-# game it scaffolds — re-ignores it after this file has spoken. So the template
-# copy is force-added (`git add -f`) and stays tracked because tracked files are
-# never consulted against ignore rules at all. It went untracked for a release
-# this way: the suite was green on the author's machine, which HAD the file, and
-# red on every clean checkout, which did not. If you add another shipped data
-# file under templates/, run `git check-ignore -v` on it before trusting `git
-# status` to have told you about it.
 export_presets.cfg
-!templates/shared/export_presets.cfg
+!src/templates/shared/export_presets.cfg
 
-# Blender
 *.blend1
 *.blend2
 
-# Editor/agent launch config carries absolute interpreter paths and a
-# BGATE_ROOT pointing at whatever project the author happened to be building.
-# Ship .claude/launch.json.example instead.
 .claude/
 !.claude/launch.json.example
 
-# Screenshot fallback: bgate_mcp/server.py writes into the CWD when the project
-# root cannot be resolved, which litters the source tree with captures of
-# whatever was on screen. Ignored so a `git add -A` before a release cannot
-# sweep the author's desktop into the repo.
 bgate_shot_*.png
 
-# Build outputs from local wheel checks (dist/, dist_smoke/). ROOT-ANCHORED,
-# and the leading slash is the whole point — the same trap the `/build/` rule
-# above documents. As a bare `dist*/` this matched a `dist` directory at ANY
-# depth, which included bgate_ui/static/dist/ — the committed React bundle the
-# wheel and the .exe both serve. It only ever looked fine because those two
-# files were force-added and git never re-consults ignore rules for a tracked
-# path; the moment the frontend emitted a third file, `git add` would silently
-# skip it and the dashboard would ship with a stale bundle.
 /dist*/
 
-# Pulsiron work-tracking agent scratch state. Machine-local, and it carries
-# workspace ids that mean nothing in anyone else's checkout.
-#
-# NOT THE WHOLE DIRECTORY, though it was until the panels arrived. Two kinds of
-# thing live under .pulsiron/ and they belong on opposite sides of this file:
-# panels/ and routines/ are the Builders Gate control surface for anyone
-# running Pulsiron — declarative UI and named commands, identical in every
-# checkout, so they SHIP. Everything else is per-machine state. Ignore the
-# directory, then unignore the two that are ours.
-# `.pulsiron/*` AND NOT `.pulsiron/` — the star is load-bearing. Git never
-# descends into an excluded DIRECTORY, so a later `!` cannot re-include
-# anything beneath one; written as the bare directory, the two unignores below
-# are dead lines and the panels silently do not ship.
 .pulsiron/*
 !.pulsiron/panels/
 !.pulsiron/routines/
-# The feed files a panel's Load button writes: a cache of what the dashboard
-# said thirty seconds ago, rewritten on every press. Never reviewable.
 .pulsiron/feeds/
-# A PANEL SHIPS ONLY IF IT IS PORTABLE, and these two were not. Both pointed at
-# absolute paths on one developer's machine, which is a username published in a
-# public repo and a panel that resolves to nothing in anyone else's checkout.
-# bgate-viewer-probe is a scratch panel that was never meant to ship at all —
-# its own notes read "Which of these shows a BIG picture?".
-# tests/test_streamer.py::TestTheSuiteIsNotTheLeak catches the class and caught
-# these; it stays the guard for the next one. Untracked rather than rewritten,
-# because a machine-local path is not something to invent a fictional value for
-# — it is something not to commit.
 .pulsiron/panels/bgate-gallery.panel.json
 .pulsiron/panels/bgate-viewer-probe.panel.json
 
-# ── frontend: one source tree, one generated tree ──────────────────────────
-# SOURCE is frontend/. Everything a human edits lives there — frontend/src for
-# the React shell, frontend/public for the classic assets (*.js, app.css,
-# *.html, favicon.svg, seats/, img/, vendor/).
-#
-# GENERATED BUT COMMITTED is bgate_ui/static/. `npm run build` copies
-# frontend/public/* into it verbatim and emits dist/bgate.js + dist/bgate.css.
-# Nothing there is hand-edited and every file in it is tracked anyway, because
-# the product ships as a wheel and a PyInstaller .exe and NEITHER HAS NODE — a
-# fresh `pip install -e .` must not need a JS build. So: do not add an ignore
-# rule that matches under bgate_ui/static/ (see the `/dist*/` note above for
-# the one that already did), and do not add one that matches under
-# frontend/public/ either — an ignored source file is an asset that vanishes
-# from the wheel on the next clean checkout.
-#
-# Only the build INPUTS are ignored:
 frontend/node_modules/
 
-
-#Ignore vscode AI rules
 .github\instructions\codacy.instructions.md
 
-# ── the built front end is GENERATED, and only the bundle is committed ──────
-# frontend/ is the source: public/ (classic modules, css, images, vendor) and
-# src/ (the React shell). `npm run build` copies public/ into bgate_ui/static/
-# verbatim and emits the bundle under dist/.
-#
-# TRACKING BOTH COPIES WOULD DOUBLE THE REPO. The copy under bgate_ui/static is
-# byte-identical to frontend/public, so committing it stored every module twice
-# and turned a file move into 60,000 added lines in the diff.
-#
-# dist/ IS THE EXCEPTION and is committed on purpose: it is the one artefact
-# that needs node to produce, and the wheel and the PyInstaller exe must work on
-# a machine that has none. Everything else in there is a plain copy, which
-# bgate_ui.webbuild remakes at startup without a toolchain.
-/bgate_ui/static/*
-!/bgate_ui/static/dist/
+/src/bgate_ui/static/*
+!/src/bgate_ui/static/dist/

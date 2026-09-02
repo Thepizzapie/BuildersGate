@@ -19,7 +19,7 @@ sequence: install, point it at a game, set keys, register the MCP server, verify
 **Windows is the supported platform.** Linux is best-effort: CI runs the suite
 there but marks it `continue-on-error`, and parts of the product shell out to
 Windows tooling (`taskkill`, `tasklist`). macOS is untested. Reports are welcome,
-see [CONTRIBUTING.md](../CONTRIBUTING.md).
+see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
 
 ## 2. Install
 
@@ -90,7 +90,7 @@ agent) and `TWITCH_OAUTH_TOKEN` (reading stream chat). Neither turns the
 
 No provider returns usable transparency. Measured: `background="transparent"`
 came back as a brown gradient. Sprite work goes through the chroma-key path in
-`bgate_core/chroma.py` either way.
+`src/bgate_core/art/chroma.py` either way.
 
 ### Where a key can live, and which one wins
 
@@ -141,14 +141,37 @@ locks never fall back. `project_status` says when the scratch project is in use.
 ## 5. Register the MCP server
 
 ```bash
+bgate connect               # the report: every client, installed, wired, or wrong
+bgate connect claude        # wire one. --all does every client that can be written to
+bgate connect --show        # the config block for clients with no `mcp add` of their own
+```
+
+Known clients: `claude`, `codex`, `gemini`, `vscode`, `cursor`, `windsurf`,
+`opencode`. Where the client ships its own `mcp add`, that subcommand performs
+the write — the tool that owns the format writes the format. Cursor, Windsurf
+and opencode keep their servers in a JSON file you also hand-edit, so nothing
+here merges into one: `--show` prints the block to paste, and the path to put it
+in. `--show` also prints a generic block for any MCP client not on the list.
+
+**The interpreter is the whole point.** A registration naming a bare `python`
+resolves against whatever is first on PATH when the client launches the server,
+which is routinely not the environment `pip install -e .` ran in. The client
+then reports "failed to connect" and the message points nowhere near the cause;
+on Windows this is the most common setup failure. `bgate connect` always writes
+the absolute path of the interpreter it is running on, reads back what is
+actually registered, and reports a bare-`python` entry as its own state rather
+than letting it look like a working one.
+
+The dashboard does the same thing at **Settings → Agent CLIs**, through the same
+code. Nobody should have to start a server to finish an install, and the two
+places cannot give different answers.
+
+Doing it by hand is still fine:
+
+```bash
 python -c "import sys; print(sys.executable)"     # get the absolute path
 claude mcp add builders-gate --scope user -- <abs-python> -m bgate_mcp.server
 ```
-
-**Use the absolute python path.** The claude CLI resolves a bare `python`
-differently than your shell and reports "failed to connect" against a server
-that runs fine. On Windows this is the most common setup failure and the error
-message points nowhere near the cause.
 
 Then install the enforcement hook:
 

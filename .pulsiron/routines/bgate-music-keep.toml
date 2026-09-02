@@ -10,5 +10,5 @@ required = true
 
 [[step]]
 name = 'keep'
-run = 'python {repo}/tools/panel_api.py keep --take "{take}"'
+run = 'python {repo}/scripts/panel_api.py keep --take "{take}"'
 timeout_secs = 120

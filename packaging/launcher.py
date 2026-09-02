@@ -110,7 +110,7 @@ def _selftest() -> int:
         return _ec.__name__
 
     def _loader():
-        # WebView2Loader.dll, which bgate_ui.webview2 loads by relative path.
+        # WebView2Loader.dll, which bgate_ui.window.webview2 loads by relative path.
         # Its absence costs the window silently: the app falls back to a
         # browser tab and nobody finds out until they read the docs.
         #
@@ -139,7 +139,7 @@ def _selftest() -> int:
         return str(x64[0])
 
     def _desktop():
-        from bgate_ui import desktop
+        from bgate_ui.window import desktop
         return f"window {desktop.DEFAULT_SIZE[0]}x{desktop.DEFAULT_SIZE[1]}"
 
     def _tls():
@@ -151,7 +151,7 @@ def _selftest() -> int:
     def _native():
         """The check that decides which window the app actually opens.
 
-        bgate_ui.webview2 is the primary window on Windows and pywebview is only
+        bgate_ui.window.webview2 is the primary window on Windows and pywebview is only
         its fallback — and available() is the gate. It needs comtypes, which was
         declared by nothing until today, so in every shipped build it answered
         "comtypes is not installed", the app quietly used pywebview, and the
@@ -162,7 +162,7 @@ def _selftest() -> int:
         So it is asserted here rather than assumed: a bundle where this fails
         still runs, still opens a window, and is not the product.
         """
-        from bgate_ui import webview2
+        from bgate_ui.window import webview2
         ok, why = webview2.available()
         if not ok:
             raise RuntimeError(f"native window unavailable: {why}")
@@ -311,7 +311,7 @@ def main() -> int:
             cmd = argv[0]                      # report it, do not run it
 
         if cmd in ("", "app"):
-            from bgate_ui.desktop import run
+            from bgate_ui.window.desktop import run
             return run(port=_port(), debug="--debug" in argv)
 
         # ── everything else opens NOTHING ──────────────────────────────────

@@ -15,5 +15,5 @@ default = ''
 
 [[step]]
 name = 'steer'
-run = 'python {repo}/tools/panel_api.py steer --message "{message}" --item "{item}"'
+run = 'python {repo}/scripts/panel_api.py steer --message "{message}" --item "{item}"'
 timeout_secs = 120

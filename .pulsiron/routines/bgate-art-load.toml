@@ -5,7 +5,7 @@ keywords = ['art', 'options', 'refs', 'providers', 'panel']
 
 [[step]]
 name = 'load'
-run = 'python {repo}/tools/panel_api.py art-options --want all --out ".pulsiron/feeds/art-load.json"'
+run = 'python {repo}/scripts/panel_api.py art-options --want all --out ".pulsiron/feeds/art-load.json"'
 timeout_secs = 30
 
 [outputs]

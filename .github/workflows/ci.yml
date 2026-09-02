@@ -10,12 +10,12 @@
 #                pointless f-strings on main.
 #   test-linux   CONTRIBUTING.md has claimed "the suite runs there but marks it
 #                continue-on-error" while no Linux job existed at all.
-#   wheel-smoke  tests/test_packaging.py names this workflow and this job, by
+#   wheel-smoke  tests/packaging/test_packaging.py names this workflow and this job, by
 #                file and by job name, as the place the build-install-import
 #                loop lives. It did not live anywhere.
 #
 # frontend-drift came later, after the committed React bundle went stale twice
-# in one week: bgate_ui/static/dist is build output that lives in git (see
+# in one week: src/bgate_ui/static/dist is build output that lives in git (see
 # frontend/vite.config.ts), and nothing compared it to the source it claims to
 # be built from.
 #
@@ -66,7 +66,7 @@ jobs:
         run: ruff check --output-format=github .
 
   frontend-drift:
-    # bgate_ui/static/dist/ is BUILD OUTPUT THAT IS COMMITTED — see the header
+    # src/bgate_ui/static/dist/ is BUILD OUTPUT THAT IS COMMITTED — see the header
     # comment in frontend/vite.config.ts for why (wheel and exe installs have
     # no node, so the repo carries the bundle). Committed output drifts: a fix
     # lands in frontend/src while the committed bundle stays stale, and nothing
@@ -102,8 +102,8 @@ jobs:
           # untracked. --stat because these are minified single-line files; the
           # full diff would be megabytes of noise and says nothing the stat
           # does not.
-          git add --intent-to-add bgate_ui/static/dist
-          if ! git diff --stat --exit-code -- bgate_ui/static/dist; then
+          git add --intent-to-add src/bgate_ui/static/dist
+          if ! git diff --stat --exit-code -- src/bgate_ui/static/dist; then
             # SAY WHAT DIFFERS, bounded. These are single-line minified files,
             # so `git diff` is useless and a red X with no delta forced a
             # guessing game the first time this fired (a one-line bgate.js
@@ -114,7 +114,7 @@ jobs:
             python3 - <<'EOF'
           import subprocess
           out = subprocess.run(
-              ["git", "diff", "--name-only", "--", "bgate_ui/static/dist"],
+              ["git", "diff", "--name-only", "--", "src/bgate_ui/static/dist"],
               capture_output=True, text=True).stdout.split()
           for name in out:
               built = open(name, "rb").read()
@@ -129,8 +129,8 @@ jobs:
               print("  committed:", head[max(0, lo - 60):lo + 200])
               print("  built:    ", built[max(0, lo - 60):lo + 200])
           EOF
-            echo "::error::bgate_ui/static/dist is stale: it is not what frontend/ builds."
-            echo "::error::Fix locally: cd frontend && npm run build, then commit bgate_ui/static/dist."
+            echo "::error::src/bgate_ui/static/dist is stale: it is not what frontend/ builds."
+            echo "::error::Fix locally: cd frontend && npm run build, then commit src/bgate_ui/static/dist."
             exit 1
           fi
 
@@ -154,7 +154,7 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
-      # node is what tests/test_shell_adjust.py hands the shell's inline
+      # node is what tests/store/test_shell_adjust.py hands the shell's inline
       # scripts to. Without it those checks SKIP rather than fail, which would
       # quietly retire the one guard that the dashboard still parses.
       - uses: actions/setup-node@v4
@@ -216,7 +216,7 @@ jobs:
         run: python -m pytest -m "not slow" -q
 
   wheel-smoke:
-    # THE JOB tests/test_packaging.py ALREADY DOCUMENTS. That module is the fast
+    # THE JOB tests/packaging/test_packaging.py ALREADY DOCUMENTS. That module is the fast
     # half of the guard — it reads pyproject and asserts every shipped tree is
     # covered by a package-data pattern, without building anything. This is the
     # half that installs the artifact and looks inside it, which is the only way
@@ -236,7 +236,7 @@ jobs:
           cache: pip
 
       # THE WHEEL CARRIES THE BUILT FRONT END, and a fresh checkout does not
-      # have one: bgate_ui/static is generated and only its dist/ is committed.
+      # have one: src/bgate_ui/static is generated and only its dist/ is committed.
       # Without this step the wheel ships a dashboard with no index.html and the
       # smoke below is what tells you, four minutes later.
       - uses: actions/setup-node@v4
@@ -271,7 +271,7 @@ jobs:
         shell: bash
         # Refuses to run if its own imports resolved to the checkout, then
         # checks the shipped trees, runs doctor, scaffolds a real project out of
-        # templates/, and serves the dashboard's assets out of site-packages.
+        # src/templates/, and serves the dashboard's assets out of site-packages.
         run: .wheelenv/Scripts/python packaging/smoke_wheel.py
 
       - uses: actions/upload-artifact@v4

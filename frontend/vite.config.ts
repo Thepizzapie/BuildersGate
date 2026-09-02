@@ -33,7 +33,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   plugins: [react()],
   build: {
-    outDir: resolve(here, "../bgate_ui/static"),
+    outDir: resolve(here, "../src/bgate_ui/static"),
     // Outside the vite root, so this needs saying explicitly. It is safe
     // BECAUSE the whole directory is generated: public/ is copied back in on
     // the same build, and nothing else is meant to live there.

@@ -153,7 +153,7 @@ TARGET_BITRATE = "96k"
 def transcode(src: Path, dest: Path) -> bool:
     """Re-encode `src` to `dest` at TARGET_BITRATE. False if ffmpeg could not."""
     try:
-        from bgate_core import proc
+        from bgate_core.runtime import proc
     except Exception:
         return False
     exe = shutil.which("ffmpeg")

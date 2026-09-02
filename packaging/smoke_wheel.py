@@ -7,7 +7,7 @@ Nothing caught any of them, because nothing in CI ever installed the wheel — t
 suite runs against the checkout, where every one of those trees is simply there
 on disk whether or not the packaging declares it.
 
-tests/test_packaging.py is the fast half of that guard: it reads pyproject and
+tests/packaging/test_packaging.py is the fast half of that guard: it reads pyproject and
 asserts every shipped tree is covered by a package-data pattern, without
 building anything. This is the slow half, and the half that cannot be fooled by
 a pattern that looks right — it runs against an installed wheel in a clean
@@ -64,7 +64,6 @@ REQUIRED_FILES = [
 # (directory, extension, how many at least). Trees too large to name file by
 # file, where "empty" is the only failure that matters.
 REQUIRED_TREES = [
-    ("bgate_engine/schemas", ".json", 1),
     ("bgate_site/theme", "", 1),
     ("bgate_ui/static", ".js", 10),
 ]
@@ -81,9 +80,9 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 def installed_root() -> Path:
     """The site-packages directory the wheel unpacked into.
 
-    bgate_engine/ and templates/ carry no .py at all, so they are not importable
+    templates/ carries no .py at all, so it is not importable
     and can only be found relative to a package that is — the same walk
-    bgate_core/scaffold.py does at runtime (``__file__/../../templates``). If
+    bgate_core/store/scaffold.py does at runtime (``__file__/../../templates``). If
     that walk lands somewhere without them, the user's install is broken in
     exactly the way this script exists to catch.
     """

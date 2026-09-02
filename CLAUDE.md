@@ -1,6 +1,6 @@
 <!-- This file is for a Claude Code session that has been asked to install and
 boot Builders Gate for someone. It is not the file that gets stamped into a game
-project; that one is templates/shared/CLAUDE.md and it covers working IN a
+project; that one is src/templates/shared/CLAUDE.md and it covers working IN a
 project after setup. -->
 
 # Setting up Builders Gate for a user
@@ -114,15 +114,30 @@ off for exactly that reason, and takes no key argument at all.
 ## Register the MCP server
 
 ```bash
+bgate connect                 # the report: every client, installed, wired, or wrong
+bgate connect claude          # wire one, pinned to the interpreter bgate runs on
+```
+
+**Use `bgate connect` rather than typing the registration.** It knows `claude`,
+`codex`, `gemini`, `vscode`, `cursor`, `windsurf` and `opencode`; it writes
+through each client's own `mcp add` where there is one, and prints the block to
+paste (`--show`) where there is not. It fills in the one argument the manual
+route gets wrong.
+
+**That argument is the absolute path to the interpreter.** The claude CLI
+resolves a bare `python` differently than the shell does and reports "failed to
+connect" for a server that runs fine. On Windows this is the single most common
+failure, and the error message points nowhere near the cause. `bgate connect`
+also *reads back* what is registered, so a bare-`python` entry that already
+exists is reported as its own state instead of looking correct.
+
+By hand it is:
+
+```bash
 claude mcp add builders-gate --scope user -- <ABSOLUTE-python-path> -m bgate_mcp.server
 ```
 
-**Use the absolute path to the interpreter.** The claude CLI resolves a bare
-`python` differently than the shell does and reports "failed to connect" for a
-server that runs fine. On Windows this is the single most common failure, and
-the error message points nowhere near the cause.
-
-Get the path with `python -c "import sys; print(sys.executable)"` in the same
+with the path from `python -c "import sys; print(sys.executable)"` in the same
 environment where `pip install -e .` ran.
 
 Then, in the game project:

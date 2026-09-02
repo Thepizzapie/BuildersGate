@@ -250,7 +250,7 @@ has to be spent again. A clip bought under the old look is not a rendering of th
 new one.
 
 The fourth lever does not exist: the art seat can train a Krea LoRA
-(`bgate_core/styles.py`) and no video provider wired here trains anything. A
+(`src/bgate_core/art/styles.py`) and no video provider wired here trains anything. A
 trained look reaches a cutscene by generating that sequence's keyframes through
 the art path and anchoring every shot on them.
 
@@ -289,7 +289,7 @@ entry `source: "registered"`.
 
 ## 11. Post-production
 
-Acquiring shots is not making a cutscene. `bgate_core/cinecut.py` is the second
+Acquiring shots is not making a cutscene. `src/bgate_core/cine/cinecut.py` is the second
 half. It exists because the module docstring, the seat brief and this document
 all said generated audio is off because the audio seat scores it over the top,
 and no path existed for that to happen: every assembled cut shipped silent while
@@ -358,16 +358,16 @@ single clip used alone as an attract loop or a sting. A three-shot demo went fro
 
 | Piece | Where |
 |---|---|
-| Styles, shot sizes, locations, plan / generate / keep / assemble / transcode / recover | `bgate_core/cinematic.py` |
-| Captions, transitions, audio mux, continuity, scene generation | `bgate_core/cinecut.py` |
-| Animatic previs reel | `bgate_core/animatic.py` |
-| kie file upload (`upload_file`), auto-upload of local anchors, the intent layer (`video_input`, `video_capabilities`, `register_video_model`) | `bgate_adapters/kie.py` |
-| Shot lists, style, model, locations, sound / transitions / VO | `bgate_core/db.py` migrations 0027, 0028 |
-| The seat, its lane, its workflow and its trap | `bgate_core/seats.py` |
-| Twenty MCP tools (`cinematic_*`) | `bgate_mcp/server.py` |
-| Dashboard endpoints and seat workspace | `bgate_ui/routes/cinematic.py`, `frontend/public/seats/cinematic.js` |
-| `video` asset kinds (`.mp4`, `.ogv`, `.webm`, `.mov`) | `bgate_core/assets.py` |
-| libtheora on the ffmpeg row | `bgate_core/doctor.py` |
+| Styles, shot sizes, locations, plan / generate / keep / assemble / transcode / recover | `src/bgate_core/cine/cinematic.py` |
+| Captions, transitions, audio mux, continuity, scene generation | `src/bgate_core/cine/cinecut.py` |
+| Animatic previs reel | `src/bgate_core/cine/animatic.py` |
+| kie file upload (`upload_file`), auto-upload of local anchors, the intent layer (`video_input`, `video_capabilities`, `register_video_model`) | `src/bgate_adapters/kie.py` |
+| Shot lists, style, model, locations, sound / transitions / VO | `src/bgate_core/store/db.py` migrations 0027, 0028 |
+| The seat, its lane, its workflow and its trap | `src/bgate_core/board/seats.py` |
+| Twenty MCP tools (`cinematic_*`) | `src/bgate_mcp/server.py` |
+| Dashboard endpoints and seat workspace | `src/bgate_ui/routes/cinematic.py`, `frontend/public/seats/cinematic.js` |
+| `video` asset kinds (`.mp4`, `.ogv`, `.webm`, `.mov`) | `src/bgate_core/store/assets.py` |
+| libtheora on the ffmpeg row | `src/bgate_core/runtime/doctor.py` |
 
 **The shot list is a table, not metadata**, which is the one place this diverges
 from `music.py` structurally. A Suno request returns the whole deliverable; a

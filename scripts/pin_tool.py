@@ -9,7 +9,7 @@ once, from a release they chose, and committed. Then every later install is
 checked against a value that came from somewhere other than that download.
 
 Prints the digest and the size. Paste both into the Tool entry in
-bgate_core/toolbin.py; this deliberately does not edit source, because a script
+bgate_core/runtime/toolbin.py; this deliberately does not edit source, because a script
 that rewrites a security constant is a script nobody reads the diff of.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import urllib.request
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
-from bgate_core import toolbin      # noqa: E402
+from bgate_core.runtime import toolbin      # noqa: E402
 
 
 def main() -> int:
@@ -46,7 +46,7 @@ def main() -> int:
     print()
     print(f"  size    {total / 1048576:.1f} MB  ({total} bytes)")
     print(f"  sha256  {digest.hexdigest()}")
-    print(f"\nPaste into TOOLS['{tool.name}'] in bgate_core/toolbin.py:")
+    print(f"\nPaste into TOOLS['{tool.name}'] in bgate_core/runtime/toolbin.py:")
     print(f'    sha256="{digest.hexdigest()}",')
     print(f"    size_mb={round(total / 1048576)},")
     return 0

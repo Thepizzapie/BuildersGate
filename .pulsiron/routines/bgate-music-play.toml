@@ -10,5 +10,5 @@ required = true
 
 [[step]]
 name = 'play'
-run = 'python {repo}/tools/panel_api.py play --take "{take}"'
+run = 'python {repo}/scripts/panel_api.py play --take "{take}"'
 timeout_secs = 30

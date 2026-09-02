@@ -10,5 +10,5 @@ default = '20'
 
 [[step]]
 name = 'read'
-run = 'python {repo}/tools/panel_api.py board --limit {limit}'
+run = 'python {repo}/scripts/panel_api.py board --limit {limit}'
 timeout_secs = 60

@@ -12,7 +12,7 @@ Ordered roughly by when you will meet them. New here? Read
 **MCP (Model Context Protocol)**
 A standard way for an AI coding assistant to call tools that live outside
 itself. You register a server once, and its tools appear to the assistant
-alongside "read a file". Builders Gate is one such server (`bgate_mcp/server.py`,
+alongside "read a file". Builders Gate is one such server (`src/bgate_mcp/server.py`,
 close to 200 tools), running on your machine over stdin/stdout with no network
 service and no cloud account.
 
@@ -20,7 +20,7 @@ service and no cloud account.
 A fixed job title an agent adopts for a session: director, narrative, gameplay,
 tech, art, audio, cinematic, qa. Eight, and the roster is fixed. A seat is an
 identity, not a process: a session declares `BGATE_SEAT=art` and inherits art's
-mission, writable paths and brief (`bgate_core/seats.py`).
+mission, writable paths and brief (`src/bgate_core/board/seats.py`).
 
 **Lane**
 The file paths a seat normally writes, as glob patterns. Art's are
@@ -62,11 +62,11 @@ process with `BGATE_SEAT`, `BGATE_ROOT`, `BGATE_WORK_ITEM` and
 `BGATE_ACTOR=agent:item-<id>`, on a captured git base commit so its edits read
 as a diff. Before any process exists it re-checks the concurrency cap, the spend
 ceilings, the chain predecessor, and whether your tree is dirty
-(`bgate_ui/dispatch.py`). Filing is free; dispatching spends money.
+(`src/bgate_ui/agents/dispatch.py`). Filing is free; dispatching spends money.
 
 **The approval gate**
 Who signs off before an agent's work counts as `done`, in three modes
-(`bgate_core/gates.py`, set per project in the dashboard or `POST /api/gate`):
+(`src/bgate_core/board/gates.py`, set per project in the dashboard or `POST /api/gate`):
 
 | Mode | Who closes an item |
 |---|---|
@@ -85,7 +85,7 @@ overriding.
 
 **The event log**
 Every status transition, gate change, spend refusal and question, as rows in the
-`event` table (`bgate_core/events.py`). Subscribers read forward from a
+`event` table (`src/bgate_core/store/events.py`). Subscribers read forward from a
 **cursor**, a row id kept per consumer, so a dashboard that was off for an hour
 resumes where it stopped. Delivery is at-least-once, so every reaction carries a
 guard query. `since()` reports `gap: true` when a cursor points below the oldest
@@ -108,7 +108,7 @@ list, call `pending_decisions`, which returns parked chains, undecided
 candidates and open questions in one call.
 
 **The follow-up router**
-What happens after an agent finishes (`bgate_ui/followup.py`). One subscriber,
+What happens after an agent finishes (`src/bgate_ui/agents/followup.py`). One subscriber,
 five branches: reopen a failure, open a QA round, leave a held item alone,
 narrate a chain advancing, or debrief the director. `decide(events, settings,
 board)` is a pure function returning actions and touching nothing.
@@ -122,7 +122,7 @@ never fires for `qa-gate`, `completion` or `chat` work. It dispatches with
 
 **The heartbeat**
 Events that come from elapsed time rather than a transition
-(`bgate_ui/heartbeat.py`): `chain.stalled` when a chain head has not moved for
+(`src/bgate_ui/pumps/heartbeat.py`): `chain.stalled` when a chain head has not moved for
 `notify.stall_hours`, `item.aging` for a `review` item nobody has looked at.
 Half of what goes wrong is an absence of transitions. Once per subject per
 stall, re-armed when the subject moves.
@@ -142,7 +142,7 @@ The director's way to reach you. An event, not a work item: a question filed as
 a queued row is a row somebody has to dispatch in order to read.
 
 **Settings**
-One registry (`bgate_core/settings.py`) describing where each switch already
+One registry (`src/bgate_core/store/settings.py`) describing where each switch already
 lives: a workspace doc, the `spend_budget` row, a module default. Storage did
 not move. What the registry adds is one validator and one precedence rule,
 **env > project stored > default**, with the API reporting which layer won.
@@ -162,7 +162,7 @@ the change lands in the activity ledger and on the bus.
 Which of four things this project is allowed to be doing: `thesis`, `graybox`,
 `production`, `release`. Stages hold whole **seats** — at `graybox`, art, audio
 and cinematic do not dispatch at all — and the hold is enforced in the readiness
-rule itself, not as advice (`bgate_core/greenlight.py`). A project that has
+rule itself, not as advice (`src/bgate_core/design/greenlight.py`). A project that has
 never stored a stage is read from its board: one with work already dispatched is
 at `production`; a new one starts at `thesis`. `greenlight_status` is the read.
 
@@ -188,7 +188,7 @@ vocabulary: `dwell`, `carry`, `escort`, `defend`, `route`, `timing`, `disarm`,
 `restrict`, `manipulate`, `spend`, `gather`. The vocabulary is closed so
 sameness can be counted — a task list can be long, varied in fiction and
 completely uniform in mechanics, and prose review will not catch that
-(`bgate_core/encounter.py`).
+(`src/bgate_core/level/encounter.py`).
 
 **Enemy interaction (`alters`)**
 How one enemy changes the player's read of another. Required design content
@@ -208,7 +208,7 @@ that gets routed around.
 The design document, stored as structured sections rather than prose: pillars,
 core loop, constraints, art direction, references. Agents read it through
 `bible_read` and `seat_brief`, and it is the source the art prompts are
-assembled from, so editing it changes the art (`bgate_core/artdirection.py`).
+assembled from, so editing it changes the art (`src/bgate_core/art/artdirection.py`).
 
 **Lore**
 The world's content: entities (characters, places, factions) with prose bodies,
@@ -225,7 +225,7 @@ The deterministic gate every narrative write passes through. Lexical, not a
 model call: retired entities appearing on stage, invented proper nouns, polarity
 flips, number disagreements. It runs on every write because it is cheap. `ok`
 means nothing **mechanical** is wrong; it will not catch thematic drift
-(`bgate_core/canon.py`).
+(`src/bgate_core/design/canon.py`).
 
 ## Art
 
@@ -235,7 +235,7 @@ Five classes — `prop`, `furniture`, `door`, `ui`, `enemy` — each with a band
 because "no expectation" is how a mug ends up chair-sized. `scale_check`
 measures the **opaque bounding box** of a file and divides by the declared
 player height, so a 512×512 sheet holding a 40px mug is graded as a 40px mug
-(`bgate_core/scalecontract.py`).
+(`src/bgate_core/three_d/scalecontract.py`).
 
 **Game scale (vs contact sheet)**
 A contact sheet draws every asset in the same box, which is exactly the
@@ -250,7 +250,7 @@ whether any region holds the eye, and the lanes between obstacles. A cropped or
 mostly-transparent shot is refused rather than accepted with a caveat, and a
 pass cannot stand over a measured finding — each one is answered with
 `room_override` and a reason, per finding, never per project
-(`bgate_core/roomqa.py`).
+(`src/bgate_core/level/roomqa.py`).
 
 **In-game listening pass**
 An audio review over a gameplay **capture**, naming the cues actually heard
@@ -285,7 +285,7 @@ pipeline picks a saturated colour the character's palette does not contain,
 demands a flat backdrop of exactly that RGB in the prompt, keys it out, then
 **audits the cut**: background bleed, white halo, feathered edges, colour under
 transparent pixels, holes eaten out of the art. A frame that fails the audit is
-a named failure, not a sprite (`bgate_core/chroma.py`).
+a named failure, not a sprite (`src/bgate_core/art/chroma.py`).
 
 **Artifact / revision / candidate**
 Generated art lands as an immutable **revision** of a named logical asset. A new

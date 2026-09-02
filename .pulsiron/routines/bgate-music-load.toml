@@ -5,7 +5,7 @@ keywords = ['music', 'options', 'models', 'candidates', 'panel']
 
 [[step]]
 name = 'load'
-run = 'python {repo}/tools/panel_api.py music-options --want all --out ".pulsiron/feeds/music-load.json"'
+run = 'python {repo}/scripts/panel_api.py music-options --want all --out ".pulsiron/feeds/music-load.json"'
 timeout_secs = 30
 
 [outputs]

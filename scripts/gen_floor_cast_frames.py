@@ -86,28 +86,10 @@ from PIL import Image  # noqa: E402
 
 from bgate_adapters import imagegen, kie  # noqa: E402
 
-REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _floorpaths import REPO, sandbox  # noqa: E402
 
-# WHERE THE SANDBOX IS, ASKED FOR RATHER THAN HARDCODED.
-#
-# This was an absolute path to one machine's Desktop, which is three separate
-# problems in one line: it only ran for the person who wrote it, it put a home
-# directory and an account name into a public repository, and the leak test that
-# guards against exactly that (tests/test_streamer.py) failed on main because of
-# it.
-#
-# BGATE_CAST_PROJECT is the env var, --project is the flag, and the default is
-# a sibling `bg-testbed` beside this checkout - which is where it actually lives
-# for the person who wrote it, so the convenience is kept without the address.
-def _sandbox() -> Path:
-    from os import environ
-    asked = environ.get("BGATE_CAST_PROJECT", "").strip()
-    if asked:
-        return Path(asked).expanduser().resolve()
-    return (REPO.parent / "bg-testbed").resolve()
-
-
-ROOT = _sandbox()
+ROOT = sandbox()
 CAST = ROOT / ".bgate_out" / "art" / "cast"
 OUT = CAST / "anim"
 # ROOT is the ART project (bg-testbed); the rooms are art installed into the
@@ -891,6 +873,6 @@ if __name__ == "__main__":
     # THE KEYS ARE LOADED BEFORE ANY THREAD STARTS - the grid generator lost
     # three sheets to a race on exactly this, workers reaching the adapter while
     # the project's .env was still being read.
-    from bgate_core import envfile
+    from bgate_core.store import envfile
     envfile.load_env(str(ROOT))
     sys.exit(main())

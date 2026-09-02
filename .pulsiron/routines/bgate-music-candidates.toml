@@ -10,5 +10,5 @@ default = ''
 
 [[step]]
 name = 'list'
-run = 'python {repo}/tools/panel_api.py candidates --name "{name}"'
+run = 'python {repo}/scripts/panel_api.py candidates --name "{name}"'
 timeout_secs = 60

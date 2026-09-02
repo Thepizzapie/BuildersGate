@@ -23,19 +23,12 @@ from pathlib import Path
 
 from PIL import Image
 
-REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _floorpaths import REPO, sandbox  # noqa: E402
 FLOOR = REPO / "frontend" / "public" / "img" / "floor"
 
 
-def _sandbox() -> Path:
-    from os import environ
-    asked = environ.get("BGATE_CAST_PROJECT", "").strip()
-    if asked:
-        return Path(asked).expanduser().resolve()
-    return (REPO.parent / "bg-testbed").resolve()
-
-
-RAW = _sandbox() / ".bgate_out" / "art" / "portraits"
+RAW = sandbox() / ".bgate_out" / "art" / "portraits"
 
 # How far a pixel may sit from the background colour and still be background.
 # Generous because these arrive as JPEG - a "flat" field is a few units of

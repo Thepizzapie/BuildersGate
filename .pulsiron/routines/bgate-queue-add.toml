@@ -30,5 +30,5 @@ default = 'false'
 
 [[step]]
 name = 'file'
-run = 'python {repo}/tools/panel_api.py queue --seat "{seat}" --title "{title}" --brief "{brief}" --priority {priority} --deploy "{deploy}"'
+run = 'python {repo}/scripts/panel_api.py queue --seat "{seat}" --title "{title}" --brief "{brief}" --priority {priority} --deploy "{deploy}"'
 timeout_secs = 120
