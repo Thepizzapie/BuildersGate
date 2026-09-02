@@ -9,6 +9,8 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.43] - 2026-09-01
+
 ### Added
 - **The rig and animation gates now measure the thing they are named after.**
   A full pass over the 3D character path, driven by the benchmark game's own
