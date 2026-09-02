@@ -22,7 +22,7 @@ import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-STATIC = REPO / "bgate_ui" / "static"
+STATIC = REPO / "src" / "bgate_ui" / "static"
 DIST = REPO / "dist"
 STAGE = REPO / "build" / "floor_assets_stage"
 

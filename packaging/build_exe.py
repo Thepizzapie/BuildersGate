@@ -122,7 +122,7 @@ BUILT_ASSETS = [
 
 
 def check_frontend_built() -> None:
-    static = ROOT / "bgate_ui" / "static"
+    static = ROOT / "src" / "bgate_ui" / "static"
     missing = [rel for rel in BUILT_ASSETS
                if not (static / rel).is_file() or (static / rel).stat().st_size == 0]
     if missing:

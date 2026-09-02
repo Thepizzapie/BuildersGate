@@ -173,7 +173,7 @@ jobs:
         env:
           BGATE_STRICT_ROUTES: "1"
         run: |
-          python -c "import os, tempfile; d = tempfile.mkdtemp(); os.environ['BGATE_ROOT'] = d; from bgate_core import db; db.connect(d); from bgate_ui.app import app; from fastapi.testclient import TestClient; body = TestClient(app).get('/api/routes/status').json(); print(body); assert body['ok'], body"
+          python -c "import os, tempfile; d = tempfile.mkdtemp(); os.environ['BGATE_ROOT'] = d; from bgate_core.store import db; db.connect(d); from bgate_ui.app import app; from fastapi.testclient import TestClient; body = TestClient(app).get('/api/routes/status').json(); print(body); assert body['ok'], body"
 
       - name: pytest
         # -m "not slow" is what CONTRIBUTING tells contributors to run, so it is
