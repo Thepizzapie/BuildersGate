@@ -479,31 +479,36 @@ def _prompt_sections(path: Path) -> dict[str, str]:
 
 
 def _override_path(seat: str) -> Optional[Path]:
-    """``prompts/dispatch.<seat>.txt``, or None — CONTAINED.
+    """``prompts/dispatch.<seat>.txt``, or None — LOOKED UP, NEVER BUILT.
 
     The seat is a column on a work item, and a work item is filed by an agent
     through queue_add: `..\\..\\..\\Users\\me\\.ssh\\id_rsa` is a seat name as
-    far as the database is concerned, and it used to be interpolated straight
+    far as the database is concerned, and it was once interpolated straight
     into a filename that is then read and spliced into the prompt of a session
-    the board is about to spawn. Two gates, because either alone has a hole:
-    the charset refuses a separator or a dot before the path is built, and the
-    resolve-and-contain refuses anything that still leaves the directory (a
-    symlink inside prompts/, say). Same discipline as bgate_mcp.server._art_out.
+    the board is about to spawn.
+
+    NO PATH IS CONSTRUCTED FROM THE SEAT. The directory is enumerated and the
+    seat is compared against the names found there, so the Path returned comes
+    from the filesystem and the untrusted string only ever reaches a string
+    equality. Validating the name and then containing the result was the first
+    fix and it was not enough: it left a path built out of the value, which is
+    a shape a later edit can quietly widen — and CodeQL kept flagging it,
+    correctly, for exactly that reason. The charset check stays as the cheap
+    first refusal.
     """
     if not _SEAT_NAME_RE.fullmatch(seat or ""):
         return None
-    candidate = (PROMPTS_DIR / f"dispatch.{seat}.txt").resolve()
-    try:
-        candidate.relative_to(PROMPTS_DIR.resolve())
-    except ValueError:
-        return None
-    return candidate
+    wanted = f"dispatch.{seat}.txt"
+    for found in PROMPTS_DIR.glob("dispatch.*.txt"):
+        if found.name == wanted:
+            return found
+    return None
 
 
 def _prompt_template(seat: str) -> str:
     base = _prompt_sections(PROMPTS_DIR / "dispatch.txt")
     override = _override_path(seat)
-    if override is not None and override.is_file():
+    if override is not None:          # glob only yields files that exist
         for name, body in _prompt_sections(override).items():
             if name in base:
                 base[name] = body
