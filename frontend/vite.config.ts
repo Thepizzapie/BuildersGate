@@ -15,16 +15,24 @@ const here = dirname(fileURLToPath(import.meta.url));
    reader had to know which half of the UI a screen belonged to before they
    could find the file that draws it.
 
-   bgate_ui/static/ IS NOW GENERATED. Vite copies public/ into it verbatim and
+   src/bgate_ui/static/ IS GENERATED. Vite copies public/ into it verbatim and
    emits the React bundle under dist/, so every served URL is exactly what it
    was (/static/app.css, /static/wf.js, /static/dist/bgate.js) and the server
    needed no route change. Do not hand-edit anything in there; it is wiped and
    rewritten on every build.
 
-   The dashboard is distributed as a Python wheel and as a PyInstaller .exe.
-   Neither has node. So the BUILD OUTPUT IS COMMITTED, which is what lets a
-   `pip install` with no toolchain still serve a dashboard, and it is shipped
-   wholesale by the package-data glob in pyproject.toml.
+   WHAT IS COMMITTED IS dist/ ONLY (.gitignore: `/src/bgate_ui/static/*` with
+   `!/src/bgate_ui/static/dist/`). dist/ is the one artefact that needs node;
+   the rest of static/ is a verbatim copy of public/ and tracking it would
+   store every module twice. So a fresh clone has dist/ and no index.html:
+   `bgate serve` from a checkout fills the copy in itself (bgate_ui.app
+   _static_dir copies public/ over at startup), while a WHEEL OR EXE NEEDS
+   `npm run build` FIRST — ci.yml's wheel-smoke and release-exe.yml both run it
+   before packaging, and pyproject's package-data glob ships static/ wholesale.
+
+   The floor's img/floor and audio/floor are NOT here at all: they live in
+   packaging/floor-assets/ as their own package (builders-gate-floor-assets),
+   which the server mounts when it is installed.
 
    FIXED FILENAMES, NOT HASHED. index.html is post-processed in Python, which
    rewrites every `/static/**.js|css` reference with a `?v=<mtime>` stamp; that

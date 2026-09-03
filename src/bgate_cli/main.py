@@ -295,6 +295,10 @@ def hook_status(project_dir: str = "", as_json: bool = False) -> int:
         print(f"seat      (none adopted) -> director, mode={report.get('mode')}")
     print(f"installed {'yes' if report['installed'] else 'NO'}"
           + (f"  matcher={report.get('matchers') or []}" if report["installed"] else ""))
+    if report.get("enforcement"):
+        print()
+        print(report["enforcement"])
+        print()
     for probe in report["probes"]:
         mark = "ok  " if probe.get("ok") else "FAIL"
         print(f"{mark}  {probe['probe']}: {probe.get('error') or probe.get('got')}")

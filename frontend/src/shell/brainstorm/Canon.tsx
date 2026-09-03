@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ScrollArea, Text, Textarea, Tooltip } from "@mantine/core";
 import { Ti } from "../Ti";
-import { usePoll, useViewActive } from "../../hooks";
+import { useEvents, useViewActive } from "../../hooks";
 import {
   canonCheck, loreBrief, loreList,
   type Entity, type Fact,
@@ -343,7 +343,7 @@ export function CanonColumn({ seat, sessionId }: {
     void sweep(entities);
   }, [sweep]);
 
-  usePoll(refresh, LIST_MS, active);
+  useEvents(refresh, { enabled: active, kinds: [], fallbackMs: LIST_MS });
 
   /* A new room is a new argument. Anything expanded or half-typed described the
      last one. */

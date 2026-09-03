@@ -79,10 +79,10 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any, Optional
+
+from . import _http
 
 ENV = "DEEPGRAM_API_KEY"
 KEY_URL = "https://console.deepgram.com/"
@@ -148,7 +148,7 @@ ENDPOINTING_MS = 400
 UTTERANCE_END_MS = 1000
 
 
-class DeepgramError(RuntimeError):
+class DeepgramError(_http.ProviderError):
     """A Deepgram call failed in a way the caller should surface, not retry."""
 
 
@@ -395,25 +395,20 @@ def speak(text: str, *, model: str = DEFAULT_SPEAK_MODEL,
     # whole reason this is a POST from the server and not a URL a browser holds.
     query = urllib.parse.urlencode({
         "model": model, "encoding": "linear16", "container": container})
-    request = urllib.request.Request(
-        f"{SPEAK_URL}?{query}",
-        data=json.dumps({"text": text}).encode("utf-8"),
-        headers={**headers, "Content-Type": "application/json"},
-        method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            audio = response.read()
-            head = {k.lower(): v for k, v in response.headers.items()}
-    except urllib.error.HTTPError as exc:
-        body = ""
-        try:
-            body = exc.read().decode("utf-8", "replace")[:400]
-        except Exception:
-            pass
-        return {"ok": False, "status": exc.code,
-                "error": _speak_help(exc.code, body)}
+        response = _http.request(
+            "POST", f"{SPEAK_URL}?{query}", json={"text": text},
+            headers={**headers, "Accept": "*/*"}, timeout=timeout,
+            provider="deepgram")
+    except _http.ProviderError as exc:
+        if exc.status:
+            return {"ok": False, "status": exc.status,
+                    "error": _speak_help(exc.status, exc.body)}
+        return {"ok": False, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - a dead network is a sentence, not a trace
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    audio = response.body
+    head = response.headers
 
     try:
         chars = int(head.get("dg-char-count") or len(text))

@@ -52,7 +52,7 @@ def calls(monkeypatch, routable_gateway):
         seen.append({"task_kind": kw.get("task_kind"), "prompt": prompt,
                      "refs": [str(r) for r in (kw.get("ref_paths") or [])],
                      "path": str(out_path)})
-        return {"ok": True, "path": str(out_path), "estimated_usd": 0.04,
+        return {"ok": True, "path": str(out_path), "usd": 0.04,
                 "seconds": 1.0, "chroma": {"name": "magenta"}, "alpha": {}}
 
     monkeypatch.setattr(server._chroma, "generate", fake_generate)
@@ -163,7 +163,7 @@ async def test_the_extra_views_are_priced_before_anything_is_bought(root, calls)
                      project_dir=str(root))
     assert got.get("ok") is False
     assert got["stage"] == "spend_gate"
-    assert got["estimated_usd"] == pytest.approx(0.585, abs=0.01)
+    assert got["usd"] == pytest.approx(0.585, abs=0.01)
     assert calls == [], "the gate must refuse BEFORE the first call"
 
 
@@ -264,7 +264,7 @@ async def test_krea_runs_are_priced_on_kreas_own_numbers(root, calls,
                      limits={"max_cost_usd": expected - 0.01},
                      project_dir=str(root))
     assert got.get("ok") is False and got["stage"] == "spend_gate"
-    assert got["estimated_usd"] == pytest.approx(expected, abs=0.001)
+    assert got["usd"] == pytest.approx(expected, abs=0.001)
 
 
 @pytest.mark.anyio
@@ -280,7 +280,7 @@ async def test_a_view_that_fails_is_dropped_not_fatal(root, calls, monkeypatch):
             state["n"] += 1
             if state["n"] == 3:            # the profile view
                 return {"ok": False, "error": "content policy",
-                        "estimated_usd": 0.0, "seconds": 0.5}
+                        "usd": 0.0, "seconds": 0.5}
         return real(prompt, out_path, **kw)
 
     monkeypatch.setattr(server._chroma, "generate", flaky)

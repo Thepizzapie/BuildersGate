@@ -106,7 +106,7 @@ def answers(monkeypatch):
         box["asked"].append({"system": system, "turns": turns, **kw})
         text = box["replies"].pop(0) if box["replies"] else "sure, go on"
         return {"ok": True, "text": text, "model": "test",
-                "seconds": 0.0, "estimated_usd": 0.0}
+                "seconds": 0.0, "usd": 0.0}
 
     monkeypatch.setattr(_route, "_ask", fake)
     return box

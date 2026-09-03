@@ -37,7 +37,7 @@ WHAT IS AND IS NOT DECIDED HERE:
     contract exists to prevent. This module returns a flat PNG.
 
   * THE PRICE IS ZERO AND SAYING SO IS THE HONEST ANSWER, not a missing value.
-    `estimated_usd: 0.0` is a fact about a local generation, and the spend gate
+    `usd: 0.0` is a fact about a local generation, and the spend gate
     should read it as one.
 
   * NOTHING HEAVY IS IMPORTED, EVER. No torch, no diffusers, no model library,
@@ -51,16 +51,17 @@ from __future__ import annotations
 import json
 import os
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 from bgate_adapters import imageto3d as _i3d
 
+from . import _http
+from . import _result as _shape
 
-class LocalGenError(RuntimeError):
+
+class LocalGenError(_http.ProviderError):
     """A local generation could not be made. Carries what to fix."""
 
 
@@ -340,16 +341,41 @@ def _spec() -> dict:
     return _i3d.BACKENDS[BACKEND]
 
 
-def _fetch_bytes(url: str, *, timeout: float = 120.0) -> bytes:
-    req = urllib.request.Request(url, headers={"Accept": "*/*"})
+def _call(path: str, *, payload: Optional[dict] = None, method: str = "GET",
+          timeout: float = 60.0) -> dict:
+    """One ComfyUI call, with the local-server words on failure: there is no
+    key to check, there is a process to start."""
+    url = _i3d.base_url(BACKEND) + path
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except urllib.error.HTTPError as exc:
+        got = _http.request(method, url, json=payload, timeout=timeout,
+                            provider="local")
+    except _http.ProviderError as exc:
+        if exc.status == 0:
+            raise LocalGenError(
+                f"could not reach ComfyUI at {_i3d.base_url(BACKEND)} "
+                f"({exc.body}) — is it running? Point "
+                f"{_spec().get('base_env') or 'the base URL'} at it if it is on "
+                "another host or port.", provider="local") from exc
         raise LocalGenError(
-            f"ComfyUI returned HTTP {exc.code} fetching {url}") from exc
-    except urllib.error.URLError as exc:
-        raise LocalGenError(f"could not reach ComfyUI at {url}: {exc}") from exc
+            f"ComfyUI returned HTTP {exc.status} on {method} {path}: {exc.body}",
+            provider="local", status=exc.status, body=exc.body) from exc
+    try:
+        return got.json(provider="local")
+    except _http.ProviderError as exc:
+        raise LocalGenError(str(exc), provider="local") from exc
+
+
+def _fetch_bytes(url: str, *, timeout: float = 120.0) -> bytes:
+    try:
+        return _http.request("GET", url, headers={"Accept": "*/*"},
+                             timeout=timeout, provider="local").body
+    except _http.ProviderError as exc:
+        if exc.status == 0:
+            raise LocalGenError(f"could not reach ComfyUI at {url}: {exc.body}",
+                                provider="local") from exc
+        raise LocalGenError(
+            f"ComfyUI returned HTTP {exc.status} fetching {url}",
+            provider="local", status=exc.status) from exc
 
 
 def _images(history: dict, task: str) -> list[dict]:
@@ -371,8 +397,8 @@ def _images(history: dict, task: str) -> list[dict]:
 
 
 def submit(body: dict, *, timeout: float = 60.0) -> str:
-    got = _i3d._request(BACKEND, _spec()["submit_path"], payload=body,
-                        method="POST", timeout=timeout)
+    got = _call(_spec()["submit_path"], payload=body, method="POST",
+                timeout=timeout)
     task = str(got.get(_spec().get("task_key", "prompt_id")) or "")
     if not task:
         raise LocalGenError(f"ComfyUI accepted the graph but returned no "
@@ -382,11 +408,10 @@ def submit(body: dict, *, timeout: float = 60.0) -> str:
 
 def wait(task: str, *, timeout: float = 600.0, poll: float = 1.0) -> dict:
     """Block until the run appears in history with outputs, or give up saying so."""
-    deadline = time.monotonic() + timeout
     path = _spec()["poll_path"].format(task=task)
-    last: dict = {}
-    while time.monotonic() < deadline:
-        last = _i3d._request(BACKEND, path, timeout=30.0)
+
+    def step() -> Optional[dict]:
+        last = _call(path, timeout=30.0)
         run = (last or {}).get(task) or {}
         if run.get("outputs"):
             return last
@@ -395,24 +420,32 @@ def wait(task: str, *, timeout: float = 600.0, poll: float = 1.0) -> dict:
             raise LocalGenError(
                 "ComfyUI reported an error running the graph: "
                 + json.dumps(status_obj)[:400])
-        time.sleep(poll)
-    raise LocalGenError(
-        f"ComfyUI did not finish within {timeout:.0f}s. A first run downloads "
-        "and loads weights and can be much slower than the ones after it — "
-        "raise the timeout, or watch the ComfyUI console.")
+        return None
+
+    try:
+        return _http.poll(step, first=poll, max_wait=timeout, factor=1.0,
+                          ceiling=poll, provider="local", label="run")
+    except LocalGenError:
+        raise
+    except _http.ProviderError as exc:
+        raise LocalGenError(
+            f"ComfyUI did not finish within {timeout:.0f}s. A first run "
+            "downloads and loads weights and can be much slower than the ones "
+            "after it — raise the timeout, or watch the ComfyUI console.",
+            provider="local") from exc
 
 
 def _result(out: Path, *, seconds: float, size: str, model: str,
             workflow: str, task: str, extra: Optional[dict] = None) -> dict:
     """The same shape imagegen returns, because chroma reads both."""
-    got = {
+    got = _shape.shape({
         "ok": True,
         "path": str(out),
         "bytes": out.stat().st_size,
         "seconds": round(seconds, 2),
         # ZERO IS A PRICE, NOT A MISSING VALUE. The spend gate should read it
         # as the fact it is.
-        "estimated_usd": 0.0,
+        "usd": 0.0,
         "provider": "local",
         "model": model or "(undeclared)",
         "size": size,
@@ -420,7 +453,7 @@ def _result(out: Path, *, seconds: float, size: str, model: str,
         "workflow": workflow,
         "task": task,
         "licence": model_licence(),
-    }
+    })
     got.update(extra or {})
     return got
 
@@ -432,14 +465,14 @@ def _run(kind: str, prompt: str, out_path: str | os.PathLike[str], *,
     ready = available()
     if not ready.get("available") and kind == "generate" and not workflow:
         return {"ok": False, "provider": "local", "error": ready.get("reason"),
-                "estimated_usd": 0.0}
+                "usd": 0.0}
 
     width, height = parse_size(size)
     image_name = ""
     uploaded = []
     if kind == "edit":
         if not ref_paths:
-            return {"ok": False, "provider": "local", "estimated_usd": 0.0,
+            return {"ok": False, "provider": "local", "usd": 0.0,
                     "error": "the edit path needs at least one reference image"}
         for ref in ref_paths[:1]:
             # ONE reference. A graph can only name as many LoadImage nodes as it
@@ -459,7 +492,7 @@ def _run(kind: str, prompt: str, out_path: str | os.PathLike[str], *,
     history = wait(task, timeout=timeout)
     images = _images(history, task)
     if not images:
-        return {"ok": False, "provider": "local", "estimated_usd": 0.0,
+        return {"ok": False, "provider": "local", "usd": 0.0,
                 "task": task,
                 "error": "the graph ran but wrote no image — it needs a "
                          "SaveImage (or any node that reports an image output) "
@@ -500,7 +533,7 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
         got = _run("generate", prompt, out_path, size=size, seed=seed,
                    negative=negative, timeout=timeout, workflow=workflow)
     except LocalGenError as exc:
-        return {"ok": False, "provider": "local", "estimated_usd": 0.0,
+        return {"ok": False, "provider": "local", "usd": 0.0,
                 "error": str(exc)}
     if got.get("ok") and tileable:
         try:
@@ -531,7 +564,7 @@ def edit(prompt: str, ref_paths: list, out_path: str | os.PathLike[str], *,
                    negative=negative, ref_paths=tuple(ref_paths or ()),
                    timeout=timeout, workflow=workflow)
     except LocalGenError as exc:
-        return {"ok": False, "provider": "local", "estimated_usd": 0.0,
+        return {"ok": False, "provider": "local", "usd": 0.0,
                 "error": str(exc)}
     if got.get("ok") and tileable:
         try:

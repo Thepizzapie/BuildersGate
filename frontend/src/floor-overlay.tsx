@@ -20,10 +20,12 @@ import {
 } from "./shell/agents/floorplan";
 import { buildNav } from "./shell/agents/route";
 import { useHandoffs } from "./shell/agents/handoff";
+import { onEvents } from "./hooks";
 import { FloorCanvas } from "./shell/agents/FloorCanvas";
 import "./shell/agents/floor.css";
 
-const POLL_MS = 3000;
+/* The bus does the noticing; this is the safety net for what it misses. */
+const POLL_MS = 30000;
 
 async function fetchJSON<T>(url: string, fallback: T): Promise<T> {
   try {
@@ -52,8 +54,9 @@ function FloorOverlay() {
       if (live) setState(d);
     };
     tick();
+    const off = onEvents(["*"], tick);
     const id = window.setInterval(tick, POLL_MS);
-    return () => { live = false; window.clearInterval(id); };
+    return () => { live = false; off(); window.clearInterval(id); };
   }, []);
 
   const sig = useMemo(() => floorSignature(state), [state]);

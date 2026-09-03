@@ -12,6 +12,14 @@ from .util import slugify
 ENGINES = ("godot", "none")
 DIMENSIONS = ("2d", "3d", "2d+3d")
 
+# The ceilings a new project is born under. Declared once, read by the seed
+# below and mirrored by the settings registry, so the panel's "default" and
+# the row a fresh project actually carries never disagree.
+BUDGET_PER_ITEM_USD = 10.0
+BUDGET_PER_DAY_USD = 50.0
+BUDGET_PER_PROJECT_USD = 500.0
+
+
 def user_dir() -> Path:
     """The user-scoped Builders Gate directory (``~/.bgate`` unless overridden).
 
@@ -204,29 +212,25 @@ def _exists(root: str | os.PathLike[str]) -> bool:
 
 
 def _seed_budget_default(root: str | os.PathLike[str]) -> None:
-    """A NEW project starts with budgets OFF, which is what the product says.
+    """A NEW project starts with budgets ON, under ceilings generous enough
+    that a normal day never meets them.
 
-    THE DECLARED DEFAULT AND THE STORED ONE DISAGREED. settings.py has said
-    since 2026-08-19 that budget enforcement is "OFF by default, and
-    deliberately: shipped on, every project silently enforced a $5/item,
-    $25/day ceiling nobody chose". The Setting's `default=False` never reached
-    the database, because that key STORES to the spend_budget row and the
-    schema's own column default is 1 - so every project created since has been
-    enforcing the ceiling the note says was removed, and the panel read it back
-    as ON.
-
-    Fixed HERE and not in a migration on purpose: a migration would reach into
-    projects whose owners may have turned enforcement on deliberately, and
-    "your budget stopped being enforced" is not a change to make on somebody
-    else's behalf. Only a project being created for the first time is touched.
+    The ceiling exists to catch a runaway, not to ration: $10 an item, $50 a
+    day, $500 for the project. Only a project being created for the first
+    time is touched - a project whose owner turned enforcement off, or set
+    their own numbers, keeps them; a migration would overwrite a choice.
 
     Never raises. The per-RUN ceiling (an item's own max_cost_usd) is
     unaffected either way - spend.item_ceiling honours that whether or not the
-    budget is enforced, and that is the ceiling agents were measured breaking.
+    budget is enforced.
     """
     try:
         with db.tx(root) as conn:
-            conn.execute("UPDATE spend_budget SET enforced = 0 WHERE id = 1")
+            conn.execute(
+                "UPDATE spend_budget SET enforced = 1, per_item_usd = ?, "
+                "per_day_usd = ?, per_project_usd = ? WHERE id = 1",
+                (BUDGET_PER_ITEM_USD, BUDGET_PER_DAY_USD,
+                 BUDGET_PER_PROJECT_USD))
     except Exception:
         pass
 

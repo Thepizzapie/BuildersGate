@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from . import _result
+
 # Model routing. DIRECTOR DIRECTIVE (2026-07-20): gpt-image-2 is BANNED —
 # gpt-image-1 for everything (gpt-image-1-mini acceptable for cheap drafts via
 # the env overrides below). gpt-image-2 also REJECTS background=transparent
@@ -139,7 +141,7 @@ def cost_meta(result: dict) -> dict:
     these keys off ``metadata`` and renders "18.4s · ~$0.042" per candidate.
     """
     return {"seconds": (result or {}).get("seconds"),
-            "estimated_usd": (result or {}).get("estimated_usd")}
+            "usd": (result or {}).get("usd")}
 
 
 def _account(result: dict, root: Any, logical_name: str,
@@ -151,7 +153,7 @@ def _account(result: dict, root: Any, logical_name: str,
     try:
         from bgate_core.board import spend
 
-        spend.record(root, float(result.get("estimated_usd") or 0.0),
+        spend.record(root, float(result.get("usd") or 0.0),
                      kind="image", work_item_id=work_item_id,
                      logical_name=logical_name or "", detail=detail)
     except Exception:
@@ -268,7 +270,7 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
     provider's own mode and can live with whatever arrives.
 
     Every result carries ``seconds`` (wall clock the call actually took) and
-    ``estimated_usd`` (from IMAGE_PRICE_USD — the one price table). Pass ``root``
+    ``usd`` (from IMAGE_PRICE_USD — the one price table). Pass ``root``
     to also append the spend to the project ledger, keyed by ``logical_name`` so
     the art lab can show a running total per asset.
     """
@@ -313,7 +315,7 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
         # agent can act on — sanitized by the SDK, no key material inside.
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                 "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": 0.0}
+                "usd": 0.0}
 
     saved = _save(result, out_path, model, size, quality, transparent,
                   seconds=round(time.monotonic() - started, 2))
@@ -403,7 +405,7 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                     "seconds": round(time.monotonic() - started, 2),
-                    "estimated_usd": 0.0}
+                    "usd": 0.0}
     finally:
         for handle in handles:
             handle.close()
@@ -427,7 +429,7 @@ def _save(result, out_path: str, model: str, size: str, quality: str,
         # one used to copy them, which reported a real charge as free to
         # anything reading the number. Unknown, and it says which one it is.
         return {"ok": False, "error": "API returned no image payload",
-                "seconds": seconds, "estimated_usd": None,
+                "seconds": seconds, "usd": None,
                 "cost_note": "the generation call succeeded and returned no "
                              "image, so it was almost certainly billed at about "
                              f"${price_per_image(quality):.3f} — unknown rather "
@@ -436,15 +438,16 @@ def _save(result, out_path: str, model: str, size: str, quality: str,
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(base64.b64decode(datum.b64_json))
-    return {
+    return _result.shape({
         "ok": True,
         "path": str(out),
         "bytes": out.stat().st_size,
         "seconds": seconds,
-        "estimated_usd": price_per_image(quality),
+        "usd": price_per_image(quality),
+        "provider": "openai",
         "model": model,
         "size": size,
         "quality": quality,
         "transparent": transparent,
         "revised_prompt": getattr(datum, "revised_prompt", None),
-    }
+    })

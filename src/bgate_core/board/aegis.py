@@ -148,15 +148,23 @@ def project_at(path: Path) -> Optional[Path]:
     return None
 
 
-def mode() -> str:
+def mode(root=None) -> str:
     """How hard to enforce the project boundary. Never raises.
 
-    An unrecognised value is the default rather than an error: BGATE_AEGIS is
-    set by hand and by dispatch, and a typo that silently disabled the gate
-    would be the worst of the available failures.
+    An explicit BGATE_AEGIS wins; otherwise the enforcement profile
+    (bgate_core.board.enforcement) supplies the mode. An unrecognised value
+    falls through to the profile rather than erroring: BGATE_AEGIS is set by
+    hand and by dispatch, and a typo that silently disabled the gate would be
+    the worst of the available failures.
     """
     chosen = os.environ.get("BGATE_AEGIS", "").strip().lower()
-    return chosen if chosen in MODES else DEFAULT_MODE
+    if chosen in MODES:
+        return chosen
+    try:
+        from . import enforcement
+        return enforcement.ladder("aegis", root)
+    except Exception:
+        return DEFAULT_MODE
 
 
 def allowlist_dirs() -> list[Path]:

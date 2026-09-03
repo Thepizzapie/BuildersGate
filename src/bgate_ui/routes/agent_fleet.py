@@ -6,8 +6,9 @@ the dashboard currently has open. Both halves of that are lossy in the same
 direction: an agent spawned before a dashboard restart, an agent spawned by a
 second dashboard, and an agent working a game you are not looking at right now
 all appeared in nothing at all -- while still editing files and still billing.
-``bgate_core.board.agentreg`` drops a file per run under ``~/.bgate/agents`` and a
-file outlives the process that wrote it, which is the whole reason a machine-
+``bgate_core.board.agentreg`` writes a row per run into the project's
+``agent_runs`` table and reads the open rows across every registered project;
+a row outlives the process that wrote it, which is the whole reason a machine-
 wide view can exist.
 
 THESE ARE NOT MCP TOOLS AND MUST NEVER BECOME ONE. An agent that can enumerate

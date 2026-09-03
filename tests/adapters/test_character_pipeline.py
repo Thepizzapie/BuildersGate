@@ -27,7 +27,7 @@ def stub(monkeypatch, tmp_path):
         @staticmethod
         def generate(prompt, out, **kw):
             calls["plate"] = {"prompt": prompt, **kw}
-            return {"ok": True, "path": out, "estimated_usd": 0.06}
+            return {"ok": True, "path": out, "usd": 0.06}
 
     monkeypatch.setattr(blender, "_plate_provider",
                         lambda name, root=None: _Provider)
@@ -42,7 +42,7 @@ def stub(monkeypatch, tmp_path):
     monkeypatch.setattr(i3d, "price_for", lambda b, **k: 0.30)
     monkeypatch.setattr(i3d, "generate", lambda *a, **k: dict(
         calls.__setitem__("mesh", k) or {},
-        ok=True, estimated_usd=0.30, warnings=[]))
+        ok=True, usd=0.30, warnings=[]))
     return calls
 
 
@@ -129,7 +129,7 @@ class TestItMatchesTheRunThatWorked:
         got = blender.character("a pirate woman", tmp_path, backend="krea",
                                 dry_run=True)
         assert got["ok"] is True and got["stage"] == "quote"
-        assert got["estimated_usd"] == 0.30
+        assert got["usd"] == 0.30
         assert stub["plate"] is None and stub["mesh"] is None
 
     def test_an_unpriced_stage_makes_the_total_unknown_not_partial(self):

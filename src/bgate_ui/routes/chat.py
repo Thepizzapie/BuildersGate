@@ -177,7 +177,7 @@ def chat_config(request: Request, payload: dict) -> dict:
         raise api.bad_request(str(exc), platform=one.id)
     except OSError as exc:
         raise api.unavailable(
-            f"could not write the project's .env: {type(exc).__name__}: {exc}",
+            f"could not write the project's .env: {api.safe_error(exc)}",
             platform=one.id)
     _envfile.reset_cache()
     # Live in this process too, the same half `providers.set_key` documents:

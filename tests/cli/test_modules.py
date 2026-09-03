@@ -65,12 +65,20 @@ class TestTheServerRegistry:
         assert server._module_registers("queue_add")
         assert server._module_registers("godot_run")
 
-    def test_an_unpinned_session_registers_everything(self, monkeypatch):
+    def test_an_unpinned_session_is_the_director(self, monkeypatch):
         from bgate_mcp import server
 
         monkeypatch.setattr(server, "_MODULES_OFF", None)
         monkeypatch.delenv("BGATE_ROOT", raising=False)
-        # No project resolvable in the test cwd -> empty disabled set.
+        monkeypatch.delenv("BGATE_SEAT", raising=False)
+        monkeypatch.delenv("BGATE_SEAT_TOOLS", raising=False)
+        # No project resolvable in the test cwd -> empty disabled set; the
+        # seat scope still applies, and it is the director's.
+        assert server._module_registers("queue_add")
+        assert server._module_registers("art_qa_verdict")
+        assert not server._module_registers("music_generate")
+        assert server._seat_scoped_off("music_generate")
+        monkeypatch.setenv("BGATE_SEAT_TOOLS", "all")
         assert server._module_registers("music_generate")
         monkeypatch.setattr(server, "_MODULES_OFF", None)  # drop the cache
 
@@ -105,10 +113,45 @@ class TestSeatScopedTools:
         assert modules.seat_tool_enabled("storyboard_write_script", "narrative")
         assert not modules.seat_tool_enabled("image_generate", "narrative")
 
-    def test_unknown_and_absent_seats_are_unscoped(self):
-        assert modules.seat_tool_enabled("music_generate", "")
-        assert modules.seat_tool_enabled("music_generate", "director")
+    def test_unknown_seats_are_unscoped_but_the_director_is_a_seat(self):
+        # The seatless session IS the director: it holds arbitration and
+        # evidence, not the generation surfaces, and tool_unlock grows it.
+        assert not modules.seat_tool_enabled("music_generate", "")
+        assert not modules.seat_tool_enabled("music_generate", "director")
+        assert not modules.seat_tool_enabled("image_generate", "")
+        assert modules.seat_tool_enabled("art_qa_verdict", "")
+        assert modules.seat_tool_enabled("brainstorm_new", "")
+        assert modules.seat_tool_enabled("queue_add", "")
         assert modules.seat_tool_enabled("music_generate", "mystery-seat")
+        assert "image" in modules.hidden_crafts("")
+        assert modules.hidden_crafts("mystery-seat") == []
+
+    def test_brainstorm_is_reachable_from_a_seat(self):
+        assert modules.seat_tool_enabled("brainstorm_new", "narrative")
+        assert not modules.seat_tool_enabled("brainstorm_new", "audio")
+
+
+class TestTheSpineSplit:
+    def test_the_groups_partition_the_spine(self):
+        seen: set[str] = set()
+        for names in modules.SPINE_GROUPS.values():
+            assert not (seen & names)
+            seen |= names
+        assert seen == modules.SPINE
+
+    def test_every_seat_holds_core_and_canon(self):
+        for seat in ("art", "gameplay", "tech", "audio", "narrative", "qa",
+                     "cinematic", ""):
+            assert modules.seat_tool_enabled("queue_add", seat)
+            assert modules.seat_tool_enabled("bible_read", seat)
+            assert modules.seat_tool_enabled("godot_run", seat)
+
+    def test_seats_that_never_touch_a_scene_do_not_carry_engine(self):
+        for seat in ("audio", "narrative"):
+            assert not modules.seat_tool_enabled("scene_set_property", seat)
+            assert not modules.seat_tool_enabled("godot_test_run", seat)
+        for seat in ("gameplay", "tech", "art", "qa", ""):
+            assert modules.seat_tool_enabled("scene_set_property", seat)
 
     def test_the_server_gate_composes_seat_and_modules(self, monkeypatch):
         from bgate_mcp import server
@@ -118,6 +161,24 @@ class TestSeatScopedTools:
         monkeypatch.delenv("BGATE_SEAT_TOOLS", raising=False)
         assert not server._module_registers("blender_rig")
         assert server._module_registers("godot_run")
+
+    def test_the_director_can_unlock_a_craft_it_parked(self, monkeypatch):
+        from bgate_mcp import server
+
+        # The process under test booted seatless, so image_* is parked.
+        parked = [n for n in server._PARKED if n.startswith("image_")]
+        if not parked:
+            # The suite boots with BGATE_SEAT_TOOLS=all (conftest), so park
+            # one by hand: the same wrapper object _tool would have parked.
+            monkeypatch.setitem(server._PARKED, "image_generate",
+                                server.image_generate)
+            parked = ["image_generate"]
+        got = server.tool_unlock.__wrapped__("image")
+        assert got["ok"] and parked[0] in got["added"]
+        after = {n for n, _ in server._registry_rows()}
+        assert set(parked) <= after
+        assert server.tool_unlock.__wrapped__("image")["added"] == []
+        assert "error" in server.tool_unlock.__wrapped__("no-such-craft")
         # the escape hatch: a session that genuinely needs everything
         monkeypatch.setenv("BGATE_SEAT_TOOLS", "all")
         assert server._module_registers("blender_rig")

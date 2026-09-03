@@ -21,9 +21,10 @@ WHAT SURVIVES IS WHAT IS STILL TRUE OF THE PRODUCT, not of a module:
   * A stolen CSS prefix. ``providerkeys.js`` shipped as ``pk-``, which app.css
     already owned for the peek overlay, and inherited its ``position:fixed``:
     the panel floated over the whole dashboard. Prefixes are global.
-  * A rebuilt ``#pv-host``. providerkeys.js is the ONLY surface that may write
-    an API key and it wires its listeners onto that element; a second div with
-    the same id looks identical and is dead.
+  * A credential read from the settings screen. ``ProviderKeys.tsx`` is the
+    ONLY surface that may write an API key, it fetches ``/api/providers``
+    itself, and its key field is write-only: type=password, cleared on submit,
+    never echoed. Settings.tsx renders it and never touches the endpoint.
   * The FLAGS the hierarchy leans on, which are the registry's side of the
     contract and are unchanged by which framework draws the rows.
 
@@ -43,6 +44,7 @@ STATIC = ROOT / "frontend" / "public"
 INDEX = STATIC / "index.html"
 CSS = STATIC / "app.css"
 SETTINGS = ROOT / "frontend" / "src" / "shell" / "settings" / "Settings.tsx"
+PROVIDERS = ROOT / "frontend" / "src" / "shell" / "settings" / "ProviderKeys.tsx"
 
 
 def screen() -> str:
@@ -54,11 +56,16 @@ class TestTheReplacedModulesAreGone:
     reader has to open to discover it is dead, and a page that still loads is a
     page somebody will edit by mistake."""
 
-    @pytest.mark.parametrize("name", ["settingsview.js", "agents_console.js"])
+    GONE = ["settingsview.js", "agents_console.js",
+            # The generator panels: ported to frontend/src/shell/settings/
+            # (ProviderKeys.tsx, LocalGenerators.tsx, AgentClis.tsx).
+            "providerkeys.js", "localsetup.js"]
+
+    @pytest.mark.parametrize("name", GONE)
     def test_the_file_is_deleted(self, name):
         assert not (STATIC / name).exists()
 
-    @pytest.mark.parametrize("name", ["settingsview.js", "agents_console.js"])
+    @pytest.mark.parametrize("name", GONE)
     def test_nothing_loads_it(self, name):
         for page in STATIC.glob("*.html"):
             text = page.read_text(encoding="utf-8", errors="ignore")
@@ -83,16 +90,32 @@ class TestRendersFromTheDescription:
 class TestCredentialsStaySeparate:
     def test_the_screen_never_reads_the_providers_endpoint(self):
         assert "/api/providers" not in screen(), (
-            "Settings.tsx must not fetch credentials; providerkeys.js owns "
+            "Settings.tsx must not fetch credentials; ProviderKeys.tsx owns "
             "them and is the only surface that may write one")
 
-    def test_the_host_is_declared_exactly_once_and_not_in_the_classic_page(self):
-        """providerkeys.js mounts into `#pv-host` and wires listeners onto that
-        element. A second one with the same id looks identical and is dead."""
+    def test_the_panel_is_rendered_by_the_screen_and_nowhere_classic(self):
+        """The key panel is a React component the screen renders. Nothing in the
+        classic page carries a host for it any more, and no classic script
+        writes a key."""
         body = screen()
-        assert body.count('id="pv-host"') == 1, "the credentials host moved or doubled"
-        assert "ProviderKeys" in body, "nothing asks the credentials panel to paint"
-        assert 'id="pv-host"' not in INDEX.read_text(encoding="utf-8")
+        assert "<ProviderKeys" in body, "nothing renders the credentials panel"
+        index = INDEX.read_text(encoding="utf-8")
+        assert 'id="pv-host"' not in index
+        assert "providerkeys.js" not in index
+
+    def test_the_key_field_is_write_only(self):
+        """The value has exactly one journey, keystrokes -> POST body. The field
+        is a password input, it is blanked the moment the save returns whether
+        or not it worked, and the row repaints from the response."""
+        body = PROVIDERS.read_text(encoding="utf-8")
+        assert 'type="password"' in body
+        assert 'setKey("")' in body, "the field is not cleared after a save"
+        assert '/key`' in body and 'method: "POST"' in body
+        # Never a query string, never a path segment: the key rides in the body.
+        assert "body: { key, scope }" in body
+        assert "?key=" not in body and "key=${" not in body
+        # The only thing about the value ever drawn is the last-4 fingerprint.
+        assert "row.last4" in body
 
 
 class TestPrecedenceStaysVisible:

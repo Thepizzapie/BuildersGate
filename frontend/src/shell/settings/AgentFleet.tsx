@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { Badge, Button, Group, Text } from "@mantine/core";
 import { Ti } from "../Ti";
 import { mutate, readJSON } from "../../bridge";
-import { usePoll } from "../../hooks";
+import { useEvents } from "../../hooks";
 
 /* THE MASTER AGENT VIEW - every running agent on the machine, not just this
  * project's.
@@ -61,7 +61,7 @@ export function AgentFleet({ active }: { active: boolean }) {
   const refresh = useCallback(async () => { setFleet(await readFleet()); }, []);
   /* Five seconds. This is a list of things that are happening right now and the
      reason to open it is usually that something should not be. */
-  usePoll(refresh, 5000, active);
+  useEvents(refresh, { enabled: active, kinds: ["agent.*", "item.*"] });
 
   /* Every stop re-reads rather than removing the row optimistically. A stop can
      land on a run that had already finished, and a row that vanishes on click

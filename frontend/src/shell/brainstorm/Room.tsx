@@ -7,7 +7,7 @@ import { SEAT_COLOR, SEAT_ICON } from "../nav";
 import { askText, mutate, readJSON, toast } from "../../bridge";
 import { CanonColumn } from "./Canon";
 import { useVoice } from "./voice";
-import { usePoll, useViewActive } from "../../hooks";
+import { useEvents, useViewActive } from "../../hooks";
 import { useStickyBottom } from "../sticky";
 import "./room.css";
 
@@ -185,7 +185,6 @@ type Plan = {
 };
 
 const EMPTY: Session = { id: 0, messages: [] };
-const POLL_MS = 6000;
 /* MIRRORS bgate_core/brainstorm.py's MAX_PARTICIPANTS. Duplicated rather than
    fetched because the only thing it changes here is whether a chip explains
    itself before the click; the server is still the one that refuses, and it
@@ -369,8 +368,8 @@ export function Room({ seat }: { seat?: string } = {}) {
      writes — but it is the hook an asynchronous seat reply arrives through, and
      wiring it now means the transcript is already a thing that grows on its own
      rather than a thing that grows when you press say. */
-  usePoll(() => { if (session.id) refresh(session.id); },
-          POLL_MS, active && !!session.id);
+  useEvents(() => { if (session.id) refresh(session.id); },
+            { enabled: active && !!session.id, kinds: [], key: session.id });
 
   /* ASK ONE SEAT — A ROUTING FIELD NOW, NOT A PREFIX IN THE TEXT.
    *

@@ -1528,7 +1528,7 @@ window.SceneBuild = (() => {
     if (!view || !view.classList.contains("active")) return false;
     const pane = document.getElementById("atlas-scene");
     if (!pane || pane.hidden) return false;
-    // A dialog is up: the diff preview, or ask.js's confirm. Whatever the key
+    // A dialog is up: the diff preview, or an askConfirm. Whatever the key
     // means, it does not mean it to the scene behind them.
     if (document.getElementById("sb-modal")) return false;
     if (document.querySelector(".ask-scrim")) return false;

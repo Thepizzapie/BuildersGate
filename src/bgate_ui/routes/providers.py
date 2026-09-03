@@ -140,7 +140,7 @@ def provider_set_key(provider_id: str, request: Request, payload: dict) -> dict:
         raise api.bad_request(str(exc), provider=provider_id)
     except OSError as exc:
         raise api.unavailable(
-            f"could not write the project's .env: {type(exc).__name__}: {exc}",
+            f"could not write the project's .env: {api.safe_error(exc)}",
             provider=provider_id)
     return api.ok(_payload(_providers.status(root())), applied=row)
 
@@ -165,6 +165,6 @@ def provider_clear_key(provider_id: str, request: Request,
         raise api.bad_request(str(exc), provider=provider_id)
     except OSError as exc:
         raise api.unavailable(
-            f"could not write the project's .env: {type(exc).__name__}: {exc}",
+            f"could not write the project's .env: {api.safe_error(exc)}",
             provider=provider_id)
     return api.ok(_payload(_providers.status(root())), applied=row)

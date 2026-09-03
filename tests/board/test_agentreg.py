@@ -1,6 +1,6 @@
 """The machine-wide agent registry, and the pid-reuse case it exists for.
 
-The interesting tests here are the ones that fake a STALE entry: a file left by
+The interesting tests here are the ones that fake a STALE entry: a row left by
 a run whose process is long dead, whose pid the OS has since handed to
 something else. Everything the registry does about killing, listing and
 reconciling hangs off telling that apart from a live agent, so it is tested
@@ -9,7 +9,6 @@ directly rather than inferred from a happy path.
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
 import subprocess
 import sys
@@ -18,6 +17,7 @@ import time
 import pytest
 
 from bgate_core.board import agentreg, queue
+from bgate_core.store import db, project
 
 HAVE_PSUTIL = importlib.util.find_spec("psutil") is not None
 
@@ -113,7 +113,7 @@ def test_the_fallback_start_time_agrees_with_psutil(monkeypatch):
 def test_a_recycled_pid_is_caught_without_psutil(root, without_psutil):
     item_id = _dispatched_item(root)
     agentreg.record(os.getpid(), item_id=item_id, root=str(root))
-    _restamp(os.getpid(), agentreg.process_start(os.getpid()) - 10_000)
+    _restamp(root, os.getpid(), agentreg.process_start(os.getpid()) - 10_000)
 
     assert agentreg.live() == []
     assert [f["item_id"] for f in agentreg.reconcile()["failed"]] == [item_id]
@@ -124,17 +124,18 @@ def test_a_recycled_pid_is_caught_without_psutil(root, without_psutil):
 # ---------------------------------------------------------------------------
 
 
-def test_record_writes_one_file_with_the_identity_fields(root):
-    path = agentreg.record(os.getpid(), item_id=7, seat="art", root=str(root),
-                           runner="claude", log=str(root / "a.log"))
-    assert path is not None and path.is_file()
-    data = json.loads(path.read_text(encoding="utf-8"))
+def test_record_writes_one_row_with_the_identity_fields(root):
+    row_id = agentreg.record(os.getpid(), item_id=7, seat="art", root=str(root),
+                             runner="claude", log=str(root / "a.log"))
+    assert row_id is not None
+    (data,) = agentreg.open_runs(str(root))
     assert data["pid"] == os.getpid()
     assert data["item_id"] == 7
     assert data["seat"] == "art"
-    assert data["root"] == str(root)
+    assert os.path.normcase(data["root"]) == os.path.normcase(str(root.resolve()))
     assert data["runner"] == "claude"
     assert data["started_at"] > 0
+    assert data["ended_at"] is None and data["status"] == "running"
     # THE FIELD THE WHOLE MODULE TURNS ON.
     assert data["proc_started"] is not None
 
@@ -145,10 +146,11 @@ def test_live_sees_a_recorded_running_process(root):
     assert agentreg.stale() == []
 
 
-def test_forget_removes_the_entry(root):
+def test_forget_closes_the_row(root):
     agentreg.record(os.getpid(), item_id=1, root=str(root))
     assert agentreg.forget(os.getpid()) is True
     assert agentreg.entries() == []
+    assert agentreg.last_run(str(root), 1)["status"] == "gone"
     assert agentreg.forget(os.getpid()) is False
 
 
@@ -164,13 +166,12 @@ def test_an_exited_process_is_stale_not_live(root):
 # ---------------------------------------------------------------------------
 
 
-def _restamp(pid: int, started) -> None:
-    """Rewrite an entry's recorded start time, to fake a stale row whose pid
+def _restamp(root, pid: int, started) -> None:
+    """Rewrite a row's recorded start time, to fake a stale row whose pid
     the OS has since handed to a different program."""
-    path = agentreg.registry_dir() / f"agent-{pid}.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["proc_started"] = started
-    path.write_text(json.dumps(data), encoding="utf-8")
+    with db.tx(root) as conn:
+        conn.execute("UPDATE agent_runs SET proc_started = ? WHERE pid = ?",
+                     (started, pid))
 
 
 def test_a_recycled_pid_is_not_our_agent(root):
@@ -180,7 +181,7 @@ def test_a_recycled_pid_is_not_our_agent(root):
     "stop it" would kill whatever now owns the number.
     """
     agentreg.record(os.getpid(), item_id=1, seat="art", root=str(root))
-    _restamp(os.getpid(), agentreg.process_start(os.getpid()) - 10_000)
+    _restamp(root, os.getpid(), agentreg.process_start(os.getpid()) - 10_000)
     assert agentreg.live() == []
     assert [e["pid"] for e in agentreg.stale()] == [os.getpid()]
 
@@ -188,7 +189,7 @@ def test_a_recycled_pid_is_not_our_agent(root):
 def test_reconcile_fails_the_item_behind_a_recycled_pid(root):
     item_id = _dispatched_item(root)
     agentreg.record(os.getpid(), item_id=item_id, seat="art", root=str(root))
-    _restamp(os.getpid(), agentreg.process_start(os.getpid()) - 10_000)
+    _restamp(root, os.getpid(), agentreg.process_start(os.getpid()) - 10_000)
 
     out = agentreg.reconcile()
 
@@ -274,15 +275,30 @@ def test_an_entry_with_no_recorded_start_time_is_not_claimed_as_ours(root):
     rather than being promoted on the strength of a recycled number."""
     item_id = _dispatched_item(root)
     agentreg.record(os.getpid(), item_id=item_id, root=str(root))
-    _restamp(os.getpid(), None)
+    _restamp(root, os.getpid(), None)
 
     assert agentreg.live() == []
     assert agentreg.stale() == []
     assert queue.get(root, item_id)["status"] == "dispatched"
 
 
-def test_a_broken_entry_file_is_skipped_not_raised(root):
+def test_a_registered_project_with_no_database_is_skipped_not_raised(
+        root, tmp_path):
     agentreg.record(os.getpid(), item_id=1, root=str(root))
-    (agentreg.registry_dir() / "agent-999999999.json").write_text(
-        "{not json", encoding="utf-8")
+    ghost = tmp_path / "ghost"
+    ghost.mkdir()
+    project.register(ghost, "ghost")
     assert [e["pid"] for e in agentreg.entries()] == [os.getpid()]
+
+
+def test_a_finished_row_is_not_part_of_the_fleet(root):
+    agentreg.record(os.getpid(), item_id=1, root=str(root))
+    assert agentreg.finish(str(root), 1, os.getpid(), status="done",
+                           result={"outcome": "done"}, cost_usd=0.25)
+    assert agentreg.entries() == []
+    run = agentreg.last_run(str(root), 1)
+    assert run["status"] == "done" and run["cost_usd"] == 0.25
+    assert run["result"] == {"outcome": "done"}
+    # Finished once is finished: a second close does not rewrite the outcome.
+    assert agentreg.finish(str(root), 1, os.getpid(), status="gone") is False
+    assert agentreg.last_run(str(root), 1)["status"] == "done"

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Group, ScrollArea, Textarea } from "@mantine/core";
 import { Ti } from "../Ti";
 import { Markdown } from "../../components/Markdown";
-import { usePoll } from "../../hooks";
+import { useEvents, FALLBACK_MS } from "../../hooks";
 import { toast } from "../../bridge";
 import { directorChat, directorNew, directorSay, type ChatMsg } from "./api";
 
@@ -48,7 +48,10 @@ export function DirectorChat({ active, onSent }: {
     if (wasRunning.current && !got.running) onSent?.();
     wasRunning.current = !!got.running;
   }, [onSent]);
-  usePoll(poll, POLL_MS, active);
+  /* A running turn is a stream, not a change to notice: the transcript grows
+     between events, so it keeps its fast tick only while a turn is open. */
+  useEvents(poll, { enabled: active, kinds: ["director.*", "agent.*", "item.*"],
+                    fallbackMs: running ? POLL_MS : FALLBACK_MS });
 
   /* Follow the tail unless the reader has scrolled up to read something. */
   useEffect(() => {

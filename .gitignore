@@ -55,3 +55,5 @@ frontend/node_modules/
 
 /src/bgate_ui/static/*
 !/src/bgate_ui/static/dist/
+
+packaging/floor-assets/build/

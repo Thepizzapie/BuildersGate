@@ -51,7 +51,7 @@ exclude = ["tests*", "docs*", "*.__pycache__"]
 namespaces = true
 
 [tool.setuptools.package-data]
-bgate_ui = ["static/**/*"]
+bgate_ui = ["static/**/*", "agents/prompts/*.txt"]
 bgate_site = ["theme/*"]
 templates = ["**/*", "**/.gitignore"]
 

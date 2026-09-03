@@ -567,7 +567,7 @@
     --ease-out:cubic-bezier(0,0,.2,1);
 
     --z-drawer:60; --z-overlay:70; --z-lightbox:80; --z-toast:90; --z-firstrun:100;
-    /* ask.js sits above the tool overlays too, and those are not on this scale —
+    /* the ask dialogs sit above the tool overlays too, and those are not on this scale —
        the audio lab is 1400, its picker 1401, the world modal 8500. A question
        asked from inside one of them has to be reachable. */
     --z-ask:9000;
@@ -1406,7 +1406,7 @@
   .lamp.bad{background:var(--accent); box-shadow:0 0 10px var(--accent); animation:throb 1.1s infinite}
   .lamp.waiting{background:var(--warn); box-shadow:0 0 8px var(--warn)}
 
-  /* ── the bell + its drawer (notify.js) ────────────────────────────────────
+  /* ── the bell + its drawer (frontend/src/shell/Bell.tsx) ────────────────────────────────────
      Lives in the status bar beside the two counter chips, so the badge is on
      screen in every workspace rather than only in the view that reads the log.
 
@@ -1439,7 +1439,7 @@
   .nt-badge.hidden{display:none}
   .nt-drawer{
     /* FIXED, against the viewport. The drawer is appended to <body> now
-       (notify.js) rather than to the bell's host in the header — see the note
+       (Bell.tsx) rather than to the bell's host in the header — see the note
        there: a backdrop-filtered header is a backdrop root, and a drawer
        inside one can neither frost the page nor rise above it. Anchored under
        the header bar, hard right, which is where it rendered before. */
@@ -2172,7 +2172,7 @@
   .toast .tx{flex:none; color:var(--text-3); font-size:var(--fs-lg); line-height:1; padding:0 var(--s-1)}
   .toast .tx:hover{color:var(--text)}
 
-  /* ── ask (ask.js) ────────────────────────────────────────────────────────
+  /* ── ask (frontend/src/ask.tsx) ────────────────────────────────────────────────────────
      window.prompt and window.confirm draw through the browser chrome, so no
      token reaches them — and the WebView2 desktop build suppresses prompt()
      outright, which made every one of them a dead button there. These are the

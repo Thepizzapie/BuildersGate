@@ -77,8 +77,8 @@
       t.textContent = msg; t.style.opacity = "1";
       clearTimeout(t._to); t._to = setTimeout(() => { t.style.opacity = "0"; }, 2600);
     },
-    // The in-page replacements for prompt()/confirm() — ask.js, loaded above
-    // this file. Mirrored here so seat code keeps its bg.* idiom instead of
+    // The in-page replacements for prompt()/confirm() — frontend/src/ask.tsx,
+    // on window before any seat runs. Mirrored here so seat code keeps its bg.* idiom instead of
     // growing a second copy of the pattern per seat.
     askText(o) { return window.askText(o); },
     askConfirm(o) { return window.askConfirm(o); },
@@ -152,7 +152,7 @@
    * the sprite editor and the audio lab each wrote "saved <file>" to a console
    * nobody has open, and the owner's report was exact: "there is zero feedback
    * in saving in any of the editors". The message was always being produced and
-   * never being shown. notify.js and agents_console.js call window.toast the
+   * never being shown. The bell and the console call window.toast the
    * same way and were failing the same way.
    *
    * One export rather than a local copy per file: a second implementation is

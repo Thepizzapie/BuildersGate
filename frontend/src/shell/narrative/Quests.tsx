@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { ScrollArea } from "@mantine/core";
 import { Ti } from "../Ti";
-import { usePoll } from "../../hooks";
+import { useEvents } from "../../hooks";
 import {
   EMPTY_QUESTS, questAdd, questAddStep, questCutStep, questList, questSetState,
   type CanonVerdict, type Quest, type QuestBrief, type Step,
@@ -31,8 +31,6 @@ import type { HeadSlot } from "./head";
  * lands and is reported. That is the same latitude the MCP tool gives an agent —
  * "the wizard is still draft" is information, not an error.
  */
-
-const POLL_MS = 15000;
 
 const STATE_TONE: Record<string, string> = {
   draft: "var(--text-3)", active: "var(--good)",
@@ -77,7 +75,7 @@ export function Quests({ head, active }: { head: HeadSlot; active: boolean }) {
   const load = useCallback(async () => {
     setBrief(await questList());
   }, []);
-  usePoll(load, POLL_MS, active);
+  useEvents(load, { enabled: active, kinds: [] });
 
   const quests = brief.quests || [];
   const quest: Quest | undefined =

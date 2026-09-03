@@ -25,8 +25,23 @@ from pathlib import Path
 
 import pytest
 
-from bgate_core.board import queue
+from bgate_core.board import agentreg, queue
+from bgate_core.store import db
 from bgate_ui.agents import dispatch
+
+
+def _open_row(root, pid, item_id, *, started_at=0.0, proc_started=None,
+              proc_name="") -> None:
+    """A run row left open by a previous server run."""
+    with db.tx(root) as conn:
+        conn.execute(
+            "INSERT INTO agent_runs (project, item_id, pid, proc_started, "
+            "proc_name, started_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(root), item_id, pid, proc_started, proc_name, started_at))
+
+
+def _open_pids(root) -> list[int]:
+    return [int(r["pid"]) for r in agentreg.open_runs(str(root))]
 
 # --- the fake CLI -----------------------------------------------------------
 # Mirrors the real `claude -p --input-format stream-json --output-format
@@ -246,9 +261,7 @@ class TestCompletionAndReap:
         pid = res["pid"]
         _wait(lambda: "taking the item" in _log_text(root, item["id"]),
               what="the agent to start")
-        ledger = json.loads((Path(root) / ".bgate" / "agents" / "pids.json")
-                            .read_text(encoding="utf-8"))
-        assert str(pid) in ledger
+        assert pid in _open_pids(root)
 
         # The agent self-reports via queue_complete -> status() closes stdin ->
         # the CLI hits EOF and exits -> the next status() reaps it.
@@ -261,11 +274,12 @@ class TestCompletionAndReap:
         assert item["id"] not in dispatch._live
         # A clean exit must not overwrite the agent's own result.
         assert queue.get(root, item["id"])["result"] == "jump fixed"
-        # Reaped pids leave the ledger, so the next server run has nothing to
-        # sweep for this agent.
-        ledger = json.loads((Path(root) / ".bgate" / "agents" / "pids.json")
-                            .read_text(encoding="utf-8"))
-        assert str(pid) not in ledger
+        # A reaped run's row is closed, so the next server run has nothing to
+        # sweep for this agent - and the row still carries what it banked.
+        assert pid not in _open_pids(root)
+        run = agentreg.last_run(str(root), item["id"])
+        assert run["ended_at"] and run["status"] == "done"
+        assert run["result"]["code"] == 0
 
         final = dispatch.read_activity(root, item["id"])["final"]
         assert final and final["subtype"] == "success"
@@ -321,27 +335,15 @@ class TestOrphanSweep:
 
     def test_dead_pids_are_cleared_without_killing_anything(self, root):
         """A pid from a previous server run that is gone (or belongs to some
-        unrelated process now) must be dropped from the ledger, never killed."""
-        path = Path(root) / ".bgate" / "agents" / "pids.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        unrelated process now) must have its row closed, never be killed."""
+        _open_row(root, 999999999, 1)
         # A pid that is not a claude process: this very interpreter.
-        path.write_text(json.dumps({
-            "999999999": {"item_id": 1, "spawned_at": 0},
-            str(os.getpid()): {"item_id": 2, "spawned_at": 0},
-        }), encoding="utf-8")
+        _open_row(root, os.getpid(), 2)
         swept = dispatch.reap_orphans(root)
         assert swept["killed"] == []
         assert set(swept["cleared"]) == {999999999, os.getpid()}
-        assert json.loads(path.read_text(encoding="utf-8")) == {}
+        assert _open_pids(root) == []
         assert os.getpid()  # still alive, obviously — nothing was killed
-
-    def test_an_unreadable_ledger_is_reset_not_fatal(self, root):
-        path = Path(root) / ".bgate" / "agents" / "pids.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{not json", encoding="utf-8")
-        swept = dispatch.reap_orphans(root)
-        assert swept["killed"] == []
-        assert json.loads(path.read_text(encoding="utf-8")) == {}
 
     @pytest.mark.skipif(sys.platform != "win32",
                         reason="the sweep identifies processes with tasklist")
@@ -364,15 +366,12 @@ class TestOrphanSweep:
         proc = subprocess.Popen([str(shim), "BgateOrphanSweepTest", "/t", "120"],
                                 creationflags=dispatch._NO_WINDOW)
         try:
-            path = Path(root) / ".bgate" / "agents" / "pids.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(
-                {str(proc.pid): {"item_id": 7, "spawned_at": 0}}), encoding="utf-8")
+            _open_row(root, proc.pid, 7)
 
             swept = dispatch.reap_orphans(root)
             assert [k["pid"] for k in swept["killed"]] == [proc.pid]
             assert proc.wait(timeout=20) is not None
-            assert json.loads(path.read_text(encoding="utf-8")) == {}
+            assert _open_pids(root) == []
         finally:
             if proc.poll() is None:
                 proc.kill()

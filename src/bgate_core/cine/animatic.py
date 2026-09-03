@@ -512,9 +512,9 @@ def build(root: str | os.PathLike[str], name: str, *, source: str = "auto",
         "panel_files": [p["path"] for p in panels],
         "transitions": plan["transitions"],
         # Stated in the payload rather than left to be inferred. Every other
-        # verb in the cutscene pipeline returns an estimated_usd and a caller
+        # verb in the cutscene pipeline returns an usd and a caller
         # that has to work out which ones are free will eventually guess wrong.
-        "estimated_usd": 0.0,
+        "usd": 0.0,
     }
     out["warnings"] = report_notes(out, shots)
     try:

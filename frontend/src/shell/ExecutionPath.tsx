@@ -30,7 +30,7 @@
  */
 import { useCallback, useState } from "react";
 import { readJSON } from "../bridge";
-import { usePoll } from "../hooks";
+import { useEvents, WORK_KINDS } from "../hooks";
 import { Ti } from "./Ti";
 
 type Link = {
@@ -63,7 +63,7 @@ export function ExecutionPath({ itemId }: { itemId: number }) {
     setReply(await readJSON<PathReply>(`/api/queue/${itemId}/path`, {}));
   }, [itemId]);
 
-  usePoll(refresh, 5000, true, itemId);
+  useEvents(refresh, { kinds: WORK_KINDS, key: itemId });
 
   const path = reply.path || [];
   /* A single link is this item alone with nothing before it. Drawing a

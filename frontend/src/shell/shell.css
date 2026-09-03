@@ -1255,7 +1255,7 @@ html.bg-framed body { padding-top: 44px }
    from the user's side the stop button simply did not exist.
 
    Padding the shell by exactly the drawer's width (--ptn-w, published by
-   ptnotes.js so the two cannot drift) makes the grid resolve narrower and the
+   views/playtests/playtests.css so the two cannot drift) makes the grid resolve narrower and the
    bar reflow inside it. Nothing ends up underneath.
 
    Not applied under 640px, where the drawer is the whole window: reserving

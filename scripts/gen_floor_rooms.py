@@ -57,7 +57,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from _floorpaths import sandbox  # noqa: E402
+from _floorpaths import sandbox, FLOOR_IMG  # noqa: E402
 
 from PIL import Image  # noqa: E402
 
@@ -68,7 +68,7 @@ CONCEPT = ART_ROOT / ".bgate" / "refs" / "floor-concept.r1.png"
 
 # public/, not static/: the build copies public -> bgate_ui/static, so art
 # written straight to static disappears on the next `npm run build`.
-OUT = ROOT / "frontend" / "public" / "img" / "floor" / "rooms"
+OUT = FLOOR_IMG / "rooms"
 RAW = ART_ROOT / ".bgate_out" / "art" / "floor-rooms"
 CROP = ART_ROOT / ".bgate_out" / "art" / "floor-crops"
 

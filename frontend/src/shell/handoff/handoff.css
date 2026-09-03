@@ -1,0 +1,98 @@
+/* handoff.css — the "put it in the game" panel (Handoff.tsx).
+   Tokens only: --s-*, --r-*, --surface-*, so the light and orbit themes get
+   this for free. The editors sit at 1400/1401; ask (--z-ask, 9000) must stay
+   above this because this panel asks for confirmation before it writes. */
+.hoff-back{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.62);
+  display:flex;align-items:center;justify-content:center;padding:var(--s-6)}
+/* --solid-1, NOT --surface-1. On the orbit theme the surface ramp is an alpha
+   ladder, correct for a panel on the page's own ground; a modal painted with
+   it has no ground of its own and the dashboard shows straight through. */
+.hoff{width:min(1080px,96vw);max-height:92vh;display:flex;flex-direction:column;
+  background:var(--solid-1,var(--surface-1));border:1px solid var(--line);
+  border-radius:var(--r-lg);box-shadow:var(--shadow-3,0 24px 64px rgba(0,0,0,.5));overflow:hidden}
+.hoff-bar{display:flex;align-items:center;gap:var(--s-4);flex:none;
+  padding:var(--s-4) var(--s-5);background:var(--surface-4);border-bottom:1px solid var(--line)}
+.hoff-bar .t{font-family:var(--mono);font-size:var(--fs-2xs);font-weight:var(--fw-semi);
+  letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text)}
+.hoff-bar .a{margin-left:auto;display:flex;gap:var(--s-3);align-items:center}
+.hoff-asset{display:flex;align-items:center;gap:var(--s-3);min-width:0;
+  font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-2);
+  background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-full);
+  padding:var(--s-2) var(--s-4);max-width:44ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hoff-body{overflow:auto;padding:var(--s-5);display:flex;flex-direction:column;gap:var(--s-5)}
+
+/* The two exits. A segmented control, not tabs and not stages: these are
+   ALTERNATIVES, and numbering them 1/2 would say they are a sequence. */
+.hoff-exits{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-4)}
+.hoff-exit{display:flex;flex-direction:column;gap:var(--s-2);text-align:left;cursor:pointer;
+  padding:var(--s-5);background:var(--surface-2);border:1px solid var(--line);
+  border-left:2px solid var(--line);border-radius:var(--r-md);color:var(--text-2);font:inherit}
+.hoff-exit:hover{border-color:var(--line-strong);background:var(--surface-3)}
+.hoff-exit.on{background:var(--surface-3);border-color:var(--line-strong);
+  border-left-color:var(--accent);color:var(--text)}
+.hoff-exit b{font-size:var(--fs-md);font-weight:var(--fw-semi);color:var(--text);display:flex;
+  align-items:center;gap:var(--s-3)}
+.hoff-exit span{font-size:var(--fs-xs);line-height:var(--lh-snug)}
+.hoff-exit .free{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--good);
+  text-transform:uppercase;letter-spacing:var(--track-label)}
+.hoff-exit.off{opacity:.55}
+
+.hoff-row{display:flex;align-items:center;gap:var(--s-4);flex-wrap:wrap}
+.hoff-col{display:flex;flex-direction:column;gap:var(--s-3)}
+.hoff-lbl{font-family:var(--mono);font-size:var(--fs-3xs);text-transform:uppercase;
+  letter-spacing:var(--track-label);color:var(--text-2)}
+.hoff-note{font-size:var(--fs-xs);color:var(--text-3);line-height:var(--lh-snug)}
+.hoff-warn{font-size:var(--fs-xs);line-height:var(--lh-snug);color:var(--warn);
+  background:var(--warn-soft);border:1px solid var(--warn-line);
+  border-radius:var(--r-xs);padding:var(--s-3) var(--s-4)}
+.hoff-bad{color:var(--bad);background:var(--bad-soft);border-color:var(--bad-line)}
+.hoff-good{color:var(--good);background:var(--good-soft);border-color:var(--good-line)}
+
+.hoff-ta{font-family:var(--mono);font-size:var(--fs-xs);line-height:var(--lh-snug);
+  width:100%;resize:vertical;min-height:190px;white-space:pre-wrap}
+
+/* Scene picker: rows are wells inside the panel, one step DOWN the elevation
+   ladder .spanel established. */
+.hoff-scenes{max-height:230px;overflow:auto;border:1px solid var(--line);
+  border-radius:var(--r-xs);background:var(--bg)}
+.hoff-scene{display:flex;align-items:center;gap:var(--s-4);width:100%;text-align:left;
+  padding:var(--s-3) var(--s-4);background:transparent;border:0;border-bottom:1px solid var(--line);
+  color:var(--text-2);font:inherit;font-size:var(--fs-xs);cursor:pointer}
+.hoff-scene:last-child{border-bottom:0}
+.hoff-scene:hover{background:var(--surface-2);color:var(--text)}
+.hoff-scene.on{background:var(--surface-3);color:var(--text);box-shadow:inset 2px 0 0 var(--accent)}
+.hoff-scene .n{font-weight:var(--fw-semi)}
+.hoff-scene .p{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);
+  margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40ch}
+.hoff-tag{font-family:var(--mono);font-size:var(--fs-3xs);border:1px solid var(--line);
+  border-radius:var(--r-full);padding:0 var(--s-3);color:var(--text-3);flex:none}
+.hoff-tag.on{color:var(--good);border-color:var(--good-line);background:var(--good-soft)}
+
+.hoff-pre{font-family:var(--mono);font-size:var(--fs-2xs);line-height:1.5;white-space:pre-wrap;
+  word-break:break-word;background:var(--bg);border:1px solid var(--line);
+  border-radius:var(--r-xs);padding:var(--s-4);max-height:260px;overflow:auto;margin:0}
+.hoff-pre .add{color:var(--good)}
+.hoff-plan{margin:0;padding-left:var(--s-7);font-size:var(--fs-xs);line-height:1.65;color:var(--text-2)}
+.hoff-plan li::marker{color:var(--accent)}
+
+.hoff-chips{display:flex;flex-wrap:wrap;gap:var(--s-2)}
+.hoff-chip{display:inline-flex;align-items:center;gap:var(--s-2);font-family:var(--mono);
+  font-size:var(--fs-3xs);border:1px solid var(--line);border-radius:var(--r-full);
+  padding:var(--s-1) var(--s-3);color:var(--text-2);background:var(--surface-2)}
+.hoff-chip button{background:none;border:0;color:var(--text-3);cursor:pointer;font:inherit;padding:0 2px}
+.hoff-chip button:hover{color:var(--bad)}
+.hoff-refs{max-height:190px;overflow:auto;border:1px solid var(--line);
+  border-radius:var(--r-xs);background:var(--bg)}
+.hoff-ref{display:flex;gap:var(--s-3);align-items:center;width:100%;text-align:left;padding:var(--s-2) var(--s-4);
+  background:transparent;border:0;border-bottom:1px solid var(--line);color:var(--text-2);
+  font:inherit;font-size:var(--fs-2xs);cursor:pointer}
+.hoff-ref:hover{background:var(--surface-2);color:var(--text)}
+.hoff-ref.on{background:var(--surface-3);color:var(--text)}
+.hoff-ref .k{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);flex:none;min-width:8ch}
+.hoff-ref .u{margin-left:auto;font-size:var(--fs-3xs);color:var(--text-3);flex:none}
+
+.hoff-shot{max-width:100%;border:1px solid var(--line);border-radius:var(--r-xs);display:block}
+.hoff-busy{display:inline-flex;align-items:center;gap:var(--s-3);font-family:var(--mono);
+  font-size:var(--fs-2xs);color:var(--accent)}
+.hoff-steps{display:flex;flex-direction:column;gap:var(--s-3)}
+@media (max-width:760px){.hoff-exits{grid-template-columns:1fr}}

@@ -262,68 +262,76 @@ CRAFTS: dict[str, tuple[str, ...]] = {
 # THE SPINE, BY EXACT NAME, because the alternative is what this fixes.
 #
 # CRAFTS is a PREFIX table, and a tool whose name matched no prefix landed in
-# the shared spine SILENTLY - not because anyone decided it was universal, but
-# because nobody noticed. That is how `sidescroll_generate` (27 parameters) and
-# `godot_deliver_asset` (713 words of docstring) came to ride in the audio
-# seat's context on every turn. The failure mode is invisible by construction:
-# a miscategorised tool still works, it just costs every seat that will never
-# call it.
+# the shared spine SILENTLY. That is how `sidescroll_generate` (27 parameters)
+# and `godot_deliver_asset` (713 words of docstring) came to ride in the audio
+# seat's context on every turn. So membership is DECLARED: exact names, never
+# prefixes. A new tool matching neither a craft nor this table fails
+# `test_modules.py::TestEveryToolIsClassified`.
 #
-# So membership is now DECLARED. Exact names, never prefixes: a prefix here
-# would re-open the same hole one level up, letting the next `godot_*` tool
-# join the spine by accident exactly as these did. A new tool matching neither
-# a craft nor this list fails `test_modules.py::TestEveryToolIsClassified`,
-# and the fix is one line in whichever of the two tables is correct - a
-# decision someone makes, rather than one the string table makes for them.
-SPINE: frozenset[str] = frozenset({
-    "agent_activity", "agent_steer", "agent_steer_all", "ask_human",
-    "asset_lock", "asset_release", "asset_status", "asset_track",
-    "asset_verify", "bgate_doctor", "bible_add", "bible_read",
-    "bible_ref_attach", "bible_ref_detach", "bible_ref_list",
-    "bible_update", "board_digest", "canon_check",
-    "consistency_check", "decision_add", "decision_list",
-    "decision_settle",
-    # THE PRODUCTION STAGE. `greenlight_status` is spine because it is the
-    # answer to "why will my queued item not dispatch" — a seat the stage is
-    # holding has to be able to read the hold, or it concludes the board is
-    # broken and works around it, which is the exact behaviour the stage
-    # exists to stop. The three writers below it are the director's
-    # arbitration and are DIRECTOR_ONLY; graybox_submit is gameplay's move
-    # and is not. encounter_design_set and scale_contract_set are project
-    # canon, filed the way bible_add is.
-    "greenlight_status", "greenlight_thesis_set",
-    "greenlight_graybox_submit", "greenlight_graybox_verdict",
-    "greenlight_advance", "greenlight_waive", "greenlight_supersede",
-    "encounter_design_set", "scale_contract_set",
-    "godot_check_project",
-    "godot_inspect_resource", "godot_run", "godot_scaffold",
-    "godot_screenshot", "godot_status", "godot_templates",
-    "godot_test_run", "handoff_note", "handoff_read",
-    "iteration_record_checks", "iteration_status",
-    # kie_status STAYS SPINE and it is not an oversight. kie is one key over
-    # three capabilities - images, Suno music, Seedance video - so filing it
-    # under `image` would hide it from the audio seat whose music path is
-    # kie-only. A wrongly-hidden tool breaks a workflow silently; 36 words is
-    # not worth that trade.
-    "kie_status",
-    "lore_add", "lore_brief", "lore_fact", "lore_link", "lore_list",
-    "lore_update", "not_building_add", "not_building_list",
-    "pending_decisions", "plan_status", "profile_get", "profile_set",
-    "project_init", "project_select", "project_set_dimension",
-    "project_status", "provider_status", "queue_add",
-    "queue_add_chain", "queue_add_dependency", "queue_claim_next",
-    "queue_complete", "queue_cut_dependency", "queue_get",
-    "queue_list", "queue_next", "queue_reopen", "queue_update",
-    "recall", "ref_list", "ref_pin", "ref_unpin",
-    # The map of this list. Universal by definition - a seat that cannot ask
-    # what its own surface contains is the problem this whole phase is about.
-    "tool_index",
-    "scene_attach_script", "scene_node_add", "scene_outline",
-    "scene_rename_node", "scene_reparent_node", "scene_set_property",
-    "scene_swap_resource", "scene_unwire", "scene_wire", "seat_brief",
-    "seat_can_write", "seat_configure", "seat_list", "seat_notes",
-    "seat_post_note",
-})
+# THE SPINE IS THREE THINGS, NOT ONE. `core` is the board and the seat's own
+# lifelines - every seat holds it. `canon` is the design record - every seat
+# holds it too, because a seat that cannot read the bible builds against a
+# premise it invented. `engine` is scene surgery, engine checks and the
+# iteration ledger: the seats that never touch a .tscn (audio, narrative) do
+# not carry it. godot_run / godot_screenshot / godot_status stay in core: the
+# cheapest evidence there is, and every seat is asked for evidence.
+SPINE_GROUPS: dict[str, frozenset[str]] = {
+    "core": frozenset({
+        "agent_activity", "agent_steer", "agent_steer_all", "ask_human",
+        "asset_lock", "asset_release", "asset_status", "asset_track",
+        "asset_verify", "bgate_doctor", "board_digest",
+        "godot_run", "godot_screenshot", "godot_status",
+        "handoff_note", "handoff_read",
+        # kie_status STAYS CORE: kie is one key over three capabilities, so
+        # filing it under `image` would hide it from the audio seat whose
+        # music path is kie-only.
+        "kie_status",
+        "pending_decisions", "plan_status", "profile_get", "profile_set",
+        "project_init", "project_select", "project_set_dimension",
+        "project_status", "provider_status", "queue_add",
+        "queue_add_chain", "queue_add_dependency", "queue_claim_next",
+        "queue_complete", "queue_cut_dependency", "queue_get",
+        "queue_list", "queue_next", "queue_reopen", "queue_update",
+        "recall", "ref_list", "ref_pin", "ref_unpin",
+        "seat_brief", "seat_can_write", "seat_configure", "seat_list",
+        "seat_notes", "seat_post_note",
+        # The map of this surface, and the way to grow it. Universal by
+        # definition.
+        "tool_index", "tool_unlock",
+    }),
+    "canon": frozenset({
+        "bible_add", "bible_read", "bible_ref_attach", "bible_ref_detach",
+        "bible_ref_list", "bible_update", "canon_check",
+        "consistency_check", "decision_add", "decision_list",
+        "decision_settle",
+        # greenlight_status is the answer to "why will my item not dispatch";
+        # the writers are DIRECTOR_ONLY, graybox_submit is gameplay's move.
+        "greenlight_status", "greenlight_thesis_set",
+        "greenlight_graybox_submit", "greenlight_graybox_verdict",
+        "greenlight_advance", "greenlight_waive", "greenlight_supersede",
+        "encounter_design_set", "scale_contract_set",
+        "lore_add", "lore_brief", "lore_fact", "lore_link", "lore_list",
+        "lore_update", "not_building_add", "not_building_list",
+    }),
+    "engine": frozenset({
+        "godot_check_project", "godot_inspect_resource", "godot_scaffold",
+        "godot_templates", "godot_test_run",
+        "iteration_record_checks", "iteration_status",
+        "scene_attach_script", "scene_node_add", "scene_outline",
+        "scene_rename_node", "scene_reparent_node", "scene_set_property",
+        "scene_swap_resource", "scene_unwire", "scene_wire",
+    }),
+}
+
+SPINE: frozenset[str] = frozenset().union(*SPINE_GROUPS.values())
+
+
+def spine_group(tool_name: str) -> str:
+    """Which spine group holds this tool; '' when it is not spine."""
+    for group, names in SPINE_GROUPS.items():
+        if tool_name in names:
+            return group
+    return ""
 
 
 # THE SPINE IS NOT ONE THING. Splitting it is the only P2 lever that pays
@@ -385,11 +393,18 @@ def unclassified(tool_names) -> list[str]:
     return sorted(n for n in tool_names
                   if n not in SPINE and not crafts_owning(n))
 
-# Which crafts each dispatched seat holds. Absent seats — and the director,
-# whose whole job is reaching across crafts — are unscoped. `brainstorm`
-# belongs to no seat: the room is its own read-only process, and deploying a
-# plan is seatless director work.
+# Which crafts each seat holds. THE DIRECTOR IS A SEAT TOO: the seatless
+# human session used to register all ~250 tools (about 100k tokens of schema
+# before the first turn) because "reaches across crafts" was read as "holds
+# every generation surface". It holds the arbitration and evidence crafts and
+# delegates generation to the seats that practise it; when it genuinely needs
+# a craft in its own hands, `tool_unlock(craft)` registers it on the spot and
+# BGATE_SEAT_TOOLS=all still registers everything at boot. Unknown seats
+# stay unscoped.
+DIRECTOR = "director"
+
 SEAT_CRAFTS: dict[str, tuple[str, ...]] = {
+    DIRECTOR: ("verdicts", "brainstorm", "playtest", "quest", "dialogue"),
     "art": ("image", "three_d"),
     # gameplay gets `verdicts` for traversal_prove and nothing else would be
     # the wrong trade — a seat that builds routes and cannot prove one drives
@@ -398,29 +413,61 @@ SEAT_CRAFTS: dict[str, tuple[str, ...]] = {
     "tech": ("level", "three_d"),
     "audio": ("music", "voice", "sfx"),
     # narrative holds `cinematic` for the storyboard half — scripts and
-    # boards are writing work — not for shot generation, which spends.
-    "narrative": ("dialogue", "quest", "cinematic"),
+    # boards are writing work — not for shot generation, which spends — and
+    # `brainstorm`, because a room with nobody in it was reachable by no seat.
+    "narrative": ("dialogue", "quest", "cinematic", "brainstorm"),
     "qa": ("playtest", "verdicts"),
     "cinematic": ("cinematic", "image"),
 }
+
+# Which SPINE groups each seat holds. `core` and `canon` are universal; only
+# the seats that edit scenes or run the engine's checks carry `engine`.
+_ALL_SPINE = tuple(SPINE_GROUPS)
+SEAT_SPINE: dict[str, tuple[str, ...]] = {
+    DIRECTOR: _ALL_SPINE,
+    "art": _ALL_SPINE,
+    "gameplay": _ALL_SPINE,
+    "tech": _ALL_SPINE,
+    "qa": _ALL_SPINE,
+    "cinematic": _ALL_SPINE,
+    "audio": ("core", "canon"),
+    "narrative": ("core", "canon"),
+}
+
+
+def effective_seat(seat: str) -> str:
+    """The seat a registry is built for: no BGATE_SEAT is the director."""
+    return (seat or "").strip().lower() or DIRECTOR
+
+
+def hidden_crafts(seat: str) -> list[str]:
+    """Crafts this seat does NOT hold — what `tool_unlock` could add."""
+    held = SEAT_CRAFTS.get(effective_seat(seat))
+    if held is None:
+        return []
+    return sorted(c for c in CRAFTS if c not in held)
 
 
 def seat_tool_enabled(tool_name: str, seat: str) -> bool:
     """Does this seat's registry include this tool?
 
-    Fail open three ways on purpose: no seat (a human's session), an unknown
-    seat (a project invented one — its surface is unknowable, so it gets
-    everything), and any tool outside every craft group (the shared spine).
-    A wrongly-hidden tool is a silently broken workflow; a wrongly-shown one
-    costs only context.
+    Fail open two ways on purpose: an unknown seat (a project invented one —
+    its surface is unknowable, so it gets everything), and any tool outside
+    every table. A wrongly-hidden tool is a silently broken workflow; a
+    wrongly-shown one costs only context. The seatless session is the
+    director and is scoped like any seat — `tool_unlock` is its way out.
     """
     if (seat or "").strip() and tool_name in DIRECTOR_ONLY:
         # Before the craft lookup, and gated on ANY seat rather than a known
         # one: dispatch is the fact that matters here, not which chair.
         return False
-    held = SEAT_CRAFTS.get((seat or "").strip().lower())
+    key = effective_seat(seat)
+    held = SEAT_CRAFTS.get(key)
     if held is None:
         return True
+    group = spine_group(tool_name)
+    if group:
+        return group in SEAT_SPINE.get(key, _ALL_SPINE)
     # A TOOL MAY BELONG TO SEVERAL CRAFTS, and it is enabled if the seat holds
     # ANY of them. This used to return on the first craft whose prefix matched,
     # so a shared tool resolved to whichever craft happened to be declared

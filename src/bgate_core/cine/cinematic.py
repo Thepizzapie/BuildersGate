@@ -2928,7 +2928,7 @@ def _register(root: str, stem: str, shot: dict, seq: dict, result: dict, *,
             "source_url_expires_at": result.get("expires_at") or "",
             "credits_consumed": result.get("credits_consumed"),
             "credits_source": result.get("credits_source") or "",
-            "estimated_usd": result.get("estimated_usd"),
+            "usd": result.get("usd"),
             "accounted": bool(result.get("accounted")),
             "preview": assets.normalize_path(root, result["path"]),
         })

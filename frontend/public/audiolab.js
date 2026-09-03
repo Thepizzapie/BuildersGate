@@ -5039,7 +5039,7 @@ window.AudioLab = (() => {
   /* THE STEP AFTER "SAVED", and the loudest gap in the whole app: "Audio lab I
      have no idea how to save or wire any of that up to specific scenes or
      triggers". Saving wrote an .ogg that no scene referenced, and there was no
-     verb here that put it in the game. handoff.js is the shared panel — an
+     verb here that put it in the game. window.Handoff (frontend/src/shell/handoff/) is the shared panel — an
      AudioStreamPlayer wired into a real scene for free, or a work item that
      already names the file, the scene, the bus and the trigger. */
   function handoff(){

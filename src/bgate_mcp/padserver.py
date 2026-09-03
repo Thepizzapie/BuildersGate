@@ -237,7 +237,16 @@ def _rev(scene: Any) -> str:
     process, and a session reopened next week.
     """
     blob = json.dumps(scene or {}, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+    # SHA-256, and `usedforsecurity=False` to say what this actually is: a
+    # change marker, like an ETag. Nothing authenticates on it and nothing
+    # secret goes into it — the flag alone did not settle it, and arguing with
+    # a scanner over a digest nobody profiled is worse than paying for the
+    # stronger one. The value is truncated either way, and both sides of the
+    # comparison are recomputed from current bytes (see pad_draw), so the only
+    # effect of the change is that a browser holding a rev from before it gets
+    # one refusal and reloads.
+    return hashlib.sha256(blob.encode("utf-8"),
+                          usedforsecurity=False).hexdigest()[:12]
 
 
 def _fail(exc: Exception) -> dict:

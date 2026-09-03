@@ -296,7 +296,7 @@ async def test_image_sprites_refuses_past_the_per_run_ceiling(wired, no_paid_cal
                      name="tommy")
 
     assert got["ok"] is False and got["stage"] == "spend_gate"
-    assert got["estimated_usd"] > 0.05 and got["ceiling_usd"] == 0.05
+    assert got["usd"] > 0.05 and got["ceiling_usd"] == 0.05
     assert "ceiling" in got["error"]
 
 

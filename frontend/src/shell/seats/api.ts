@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { readJSON } from "../../bridge";
-import { usePoll } from "../../hooks";
+import { useEvents, FALLBACK_MS } from "../../hooks";
 
 /* seats/api.ts — the reads every seat workspace shares.
  *
@@ -65,7 +65,10 @@ export function useJSON<T extends Record<string, unknown>>(
   /* `path` as the poll key: a changed URL fetches NOW rather than on the next
      tick. See usePoll — this was the bug that made every picker on every seat
      show the previously-selected thing for up to a minute. */
-  usePoll(refresh, ms, enabled && !!path, path);
+  /* `ms` is now the FLOOR of the fallback timer: the read happens when an
+     event arrives, and the timer only covers what no event describes. */
+  useEvents(refresh, { enabled: enabled && !!path, key: path,
+                       fallbackMs: Math.max(ms, FALLBACK_MS) });
   /* `__refresh` RIDES ON THE RESULT, the same way `__error` does.
    *
    * Every panel that writes needs the read to happen NOW rather than on the

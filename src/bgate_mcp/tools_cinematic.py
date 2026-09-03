@@ -8,6 +8,10 @@ BOTTOM - by then its globals all exist, which is what makes the
 circular import legal - so server.<tool> still answers for every
 caller and test.
 """
+from typing import Annotated
+
+from pydantic import Field
+
 from bgate_mcp.server import (  # noqa: F401
     Optional, _Path, _gate_images, _log,
     _provider_gate, _root, _tool, _work_item_id,
@@ -45,102 +49,24 @@ def cinematic_options() -> dict:
 
 
 @_tool
-def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
-                   style_note: str = "", style_refs: Optional[list] = None,
-                   locations: Optional[list] = None,
-                   model: str = "", aspect_ratio: str = "16:9",
-                   resolution: str = "720p", audio_track: str = "",
-                   audio_gain_db: float = 0.0, fade_in: float = 0.0,
-                   fade_out: float = 0.0) -> dict:
+def cinematic_plan(name: Annotated[str, Field(description='Sequence name; the row every shot, estimate and assembly refers to.')], shots: Annotated[list, Field(description='Shot objects in cut order: action (required), camera, shot_size, location, dialogue, duration, first_frame, last_frame, refs, transition, transition_s, vo.')], logline: Annotated[str, Field(description='One line on what the cutscene is, for humans reading the sequence.')] = "", style: Annotated[str, Field(description='A preset KEY (anime, noir, comic, painterly, pixel, stop_motion, cg_animated, watercolor, vhs, silhouette, live_action) or free prose; unlisted words are prose.')] = "",
+                   style_note: Annotated[str, Field(description="The project's own wording, appended to the preset.")] = "", style_refs: Annotated[Optional[list], Field(description='Repo-relative paths to frames carrying the look; these beat prose and hold across generations.')] = None,
+                   locations: Annotated[Optional[list], Field(description='[{slug, description, label?, plates?}]; each shot names one and its description is injected into every shot filmed there.')] = None,
+                   model: Annotated[str, Field(description='Video model for the WHOLE sequence (cinematic_options lists them); changing it resets generated shots.')] = "", aspect_ratio: Annotated[str, Field(description='Frame shape every shot is bought at. Default 16:9.')] = "16:9",
+                   resolution: Annotated[str, Field(description='Resolution every shot is bought at. Default 720p.')] = "720p", audio_track: Annotated[str, Field(description='Repo-relative path to the music bed laid under the whole cutscene; without it the cut is silent.')] = "",
+                   audio_gain_db: Annotated[float, Field(description='Trim on the bed, in dB (-6 is a usual start under dialogue). Default 0.')] = 0.0, fade_in: Annotated[float, Field(description='Seconds to fade picture and sound in at the start. Default 0.')] = 0.0,
+                   fade_out: Annotated[float, Field(description='Seconds to fade picture and sound out at the end. Default 0.')] = 0.0) -> dict:
     """Write a cutscene's shot list. SPENDS NOTHING - do this first, always.
 
-    `shots` is a list of objects, in cut order. Each takes:
-      action       REQUIRED. What happens in this shot.
-      camera       the MOVE and the prose ("slow push in", "low angle, handheld")
-      shot_size    the framing, from a fixed list: establishing, wide, full,
-                   medium, medium_close, close, extreme_close, over_shoulder,
-                   insert, cutaway. Fixed so coverage can be COUNTED.
-      location     the slug of one of this sequence's `locations`
-      dialogue     a spoken line, quoted into the prompt as speech
-      duration     4-15 seconds, default 5. Write 5-10; past that expect drift.
-      first_frame  a repo-relative path to an APPROVED still to open on
-      last_frame   a still to land on. For a deliberate match cut ONLY.
-      refs         repo-relative paths to reference stills for identity
-      transition   how the PREVIOUS shot becomes this one: cut (default, free),
-                   fade, dissolve, wipe. cinematic_transitions explains each.
-      transition_s the handle, default 0.5s. A transition overlaps both shots,
-                   so the cut is SHORTER than the sum of its durations.
-      vo           a voice-over clip for this shot
-
-    SOUND. audio_track is a repo-relative path to the bed laid under the whole
-    cutscene - a track the audio seat kept, or a hand mix. Without it the cut is
-    SILENT: models generate audio baked into the picture, which cannot be
-    separated, ducked or localised, so this pipeline keeps the picture clean and
-    scores it here. audio_gain_db trims the bed under dialogue (-6 is a usual
-    starting point); fade_in/fade_out fade both picture and sound.
-
-    DIALOGUE BECOMES SUBTITLES automatically. Timing is derived from the shot
-    durations and the transitions between them at assemble time, and written as
-    both .srt (what a translator opens) and .json (what the delivered scene
-    reads). Nothing stores caption timing, so it cannot drift from the shot list.
-
-    STYLE - "cutscenes in whatever style" - has three levers, weakest first,
-    and all three are applied to EVERY shot automatically:
-      style       a preset KEY (cinematic_options lists them: anime, noir,
-                  comic, painterly, pixel, stop_motion, cg_animated, watercolor,
-                  vhs, silhouette, live_action) OR free prose. An unlisted word
-                  is treated as prose rather than refused - whatever style means
-                  whatever style.
-      style_note  the project's own wording, appended to the preset
-      style_refs  repo-relative paths to frames carrying the look. These BEAT
-                  prose and are the only lever that holds across eight
-                  generations.
-    Naming no style is itself a choice, and a silent one: the model falls back
-    to its own house look, which differs per model and per version. plan() says
-    so rather than letting it pass.
-
-    THE SET IS THE THIRD RAIL AND IT IS THE ONE THAT WAS MISSING. `locations` is
-    a list of objects - slug, description, optional label and plates (repo-
-    relative images of the set) - and each shot names one. That description is
-    injected into EVERY shot filmed there, identically, in a fixed position.
-    Without it the room lives inside each shot's own action prose, and four
-    differently-worded descriptions of one office are four different offices:
-    measured on real sequences, cast and style held across every shot and the
-    SET drifted between all of them.
-
-    GENERATE GROUPED BY LOCATION, NOT DOWN THE LIST. Two shots of one set agree
-    with each other less the further apart they were generated, so buy a
-    location's shots together - `generation_order` in the returned sequence is
-    that order. The CUT is unaffected: cinematic_assemble joins by shot index.
-
-    COVER THE BEATS TIGHT. Wides are both the flattest editorial choice and the
-    most drift-prone thing to buy, because a wide shows the whole set and
-    therefore shows every way the model disagreed with itself about it. A
-    close-up contains almost no set to be inconsistent about. This returns
-    advisory warnings when nothing is tighter than medium, when three shots in a
-    row are the same size, and when a multi-location sequence establishes none
-    of them.
-
-    model picks which video model buys this sequence (cinematic_options lists
-    what is registered and the exact ranges each accepts). It lives on the
-    SEQUENCE because a cutscene generated half on one model does not cut
-    together. Changing style or model resets already-generated shots - a clip
-    rendered in the old look is not a rendering of the new one - and that is
-    reported, because it means spending money again.
-
-    ANCHOR EVERY SHOT. A text-only sequence invents the cast fresh each
-    generation and no two shots agree on a face. Generate the keyframes through
-    the art path first (image_generate conditioned on the pinned character), get
-    them approved, then name them here. This returns a warning when no shot is
-    anchored, and it is the most expensive warning in the product to ignore.
-
-    NEVER point last_frame/first_frame at the previous shot's output. That is
-    the art seat's rule 2 (chains decay) with a worse decay constant - a video
-    model's final frame is the most drifted image it produced AND a lossy
-    intermediate. Every shot anchors on the same approved stills.
-
-    Re-running this to edit the list PRESERVES shots whose action text did not
-    change, along with the clips already paid for; only changed shots reset.
+    `shots` in cut order, each {action (REQUIRED), camera, shot_size (a fixed
+    list), location (a slug from `locations`), dialogue (becomes subtitles),
+    duration (4-15s, default 5), first_frame, last_frame (match cuts ONLY),
+    refs, transition (cut | fade | dissolve | wipe), transition_s, vo}.
+    Without audio_track the cut is SILENT. Name a style or the model's house
+    look applies. Generate grouped by location (`generation_order`). ANCHOR
+    EVERY SHOT on approved stills; never on the previous shot's output.
+    Changing style or model resets generated shots.
+    Full notes: docs/tools.md#cinematic_plan
     """
     from bgate_core.cine import cinematic as _cine
 
@@ -178,19 +104,13 @@ def cinematic_generate_shot(name: str, idx: int, model: str = "",
                             timeout: float = 1800.0) -> dict:
     """Buy ONE shot of a planned sequence. Costs real credits. Runs in minutes.
 
-    ONE SHOT PER CALL, DELIBERATELY. There is no generate-the-whole-sequence
-    tool: the thing a human has to do between shots is LOOK at the clip, and a
-    loop is built to skip exactly that. Generate, watch, keep or re-generate,
-    then move to the next index.
-
-    generate_audio is FALSE by default and that is a considered default, not an
-    oversight. Model audio is baked into the clip and cannot be separated
-    afterwards, so it fights the score, cannot be ducked under dialogue and
-    cannot be localised. The picture is this seat's; the sound is the audio
-    seat's, laid over the top where it stays editable.
-
-    Local conditioning frames are uploaded to the provider automatically. Both
-    the budget and the encoder are checked BEFORE anything is charged.
+    ONE SHOT PER CALL, DELIBERATELY: look at the clip, keep or re-generate,
+    then move to the next index. generate_audio is FALSE by default - model
+    audio is baked into the clip and cannot be ducked, separated or
+    localised; the audio seat scores the cut. Local conditioning frames are
+    uploaded automatically. Budget and encoder are checked BEFORE anything
+    is charged.
+    Full notes: docs/tools.md#cinematic_generate_shot
     """
     from bgate_core.cine import cinematic as _cine
 
@@ -216,14 +136,12 @@ def cinematic_generate_shot(name: str, idx: int, model: str = "",
 def cinematic_assemble(name: str, quality: int = 6) -> dict:
     """Join a sequence's kept shots, in order, into ONE .ogv the game can load.
 
-    Refuses while any shot that is not marked 'cut' is unkept - assembling
-    around a missing beat ships a story that does not make sense rather than an
-    error. It also refuses a set of shots that are not all the same size,
-    because ffmpeg joins those into a broken file and reports SUCCESS.
-
-    The result is registered as a candidate like any other. WATCH THE WHOLE CUT
-    before keeping it: shots were judged alone, and a cut is judged as a cut - the light jumping, a character swapping hands, the camera crossing the line
-    are all invisible shot by shot.
+    Refuses while any shot not marked 'cut' is unkept, and refuses shots that
+    are not all the same size (ffmpeg joins those into a broken file and
+    reports success). The result is registered as a candidate. WATCH THE
+    WHOLE CUT before keeping it - the light jumping and the camera crossing
+    the line are invisible shot by shot.
+    Full notes: docs/tools.md#cinematic_assemble
     """
     from bgate_core.cine import cinematic as _cine
 
@@ -253,24 +171,13 @@ def cinematic_keep(artifact_id: int, note: str = "", quality: int = 6,
                    install_to_engine: Optional[bool] = None) -> dict:
     """Approve a take, and put it in the engine project if the engine loads it.
 
-    WHAT GETS INSTALLED DEPENDS ON WHAT IT IS. An assembled CUT is transcoded to
-    Ogg Theora and copied into the game - that is the asset the game plays. A
-    SHOT is approved and stays in .bgate_out, because nothing references it: the
-    game loads the cut, and cinematic_assemble reads the candidates directly.
-    Installing every shot meant a Theora encode each and, at 1080p, tens of
-    megabytes of files nobody asked for.
-
-    THE TRANSCODE IS NOT A COPY, and that is why this is not music_keep with a
-    different noun. Godot plays Ogg Theora and only Ogg Theora; the .mp4 every
-    model returns produces NO IMPORT ERROR, so copying one in leaves a scene
-    that runs perfectly with a blank rectangle where the cutscene was. The
-    engine documentation's own settings are used (-q:v 6, keyframe interval 64),
-    and the conversion happens BEFORE the approval so a failure can never leave
-    a row saying approved over a game with no file.
-
-    quality is 1-10, 6 is the documented baseline; drop to 5 for 1440p+.
-    install_to_engine overrides the default either way - pass true for a single
-    clip used on its own, as an attract-mode loop or a sting with no cut.
+    An assembled CUT is transcoded to Ogg Theora (the only format Godot
+    plays; an .mp4 imports with NO error and plays a blank rectangle) and
+    copied into the game BEFORE the approval. A SHOT is approved and stays in
+    .bgate_out. quality is 1-10, 6 the documented baseline (5 for 1440p+).
+    install_to_engine overrides the default - true for a single clip used on
+    its own.
+    Full notes: docs/tools.md#cinematic_keep
     """
     from bgate_core.cine import cinematic as _cine
 
@@ -310,37 +217,24 @@ def cinematic_discard(artifact_id: int, note: str = "") -> dict:
 
 
 @_tool
-def cinematic_register_model(name: str, model: str, intent: dict,
-                             label: str = "", note: str = "",
-                             enums: Optional[dict] = None,
-                             ranges: Optional[dict] = None,
-                             caps: Optional[dict] = None,
-                             intent_values: Optional[dict] = None,
-                             intent_scale: Optional[dict] = None,
-                             credits: Optional[dict] = None) -> dict:
+def cinematic_register_model(name: Annotated[str, Field(description='What to call the model here, e.g. "kling-3".')], model: Annotated[str, Field(description='The LITERAL id kie wants in the top-level `model` field.')], intent: Annotated[dict, Field(description="Map of seconds, shape, quality, first_frame, last_frame, refs, audio to this model's own field names; omit what it cannot do.")],
+                             label: Annotated[str, Field(description='Human-readable name shown in listings.')] = "", note: Annotated[str, Field(description='Free text about the model or where its page is.')] = "",
+                             enums: Annotated[Optional[dict], Field(description="Allowed values per field, keyed by the model's own field names.")] = None,
+                             ranges: Annotated[Optional[dict], Field(description="Numeric [min, max] per field, keyed by the model's own field names.")] = None,
+                             caps: Annotated[Optional[dict], Field(description="Hard limits per field (e.g. max reference count), keyed by the model's own field names.")] = None,
+                             intent_values: Annotated[Optional[dict], Field(description='{intent: {canonical: this model\'s spelling}}, e.g. shape 16:9 -> "landscape".')] = None,
+                             intent_scale: Annotated[Optional[dict], Field(description='{intent: multiplier}, e.g. seconds -> n_frames.')] = None,
+                             credits: Annotated[Optional[dict], Field(description='{"per_second", "per_call"} credit rates for the estimate; beats the built-in table, loses to BGATE_KIE_VIDEO_CREDITS.')] = None) -> dict:
     """Add a video model from a reference page you have READ. Spends nothing.
 
-    kie's market carries dozens of video models; this product ships only the
-    ones whose id and schema were verified against their own documentation,
-    because a guessed id is a 404 after a round trip and a guessed parameter
-    name is a setting you paid for and did not get. That rule is not relaxed
-    here - what this changes is WHO does the reading, so a user with the Kling
-    or Sora page open is not blocked on a release.
-
-      name    what to call it here, e.g. "kling-3"
-      model   the LITERAL id kie wants in the top-level `model` field
-      intent  what this model calls each of: seconds, shape, quality,
-              first_frame, last_frame, refs, audio. Omit any it cannot do - asking for one it has no field for is then refused before the
-              spend instead of being silently dropped.
-
-    Optional, and worth filling in because they are checked before money moves:
-      enums / ranges / caps   this model's own limits, keyed by ITS field names
-      intent_values           {intent: {canonical: this model's spelling}} - e.g. shape 16:9 -> "landscape"
-      intent_scale            {intent: multiplier} - e.g. seconds -> n_frames
-
-    Registered models are stamped source="registered" everywhere they are
-    listed, so nothing confuses your entry for a verified one. The registration
-    lives for the life of this server process.
+    name is what to call it here; model is the LITERAL id kie wants; intent
+    maps each of seconds, shape, quality, first_frame, last_frame, refs, audio
+    to this model's field name - omit any it cannot do and asking for it is
+    refused before the spend. Optional and checked before money moves: enums
+    / ranges / caps (keyed by ITS field names), intent_values ({intent:
+    {canonical: spelling}}), intent_scale ({intent: multiplier}). Stamped
+    source="registered"; lives for this server process.
+    Full notes: docs/tools.md#cinematic_register_model
     """
     from bgate_adapters import kie
 
@@ -355,19 +249,12 @@ def cinematic_register_model(name: str, model: str, intent: dict,
 def cinematic_estimate(name: str, model: str = "") -> dict:
     """What this sequence will cost to buy, before buying any of it. Free.
 
-    Read this between cinematic_plan and the first cinematic_generate_shot. A
-    shot list is the only artifact here that can be reviewed for nothing, and
-    an eight-shot sequence is eight paid generations - the argument about
-    whether shot 3 earns its place is much easier with the bill next to it.
-
-    AN UNKNOWN PRICE IS REPORTED AS UNKNOWN, NEVER AS ZERO. kie publishes credit
-    bands rather than per-model prices, so shots on an unrated model come back
-    in `unknown_shots` and are left OUT of the total; `usd` is null, not 0.0. A
-    total that silently omitted them would read as "this is cheap".
-
-    The numbers are an upper bound derived from kie's published band, not read
-    off an invoice. Set BGATE_KIE_USD_PER_CREDIT once you have real figures, or
-    BGATE_KIE_VIDEO_CREDITS to correct a model's rate without a code change.
+    Read it between cinematic_plan and the first cinematic_generate_shot. AN
+    UNKNOWN PRICE IS REPORTED AS UNKNOWN, NEVER AS ZERO: shots on an unrated
+    model land in `unknown_shots` and `usd` is null. The numbers are an upper
+    bound from kie's published band; set BGATE_KIE_USD_PER_CREDIT or
+    BGATE_KIE_VIDEO_CREDITS for real figures.
+    Full notes: docs/tools.md#cinematic_estimate
     """
     from bgate_core.cine import cinematic as _cine
 
@@ -380,25 +267,14 @@ def cinematic_stuck_shots(older_than_s: int = 0, poll: bool = True) -> dict:
     """Find generations that were PAID FOR and never collected. This is the tool
     that finds money.
 
-    A generation is charged at submit. Everything after that - the poll loop,
-    the download, this process surviving the ten minutes it takes - can fail
-    while the provider sits on a finished clip you have already been billed for.
-    Nothing surfaces that on its own; a shot row simply stays at 'generating'
-    forever and looks like work in flight.
-
-    Run this after any dashboard restart, any killed agent, and before planning
-    a re-generation of a shot that "failed". The classification to act on is
-    `recoverable`: the clip is finished and waiting, and cinematic_recover_shot
-    collects it WITHOUT paying again. Pressing generate instead pays twice.
-
-      older_than_s  how stale a 'generating' row must be to be suspicious.
-                    Defaults to the module's own threshold.
-      poll          ask the provider about each one. False answers from the
-                    database alone and never leaves the machine.
-
-    `lost` means the row has no task id at all - the submit failed before it
-    returned one, so there is probably nothing to collect and nothing was
-    charged. `unknown` means the provider was asked and did not say.
+    A generation is charged at submit; a row stuck at 'generating' may be a
+    finished clip you already own. Run after any dashboard restart or killed
+    agent, and before re-generating a "failed" shot. Act on `recoverable`
+    with cinematic_recover_shot (pays nothing); `lost` has no task id and
+    probably no charge; `unknown` means the provider did not say.
+    older_than_s: how stale counts as suspicious. poll=False never leaves the
+    machine.
+    Full notes: docs/tools.md#cinematic_stuck_shots
     """
     from bgate_core.cine import cinematic as _cine
 
@@ -413,20 +289,13 @@ def cinematic_probe_model(name: str, timeout: float = 30.0) -> dict:
     """Ask kie whether a registered model id actually exists. Opt-in, and READ
     THE CAVEAT.
 
-    cinematic_register_model takes a model id on trust - kie publishes no
-    catalogue endpoint, so a typo passes registration cleanly and surfaces as a
-    PAID 404 at generation time. This narrows that window by submitting a
-    deliberately empty request and reading which error comes back: 404 means the
-    id is wrong, 422 means the id resolved and only the arguments were missing.
-
-    IT IS INFERENCE, NOT A CONTRACT. The 404-vs-422 split is read off kie's
-    error table, not documented behaviour, and the case it cannot rule out is a
-    model that ACCEPTS an empty input and starts a billable job. If that happens
-    the returned task id is reported loudly rather than swallowed - treat it as
-    a real charge and collect it with cinematic_recover_shot.
-
-    Registered models are marked unverified until this says otherwise. An
-    unverified model is not a broken one; it is one nobody has confirmed.
+    Submits a deliberately empty request: 404 means the id is wrong, 422 means
+    it resolved. IT IS INFERENCE, NOT A CONTRACT - a model that ACCEPTS an
+    empty input may start a billable job; a returned task id is reported
+    loudly, so treat it as a real charge and collect it with
+    cinematic_recover_shot. Registered models stay unverified until this
+    says otherwise.
+    Full notes: docs/tools.md#cinematic_probe_model
     """
     from bgate_adapters import kie
 
@@ -511,18 +380,11 @@ def cinematic_transitions() -> dict:
 def cinematic_continuity(name: str) -> dict:
     """Do this sequence's shots actually CUT TOGETHER? Costs nothing but time.
 
-    The measured half of the seat's "watch it twice" rule. It extracts the real
-    frames either side of every join and compares overall brightness and colour
-    palette - on the pixels, never on the prompts, because the whole reason a
-    cut fails is that the model did something other than what was asked.
-
-    IT CANNOT TELL YOU THE CUTSCENE IS GOOD and does not try. A cut from a
-    cellar to a snowfield SHOULD jump in brightness. Every finding says what it
-    measured and leaves the verdict to a human.
-
-    Run it BEFORE assembling: the fix for a real mismatch is re-generating a
-    shot, which is a decision to make before paying for the assembly - or
-    softening the join with a dissolve, which is what a dissolve is for.
+    Extracts the real frames either side of every join and compares
+    brightness and palette on the pixels, never the prompts. IT CANNOT TELL
+    YOU THE CUTSCENE IS GOOD - a cellar-to-snowfield cut should jump; every
+    finding leaves the verdict to a human. Run it BEFORE assembling.
+    Full notes: docs/tools.md#cinematic_continuity
     """
     from bgate_core.cine import cinematic as _cine
 
@@ -549,41 +411,13 @@ def cinematic_animatic(name: str, source: str = "auto", fps: int = 12,
     """Cut the storyboard panels together at their planned timings. FREE - calls
     no model and spends nothing.
 
-    CALL THIS BEFORE cinematic_generate_shot. EVERY TIME. Between planning a
-    sequence and buying it there was nothing at all, which means the first human
-    to see the EDIT saw it after every second of it had been paid for. By then
-    the only cheap change left is deleting shots. This is the stage that makes
-    the scene wrong in a place where being wrong is free.
-
-    That is not a nicety borrowed from film school, it is the arithmetic. Hand
-    animation runs at about one finished second per animator-hour, which is why
-    nobody animates an unproven edit - they cut the boards together first and fix
-    it there. Generated video costs MORE per second than that, and this pipeline
-    had no previs at all.
-
-    WHAT COMES BACK, AND WHAT TO DO WITH IT:
-      average_shot_s   read this first. Modern films sit at 4-6s. Under 4 and
-                       the cut is a montage nobody follows; over 6 and it is a
-                       slideshow of stills. It is one number and it tells you
-                       whether the edit reads.
-      runtime_s / measured_s   what the shot list adds up to, and what the file
-                       actually is. They disagree only when something is wrong,
-                       and captions are timed off the first one.
-      placeholders     beats with no still yet. They are rendered as slate cards
-                       held for their full duration, never skipped - a gap in
-                       the edit is information, and a reel that quietly ran
-                       short would read as finished.
-      warnings         untimed shots, two consecutive shots describing the same
-                       beat, pacing outside the window. All advisory.
-
-    `source` is "auto" (the planned sequence if there is one, else the board),
-    "sequence" or "board". The sequence is preferred because that is the row
-    money is spent against and the only one carrying transitions.
-
-    The reel is an .mp4 under design/cinematics/animatics/ - H.264, not the
-    Theora the shipped cutscene uses, because this is watched by a person in a
-    browser and never by the engine. The panels come back as images so you can
-    look at the edit rather than reading a runtime.
+    CALL THIS BEFORE cinematic_generate_shot. EVERY TIME. Read
+    `average_shot_s` first (films sit at 4-6s), then runtime_s / measured_s,
+    `placeholders` (beats with no still, held as slate cards) and `warnings`.
+    `source`: "auto" (the planned sequence if any, else the board),
+    "sequence" or "board". The reel is an H.264 .mp4 under
+    design/cinematics/animatics/; the panels come back as images.
+    Full notes: docs/tools.md#cinematic_animatic
     """
     from bgate_core.cine import animatic as _anim
 
@@ -595,31 +429,12 @@ def cinematic_animatic(name: str, source: str = "auto", fps: int = 12,
 def cinematic_deliver(name: str, force: bool = False) -> dict:
     """Build the Godot scene that PLAYS this cutscene. The last mile.
 
-    Keeping a cut installs an .ogv and prints a res:// path, and that is where
-    this pipeline used to stop - leaving a designer to hand-author a
-    VideoStreamPlayer, wire a skip input, drive the captions and work out how to
-    hand control back to gameplay. This writes all four.
-
-    What you get, beside the .ogv in the engine project:
-      <name>.tscn   a CanvasLayer at layer 100, so it draws over whatever is
-                    already rendering - 2D, 3D or the HUD
-      <name>.gd     plays, draws captions off the video's own clock, skips on
-                    ui_cancel/ui_accept, and emits `finished(skipped: bool)`
-      <name>.srt    the caption file a translator opens
-      <name>_captions.json  what the script reads at runtime
-
-    The contract is ONE signal. `finished` fires whether the video ended or the
-    player skipped, because every caller wants the same thing next and branching
-    on which is how a skipped cutscene leaves a game on a black screen.
-
-    Gameplay calls it with three lines:
-        var cut := preload("res://.../<name>.tscn").instantiate()
-        add_child(cut)
-        await cut.finished
-
-    IT WILL NOT OVERWRITE A SCRIPT YOU HAVE EDITED. The .gd is meant to be
-    changed - a project will want its own skip input or a letterbox - so
-    delivery detects a hand-edited file and keeps it. Pass force to replace it.
+    Writes <name>.tscn (a CanvasLayer at layer 100), <name>.gd (plays, draws
+    captions, skips on ui_cancel/ui_accept, emits `finished(skipped: bool)`),
+    <name>.srt and <name>_captions.json beside the kept .ogv. Gameplay
+    instantiates it, add_child, `await cut.finished`. IT WILL NOT OVERWRITE
+    A SCRIPT YOU HAVE EDITED; pass force to replace it.
+    Full notes: docs/tools.md#cinematic_deliver
     """
     from bgate_core.cine import cinematic as _cine
 
@@ -655,38 +470,21 @@ def _frames_images(result: dict) -> list[str]:
 
 
 @_tool(images=_frames_images)
-def storyboard_auto(name: str, premise: str = "", frames: int = 6,
-                    style: str = "", style_note: str = "",
-                    cast_refs: Optional[list] = None,
-                    aspect_ratio: str = "16:9", quality: str = "low",
-                    promote_to: str = "", model: str = "") -> dict:
+def storyboard_auto(name: Annotated[str, Field(description='Board name; also the sequence name when promoted.')], premise: Annotated[str, Field(description="One or two sentences on what happens; empty reuses the board's existing beats.")] = "", frames: Annotated[int, Field(description='How many beats to break the premise into. Default 6.')] = 6,
+                    style: Annotated[str, Field(description="A cinematic_styles preset key or free prose; empty applies the bible's art direction only.")] = "", style_note: Annotated[str, Field(description="The project's own wording, appended to the style.")] = "",
+                    cast_refs: Annotated[Optional[list], Field(description='Pinned reference names for who is in the scene; empty derives a cast from character pins, then lore.')] = None,
+                    aspect_ratio: Annotated[str, Field(description='Frame shape for every panel. Default 16:9.')] = "16:9", quality: Annotated[str, Field(description='low | medium | high per frame. Default low - a board is read at a glance.')] = "low",
+                    promote_to: Annotated[str, Field(description='Sequence name to write a shot list into when the board is done; empty promotes nothing.')] = "", model: Annotated[str, Field(description='Image model id for the frames; "" takes the provider default.')] = "") -> dict:
     """Premise in, finished storyboard out, in ONE call. START HERE.
 
-    THIS IS THE DEFAULT DOOR FOR "MAKE ME A CUTSCENE" and the other storyboard
-    tools are its parts, for when you need to change one thing. Do not hand-run
-    write_script then six frame_generates then promote: that is this tool with
-    five extra places to stop, and stopping to ask about something the brief
-    already answered is the failure mode this exists to remove.
-
-    WHAT IT DOES WITHOUT ASKING:
-      * No cast pinned? It derives one - character pins first, canon lore
-        entities second - and conditions every frame on it, so the look holds
-        across the board. An underspecified cast is a reason to go looking, not
-        a reason to stop and file a note.
-      * No style? The project bible's locked art direction is appended at the
-        generation door regardless, so the game's look applies anyway.
-      * No beats? It writes them from the premise for a fraction of a cent.
-      * A frame fails? The rest still draw. You get a partial board and a named
-        list of what failed, which is worth more than a refusal.
-
-    COST: images only, and cheap - `quality="low"` is the default here because
-    a board is read at a glance. Six frames is a few tens of cents. It does NOT
-    buy video: promote_to writes the shot list, which is free, and
-    cinematic_generate_shot spends per shot as a separate decision.
-
-    Re-running is safe and does not re-buy: a frame that already has an image is
-    kept and approved rather than redrawn, and a board that already has beats
-    keeps them rather than having a model overwrite somebody's edits.
+    THE DEFAULT DOOR FOR "MAKE ME A CUTSCENE"; the other storyboard tools are
+    its parts. Without asking: derives a cast (character pins, then canon
+    lore), applies the bible's locked art direction, writes beats from the
+    premise, and draws every frame - a failed frame does not stop the rest.
+    Images only, `quality="low"` by default; it buys NO video (promote_to
+    writes the shot list for free). Re-running keeps existing images and
+    beats.
+    Full notes: docs/tools.md#storyboard_auto
     """
     from bgate_core.cine import storyboard as _sb
 
@@ -710,27 +508,15 @@ def storyboard_write_script(name: str, premise: str, frames: int = 6,
                             characters: str = "",
                             aspect_ratio: str = "16:9") -> dict:
     """Turn a premise into a script and a beat-per-frame board. Costs a fraction
-    of a cent. START HERE when you know what the scene is ABOUT but not yet what
-    is in it.
+    of a cent. START HERE when you know what the scene is ABOUT but not yet
+    what is in it.
 
-    This writes prose and beats. It draws NOTHING and buys no video. The board it
-    creates is a plan you can argue with, reorder and throw away for free, which
-    is the entire reason it exists in front of cinematic_plan.
-
-      premise     one or two sentences. What happens in this scene.
-      frames      how many beats to break it into, 1-24. Default 6.
-      cast_refs   PINNED REFERENCE NAMES for who is in this scene. Every one
-                  contributes its stored profile so the script is written about
-                  THIS project's characters rather than plausible strangers.
-                  Pin them with ref_pin first; ref_list shows what exists.
-      characters  anything about the cast the pins do not say
-      style       a cinematic_styles preset key, or free prose
-
-    THE CAST IS THE POINT. A script written without it invents people nobody has
-    drawn, and every frame then anchors on a stranger. Pass cast_refs.
-
-    Re-running replaces the board's beats. Frames that already have an image keep
-    it at the same index, so re-writing the script does not throw away drawings.
+    Writes prose and beats; draws NOTHING and buys no video. frames: 1-24
+    beats, default 6. cast_refs: PINNED REFERENCE NAMES - THE CAST IS THE
+    POINT, a script without it invents strangers. characters: anything the
+    pins do not say. style: a preset key or prose. Re-running replaces the
+    beats; frames that already have an image keep it at the same index.
+    Full notes: docs/tools.md#storyboard_write_script
     """
     from bgate_core.cine import storyboard as _sb
 
@@ -741,30 +527,20 @@ def storyboard_write_script(name: str, premise: str, frames: int = 6,
 
 
 @_tool
-def storyboard_plan(name: str, frames: Optional[list] = None, premise: str = "",
-                    logline: str = "", style: str = "", style_note: str = "",
-                    style_refs: Optional[list] = None,
-                    cast_refs: Optional[list] = None,
-                    aspect_ratio: str = "16:9") -> dict:
+def storyboard_plan(name: Annotated[str, Field(description='Board name.')], frames: Annotated[Optional[list], Field(description="[{beat, action, camera, dialogue, duration, refs, note}] in scene order; omit entirely to edit only the board's fields.")] = None, premise: Annotated[str, Field(description='What the scene is about.')] = "",
+                    logline: Annotated[str, Field(description='One line on the scene, for humans.')] = "", style: Annotated[str, Field(description='A cinematic_styles preset key or free prose.')] = "", style_note: Annotated[str, Field(description="The project's own wording, appended to the style.")] = "",
+                    style_refs: Annotated[Optional[list], Field(description='Pinned reference names carrying the look, applied to every frame.')] = None,
+                    cast_refs: Annotated[Optional[list], Field(description='Pinned reference names for who is in the scene, conditioned on every frame.')] = None,
+                    aspect_ratio: Annotated[str, Field(description='Frame shape for every panel. Default 16:9.')] = "16:9") -> dict:
     """Write or edit a storyboard by hand. SPENDS NOTHING.
 
-    `frames` is a list of objects, in scene order. Each takes:
-      beat      what happens, in story terms. Required unless action is given.
-      action    what is VISIBLE and moving. This is what the image model reads.
-      camera    shot size and movement ("low angle wide", "slow push in")
-      dialogue  a spoken line
-      duration  seconds this beat will run as a shot. Default 5.
-      refs      frame-specific pinned reference names, on top of the cast
-      note      anything for the human reading the board
-
-    OMIT `frames` ENTIRELY to edit the board's own fields - cast, style, premise - and leave the drawings alone. That is how you re-cast a board you have
-    already drawn without paying to draw it again.
-
-    A frame that already has an image KEEPS it when the board is re-planned at
-    the same index. Images are the only thing here that cost money.
-
-    storyboard_write_script does this from a premise with one cheap model call.
-    Use this to fix what it wrote, or when you already know your beats.
+    `frames` in scene order, each {beat (required unless action), action
+    (what is VISIBLE - what the image model reads), camera, dialogue,
+    duration (default 5), refs, note}. OMIT `frames` ENTIRELY to edit only
+    the board's own fields (cast, style, premise) and leave the drawings
+    alone. A frame that already has an image KEEPS it at the same index.
+    storyboard_write_script does this from a premise.
+    Full notes: docs/tools.md#storyboard_plan
     """
     from bgate_core.cine import storyboard as _sb
 
@@ -801,35 +577,22 @@ def storyboard_open(name: str) -> dict:
 
 
 @_tool(images=_board_images)
-def storyboard_frame_generate(name: str, idx: int, prompt: str = "",
-                              provider: str = "", model: str = "",
-                              refs: Optional[list] = None,
-                              use_cast: bool = True, ref_strength: float = 0.5,
-                              quality: str = "medium") -> dict:
+def storyboard_frame_generate(name: Annotated[str, Field(description='Board name.')], idx: Annotated[int, Field(description='Zero-based frame index on the board.')], prompt: Annotated[str, Field(description="Override the prompt outright; empty builds it from the frame's action, camera and the board's style.")] = "",
+                              provider: Annotated[str, Field(description='Image provider; "" uses the project\'s routing.')] = "", model: Annotated[str, Field(description='Provider model id; "" takes the default.')] = "",
+                              refs: Annotated[Optional[list], Field(description='Extra pinned reference names for THIS frame only, on top of the cast.')] = None,
+                              use_cast: Annotated[bool, Field(description="Condition on the board's cast_refs. False for a frame with nobody in it. Default True.")] = True, ref_strength: Annotated[float, Field(description='How hard the references pull, 0-1. Default 0.5.')] = 0.5,
+                              quality: Annotated[str, Field(description='low | medium | high. Default medium; low costs about a quarter and is usually enough.')] = "medium") -> dict:
     """Draw ONE storyboard frame. This is the only tool here that costs money,
-    and it is an IMAGE - roughly two orders of magnitude cheaper than the video
-    shot it exists to stop you buying blind.
+    and it is an IMAGE - far cheaper than the video shot it stops you buying
+    blind.
 
-    ONE FRAME PER CALL, deliberately. A loop that draws the whole board has
-    nowhere to stop when frame 2 comes back wrong.
-
-    CONDITIONING IS WHY THIS BEATS A BARE image_generate. The board's cast_refs
-    and style_refs are resolved and passed as reference images automatically, so
-    frame 6 is drawn against the same character files as frame 1. That is the
-    drift this whole subsystem exists to prevent.
-
-      refs         extra pinned names for THIS frame only
-      use_cast     False for a frame with nobody in it (an empty room). A
-                   character reference on a shot with no character is noise the
-                   model has to fight.
-      quality      low | medium | high. Boards are read at a glance; low is
-                   usually enough and costs about a quarter of medium.
-
-    The prompt is built from the frame's action, camera and the board's style
-    unless you pass `prompt` to override it outright.
-
-    Comes back as 'drafted', never 'approved'. A human or a judging pass decides
-    that, because approval is what lets a shot be bought against this frame.
+    ONE FRAME PER CALL. The board's cast_refs and style_refs are passed as
+    reference images automatically. refs: extra pins for THIS frame; use_cast
+    False for a frame with nobody in it; quality low | medium | high (low is
+    usually enough). The prompt is built from the frame's action, camera and
+    style unless `prompt` overrides it. Comes back 'drafted', never
+    'approved'.
+    Full notes: docs/tools.md#storyboard_frame_generate
     """
     from bgate_core.cine import storyboard as _sb
 
@@ -848,17 +611,11 @@ def storyboard_frame_attach(name: str, idx: int, image: str = "",
     """Put an EXISTING image on a frame - one the author drew, shot, or pinned.
     Costs nothing.
 
-    Pass exactly one of:
-      image   a repo-relative path to a file already in the project
-      ref     a pinned reference name (ref_list shows them)
-
-    THE HUMAN PATH, and it is first-class rather than a fallback. A frame a
-    person chose is better evidence for spending video money than one a model
-    guessed, so `source` records which this was. Do not launder an uploaded
-    frame as a generated one or the reverse.
-
-    approve=True marks it approved in the same call. Only do that if you are the
-    one who decided, not merely the one who attached it.
+    Pass exactly one of `image` (a repo-relative path) or `ref` (a pinned
+    reference name). `source` records which this was - do not launder an
+    uploaded frame as a generated one or the reverse. approve=True marks it
+    approved in the same call; only if you are the one who decided.
+    Full notes: docs/tools.md#storyboard_frame_attach
     """
     from bgate_core.cine import storyboard as _sb
 
@@ -867,14 +624,14 @@ def storyboard_frame_attach(name: str, idx: int, image: str = "",
 
 
 @_tool
-def storyboard_frame_set(name: str, idx: int, beat: Optional[str] = None,
-                         action: Optional[str] = None,
-                         camera: Optional[str] = None,
-                         dialogue: Optional[str] = None,
-                         duration: Optional[int] = None,
-                         note: Optional[str] = None,
-                         status: Optional[str] = None,
-                         slug: Optional[str] = None) -> dict:
+def storyboard_frame_set(name: Annotated[str, Field(description='Board name.')], idx: Annotated[int, Field(description='Zero-based frame index on the board.')], beat: Annotated[Optional[str], Field(description='What happens, in story terms.')] = None,
+                         action: Annotated[Optional[str], Field(description='What is VISIBLE and moving; what the image model reads.')] = None,
+                         camera: Annotated[Optional[str], Field(description='Shot size and movement ("low angle wide", "slow push in").')] = None,
+                         dialogue: Annotated[Optional[str], Field(description='A spoken line.')] = None,
+                         duration: Annotated[Optional[int], Field(description='Seconds this beat runs as a shot.')] = None,
+                         note: Annotated[Optional[str], Field(description='Anything for the human reading the board.')] = None,
+                         status: Annotated[Optional[str], Field(description='empty | generating | drafted | approved | cut. Approving a frame with no image is refused.')] = None,
+                         slug: Annotated[Optional[str], Field(description='Short identifier for the frame.')] = None) -> dict:
     """Edit one frame's text, timing or status without touching the rest.
 
     status is empty | generating | drafted | approved | cut. APPROVING A FRAME
@@ -940,18 +697,12 @@ def storyboard_promote(name: str, sequence_name: str = "", model: str = "",
     """Turn an approved board into a cutscene shot list ready to be bought.
     THIS IS THE LINE between free and paid.
 
-    Each frame's image becomes that shot's `first_frame`, which is exactly the
-    "anchor on an approved still" the cinematic seat has always required and
-    previously had no path to produce. Style, style refs and aspect ratio ride
-    along, so the shots are bought under the look the board was approved under.
-
-    REFUSES BY DEFAULT on a board whose live frames are not all approved and
-    drawn, and names which ones. allow_unanchored=True is for the deliberate
-    case only - every shot in what comes out of this is a paid generation.
-
-    Cut frames do not travel. What comes back is a cine_sequence: read it with
-    cinematic_sequences, then buy it one shot at a time with
-    cinematic_generate_shot.
+    Each frame's image becomes that shot's `first_frame`; style, refs and
+    aspect ratio ride along. REFUSES BY DEFAULT on a board whose live frames
+    are not all approved and drawn, naming which; allow_unanchored=True is for
+    the deliberate case only. Cut frames do not travel. Read the result with
+    cinematic_sequences, then buy one shot at a time.
+    Full notes: docs/tools.md#storyboard_promote
     """
     from bgate_core.cine import storyboard as _sb
 

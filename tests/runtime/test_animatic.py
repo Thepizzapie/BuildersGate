@@ -221,7 +221,7 @@ class TestMissingFrames:
 class TestReport:
     @needs_ffmpeg
     def test_it_costs_nothing_and_says_so(self, root, planned):
-        assert animatic.build(root, planned)["estimated_usd"] == 0.0
+        assert animatic.build(root, planned)["usd"] == 0.0
 
     @needs_ffmpeg
     def test_the_reel_is_not_ogg_theora(self, root, planned):

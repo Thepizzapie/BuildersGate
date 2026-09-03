@@ -220,6 +220,21 @@ def bundle() -> str:
     return dist.read_text(encoding="utf-8", errors="replace")
 
 
+def island(name: str) -> str:
+    """One source file of the Playtests island (frontend/src/views/playtests/).
+
+    The recorder, the preflight, the review overlay and the triage moved out
+    of index.html into React. The invariants below that were pinned against
+    the served page's inline script are pinned against the island's SOURCE
+    instead — same strings, same function bodies, one directory over.
+    """
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "frontend" / "src" / "views" / "playtests" / name
+    assert src.is_file(), f"no {name} in the Playtests island"
+    return src.read_text(encoding="utf-8")
+
+
 class TestNoGameSpecificHardcoding:
     def test_the_character_names_are_gone(self, page):
         # Two character names from one game used to be substring-matched into
@@ -256,10 +271,20 @@ class TestNoGameSpecificHardcoding:
         assert "lore" in text and "canon" in text
 
     def test_the_play_panel_advertises_no_button_the_template_lacks(self, page):
+        """The play panel is the Playtests island now
+        (frontend/src/views/playtests/PlayPanel.tsx). The hint still renders
+        only what the backend reports — `controls` rides in on the /api/state
+        push through store.ts — and promises nothing otherwise."""
+        src = island("PlayPanel.tsx")
         for absent in ("J/K punch", "U/I kick", "S block", "L duck"):
             assert absent not in page, f"still advertising {absent!r}"
-        assert 'id="play-controls"' in page
-        assert "function renderControlsHint(" in page
+            assert absent not in src, f"still advertising {absent!r}"
+        assert 'id="play-controls"' in src
+        assert "controlsLine" in src and "input map" in src
+        from pathlib import Path
+
+        store = Path(__file__).resolve().parents[2] / "frontend" / "src" / "store.ts"
+        assert "controls" in store.read_text(encoding="utf-8")
 
     def test_the_shipped_2d_template_really_only_binds_three_actions(self):
         from pathlib import Path
@@ -287,22 +312,28 @@ class TestNoGameSpecificHardcoding:
 # human steps — plug in a microphone, start the game.
 # ---------------------------------------------------------------------------
 class TestPreflightIsActionable:
+    # The panel is frontend/src/views/playtests/PlayPanel.tsx now; the served
+    # page is still checked where the string could come back through it.
     def test_the_reason_is_no_longer_truncated(self, page):
-        assert "slice(0, 60)" not in page and "slice(0,60)" not in page
+        src = island("PlayPanel.tsx")
+        for text in (page, src):
+            assert "slice(0, 60)" not in text and "slice(0,60)" not in text
 
-    def test_the_human_steps_still_carry_a_sentence(self, page):
+    def test_the_human_steps_still_carry_a_sentence(self):
         """What a person must do themselves is still spelled out."""
-        assert "const PT_FIXES = {" in page
-        fixes = page.split("const PT_FIXES = {")[1].split("};")[0]
+        src = island("PlayPanel.tsx")
+        assert "const PT_FIXES" in src
+        fixes = src.split("const PT_FIXES")[1].split("};")[0]
         for check in ("mic", "window", "native_game"):
             assert f"{check}:" in fixes
 
-    def test_the_app_installs_what_it_can_instead_of_instructing(self, page):
+    def test_the_app_installs_what_it_can_instead_of_instructing(self):
         """ffmpeg is fetchable, so it is a button and not a sentence."""
-        assert "const PT_INSTALLABLE = {" in page
-        installable = page.split("const PT_INSTALLABLE = {")[1].split("};")[0]
+        src = island("PlayPanel.tsx")
+        assert "const PT_INSTALLABLE" in src
+        installable = src.split("const PT_INSTALLABLE")[1].split("};")[0]
         assert "ffmpeg" in installable
-        assert "function ptInstall(" in page
+        assert "function ptInstall(" in src
 
     def test_it_never_tells_a_packaged_user_to_open_a_terminal(self, page):
         """THE REGRESSION GUARD. These strings were on the Playtests screen of
@@ -312,21 +343,24 @@ class TestPreflightIsActionable:
         instructions explain themselves by quoting them, so a raw substring
         search over the file matches the very comments describing why the text
         is gone. What matters is whether a USER can read it, which is the code
-        with the commentary taken out.
+        with the commentary taken out. Both the served page and the island's
+        source are checked: the panel moved, the rule did not.
         """
-        code = re.sub(r"/\*.*?\*/", "", page, flags=re.S)          # JS block
-        code = re.sub(r"<!--.*?-->", "", code, flags=re.S)          # HTML
-        for forbidden in ("pip install", "bgate doctor", "source checkout"):
-            assert forbidden not in code, (
-                f"{forbidden!r} is back on the playtest panel — a packaged user "
-                f"cannot act on it")
+        for text in (page, island("PlayPanel.tsx")):
+            code = re.sub(r"/\*.*?\*/", "", text, flags=re.S)          # JS block
+            code = re.sub(r"<!--.*?-->", "", code, flags=re.S)          # HTML
+            for forbidden in ("pip install", "bgate doctor", "source checkout"):
+                assert forbidden not in code, (
+                    f"{forbidden!r} is back on the playtest panel — a packaged user "
+                    f"cannot act on it")
 
-    def test_the_detail_panel_exists_and_is_reachable(self, page):
-        assert 'id="pt-why"' in page
-        assert "function togglePtWhy(" in page
+    def test_the_detail_panel_exists_and_is_reachable(self):
+        src = island("PlayPanel.tsx")
+        assert 'id="pt-why"' in src
+        assert "function togglePtWhy(" in src
         # "what do I install?" presumed the answer was always an install. It is
         # "what is missing?" now, because the answer is often a button.
-        assert "what is missing?" in page
+        assert "what is missing?" in src
 
     def test_doctor_really_can_answer_without_a_microphone(self):
         from bgate_core.runtime import doctor
@@ -417,18 +451,20 @@ class TestResponsiveTargetsLiveMarkup:
 # 8. Seeking is offset-corrected, like the frame extraction already is
 # ---------------------------------------------------------------------------
 class TestVideoOffset:
-    def test_the_shell_applies_video_offset_when_seeking(self, page):
-        assert "activeReviewOffset" in page
-        assert "video_offset_s" in page
-        body = _function_body(page, "seekReview")
+    # The review overlay is frontend/src/views/playtests/Review.tsx now.
+    def test_the_shell_applies_video_offset_when_seeking(self):
+        src = island("Review.tsx")
+        assert "activeReviewOffset" in src
+        assert "video_offset_s" in src
+        body = _function_body(src, "seekReview")
         assert "toVideoTime(t)" in body
 
-    def test_transcript_sync_converts_back_to_session_time(self, page):
-        body = _function_body(page, "syncTranscript")
+    def test_transcript_sync_converts_back_to_session_time(self):
+        body = _function_body(island("Review.tsx"), "syncTranscript")
         assert "video.currentTime + activeReviewOffset" in body
 
-    def test_it_degrades_to_zero_when_the_backend_omits_the_field(self, page):
-        assert "d.session.video_offset_s ?? d.video_offset_s ?? 0" in page
+    def test_it_degrades_to_zero_when_the_backend_omits_the_field(self):
+        assert "d.session.video_offset_s ?? d.video_offset_s ?? 0" in island("Review.tsx")
 
     def test_the_backend_stores_the_offset_the_shell_wants(self, root):
         from bgate_core.store import db
@@ -442,28 +478,35 @@ class TestVideoOffset:
 # 9. Preflight no longer opens the mic on a hot loop
 # ---------------------------------------------------------------------------
 class TestPreflightPolling:
+    # The preflight is frontend/src/views/playtests/PlayPanel.tsx now. No
+    # setInterval anywhere in it: the 30s tick is the bus's fallback timer.
     def test_the_fifteen_second_loop_is_gone(self, page):
+        src = island("PlayPanel.tsx")
         assert "setInterval(ptPreflight, 15000)" not in page
+        assert "setInterval(" not in src
 
-    def test_it_throttles_and_backs_off_once_ready(self, page):
-        assert "PT_FRESH_MS" in page and "PT_RETRY_MS" in page
-        body = _function_body(page, "ptPreflight")
+    def test_it_throttles_and_backs_off_once_ready(self):
+        src = island("PlayPanel.tsx")
+        assert "PT_FRESH_MS" in src and "PT_RETRY_MS" in src
+        body = _function_body(src, "ptPreflight")
         assert "_ptLastCheck" in body
-        assert "ptPanelVisible()" in body
+        assert "panelVisible()" in body
 
-    def test_it_only_runs_while_the_panel_is_on_screen(self, page):
-        body = _function_body(page, "ptPanelVisible")
-        assert "view-overview" in body
+    def test_it_only_runs_while_the_panel_is_on_screen(self):
+        # The deck's own .active flag (useViewActive), not a hard-coded view
+        # id — the panel sits on the Playtests deck, and the check follows it.
+        body = _function_body(island("PlayPanel.tsx"), "panelVisible")
+        assert "activeRef.current" in body
         assert "visibilityState" in body
 
-    def test_it_tries_the_cheap_mic_free_probe_first(self, page):
-        body = _function_body(page, "ptPreflight")
+    def test_it_tries_the_cheap_mic_free_probe_first(self):
+        body = _function_body(island("PlayPanel.tsx"), "ptPreflight")
         assert "/api/doctor" in body
         assert body.index("/api/doctor") < body.index("/api/playtest/preflight")
         assert "_ptDoctorGone" in body      # one 404 and it stops asking
 
-    def test_it_never_probes_while_recording(self, page):
-        assert "if (ptRecording) return;" in _function_body(page, "ptPreflight")
+    def test_it_never_probes_while_recording(self):
+        assert "if (m.current.recording) return;" in _function_body(island("PlayPanel.tsx"), "ptPreflight")
 
 
 # ---------------------------------------------------------------------------
@@ -571,12 +614,28 @@ class TestTheShellStillParses:
         # what still has to be true is that the page mounts the shell, still
         # owns the workspace switch and the first-run decision, and still hosts
         # the classic views that were never converted.
-        for anchor in ('data-react="shell"', 'id="firstrun"', 'id="world-root"',
+        # The World deck is a React island too now (frontend/src/views/world/),
+        # so its anchor is the data-react host rather than #world-root and the
+        # World.activate() call that used to wake world.js.
+        for anchor in ('data-react="shell"', 'id="firstrun"', 'data-react="world"',
                        'id="view-overview"', "function setWorkspace(",
-                       "function showFirstRun(", "World.activate"):
+                       "function showFirstRun("):
             assert anchor in page, f"{anchor} went missing"
 
     def test_the_polling_loop_is_intact(self, page):
-        for poll in ("setInterval(pollState,", "setInterval(pollActivity,",
-                     "setInterval(pollQueue,", "setInterval(ptPoll,"):
+        """The four readers are BGEvents watchers now (frontend/public/events.js):
+        run now, on a matching event, and on a slow fallback timer. The timers
+        themselves are gone, and must stay gone - one of them coming back is a
+        panel asking the server every few seconds what the bus already said."""
+        for poll in ("BGEvents.watch(pollState,", "BGEvents.watch(pollActivity,",
+                     "BGEvents.watch(pollQueue,"):
             assert poll in page
+        for timer in ("setInterval(pollState,", "setInterval(pollActivity,",
+                      "setInterval(pollQueue,", "setInterval(ptPoll,"):
+            assert timer not in page
+        assert 'src="/static/events.js?v=' in page   # stamped, like every module
+        # The recorder's watcher moved with the recorder into the Playtests
+        # island: useEvents on playtest.*, fast only while a session is live.
+        src = island("PlayPanel.tsx")
+        assert "useEvents(ptPoll, { kinds: [\"playtest.*\"]" in src
+        assert "setInterval(" not in src

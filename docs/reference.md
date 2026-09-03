@@ -65,12 +65,25 @@ with the token injected and `fetch` wrapped to send it same-origin only.
 `BGATE_NO_AUTH=1` opts out for a scripted run. See
 [SECURITY.md](../.github/SECURITY.md).
 
-No CDN, and no build step for anyone installing it. The dashboard's source is
-`frontend/` — `frontend/public/` for the classic pages, stylesheet and modules,
-`frontend/src/` for the React parts — and `npm run build` in that directory
-writes `src/bgate_ui/static/`, which is committed. A wheel install and the packaged
-`.exe` therefore need nothing but Python. `src/bgate_ui/static/` is build output:
-editing it is editing a file the next build overwrites.
+No CDN, and no build step for anyone installing a wheel or the `.exe`. The
+dashboard's source is `frontend/` — `frontend/public/` for the classic pages,
+stylesheet and modules, `frontend/src/` for the React parts — and `npm run
+build` in that directory writes `src/bgate_ui/static/`: `public/` copied in
+verbatim, plus the React bundle under `dist/`. Only `dist/` is committed
+(`.gitignore` keeps the rest out, because it is a copy of `public/`). A source
+checkout needs no node either: `bgate serve` copies `public/` into `static/`
+at startup when `index.html` is missing. Building a wheel or the `.exe` from a
+checkout does need `npm run build` first, so the wheel carries the whole
+tree — `ci.yml`'s `wheel-smoke` job and `release-exe.yml` both run it before
+packaging. `src/bgate_ui/static/` is build output: editing it is editing a
+file the next build overwrites.
+
+The floor's paintings and soundtrack (`/static/img/floor`, `/static/audio/floor`,
+~30MB) are not in `frontend/` at all. They are a separate package,
+`builders-gate-floor-assets`, with its source in `packaging/floor-assets/`;
+`pip install "builders-gate[floor]"` (or `pip install -e packaging/floor-assets`
+from a checkout) installs it and the server mounts it. Without it the floor
+draws its procedural fallback and the lounge radio says so.
 
 ## Seats
 

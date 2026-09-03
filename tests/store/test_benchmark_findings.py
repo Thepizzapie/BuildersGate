@@ -239,28 +239,28 @@ class TestSpendCeilingIsHard:
         assert spend.reserve(root, 4.9, work_item_id=item,
                              run_ceiling_usd=5.0)["ok"]
 
-    def test_a_new_project_does_not_enforce_a_ceiling_nobody_chose(self,
-                                                                    tmp_path):
-        """settings.py has said since 2026-08-19 that budget enforcement is off
-        by default. The Setting's default never reached the database - that key
-        stores INTO the spend_budget row, whose own column default is 1 - so
-        every project created since silently enforced the $5/item, $25/day
-        ceiling the note says was removed."""
+    def test_a_new_project_enforces_generous_ceilings(self, tmp_path):
+        """Budgets are on from the first dispatch, under ceilings meant to
+        catch a runaway rather than ration a working day: $10 an item, $50 a
+        day, $500 for the project."""
         from bgate_core.store import project
 
         project.init(tmp_path, "budget-default")
-        assert not spend.budget(tmp_path)["enforced"]
+        b = spend.budget(tmp_path)
+        assert b["enforced"]
+        assert (b["per_item_usd"], b["per_day_usd"], b["per_project_usd"]) == (
+            10.0, 50.0, 500.0)
         item = _item(tmp_path)
-        for _ in range(5):
-            assert spend.reserve(tmp_path, 99.0, work_item_id=item)["ok"]
+        assert spend.reserve(tmp_path, 9.0, work_item_id=item)["ok"]
+        assert not spend.reserve(tmp_path, 99.0, work_item_id=item)["ok"]
 
-    def test_a_human_who_turned_it_on_keeps_it_on(self, tmp_path):
+    def test_a_human_who_turned_it_off_keeps_it_off(self, tmp_path):
         from bgate_core.store import project, settings
 
         project.init(tmp_path, "budget-default")
-        settings.set(tmp_path, "budget.enforced", True, actor="human")
+        settings.set(tmp_path, "budget.enforced", False, actor="human")
         project.init(tmp_path, "budget-default")
-        assert spend.budget(tmp_path)["enforced"]
+        assert not spend.budget(tmp_path)["enforced"]
 
 
 # ---------------------------------------------------------------------------

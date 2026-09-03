@@ -4,7 +4,7 @@ import {
 } from "@mantine/core";
 import { Ti } from "../Ti";
 import { SEAT_COLOR, SEAT_ICON } from "../nav";
-import { useViewActive, usePoll } from "../../hooks";
+import { useViewActive, useEvents } from "../../hooks";
 import { setSelection } from "../selection";
 import { askText, notifyUpdate, mutate, readJSON, toast } from "../../bridge";
 import { ago } from "../seats/api";
@@ -12,6 +12,7 @@ import { DirectorChat } from "./DirectorChat";
 import { FloorPane } from "./FloorPane";
 import { moduleOff } from "../../bridge";
 import { Streamer } from "./Streamer";
+import { ChatLive } from "./ChatLive";
 import {
   EMPTY_CONSOLE, consoleState, type ConsoleState, type Item,
 } from "./api";
@@ -33,9 +34,6 @@ declare global {
     /** Prefill the director's box from somewhere else in the app. Registered
      *  by DirectorChat, which owns the box. */
     BGCompose?: (task: { seat?: string; title?: string; brief?: string }) => void;
-    /** chatlive.js — viewer chat captured during a stream, as feedback. It
-     *  mounts itself into a host element and is otherwise self-contained. */
-    ChatLive?: { mount(host: HTMLElement): void; unmount?(): void; refresh?(): void };
     /** The delegation graph (static/agents_graph.js). `mount` takes the canvas
      *  host and the detail rail; `apply` is fed the console state on each poll. */
     AgentsGraph?: {
@@ -47,8 +45,6 @@ declare global {
     };
   }
 }
-
-const POLL_MS = 3000;
 
 export type Pane = "board" | "graph" | "floor";
 
@@ -76,7 +72,7 @@ export function Agents() {
     // The bell has no view of its own and is fed by this poll.
     notifyUpdate(next);
   }, []);
-  usePoll(refresh, POLL_MS, active);
+  useEvents(refresh, { enabled: active });
 
   const items = state.items || [];
   const open = items.filter((i) => !CLOSED.has(i.status));
@@ -176,7 +172,7 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
     const s = await readJSON<{ on?: boolean }>("/api/streamer", {});
     setStreamer(!!s.on);
   }, []);
-  usePoll(loadStreamer, 10000, true);
+  useEvents(loadStreamer, { kinds: ["settings.*"] });
 
   /* Turning streamer mode off while sitting on one of its tabs would leave the
      strip with nothing selected and the body blank. Fall back to the queue. */
@@ -304,9 +300,7 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
               ))
             : <Empty>nothing to approve</Empty>)}
 
-          {/* chatlive.js owns every pixel inside its host and mounts itself by
-              id; React renders the host and never its children. */}
-          {tab === "chat" && <ChatHost />}
+          {tab === "chat" && <div className="bg4-chathost"><ChatLive /></div>}
           {tab === "stream" && <Streamer />}
 
           {tab === "failed" && (failed.length
@@ -643,23 +637,3 @@ function SeatStamp({ item, verb = "" }: { item: Item; verb?: string }) {
   );
 }
 
-/** The viewer-chat island. chatlive.js mounts itself into a host id and owns
- *  everything inside it — chat captured during a stream, promotable to
- *  feedback. React renders the host and never a child of it, the same contract
- *  the brainstorm room and the workflow canvas hold. */
-function ChatHost() {
-  /* THE ELEMENT, not its id. See the ChatLive declaration above: the tab was
-     rendering an empty box because mount() threw on the string it was given,
-     every time, since the day this pane was written. A ref also means the host
-     is guaranteed to exist when the effect runs, which an id lookup only
-     happens to be. */
-  const host = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (host.current) window.ChatLive?.mount(host.current);
-    return () => window.ChatLive?.unmount?.();
-  }, []);
-  if (!window.ChatLive) {
-    return <Empty>chatlive.js is not loaded on this build</Empty>;
-  }
-  return <div ref={host} id="bg4-chat-host" className="bg4-chathost" />;
-}

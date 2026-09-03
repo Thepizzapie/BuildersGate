@@ -582,7 +582,7 @@ def synthesize(session_id: int) -> dict:
         "wrote_nothing": True,
         "already_filed": _bs.already_filed(session, plan),
         "model": {k: answer[k] for k in ("model", "runner", "seconds",
-                                         "estimated_usd") if k in answer},
+                                         "usd") if k in answer},
     })
 
 

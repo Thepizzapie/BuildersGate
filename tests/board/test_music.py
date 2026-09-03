@@ -241,7 +241,7 @@ class TestUnpricedSaysSo:
         # The credits ARE known (balance delta); the dollars are not.
         assert result["credits_consumed"] == 24.0
         assert result["credits_source"] == "balance_delta"
-        assert result["estimated_usd"] is None
+        assert result["usd"] is None
         assert result["accounted"] is False
         assert result["cost_note"]                     # says why, in words
         totals = spend.totals(root)
@@ -257,7 +257,7 @@ class TestUnpricedSaysSo:
     def test_a_configured_rate_lands_in_the_ledger(self, root, fake, monkeypatch):
         monkeypatch.setenv("BGATE_KIE_USD_PER_CREDIT", "0.002")
         result = music.generate(root, "a calm loop", name="calm")
-        assert result["estimated_usd"] == pytest.approx(0.048)
+        assert result["usd"] == pytest.approx(0.048)
         assert result["accounted"] is True
         assert spend.totals(root)["by_kind"]["audio"] == pytest.approx(0.048)
 
@@ -267,7 +267,7 @@ class TestUnpricedSaysSo:
         result = music.generate(root, "a loop", name="loop")
         assert result["credits_consumed"] is None
         assert result["credits_source"] == "unavailable"
-        assert result["estimated_usd"] is None
+        assert result["usd"] is None
         # Even with no credit count, the CHARGE is real: it still lands as an
         # unaccounted row, with the credits marked unknown rather than zero.
         un = spend.totals(root)["unaccounted"]
@@ -292,7 +292,7 @@ class TestUnpricedSaysSo:
         fake.status, fake.tracks = "SENSITIVE_WORD_ERROR", []
         got = kie.generate_music("hum", str(tmp_path / "o"), root=root)
         assert got["ok"] is False
-        assert got["estimated_usd"] is None
+        assert got["usd"] is None
         assert got["credits_consumed"] is None
         assert got["credits_source"] == "unavailable"
         assert got["accounted"] is False
@@ -588,7 +588,7 @@ class TestStatusReportsAndRecoverActs:
         got = music.recover(root, "task-1")
         assert got["credits_consumed"] is None
         assert got["credits_source"] == "not_measurable_after_the_fact"
-        assert got["estimated_usd"] is None
+        assert got["usd"] is None
 
     def test_recover_is_idempotent_by_suno_track_id(self, root, fake):
         music.recover(root, "task-1")
@@ -712,7 +712,7 @@ class TestTheTaskIdSurvivesTheProcess:
         task_id = _tickets(root)[0]["task_id"]
         got = music.recover(root, task_id)
         assert got["ok"] and got["count"] == 2
-        assert got["estimated_usd"] is None      # charged at submit, not now
+        assert got["usd"] is None      # charged at submit, not now
         for candidate in got["candidates"]:
             assert (root / candidate["path"]).is_file()
 

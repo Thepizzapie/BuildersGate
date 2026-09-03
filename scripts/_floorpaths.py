@@ -33,3 +33,12 @@ def sandbox() -> Path:
     if asked:
         return Path(asked).expanduser().resolve()
     return (REPO.parent / "bg-testbed").resolve()
+
+
+# THE FLOOR'S ART AND AMBIENCE LIVE IN THEIR OWN PACKAGE. They were 30MB of
+# PNG and MP3 under frontend/public that pyproject excluded from the wheel;
+# now they are the `builders-gate-floor-assets` distribution, built from
+# packaging/floor-assets. Every generator writes there.
+FLOOR_ASSETS = REPO / "packaging" / "floor-assets" / "builders_gate_floor_assets"
+FLOOR_IMG = FLOOR_ASSETS / "img"
+FLOOR_AUDIO = FLOOR_ASSETS / "audio"

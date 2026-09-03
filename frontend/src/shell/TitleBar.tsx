@@ -56,11 +56,20 @@ export function TitleBar() {
     read();
     /* The user can maximise without touching this bar — a double-click on the
        drag strip, Win+Up, a snap gesture — so the icon has to follow the window
-       rather than the button. Cheap poll over loopback beats plumbing a
-       WM_SIZE notification back into the page. */
-    const t = window.setInterval(read, 1000);
+       rather than the button. Every one of those changes the viewport, so the
+       page's own resize event is the notification; the slow timer is only
+       there for a state change that somehow moved no pixels. */
+    let settle = 0;
+    const onResize = () => {
+      window.clearTimeout(settle);
+      settle = window.setTimeout(read, 120);
+    };
+    window.addEventListener("resize", onResize);
+    const t = window.setInterval(read, 30000);
     return () => {
       alive = false;
+      window.removeEventListener("resize", onResize);
+      window.clearTimeout(settle);
       window.clearInterval(t);
     };
   }, []);

@@ -4,7 +4,7 @@ import { Head, Nothing, Tag, ReadError } from "./prims";
 import { useJSON, ago } from "./api";
 import { readJSON, mutate, askText } from "../../bridge";
 import { setSelection } from "../selection";
-import { usePoll } from "../../hooks";
+import { useEvents, FALLBACK_MS } from "../../hooks";
 import type { SeatBodyProps } from "./types";
 import "./director.css";
 
@@ -111,7 +111,7 @@ function usePolled<T extends Record<string, unknown>>(
     // fallback is a fresh literal per render; it is only ever read.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
-  usePoll(load, ms, active);
+  useEvents(load, { enabled: active, fallbackMs: Math.max(ms, FALLBACK_MS) });
   return { view, load };
 }
 

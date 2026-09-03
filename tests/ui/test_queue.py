@@ -159,7 +159,11 @@ class TestPlaytestFromApp:
     def test_stop_without_recording_is_honest(self, client):
         got = client.post("/api/playtest/stop").json()
         assert got["ok"] is False
-        assert "recording" in got["error"]
+        # The machine-readable half is what says WHICH refusal this is; the
+        # prose is api.safe_error's constant, because the exception's own words
+        # do not reach a response body (see api.safe_error).
+        assert got["code"] == "not_recording"
+        assert isinstance(got["error"], str) and got["error"]
 
     def test_stop_processes_and_queues_director_triage(self, client, root, monkeypatch):
         """The routing the app exists for: session -> transcript -> a DIRECTOR

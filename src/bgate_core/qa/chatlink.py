@@ -606,6 +606,10 @@ class TwitchIRC(Transport):
 
     def open(self) -> None:
         ctx = ssl.create_default_context()
+        # Stated rather than inherited. CPython's default context already
+        # refuses TLS below 1.2, so this changes nothing today — it pins the
+        # floor to the interpreter's promise instead of its current default.
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         raw = socket.create_connection((TWITCH_HOST, TWITCH_PORT), timeout=15)
         self._sock = ctx.wrap_socket(raw, server_hostname=TWITCH_HOST)
         self._sock.settimeout(_READ_TIMEOUT)

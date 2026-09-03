@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Button, ScrollArea, Text, Textarea, Tooltip } from "@mantine/core";
 import { Ti } from "../Ti";
-import { usePoll } from "../../hooks";
+import { useEvents } from "../../hooks";
 import {
   canonCheck, loreAddFact, loreAllFacts, loreBrief, loreList, loreSave,
   loreSetStatus,
@@ -100,7 +100,7 @@ export function Lore({ head, active }: { head: HeadSlot; active: boolean }) {
     if (!all.error) setFacts(all.facts);
     setSlug((s) => (s || rows[0]?.slug || ""));
   }, []);
-  usePoll(refresh, LIST_MS, active);
+  useEvents(refresh, { enabled: active, kinds: [], fallbackMs: LIST_MS });
 
   const open = useCallback(async (ref: string) => {
     const b = await loreBrief(ref);

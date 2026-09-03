@@ -947,7 +947,7 @@ def record_turn(root: str | os.PathLike[str], session_id: int, seat: str,
     if not seat:
         return                    # the room's own partner has no roster row
     try:
-        usd = max(0.0, float(answer.get("estimated_usd") or 0.0))
+        usd = max(0.0, float(answer.get("usd") or 0.0))
         with db.tx(root) as conn:
             conn.execute(
                 "UPDATE brainstorm_participant "
@@ -1720,7 +1720,7 @@ def ask(root: Any, system: str, turns: list[dict], *, session_id: int = 0,
         usd: float = USD_PER_CHAT, tag: str = "", seat: str = "") -> dict:
     """One turn with the thinking partner, in the adapters' shared result shape.
 
-    ``{ok, text, model, seconds, estimated_usd}`` or ``{ok: False, error}`` — a
+    ``{ok, text, model, seconds, usd}`` or ``{ok: False, error}`` — a
     failure is RETURNED rather than raised because the caller has usually
     already stored the human's message and must not lose it to a CLI that would
     not start.
@@ -1749,11 +1749,11 @@ def ask(root: Any, system: str, turns: list[dict], *, session_id: int = 0,
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:400],
                 "seconds": round(_time.monotonic() - started, 2),
-                "estimated_usd": 0.0}
+                "usd": 0.0}
     # `usd` survives as the floor for a runner that reports no price of its own
     # (codex reports tokens and no dollars). A real figure always wins.
-    if answer.get("ok") and not answer.get("estimated_usd"):
-        answer["estimated_usd"] = usd
+    if answer.get("ok") and not answer.get("usd"):
+        answer["usd"] = usd
     return answer
 
 

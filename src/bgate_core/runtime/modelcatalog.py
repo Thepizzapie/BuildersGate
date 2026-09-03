@@ -35,22 +35,6 @@ AGENT_MODELS = ("sonnet", "opus", "haiku", "fable")
 OPENAI_TEXT_MODELS = ("gpt-4o-mini", "gpt-5.6-luna", "gpt-5.6-terra",
                       "gpt-5.6-sol")
 
-_KEY_VARS = {"openai": "OPENAI_API_KEY", "krea": "KREA_API_KEY",
-             "kie": "KIE_API_KEY", "deepgram": "DEEPGRAM_API_KEY"}
-
-
-def _has_key(provider: str, root=None) -> bool:
-    if root is not None:
-        try:
-            from ..store import envfile
-
-            envfile.load_project_env(root)
-        except Exception:
-            pass
-    var = _KEY_VARS.get(provider, "")
-    return bool((os.environ.get(var) or "").strip()) if var else False
-
-
 def _local_available() -> bool:
     try:
         from bgate_adapters import localgen
@@ -71,11 +55,15 @@ def _claude_cli_present() -> bool:
 def configured(root=None) -> dict[str, bool]:
     """Which providers are usable right now. Keys are presence-checked only —
     never validated with a paid call from here."""
+    from . import providers
+
+    keyed = {row["id"]: bool(row["configured"])
+             for row in providers.status(root)}
     return {
-        "openai": _has_key("openai", root),
-        "krea": _has_key("krea", root),
-        "kie": _has_key("kie", root),
-        "deepgram": _has_key("deepgram", root),
+        "openai": keyed.get("openai", False),
+        "krea": keyed.get("krea", False),
+        "kie": keyed.get("kie", False),
+        "deepgram": keyed.get("deepgram", False),
         "local": _local_available(),
         "anthropic": _claude_cli_present(),
     }

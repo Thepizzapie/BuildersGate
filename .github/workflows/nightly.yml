@@ -1,0 +1,115 @@
+# The coverage ci.yml says it does not have.
+#
+# ci.yml runs `pytest -m "not slow"` and says, in its own comment, that the
+# real Blender and Godot paths therefore have NO coverage there — "that is
+# what a nightly job is for". This is that job. It installs a pinned Godot and
+# a pinned Blender on the supported platform, points the adapters at them
+# through the env vars they already honour (BGATE_GODOT, BGATE_BLENDER), and
+# runs the tests the daily gate deselects.
+#
+# Two pytest steps, because the marker does not cover everything the binaries
+# unlock: the Blender suites carry `slow`, but the Godot suites gate on
+# `godot.available()` alone and are simply skipped on a runner without the
+# engine. So `-m slow` is the first step and tests/adapters is the second —
+# the directory where every skipif on a real binary lives — so that a Godot
+# regression is red here rather than a skip nobody reads.
+#
+# Whisper is not installed: those slow tests skip, as they do everywhere.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 9 * * *"   # 09:17 UTC daily; off the hour to dodge the queue
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: "4.4.1"
+  BLENDER_MAJOR: "4.2"
+  BLENDER_VERSION: "4.2.3"
+
+jobs:
+  slow:
+    name: pytest -m slow (windows, real Godot + Blender)
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Godot ships as a portable exe in a zip; there is no installer. The
+      # adapter's own search globs include %LOCALAPPDATA%\Programs\Godot, and
+      # BGATE_GODOT is set as well so discovery is not what this job tests.
+      - name: Install Godot ${{ env.GODOT_VERSION }}
+        shell: pwsh
+        run: |
+          $zip = "Godot_v${env:GODOT_VERSION}-stable_win64.exe.zip"
+          $url = "https://github.com/godotengine/godot/releases/download/${env:GODOT_VERSION}-stable/$zip"
+          $dir = Join-Path $env:LOCALAPPDATA "Programs\Godot"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\$zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\$zip" -DestinationPath $dir -Force
+          $exe = Get-ChildItem $dir -Filter "Godot_v*_win64.exe" | Where-Object { $_.Name -notlike "*console*" } | Select-Object -First 1
+          if (-not $exe) { throw "no Godot exe in $dir" }
+          "BGATE_GODOT=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $exe.FullName --headless --version
+
+      # The official zip rather than choco: choco's blender package tracks
+      # latest and cannot be pinned reliably to a version the adapter's
+      # MIN_VERSION (4.2, for BLENDER_EEVEE_NEXT) is known to accept.
+      - name: Install Blender ${{ env.BLENDER_VERSION }}
+        shell: pwsh
+        run: |
+          $name = "blender-${env:BLENDER_VERSION}-windows-x64"
+          $url = "https://download.blender.org/release/Blender${env:BLENDER_MAJOR}/$name.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "blender"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\$name.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\$name.zip" -DestinationPath $dir -Force
+          $exe = Join-Path $dir "$name\blender.exe"
+          if (-not (Test-Path $exe)) { throw "no blender.exe at $exe" }
+          "BGATE_BLENDER=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $exe --background --version
+
+      - name: Both adapters must see their binary
+        run: |
+          python -c "from bgate_adapters import godot, blender; g = godot.available(); b = blender.available(); print(g); print(b); assert g['available'] and b['available']"
+
+      - name: pytest -m slow
+        shell: bash
+        run: |
+          python -m pytest -m slow -q -rA 2>&1 | tee pytest-slow.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: pytest tests/adapters (the real-binary suites)
+        if: always()
+        shell: bash
+        run: |
+          python -m pytest tests/adapters -q -rA 2>&1 | tee pytest-adapters.txt
+          exit ${PIPESTATUS[0]}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-pytest-output
+          path: |
+            pytest-slow.txt
+            pytest-adapters.txt
+          if-no-files-found: error
+          retention-days: 30

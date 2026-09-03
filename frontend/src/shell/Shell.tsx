@@ -5,6 +5,7 @@ import { Ti } from "./Ti";
 import { AREAS, SCREEN_NOTE, SEAT_COLOR, SEAT_ICON, areaOf, byScreen } from "./nav";
 import type { Area } from "./nav";
 import { Inspector } from "./Inspector";
+import { Bell } from "./Bell";
 import { ProjectSwitch } from "./ProjectSwitch";
 import { clock, useFloor } from "./useFloor";
 import type { Floor } from "./useFloor";
@@ -361,9 +362,9 @@ export function Shell() {
                           page stayed exactly where it was. Orchestration's
                           screen id is `agents`. */
                        onOpenFloor={() => setScreen("agents")} />
-          {/* notify.js mounts its bell here. React renders the host and never
-              its children — same contract as #asset-lib-root. */}
-          <div id="nt-host" />
+          {/* The bell renders its own #nt-host: streamer.js still anchors
+              its chip beside that id. */}
+          <Bell />
         </div>
       </header>
 

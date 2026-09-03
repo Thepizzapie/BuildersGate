@@ -6,12 +6,23 @@ import { Themed } from "./theme";
 import Overview from "./views/Overview";
 import FirstRun from "./views/FirstRun";
 import Assets from "./views/assets/Assets";
+import World from "./views/world/World";
+import Playtests from "./views/playtests/Playtests";
 import { Shell } from "./shell/Shell";
 import { Floor } from "./shell/Floor";
-import { Board } from "./shell/Board";
 import { Agents } from "./shell/agents/Agents";
 import { Room } from "./shell/brainstorm/Room";
 import { Settings } from "./shell/settings/Settings";
+/* Side effect only: registers the Studio "Generators" tab on window.StudioFlows,
+   which the classic Studio deck (flows.js) builds its tab strip from. */
+import "./shell/settings/StudioGenerators";
+/* Side effect only: askText / askConfirm / askPick on window, which the
+   classic decks reach the way they reach toast(). React code imports them
+   from bridge.ts. */
+import "./ask";
+/* Side effect only: window.Handoff — the "put it in the game" panel the
+   sprite editor, audio lab and 3D viewer open from their toolbars. */
+import "./shell/handoff/Handoff";
 import { Seats } from "./shell/seats/Seats";
 import { TitleBar } from "./shell/TitleBar";
 import { push } from "./store";
@@ -36,16 +47,23 @@ const ISLANDS: Record<string, ComponentType> = {
   overview: Overview,
   firstrun: FirstRun,
   assets: Assets,
+  /* The design bible, its reference anchors and the lore graph — the
+     producer's write surface. It was world.js + bible_refs.js. */
+  world: World,
+  /* Play & record, the recorded sessions, the review overlay and the notepad
+     drawer. It was ptnotes.js + ptreview.js + the recorder script in
+     index.html; the overlay and the drawer portal onto <body>. */
+  playtests: Playtests,
   /* The 4a shell — the rail, the screen column, the header and the inspector.
      It renders AROUND the existing stage rather than owning it. */
   shell: Shell,
-  /* The two screens the redesign adds. Decks like any other, so setWorkspace()
-     switches them and nothing in the shell special-cases them. The floor's four
+  /* The screen the redesign added. A deck like any other, so setWorkspace()
+     switches it and nothing in the shell special-cases it. The floor's four
      questions (everything / live / needs you / history) are ONE deck reading
      the current screen from shell/screen.ts — four decks would have been four
-     polls of the same log. */
+     polls of the same log. (The board — lanes by seat — went with the 4a
+     shell; shell/nav.ts says why, and index.html no longer carries its deck.) */
   floor: Floor,
-  board: Board,
   agents: Agents,
   brainstorm: Room,
   settings: Settings,

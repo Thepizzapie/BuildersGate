@@ -264,11 +264,11 @@ def _write_prompt(root: str | os.PathLike[str], *, config: dict,
         return {"ok": False, "error": written.get("error", "prompt writing failed"),
                 "artifacts": [], "usd": 0.0, "provider": "openai",
                 "model": written.get("model", "")}
-    _spend.record(root, written.get("estimated_usd", 0.0), kind="other",
+    _spend.record(root, written.get("usd", 0.0), kind="other",
                   detail=f"prompt writer ({label or 'llm.prompt'})")
     return {"ok": True, "error": "", "artifacts": [], "provider": "openai",
             "model": written.get("model", ""),
-            "usd": round(written.get("estimated_usd", 0.0), 4),
+            "usd": round(written.get("usd", 0.0), 4),
             "output": {"text": written["text"]},
             "seconds": written.get("seconds", 0.0)}
 
@@ -341,7 +341,7 @@ def run(root: str | os.PathLike[str], *, run_id: int, node_id: str,
                              f"candidate {index + 1} of {spec['count']}: "
                              f"{result.get('error') or 'no reason given'}"}
 
-        usd = float(result.get("estimated_usd") or spec["unit_usd"])
+        usd = float(result.get("usd") or spec["unit_usd"])
         _spend.record(root, usd, kind="image", work_item_id=work_item_id,
                       logical_name=name,
                       detail=f"workflow run {run_id} node {node_id} "
@@ -356,7 +356,7 @@ def run(root: str | os.PathLike[str], *, run_id: int, node_id: str,
                       "candidate": index + 1,
                       "tier": spec["tier"], "task_kind": spec["task_kind"],
                       "seconds": result.get("seconds"),
-                      "estimated_usd": usd})
+                      "usd": usd})
         produced.append({
             "artifact_id": int(artifact["id"]), "revision": artifact.get("revision"),
             "logical_name": name, "path": artifact.get("path"),

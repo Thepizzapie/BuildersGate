@@ -71,11 +71,14 @@ export type AppState = {
   project: Project | null;
   root: string;
   sessions: unknown[];
+  /** The game's own input map, when the backend reports one (state.controls
+   *  or project.controls). The play panel promises no button it lacks. */
+  controls: unknown[] | null;
 };
 
 const EMPTY: AppState = {
   asset_groups: [], assets: [], verify: {}, canon: [],
-  project: null, root: "", sessions: [],
+  project: null, root: "", sessions: [], controls: null,
 };
 
 let current: AppState = EMPTY;
@@ -97,6 +100,8 @@ export function push(raw: Record<string, unknown>): void {
     project: (raw.project as Project) || null,
     root: String(raw.root || ""),
     sessions: (raw.sessions as unknown[]) || [],
+    controls: (raw.controls as unknown[])
+      || ((raw.project as { controls?: unknown[] } | null)?.controls) || null,
   };
   listeners.forEach((fn) => fn());
 }

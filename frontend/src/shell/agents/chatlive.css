@@ -1,0 +1,64 @@
+/* chatlive.css — the live-chat pane (ChatLive.tsx).
+   OPAQUE THROUGHOUT. A scrolling chat log is a reading surface, and in the
+   orbit theme --surface-N is a translucent white wash that lets whatever is
+   behind it bleed through the text. --solid-N is the token for anything
+   carrying words; it aliases back to --surface-N on the other grounds. */
+.cl-wrap{display:flex;flex-direction:column;gap:var(--s-4);min-height:0;height:100%}
+.cl-bar{display:flex;align-items:center;gap:var(--s-3);flex-wrap:wrap}
+.cl-dot{width:7px;height:7px;border-radius:var(--r-full);background:var(--text-3);flex:none}
+.cl-dot.on{background:var(--good);animation:clpulse 2.4s ease-in-out infinite}
+.cl-dot.warn{background:var(--warn)}
+.cl-dot.bad{background:var(--bad)}
+@keyframes clpulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.cl-dot.on{animation:none}}
+.cl-state{font-family:var(--mono);font-size:var(--fs-2xs,10px);letter-spacing:var(--track-label);
+  text-transform:uppercase;color:var(--text-2)}
+.cl-chip{font-family:var(--mono);font-size:var(--fs-2xs,10px);color:var(--text-3);
+  border:1px solid var(--line);border-radius:var(--r-full);padding:1px var(--s-4);white-space:nowrap}
+.cl-chip.at{color:var(--accent);border-color:var(--accent-line)}
+.cl-chip.bad{color:var(--bad);border-color:var(--bad-line)}
+.cl-why{font-size:var(--fs-2xs,10px);color:var(--text-3);line-height:1.5;overflow-wrap:anywhere}
+
+/* The capture sentence. Deliberately its own band rather than a chip: "where
+   are my viewers' words going" is the one question this panel must answer
+   without being read carefully. */
+.cl-cap{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--solid-1);
+  padding:var(--s-4) var(--s-5);font-size:var(--fs-xs,11px);color:var(--text-2);line-height:1.5}
+.cl-cap.live{border-color:var(--accent-line);color:var(--text)}
+.cl-cap b{color:var(--accent);font-weight:var(--fw-semi)}
+
+.cl-log{flex:1;min-height:120px;overflow-y:auto;background:var(--solid-1);
+  border:1px solid var(--line);border-radius:var(--r-sm);padding:var(--s-4);
+  display:flex;flex-direction:column;gap:2px}
+.cl-msg{display:flex;gap:var(--s-3);align-items:baseline;font-size:var(--fs-xs,11px);
+  line-height:1.5;padding:1px 0}
+.cl-msg .t{font-family:var(--mono);font-size:var(--fs-3xs,9.5px);color:var(--text-3);flex:none}
+.cl-msg .a{font-weight:var(--fw-semi);color:var(--text-2);flex:none}
+.cl-msg .x{color:var(--text);min-width:0;overflow-wrap:anywhere}
+.cl-msg.mod .a{color:var(--accent)}
+.cl-msg.first .a::after{content:'·new';font-family:var(--mono);font-size:9px;color:var(--good);margin-left:3px}
+.cl-msg.kept{background:var(--accent-soft,transparent);border-radius:var(--r-xs)}
+.cl-msg .k{font-family:var(--mono);font-size:9px;color:var(--accent);flex:none}
+/* A message the sanitiser edited. Marked so the dev can SEE that somebody
+   tried, rather than only reading a tidied version of it. */
+.cl-msg.flagged .x{color:var(--text-2);font-style:italic}
+.cl-empty{font-size:var(--fs-xs,11px);color:var(--text-3);padding:var(--s-5)}
+
+.cl-in{flex:1;min-width:120px}
+
+.cl-card{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--solid-1);
+  padding:var(--s-5);display:flex;flex-direction:column;gap:var(--s-4)}
+.cl-card h5{margin:0;font-family:var(--mono);font-size:var(--fs-2xs,10px);
+  letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-2);
+  display:flex;align-items:center;gap:var(--s-3)}
+.cl-card p{margin:0;font-size:var(--fs-xs,11px);color:var(--text-3);line-height:1.55}
+.cl-card code{font-family:var(--mono);font-size:var(--fs-2xs,10px);color:var(--accent);
+  background:var(--solid-3);border-radius:var(--r-xs);padding:0 4px}
+.cl-note{border:1px solid var(--warn-line);background:var(--warn-soft);border-radius:var(--r-sm);
+  padding:var(--s-4) var(--s-5);font-size:var(--fs-2xs,10px);color:var(--text-2);line-height:1.5}
+.cl-ok{border:1px solid var(--good-line);background:var(--good-soft);border-radius:var(--r-sm);
+  padding:var(--s-4) var(--s-5);font-size:var(--fs-xs,11px);color:var(--text-2);line-height:1.55}
+.cl-ok a{color:var(--accent)}
+.cl-tally{display:flex;gap:var(--s-4);flex-wrap:wrap;font-family:var(--mono);
+  font-size:var(--fs-2xs,10px);color:var(--text-3)}
+.cl-tally b{color:var(--text);font-weight:var(--fw-semi)}

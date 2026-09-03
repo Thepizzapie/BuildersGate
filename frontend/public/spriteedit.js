@@ -2675,7 +2675,7 @@ window.SpriteEdit = (() => {
   /* THE STEP AFTER "SAVED". This editor could make a sheet and write it to
      disk, and that was the end of the road — the owner's words were "i can go
      in sprite sheet edit and create sprites and save but dont know what i can
-     do after". handoff.js is the shared answer for all three editors: pick a
+     do after". window.Handoff (frontend/src/shell/handoff/) is the shared answer for all three editors: pick a
      scene and wire it here for free, or file a work item whose brief already
      names this sheet, its animations and the scene. One line, because the
      panel is the same one the audio lab and the 3D editor open. */

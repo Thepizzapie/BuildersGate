@@ -87,15 +87,14 @@ from PIL import Image  # noqa: E402
 from bgate_adapters import imagegen, kie  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _floorpaths import REPO, sandbox  # noqa: E402
+from _floorpaths import sandbox, FLOOR_IMG  # noqa: E402
 
 ROOT = sandbox()
 CAST = ROOT / ".bgate_out" / "art" / "cast"
 OUT = CAST / "anim"
 # ROOT is the ART project (bg-testbed); the rooms are art installed into the
 # HARNESS checkout, which is this file's own repo.
-ROOMS = (Path(__file__).resolve().parents[1]
-         / "frontend" / "public" / "img" / "floor" / "rooms")
+ROOMS = FLOOR_IMG / "rooms"
 FRAMES = CAST / "frames"          # the single drawings, kept: they are the
                                   # expensive part and a restitch must be free
 
@@ -624,7 +623,7 @@ def anchor_frame(name: str) -> Path | None:
     what shipped, and the per-frame drawings for idle were bought long enough
     ago that they are not all still on disk.
     """
-    strip = REPO / "frontend" / "public" / "img" / "floor" / name / "idle.png"
+    strip = FLOOR_IMG / name / "idle.png"
     if not strip.is_file():
         return None
     out = FRAMES / f"{name}-anchor.png"

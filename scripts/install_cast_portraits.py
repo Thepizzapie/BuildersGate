@@ -24,8 +24,8 @@ from pathlib import Path
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _floorpaths import REPO, sandbox  # noqa: E402
-FLOOR = REPO / "frontend" / "public" / "img" / "floor"
+from _floorpaths import REPO, sandbox, FLOOR_IMG  # noqa: E402
+FLOOR = FLOOR_IMG
 
 
 RAW = sandbox() / ".bgate_out" / "art" / "portraits"
