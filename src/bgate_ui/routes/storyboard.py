@@ -45,7 +45,9 @@ def _refuse(exc: Exception) -> HTTPException:
     """
     if isinstance(exc, _sb.StoryboardError):
         return HTTPException(400, str(exc))
-    return HTTPException(500, f"{type(exc).__name__}: {exc}")
+    # Anything else is unanticipated, so its text stays out of the body — the
+    # StoryboardError branch above is the one a human reads. See api.safe_error.
+    return HTTPException(500, api.safe_error(exc))
 
 
 # ---- reading ---------------------------------------------------------------

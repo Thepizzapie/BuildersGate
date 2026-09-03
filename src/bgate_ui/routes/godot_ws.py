@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 
 from bgate_adapters import godot as _godot
 from bgate_core.board import jobs
+from bgate_ui import api
 from bgate_ui.deps import root
 from bgate_ui.routes import jobs as jobs_api
 
@@ -77,9 +78,14 @@ def _guard(call: Callable[[], dict]) -> dict:
     try:
         return call()
     except _godot.GodotNotFound as exc:
+        # KEPT VERBATIM. This one is our own literal naming a missing external
+        # tool and how to install it — the whole reason this is an answer and
+        # not a 500. Withholding it leaves the panel with nothing to act on.
         return {"ok": False, "error": str(exc)}
     except Exception as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        # Anything else here is unanticipated and its text can name paths that
+        # are not ours to repeat; see api.safe_error.
+        return {"ok": False, "error": api.safe_error(exc)}
 
 
 def _staged(job_id: int, stage: str, timeout: int, call: Callable[[], dict]) -> dict:

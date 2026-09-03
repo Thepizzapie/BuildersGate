@@ -71,11 +71,14 @@ def _describe(project_root: Path, target: Path) -> dict:
     try:
         session = audiolab.load_session(target)
     except audiolab.AudioError as exc:
-        session_error = str(exc)
+        # AudioError here WRAPS the OSError/JSONDecodeError that broke the read,
+        # so its text is exception-derived and cannot ride the response; the
+        # file it is about is already `rel` below. See api.safe_error.
+        session_error = api.safe_error(exc)
     try:
         beat = audiolab.load_beat(target)
     except audiolab.AudioError as exc:
-        session_error = (session_error or "") + f" · beat: {exc}"
+        session_error = (session_error or "") + " · beat: " + api.safe_error(exc)
     return {
         "rel": rel,
         "name": target.name,

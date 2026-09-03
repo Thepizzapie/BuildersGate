@@ -920,8 +920,12 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     log_dir = Path(root) / ".bgate" / "agents"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return _refused("spawn_failed", f"cannot create the agent log dir: {exc}")
+    except OSError:
+        # The PATH we chose, not the exception's own words: "cannot create
+        # <dir>" is the actionable half, and the OSError text adds only
+        # phrasing we did not write. Same at the two spawn refusals below.
+        return _refused("spawn_failed",
+                        f"cannot create the agent log dir {log_dir}")
     # int(), not the raw parameter. The rotation below is a path expression and
     # this name is the only caller-derived part of it; forcing the id through
     # int() at the boundary means no separator, traversal or wildcard can reach
@@ -1024,8 +1028,9 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     prompt = _prompt_for(root, item, native_images=native_images)
     try:
         log_handle = open(log_path, "ab")
-    except OSError as exc:
-        return _refused("spawn_failed", f"cannot open the agent log: {exc}")
+    except OSError:
+        return _refused("spawn_failed",
+                        f"cannot open the agent log {log_path}")
     # RUN BOUNDARY: the log appends across re-dispatches, and both the activity
     # view and the steer-echo scanner must only look at THIS run - the stale
     # first-run result being shown as current, and old echoes falsely marking
@@ -1076,9 +1081,11 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         proc = subprocess.Popen(args, cwd=cwd, env=env,
                                 stdin=subprocess.PIPE, stdout=log_handle,
                                 stderr=log_handle, creationflags=_NO_WINDOW)
-    except OSError as exc:
+    except OSError:
         log_handle.close()
-        return _refused("spawn_failed", f"could not start the agent CLI: {exc}")
+        return _refused("spawn_failed",
+                        f"could not start the agent CLI {args[0]!r} — is it "
+                        "installed and on PATH?")
     except Exception:
         # An unanticipated raise with no process yet: close the handle and let
         # dispatch()'s conditional release put the reservation back.

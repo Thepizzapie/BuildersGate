@@ -74,8 +74,17 @@ def _run(cwd: str | os.PathLike[str], args: Sequence[str], *,
             ["git", *args], cwd=str(cwd), capture_output=True,
             stdin=subprocess.DEVNULL, timeout=timeout,
             creationflags=_NO_WINDOW)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, (b"" if binary else ""), f"{type(exc).__name__}: {exc}"
+    except FileNotFoundError:
+        return False, (b"" if binary else ""), "git is not installed, or not on PATH"
+    except subprocess.TimeoutExpired:
+        return False, (b"" if binary else ""), f"git did not finish within {timeout}s"
+    except (OSError, subprocess.SubprocessError):
+        # A LITERAL PER BRANCH, NOT THE EXCEPTION'S OWN WORDS. This string is
+        # returned to the dashboard, and `FileNotFoundError: [WinError 2] The
+        # system cannot find the file specified` told the reader less than the
+        # two sentences above do — while being the kind of text that names
+        # paths we did not choose to publish.
+        return False, (b"" if binary else ""), "git could not be run"
     out = proc.stdout if binary else proc.stdout.decode("utf-8", "replace")
     err = proc.stderr.decode("utf-8", "replace")
     return proc.returncode == 0, out, err.strip()

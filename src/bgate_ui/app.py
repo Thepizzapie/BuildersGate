@@ -1696,14 +1696,23 @@ def _finish_playtest(root: Path, session_id: int, *, resume: bool = False) -> No
         _pt_processing[session_id] = "ready"
         _events.emit(root, "playtest.processed", ref=str(session_id))
     except Exception as exc:
+        # EVERY ONE OF THESE THREE IS READ BACK INTO A RESPONSE BODY:
+        # processing_error rides /api/playtest/state and the session detail,
+        # _pt_processing rides /api/state as `processing_worker`, and the event
+        # payload rides the activity feed. So the text is api.safe_error's
+        # constant, not the exception — see api.safe_error for why scrubbing it
+        # is not an option. The anticipated failure here (transcription did not
+        # complete) is the written reason in the `not transcript["ok"]` branch
+        # above, which never reaches this handler.
+        failed = _api.safe_error(exc)
         with db.tx(root) as conn:
             conn.execute(
                 "UPDATE playtest_session SET status = 'failed', "
                 "processing_stage = 'failed', processing_error = ?, error = ? "
-                "WHERE id = ?", (str(exc), str(exc), session_id))
-        _pt_processing[session_id] = f"failed: {exc}"
+                "WHERE id = ?", (failed, failed, session_id))
+        _pt_processing[session_id] = f"failed: {failed}"
         _events.emit(root, "playtest.failed", ref=str(session_id),
-                     payload={"error": str(exc)[:400]})
+                     payload={"error": failed[:400]})
 
 
 @app.get("/api/playtest/preflight")
@@ -1754,8 +1763,12 @@ def pt_stop() -> dict:
     try:
         session = playtest._active(root, None)
     except LookupError as exc:
-        # Sentence + code at 200 — same convention as pt_start above.
-        return {"ok": False, "code": "not_recording", "error": str(exc)}
+        # Sentence + code at 200 — same convention as pt_start above, and the
+        # same constant: `not_recording` is the part the panel acts on, and the
+        # LookupError's own words add nothing a caller of /api/playtest/stop
+        # does not already know from the code.
+        return {"ok": False, "code": "not_recording",
+                "error": _api.safe_error(exc)}
     sid = session["id"]
     _pt_processing[sid] = "processing"
     with db.tx(root) as conn:

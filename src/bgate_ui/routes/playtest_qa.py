@@ -116,8 +116,10 @@ def live_level(session_id: Optional[int] = None) -> dict:
     try:
         return api.ok(playtest.live_level(root(), session_id))
     except Exception as exc:                  # sounddevice absent, etc.
+        # Still a 200 with ok: False, so the panel says "not recording" rather
+        # than going red. Only the text changes; see api.safe_error.
         return api.ok({"ok": False, "recording": False,
-                       "reason": f"{type(exc).__name__}: {exc}"})
+                       "reason": api.safe_error(exc)})
 
 
 # ---------------------------------------------------------------------------
@@ -138,14 +140,15 @@ def capture_windows(filter: str = "") -> dict:
         windows = recorder.list_windows(filter)
     except Exception as exc:
         return api.ok({"windows": [], "hints": hints, "suggested": None,
-                       "reason": f"could not enumerate windows: {exc}"})
+                       "reason": "could not enumerate windows: "
+                                 + api.safe_error(exc)})
     suggested = None
     try:
         resolved = recorder.resolve_window(None, hints=hints)
         suggested = None if resolved["whole_desktop"] else resolved["title"]
         note = resolved["note"]
     except Exception as exc:
-        note = str(exc)
+        note = api.safe_error(exc)
     return api.ok({"windows": windows, "hints": hints,
                    "suggested": suggested, "note": note})
 

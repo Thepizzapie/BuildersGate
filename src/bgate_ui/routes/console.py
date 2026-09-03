@@ -1008,6 +1008,6 @@ def autopilot_set(payload: dict) -> dict:
             tick = _autodeploy.tick(r)
         except Exception as exc:  # pragma: no cover — belt and braces
             tick = {"dispatched": [], "refused": [
-                {"code": "tick_failed", "message": f"{type(exc).__name__}: {exc}"}]}
+                {"code": "tick_failed", "message": _api.safe_error(exc)}]}
     return {**_autodeploy.state(r), "tick": tick,
             "was": {"on": not on}, "now": state["on"]}
