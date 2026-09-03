@@ -1554,7 +1554,16 @@ def artifact_restore(artifact_id: int) -> dict:
     if not arch or not Path(arch).is_file():
         raise _api.bad_request("no archived snapshot for this revision to restore",
                                artifact_id=artifact_id)
-    dst = Path(root) / art["path"]
+    # CONTAINED AT READ TIME TOO, not only at registration. `art["path"]` is
+    # normalised by assets.normalize_path before its row is written, and that
+    # is the only reason this join is safe — an invariant enforced two modules
+    # away, on every writer that will ever exist. This is a file WRITE; the
+    # cost of re-asking is one resolve, and the cost of the invariant lapsing
+    # once is attacker-chosen bytes at an attacker-chosen path.
+    try:
+        dst = Path(root) / assets.normalize_path(root, art["path"])
+    except ValueError as exc:
+        raise _api.bad_request(str(exc), artifact_id=artifact_id)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(arch, dst)
     activity.log(root, "artifact",

@@ -237,7 +237,12 @@ def _rev(scene: Any) -> str:
     process, and a session reopened next week.
     """
     blob = json.dumps(scene or {}, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+    # usedforsecurity=False says what this is: a change marker, like an ETag.
+    # Nothing authenticates on it and nothing secret goes into it, and saying
+    # so in the call is how a reader — and a scanner — can tell it apart from
+    # a digest that does carry weight.
+    return hashlib.sha1(blob.encode("utf-8"),
+                        usedforsecurity=False).hexdigest()[:12]
 
 
 def _fail(exc: Exception) -> dict:

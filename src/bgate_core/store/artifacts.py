@@ -242,7 +242,15 @@ def _promote(root: str | os.PathLike[str], artifact: dict) -> dict:
     what is actually on disk so the workspace can show "approved but not live"
     rather than a green badge over the wrong image.
     """
-    live = Path(root) / artifact["path"]
+    # Contained at read time as well as at registration — same reasoning as
+    # bgate_ui.app.artifact_restore, which performs the other half of this
+    # copy. `register()` normalises before the INSERT, so this can only fail
+    # if a future writer skips it, which is exactly what it is here to catch.
+    try:
+        live = Path(root) / assets.normalize_path(root, artifact["path"])
+    except ValueError as exc:
+        return {"ok": False, "promoted": False, "path": artifact["path"],
+                "detail": f"refusing to install outside the project: {exc}"}
     live_hash = assets.file_hash(live) if live.is_file() else ""
     if live_hash and live_hash == (artifact["hash"] or ""):
         # The build already loads exactly these bytes — nothing to install.
