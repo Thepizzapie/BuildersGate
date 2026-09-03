@@ -461,6 +461,9 @@ def _persona_line(root: str, seat: str) -> str:
 # to the wording is a text edit and a per-seat variant is a second file.
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 _SECTION_RE = re.compile(r"^\[\[([a-z_]+)\]\]\n", re.M)
+# What may appear in a per-seat template's filename. No dot, no separator, no
+# drive letter — see _override_path.
+_SEAT_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 
 
 def _prompt_sections(path: Path) -> dict[str, str]:
@@ -475,10 +478,32 @@ def _prompt_sections(path: Path) -> dict[str, str]:
     return out
 
 
+def _override_path(seat: str) -> Optional[Path]:
+    """``prompts/dispatch.<seat>.txt``, or None — CONTAINED.
+
+    The seat is a column on a work item, and a work item is filed by an agent
+    through queue_add: `..\\..\\..\\Users\\me\\.ssh\\id_rsa` is a seat name as
+    far as the database is concerned, and it used to be interpolated straight
+    into a filename that is then read and spliced into the prompt of a session
+    the board is about to spawn. Two gates, because either alone has a hole:
+    the charset refuses a separator or a dot before the path is built, and the
+    resolve-and-contain refuses anything that still leaves the directory (a
+    symlink inside prompts/, say). Same discipline as bgate_mcp.server._art_out.
+    """
+    if not _SEAT_NAME_RE.fullmatch(seat or ""):
+        return None
+    candidate = (PROMPTS_DIR / f"dispatch.{seat}.txt").resolve()
+    try:
+        candidate.relative_to(PROMPTS_DIR.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
 def _prompt_template(seat: str) -> str:
     base = _prompt_sections(PROMPTS_DIR / "dispatch.txt")
-    override = PROMPTS_DIR / f"dispatch.{seat}.txt"
-    if override.is_file():
+    override = _override_path(seat)
+    if override is not None and override.is_file():
         for name, body in _prompt_sections(override).items():
             if name in base:
                 base[name] = body

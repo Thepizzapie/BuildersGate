@@ -37,6 +37,21 @@ datas = [
     # fallback bgate_ui/window/webview2.py reads when the resource lookup fails.
     (str(ROOT / "packaging" / "icon.ico"), "."),
 ]
+# THE FLOOR'S ART AND AMBIENCE, WHICH ARE NO LONGER PART OF static/. They moved
+# into their own distribution (`builders-gate-floor-assets`, the `floor` extra),
+# so the bundle has to carry the PACKAGE rather than a subdirectory of the
+# dashboard's static tree — the installer's floor component points here, and
+# ISCC fails the build outright if this payload is missing, which is how the
+# move was caught. Shipped with its `__init__.py` so `_internal` being on
+# sys.path makes `import builders_gate_floor_assets` resolve exactly as a pip
+# install does: app.py needs no frozen-app branch.
+_FLOOR_PKG = ROOT / "packaging" / "floor-assets" / "builders_gate_floor_assets"
+if _FLOOR_PKG.is_dir():
+    datas += [
+        (str(_FLOOR_PKG / "__init__.py"), "builders_gate_floor_assets"),
+        (str(_FLOOR_PKG / "img"), "builders_gate_floor_assets/img"),
+        (str(_FLOOR_PKG / "audio"), "builders_gate_floor_assets/audio"),
+    ]
 # THE ADAPTERS THAT ARE READ AS SOURCE, NOT IMPORTED AS MODULES — and this is
 # the same disease as the two exclusions documented further down, one level
 # over. `collect_submodules` makes a module IMPORTABLE; it compiles it into the

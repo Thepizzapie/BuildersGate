@@ -486,3 +486,77 @@ def test_the_shipped_adapter_sources_still_exist():
         assert (REPO / "src" / "bgate_adapters" / name).is_file(), (
             f"packaging/bgate.spec ships bgate_adapters/{name} and no such "
             "file exists")
+
+
+ISS = REPO / "packaging" / "installer.iss"
+
+# One optional component's payload: Source: "{#SourceDir}\_internal\<what>\*"
+_ISS_SOURCE = re.compile(
+    r'Source:\s*"\{#SourceDir\}\\_internal\\([^"*]+?)\\\*"\s*;')
+# The core row's Excludes list, which must name exactly the same paths.
+_ISS_EXCLUDES = re.compile(r'Excludes:\s*"([^"]+)"')
+
+
+def _iss_component_paths() -> set[str]:
+    """The `_internal` subpaths the installer ships as optional components."""
+    return {one.strip("\\").lower()
+            for one in _ISS_SOURCE.findall(ISS.read_text(encoding="utf-8"))}
+
+
+def _iss_excluded_paths() -> set[str]:
+    """The `_internal` subpaths the core row carves out for those components."""
+    out: set[str] = set()
+    for blob in _ISS_EXCLUDES.findall(ISS.read_text(encoding="utf-8")):
+        for one in blob.split(","):
+            one = one.strip().lstrip("\\").lower()
+            if one.startswith("_internal\\"):
+                out.add(one[len("_internal\\"):])
+    return out
+
+
+def test_the_installers_component_payloads_and_its_exclusions_agree():
+    """Two lists, one fact, and nothing compared them.
+
+    A component in packaging/installer.iss is TWO edits: the core row excludes
+    the path, and the component's own row ships it. Drop the first and the
+    payload is installed for everyone, so the component is a lie; drop the
+    second and it is installed for nobody.
+    """
+    shipped, excluded = _iss_component_paths(), _iss_excluded_paths()
+    assert shipped == excluded, (
+        "packaging/installer.iss ships and excludes different paths — shipped "
+        f"by a component but not excluded from core: {sorted(shipped - excluded)}; "
+        f"excluded from core but shipped by nothing: {sorted(excluded - shipped)}")
+
+
+def test_every_installer_component_payload_is_something_the_spec_ships():
+    """The failure this exists for, observed on a real pull request.
+
+    The floor's art moved out of the dashboard's static tree into its own
+    distribution. packaging/bgate.spec learned about it; installer.iss did not,
+    so ISCC matched zero files for two `Source:` wildcards and failed the build
+    at the very last step — after a nine-minute PyInstaller run, with no error
+    text naming the paths. The spec is the only thing that decides what exists
+    under `_internal`, so this asks it directly.
+    """
+    spec = SPEC.read_text(encoding="utf-8").replace("\\", "/")
+    for path in sorted(_iss_component_paths()):
+        top = path.split("\\")[0]
+        # Third-party packages land under _internal by being imported, not by
+        # a datas entry; only our own payloads are the spec's to name.
+        if not top.startswith(("bgate", "builders_gate")):
+            continue
+        assert path.replace("\\", "/") in spec, (
+            f"installer.iss ships _internal\\{path} as a component payload "
+            "and packaging/bgate.spec puts nothing there, so ISCC will match "
+            "no files and fail the build")
+
+
+def test_the_floor_assets_the_installer_ships_exist_in_the_checkout():
+    """The floor component's payload is the assets package — a real directory
+    in this repo, not a pip install that happens at build time."""
+    pkg = REPO / "packaging" / "floor-assets" / "builders_gate_floor_assets"
+    assert (pkg / "__init__.py").is_file()
+    for sub in ("img", "audio"):
+        assert (pkg / sub).is_dir(), f"the floor pack has no {sub}/"
+        assert any((pkg / sub).rglob("*.*")), f"the floor pack's {sub}/ is empty"

@@ -1720,10 +1720,17 @@ def pt_start(payload: Optional[dict] = None) -> dict:
         return got
     except Exception as exc:
         # Sentence + code at 200, like dispatch(): the record button renders
-        # `error` as prose next to a still-usable control, and a preflight that
-        # says "your mic is muted" is advice, not a transport failure.
+        # `error` as prose next to a still-usable control, and a failure to
+        # start recording is advice, not a transport failure.
+        #
+        # THE TEXT IS api.safe_error's CONSTANT, not the exception. Everything
+        # a human can act on here — a muted mic, no ffmpeg, no capture device —
+        # is already a written refusal from playtest.preflight(), which this
+        # handler never sees; what reaches this `except` is the unanticipated
+        # failure, whose message can name paths that are not ours to repeat.
+        # See api.safe_error for why scrubbing it is not an option.
         return {"ok": False, "code": "record_failed",
-                "error": f"{type(exc).__name__}: {exc}"}
+                "error": _api.safe_error(exc)}
 
 
 @app.post("/api/playtest/stop")

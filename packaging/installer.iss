@@ -181,13 +181,16 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; \
 ; already-bundled code, so those rows stay sizeless feature switches, which
 ; is what the page's own copy now says.
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Components: core; \
-    Excludes: "\_internal\bgate_ui\static\img\floor,\_internal\bgate_ui\static\audio\floor,\_internal\av,\_internal\av.libs,\_internal\ctranslate2,\_internal\onnxruntime,\_internal\faster_whisper,\_internal\tokenizers,\_internal\hf_xet,\_internal\_sounddevice_data"; \
+    Excludes: "\_internal\builders_gate_floor_assets\img,\_internal\builders_gate_floor_assets\audio,\_internal\av,\_internal\av.libs,\_internal\ctranslate2,\_internal\onnxruntime,\_internal\faster_whisper,\_internal\tokenizers,\_internal\hf_xet,\_internal\_sounddevice_data"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceDir}\_internal\bgate_ui\static\img\floor\*"; \
-    DestDir: "{app}\_internal\bgate_ui\static\img\floor"; Components: floor; \
+; The floor's art and ambience are their own distribution now
+; (builders-gate-floor-assets), so the payload is the package inside _internal
+; rather than a corner of the dashboard's static tree. bgate.spec puts it there.
+Source: "{#SourceDir}\_internal\builders_gate_floor_assets\img\*"; \
+    DestDir: "{app}\_internal\builders_gate_floor_assets\img"; Components: floor; \
     Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceDir}\_internal\bgate_ui\static\audio\floor\*"; \
-    DestDir: "{app}\_internal\bgate_ui\static\audio\floor"; Components: floor; \
+Source: "{#SourceDir}\_internal\builders_gate_floor_assets\audio\*"; \
+    DestDir: "{app}\_internal\builders_gate_floor_assets\audio"; Components: floor; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 ; The whisper stack is VOICE's. Playtest transcripts are speech-to-text,
 ; that is the voice feature doing work for playtest, and the wizard says
