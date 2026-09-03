@@ -318,7 +318,7 @@ def stub_openai(monkeypatch):
         else:
             painter(out_path)
         return {"ok": True, "path": str(out_path), "bytes": 1, "seconds": 0.1,
-                "estimated_usd": 0.042, "model": "gpt-image-1"}
+                "usd": 0.042, "model": "gpt-image-1"}
 
     from bgate_adapters import imagegen
 
@@ -344,7 +344,7 @@ def stub_krea(monkeypatch):
         seen["painter"](out_path, bg=bg) if seen["painter"] is _flat_backdrop \
             else seen["painter"](out_path)
         return {"ok": True, "path": str(out_path), "bytes": 1, "seconds": 0.1,
-                "estimated_usd": 0.03, "provider": "krea",
+                "usd": 0.03, "provider": "krea",
                 "model": kwargs.get("model")}
 
     from bgate_adapters import krea

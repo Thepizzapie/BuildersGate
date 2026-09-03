@@ -212,7 +212,7 @@ def _stub_edit(monkeypatch, colour=(0, 255, 0, 255), calls=None):
             calls.append({"prompt": prompt, "refs": list(ref_paths), **kw})
         Image.new("RGBA", (1024, 1024), colour).save(out_path)
         return {"ok": True, "path": out_path, "seconds": 1.0,
-                "estimated_usd": 0.042, "model": "stub"}
+                "usd": 0.042, "model": "stub"}
 
     monkeypatch.setattr(imagegen, "available", lambda: {"available": True})
     monkeypatch.setattr(imagegen, "edit", fake_edit)

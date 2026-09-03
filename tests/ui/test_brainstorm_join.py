@@ -146,7 +146,7 @@ def answers(monkeypatch):
         box["asked"].append({"seat": seat, "system": system, "turns": turns})
         text = box["replies"].get(seat, f"{seat or 'partner'} says something")
         return {"ok": True, "text": text, "model": "test", "seconds": 0.0,
-                "estimated_usd": 0.25}
+                "usd": 0.25}
 
     monkeypatch.setattr(_route, "_ask", fake)
     return box

@@ -200,9 +200,22 @@ class TestPowerShellIsFenced:
         return {"tool_name": "PowerShell", "cwd": cwd,
                 "tool_input": {"command": command}}
 
-    def test_a_write_shaped_command_is_refused_for_a_seat(self, root):
+    def test_an_out_of_lane_write_is_refused_for_a_seat(self, root):
         code, msg = hook.decide(self._payload(
-            "Set-Content game/foo.gd 'x'", str(root)), "tech", mode="block")
+            "Set-Content game/assets/rock.png 'x'", str(root)), "gameplay",
+            mode="block")
+        assert code == hook.BLOCK
+        assert "PowerShell" in msg and "lanes" in msg
+
+    def test_an_in_lane_write_passes_the_seat(self, root):
+        code, _ = hook.decide(self._payload(
+            "Set-Content game/scripts/player.gd 'x'", str(root)), "gameplay",
+            mode="block")
+        assert code == hook.ALLOW
+
+    def test_an_unreadable_target_is_refused_in_block_mode(self, root):
+        code, msg = hook.decide(self._payload(
+            "Set-Content $target 'x'", str(root)), "gameplay", mode="block")
         assert code == hook.BLOCK
         assert "PowerShell" in msg
 

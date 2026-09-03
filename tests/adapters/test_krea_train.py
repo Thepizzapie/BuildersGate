@@ -166,7 +166,7 @@ class TestTrainEndToEnd:
         assert got["images"] == 10 and got["sources"] == paths
         # NOT a number: Krea publishes no training price, and an under-quote is
         # worse than a missing one because a spend ceiling would pass it.
-        assert got["estimated_usd"] is None
+        assert got["usd"] is None
 
     def test_wait_false_hands_back_the_job_without_blocking(self, tmp_path,
                                                             monkeypatch):
@@ -204,7 +204,7 @@ class TestUpload:
             sent["body"] = req.data
             return Resp()
 
-        monkeypatch.setattr(krea.urllib.request, "urlopen", fake_open)
+        monkeypatch.setattr("urllib.request.urlopen", fake_open)
         monkeypatch.setenv("KREA_API_KEY", "test-key")
         got = krea.upload(_png(tmp_path / "anchor.png"), description="the anchor")
         assert got["image_url"] == "https://k/a1.png"
@@ -221,7 +221,7 @@ class TestUpload:
             def __enter__(self): return self
             def __exit__(self, *a): return False
 
-        monkeypatch.setattr(krea.urllib.request, "urlopen", lambda *a, **kw: Resp())
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: Resp())
         monkeypatch.setenv("KREA_API_KEY", "test-key")
         with pytest.raises(krea.KreaError) as exc:
             krea.upload(_png(tmp_path / "a.png"))

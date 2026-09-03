@@ -44,12 +44,13 @@ from typing import Any
 CAPABILITIES: dict[str, tuple[str, ...]] = {
     "image": ("kie", "krea", "openai"),
     "animate": ("retrodiffusion",),
-    "three_d": ("krea",),
+    "three_d": ("krea", "stability", "tripo", "meshy", "rodin"),
     "music": ("kie",),
     "video": ("kie",),
 }
 
-PROVIDERS = ("openai", "krea", "kie", "retrodiffusion")
+PROVIDERS = ("openai", "krea", "kie", "retrodiffusion",
+             "stability", "tripo", "meshy", "rodin")
 
 # Balance probes are network calls; a burst of billing failures must not turn
 # into a burst of probes. Per (root, provider), seconds.
@@ -116,6 +117,13 @@ def _probe(provider: str, root) -> dict:
                     row["balance"] = float(value) if value is not None else None
                 except Exception:
                     row["balance"] = None
+        else:
+            # The rest are declared in providers.PROVIDERS with a probe that
+            # borrows their adapter's available(); none exposes a balance.
+            from . import providers as _providers
+            got = _providers.by_id(provider).probe(root)
+            row["keyed"] = bool(got.get("available"))
+            row["reason"] = str(got.get("reason") or "")
     except Exception as exc:
         # TYPE NAME ONLY in the row, deliberately. The rows this builds go out
         # over HTTP (/api/providers/balances), and an exception's MESSAGE can
@@ -225,8 +233,19 @@ _BILLING_SIGNS = ("no credit", "insufficient credit", "out of credit",
                   "top it up", "balance")
 
 
-def is_billing_error(text: str) -> bool:
-    lowered = str(text or "").lower()
+def is_billing_error(error) -> bool:
+    """Is this failure about the ACCOUNT rather than the request?
+
+    A :class:`bgate_adapters._http.ProviderError` answers for itself - the
+    flag is set where the 402 or the balance sentence was read - and the
+    substring match is only the fallback for a bare string or a foreign
+    exception (the openai SDK's, say) that carries no flag.
+    """
+    from bgate_adapters._http import ProviderError
+
+    if isinstance(error, ProviderError):
+        return bool(error.billing)
+    lowered = str(error or "").lower()
     return any(sign in lowered for sign in _BILLING_SIGNS)
 
 

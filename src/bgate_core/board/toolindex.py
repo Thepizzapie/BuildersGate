@@ -115,7 +115,8 @@ def matches(tools, task: str) -> list[tuple[str, str]]:
     return sorted(found)
 
 
-def render(tools, *, task: str = "", seat: str = "") -> str:
+def render(tools, *, task: str = "", seat: str = "",
+           hidden: dict[str, list[str]] | None = None) -> str:
     """The index as text: grouped, one line per tool, no schemas."""
     if task:
         rows = matches(tools, task)
@@ -144,10 +145,30 @@ def render(tools, *, task: str = "", seat: str = "") -> str:
         lines.append(f"\nSPINE - {SPINE_BLURB}")
         for name, head in by_group["spine"]:
             lines.append(f"  {name:<28} {head}")
+    lines.extend(_hidden_lines(hidden, full=True))
     return "\n".join(lines)
 
+def _hidden_lines(hidden, *, full: bool) -> list[str]:
+    """The crafts this seat could `tool_unlock`, so the map shows what exists
+    beyond the schemas in context rather than implying the surface ends here."""
+    if not hidden:
+        return []
+    out = ["\nNOT LOADED for this seat - tool_unlock(craft) registers them, or "
+           "file the work with the seat that holds the craft:"]
+    for craft in sorted(hidden):
+        names = hidden[craft]
+        blurb = CRAFT_BLURBS.get(craft, "")
+        if full:
+            out.append(f"  {craft} ({len(names)} tools" + (f": {blurb}" if blurb else "")
+                       + "): " + ", ".join(names))
+        else:
+            out.append(f"  {craft}: {len(names)} tools" + (f" - {blurb}" if blurb else ""))
+    return out
 
-def compact(tools, *, seat: str = "") -> str:
+
+
+def compact(tools, *, seat: str = "",
+            hidden: dict[str, list[str]] | None = None) -> str:
     """NAMES ONLY, grouped — the version that rides in the instructions block.
 
     The full `render` is ~230 lines and belongs in a tool result the agent asks
@@ -167,4 +188,5 @@ def compact(tools, *, seat: str = "") -> str:
     if by_group.get("spine"):
         names = ", ".join(n for n, _ in by_group["spine"])
         lines.append(f"  spine ({SPINE_BLURB}): {names}")
+    lines.extend(_hidden_lines(hidden, full=False))
     return "\n".join(lines)

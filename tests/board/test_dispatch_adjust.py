@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from bgate_core.store import project
-from bgate_core.board import queue
+from bgate_core.board import agentreg, queue
 from bgate_ui.agents import dispatch
 
 # The fake CLI harness. Imported, never rebuilt.
@@ -47,7 +47,6 @@ def clean_module_tables():
                     entry[key].close()
                 except Exception:
                     pass
-        dispatch._done.clear()
         dispatch._activity.clear()
         dispatch._reconciled.clear()
         dispatch._starting.clear()
@@ -425,7 +424,6 @@ class TestFinishedRunRetention:
         dispatch._reap(str(root), 1, _entry(root, 1, code=0), 0)
         assert dispatch.status(str(root))
         monkeypatch.setattr(dispatch, "RETAIN_S", -1)
-        dispatch._prune_retained()
         assert dispatch.status(str(root)) == []
 
     def test_another_projects_runs_are_not_shown(self, root, tmp_path):
@@ -572,18 +570,20 @@ class TestReservationNeverStrands:
             dispatch.dispatch(str(root), item["id"])
         assert queue.get(root, item["id"])["status"] == "queued"
         assert item["id"] not in dispatch._live
-        # No process was created, so the pid ledger holds nothing for it.
-        assert dispatch._read_pids(str(root)) == {}
+        # No process was created, so no run row was opened for it.
+        assert agentreg.open_runs(str(root)) == []
 
 
 # --- 10. never kill a process we cannot identify ----------------------------
 class TestOrphanIdentity:
-    def _ledger(self, root, pid, **meta):
-        path = Path(root) / ".bgate" / "agents" / "pids.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({str(pid): {"item_id": 3, **meta}}),
-                        encoding="utf-8")
-        return path
+    def _ledger(self, root, pid, spawned_at=0.0, name="", started=None):
+        """An open run row left by a previous server run."""
+        from bgate_core.store import db
+        with db.tx(root) as conn:
+            conn.execute(
+                "INSERT INTO agent_runs (project, item_id, pid, proc_started, "
+                "proc_name, started_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (str(root), 3, pid, started, name, spawned_at))
 
     def test_a_claude_that_is_not_ours_is_spared(self, root, monkeypatch):
         """The user's own claude session, sitting on a recycled pid."""
@@ -627,8 +627,8 @@ class TestOrphanIdentity:
     def test_the_ledger_records_an_identity_to_check_against(self, root):
         if not dispatch._proc_identity(os.getpid()).get("started"):
             pytest.skip("this host cannot read process start times")
-        dispatch._record_pid(str(root), os.getpid(), 3)
-        meta = json.loads((Path(root) / ".bgate" / "agents" / "pids.json")
-                          .read_text(encoding="utf-8"))[str(os.getpid())]
-        assert meta["started"] and meta["name"]
+        agentreg.record(os.getpid(), item_id=3, root=str(root),
+                        name=dispatch._proc_identity(os.getpid()).get("name", ""))
+        meta = agentreg.open_runs(str(root))[0]
+        assert meta["proc_started"] and meta["proc_name"]
         assert dispatch._is_recorded_agent(os.getpid(), meta) is False  # not claude

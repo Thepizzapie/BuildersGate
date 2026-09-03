@@ -44,15 +44,23 @@ LANE_MODES = ("collide", "warn", "block")
 DEFAULT_LANE_MODE = "warn"
 
 
-def lane_mode() -> str:
+def lane_mode(root=None) -> str:
     """How hard to enforce a seated worker's lane. Never raises.
 
-    Unrecognised values map to the default rather than erroring — BGATE_LANES
-    is set by hand and by dispatch, and a typo that silently hardened (or
-    disabled) the gate would be worse than either mode.
+    An explicit BGATE_LANES wins; otherwise the enforcement profile
+    (bgate_core.board.enforcement) supplies the mode. Unrecognised values
+    fall through to the profile rather than erroring — BGATE_LANES is set by
+    hand and by dispatch, and a typo that silently hardened (or disabled) the
+    gate would be worse than either mode.
     """
     chosen = os.environ.get("BGATE_LANES", "").strip().lower()
-    return chosen if chosen in LANE_MODES else DEFAULT_LANE_MODE
+    if chosen in LANE_MODES:
+        return chosen
+    try:
+        from . import enforcement
+        return enforcement.ladder("lanes", root)
+    except Exception:
+        return DEFAULT_LANE_MODE
 
 # ---------------------------------------------------------------------------
 # THE LAYERED 3D SEQUENCE — KIND-KEYED, NOT ALWAYS-ON.

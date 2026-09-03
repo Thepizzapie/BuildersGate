@@ -91,7 +91,7 @@ class TestPriceIsUnknownNotFree:
         """The gate fires before the request, so nothing is charged."""
         got = krea.generate_3d("out.glb", images=["plate.png"], model="tripo")
         assert got["ok"] is False
-        assert got["estimated_usd"] is None
+        assert got["usd"] is None
         assert "confirm_unpriced" in got["error"]
         assert not captured, "the gate let a request through"
 
@@ -118,7 +118,7 @@ class TestPriceIsUnknownNotFree:
         got = krea.generate_3d("out.glb", images=["p.png"], model="tripo",
                                confirm_unpriced=True)
         assert got["ok"] is False
-        assert got["estimated_usd"] is None
+        assert got["usd"] is None
 
 
 class TestUnsupportedParametersAreRefusedNotDropped:
@@ -246,7 +246,7 @@ class TestTheResultIsADraft:
                                confirm_unpriced=True)
         assert got["ok"] is True
         assert got["draft"] is True
-        assert got["estimated_usd"] == 0.30
+        assert got["usd"] == 0.30
         assert got["next_steps"]
 
     def test_an_undocumented_result_field_is_found_rather_than_crashed_on(

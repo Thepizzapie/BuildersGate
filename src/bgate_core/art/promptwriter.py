@@ -54,10 +54,11 @@ def available(root: Any = None) -> dict:
             envfile.load_project_env(root)
         except Exception:
             pass
-    if not (os.environ.get("OPENAI_API_KEY") or "").strip():
-        return {"available": False,
-                "reason": "OPENAI_API_KEY not set — put it in the project's "
-                          ".env (gitignored, loaded per project)"}
+    from bgate_adapters import imagegen
+
+    got = imagegen.available()   # the openai adapter's own verdict
+    if not got.get("available"):
+        return {"available": False, "reason": str(got.get("reason") or "")}
     return {"available": True, "model": _model(root)}
 
 
@@ -83,7 +84,7 @@ def expand(text: str, *, subject: str = "", task_kind: str = "",
            root: Any = None, timeout: float = 60.0) -> dict:
     """Rewrite `text` into an image prompt.
 
-    Returns the adapters' shared shape — ``{ok, text, seconds, estimated_usd}``
+    Returns the adapters' shared shape — ``{ok, text, seconds, usd}``
     or ``{ok: False, error}`` — so a caller does not care whether the thing that
     produced a value was a text model or an image model.
     """
@@ -91,12 +92,12 @@ def expand(text: str, *, subject: str = "", task_kind: str = "",
     note = (text or "").strip()
     if not note:
         return {"ok": False, "error": "nothing to expand — write a rough note first",
-                "seconds": 0.0, "estimated_usd": 0.0}
+                "seconds": 0.0, "usd": 0.0}
 
     ready = available(root)
     if not ready["available"]:
         return {"ok": False, "error": ready["reason"],
-                "seconds": 0.0, "estimated_usd": 0.0}
+                "seconds": 0.0, "usd": 0.0}
 
     ask = note
     if subject:
@@ -118,12 +119,12 @@ def expand(text: str, *, subject: str = "", task_kind: str = "",
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                 "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": 0.0}
+                "usd": 0.0}
 
     if not written:
         return {"ok": False, "error": "the model returned an empty prompt",
                 "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": USD_PER_CALL}
+                "usd": USD_PER_CALL}
 
     # Models like to wrap a single answer in quotes despite being told not to.
     if len(written) > 1 and written[0] == written[-1] and written[0] in "\"'":
@@ -131,4 +132,4 @@ def expand(text: str, *, subject: str = "", task_kind: str = "",
 
     return {"ok": True, "text": written, "model": _model(root),
             "seconds": round(time.monotonic() - started, 2),
-            "estimated_usd": USD_PER_CALL}
+            "usd": USD_PER_CALL}

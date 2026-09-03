@@ -634,7 +634,7 @@ class TestTheViewRoutesTheGeometry:
             calls.append(kw)
             colour = (200, 180, 140, 255) if len(calls) == 1 else (20, 8, 30, 255)
             Image.new("RGBA", (1024, 1024), colour).save(out_path)
-            return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
+            return {"ok": True, "path": str(out_path), "usd": 0.02}
 
         monkeypatch.setattr(kie, "generate_image", fake_generate)
         # The paid gate asks the gateway before spending; a keyless test env
@@ -678,7 +678,7 @@ class TestTheViewRoutesTheGeometry:
 
         def fake_generate(prompt, out_path, **kw):
             Image.new("RGBA", (1024, 1024), (200, 180, 140, 255)).save(out_path)
-            return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
+            return {"ok": True, "path": str(out_path), "usd": 0.02}
 
         monkeypatch.setattr(kie, "generate_image", fake_generate)
         monkeypatch.setattr(gateway, "pick", lambda root, cap: {
@@ -737,7 +737,7 @@ class TestTheViewRoutesTheGeometry:
 
         def fake_generate(prompt, out_path, **kw):
             Image.new("RGBA", (1024, 1024), (170, 150, 120, 255)).save(out_path)
-            return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
+            return {"ok": True, "path": str(out_path), "usd": 0.02}
 
         monkeypatch.setattr(kie, "generate_image", fake_generate)
         monkeypatch.setattr(gateway, "pick", lambda root, cap: {

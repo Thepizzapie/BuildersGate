@@ -392,7 +392,7 @@ class TestReferencePlumbing:
                             lambda *a, **k: pytest.fail("must not reach Krea"))
         got = krea.generate("a fighter", str(tmp_path / "o.png"),
                             ref_paths=[str(tmp_path / "gone.png")])
-        assert got["ok"] is False and got["estimated_usd"] == 0.0
+        assert got["ok"] is False and got["usd"] == 0.0
 
     def test_which_models_can_be_anchored_at_all(self):
         """imagen and flux-1.1-pro are prompt-only, so "generate conditioned on
@@ -427,7 +427,7 @@ class TestReferencePricing:
         got = krea.generate("a fighter", str(tmp_path / "o.png"),
                             ref_paths=[png])
         assert got["ok"] is True
-        assert got["estimated_usd"] == 0.065
+        assert got["usd"] == 0.065
 
     def test_a_plain_generation_is_still_quoted_plain(self, monkeypatch,
                                                       tmp_path):
@@ -437,7 +437,7 @@ class TestReferencePricing:
                                             "result": {"urls": ["http://x/i.png"]}})
         monkeypatch.setattr(krea, "download", lambda url, out, **k: 4)
         got = krea.generate("a fighter", str(tmp_path / "o.png"))
-        assert got["estimated_usd"] == 0.06
+        assert got["usd"] == 0.06
 
 
 class TestGptImageReferenceSurface:

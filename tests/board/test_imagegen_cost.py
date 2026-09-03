@@ -4,8 +4,8 @@ The price table in imagegen has always existed and nothing ever put a number in
 front of a human: no elapsed time, no dollars, no ledger row. These tests pin
 the three things that make the art lab's "$0.42 spent · 18.4s" honest:
 
-  1. every generate/edit result carries ``seconds`` and ``estimated_usd``;
-  2. ``estimated_usd`` comes from IMAGE_PRICE_USD — never a number invented
+  1. every generate/edit result carries ``seconds`` and ``usd``;
+  2. ``usd`` comes from IMAGE_PRICE_USD — never a number invented
      somewhere else, and never drifting between quality tiers;
   3. passing ``root`` appends a spend_event so ``spend.for_logical`` — the exact
      call the lab header makes — can answer what an asset cost.
@@ -58,20 +58,20 @@ class TestResultCarriesCostAndLatency:
         assert got["ok"] is True, got
         assert isinstance(got["seconds"], float)
         assert got["seconds"] >= 0
-        assert got["estimated_usd"] == imagegen.IMAGE_PRICE_USD["medium"]
+        assert got["usd"] == imagegen.IMAGE_PRICE_USD["medium"]
 
     def test_edit_returns_seconds_and_usd(self, stub):
         got = imagegen.edit("same character, jab", [str(stub["ref"])],
                             str(stub["tmp"] / "e.png"), quality="high")
         assert got["ok"] is True, got
         assert isinstance(got["seconds"], float)
-        assert got["estimated_usd"] == imagegen.IMAGE_PRICE_USD["high"]
+        assert got["usd"] == imagegen.IMAGE_PRICE_USD["high"]
 
     @pytest.mark.parametrize("quality", ["low", "medium", "high", "auto"])
     def test_price_comes_from_the_one_table(self, stub, quality):
         got = imagegen.generate("x", str(stub["tmp"] / f"{quality}.png"),
                                 quality=quality)
-        assert got["estimated_usd"] == imagegen.price_per_image(quality)
+        assert got["usd"] == imagegen.price_per_image(quality)
 
     def test_failed_call_still_reports_elapsed_and_no_charge(self, tmp_path,
                                                              monkeypatch):
@@ -90,17 +90,17 @@ class TestResultCarriesCostAndLatency:
         assert got["ok"] is False
         assert "quota exhausted" in got["error"]
         assert got["seconds"] >= 0
-        assert got["estimated_usd"] == 0.0
+        assert got["usd"] == 0.0
 
     def test_cost_meta_is_what_lands_in_artifact_metadata(self, stub):
         got = imagegen.generate("x", str(stub["tmp"] / "m.png"), quality="low")
         meta = imagegen.cost_meta(got)
-        assert set(meta) == {"seconds", "estimated_usd"}
-        assert meta["estimated_usd"] == imagegen.IMAGE_PRICE_USD["low"]
+        assert set(meta) == {"seconds", "usd"}
+        assert meta["usd"] == imagegen.IMAGE_PRICE_USD["low"]
         assert meta["seconds"] == got["seconds"]
         # A caller that hands over nothing gets nulls, not an exception —
         # register-time metadata must never be the thing that fails a render.
-        assert imagegen.cost_meta({}) == {"seconds": None, "estimated_usd": None}
+        assert imagegen.cost_meta({}) == {"seconds": None, "usd": None}
 
 
 class TestTheLedgerIsWritten:

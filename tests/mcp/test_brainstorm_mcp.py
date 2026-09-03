@@ -246,7 +246,7 @@ class TestATurnCannotDispatch:
         def fake(root, system, turns, **kw):
             seen.append({"system": system, "turns": turns, **kw})
             return {"ok": True, "text": "asked", "model": "test",
-                    "seconds": 0.0, "estimated_usd": 0.0}
+                    "seconds": 0.0, "usd": 0.0}
 
         monkeypatch.setattr(_bs, "ask", fake)
         session = await call("brainstorm_new")

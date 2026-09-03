@@ -83,12 +83,11 @@
       <div class="schip" id="sb-agents" title="Agents currently executing a task."><span class="l"></span> <b>0</b> running</div>
       <button class="schip" id="sb-vault" onclick="setWorkspace('assets',document.querySelector('.rail-item[data-view=&quot;assets&quot;]'))"><span class="l"></span> vault <b>-</b></button>
       <!-- THE BELL'S SLOT MOVED TO THE 4a HEADER and must exist exactly once:
-           notify.js and streamer.js both find it with getElementById, which
-           returns the FIRST in document order. With a copy here as well, which
-           one they filled was decided by where the shell island happens to sit
-           in the markup — it worked, by accident, and any reordering would have
-           moved the bell with no error. The header renders it now
-           (frontend/src/shell/Shell.tsx). -->
+           streamer.js finds #nt-host with getElementById, which returns the
+           FIRST in document order. With a copy here as well, which one it
+           anchored to was decided by where the shell island happens to sit in
+           the markup. The header renders the bell now
+           (frontend/src/shell/Bell.tsx). -->
     </div>
     <div class="stage-body">
 
@@ -106,8 +105,6 @@
            that only a human may open. -->
       <section class="deck-view" id="view-brainstorm"><div data-react="brainstorm"></div></section>
 
-      <!-- THE BOARD — the same queue, arranged by who is doing it. -->
-      <section class="deck-view" id="view-board"><div data-react="board"></div></section>
 
       <section class="deck-view active" id="view-overview">
         <div class="view-heading"><div><span class="eyebrow">Command deck</span><h2>Overview</h2></div><p>The studio at a glance - live agents, the queue, the build.</p></div>
@@ -174,60 +171,12 @@
         <div id="me-page" class="editor-page"></div>
       </section>
 
-      <section class="deck-view" id="view-playtests">
-        <div class="view-heading"><div><span class="eyebrow">Evidence</span><h2>Playtests</h2></div><p>Play the current build and record a session - then open a recording for video, transcript, telemetry, and the director's triage.</p></div>
-        <!-- Play &amp; record lives here, next to the recordings it produces.
-             On Overview it sat under the stats and the activity ledger, so the
-             control that creates the evidence was in a different view from the
-             evidence. -->
-        <div class="panel playpanel" style="margin-bottom:20px">
-          <div class="ptbar">
-            <span class="lamp" id="pt-lamp"></span>
-            <span id="pt-msg">checking playtest gear…</span>
-            <input class="pt-goal" id="pt-goal" placeholder="Iteration goal" maxlength="160">
-            <select class="pt-target" id="pt-target" aria-label="Playtest target">
-              <option value="web">web build</option>
-              <option value="native">native Godot</option>
-            </select>
-            <!-- TWO THINGS, TWO CONTROLS. There used to be one button that
-                 said "record", a separate "boot current build" in the middle
-                 of the panel, and a kill button that appeared and disappeared
-                 -- three controls for two ideas, and no way to tell from
-                 looking which of them would end what. Running the build and
-                 recording a session are independent: you can play without
-                 recording, and a recording of a native game does not use the
-                 panel's build at all. So each gets its own start/stop, each
-                 says which of the two it acts on, and neither ever silently
-                 does the other's job. -->
-            <span class="pt-controls">
-              <button class="qbtn small" id="pt-build" onclick="toggleBuild()"
-                      title="Start or stop the game build in this panel">▶ start build</button>
-              <button class="qbtn small" id="pt-btn" onclick="toggleRecord()"
-                      title="Start or stop recording a playtest session"
-                      disabled>● start recording</button>
-            </span>
-          </div>
-          <!-- What is actually missing, in full, with the command that fixes it. -->
-          <div class="pt-why" id="pt-why" hidden></div>
-          <div id="play-holder">
-            <button class="playbtn" onclick="loadGame()">▶ boot current build</button>
-            <!-- WHETHER THE BUILD IS CURRENT, SAID RATHER THAN ASSUMED. Booting
-                 already rebuilds a stale export before it plays (see loadGame),
-                 so "boot current build" has always been true - but the screen
-                 never said so, and a button that promises CURRENT with nothing
-                 backing the claim is a promise a reader has to take on faith.
-                 webbuild.status() has returned `newest_source` and `reason` for
-                 exactly this and nothing read them. -->
-            <div class="playhint" id="play-fresh"></div>
-            <div class="playhint" id="play-controls">Controls come from your game's own input map - F1 opens live tuning over the running build.</div>
-          </div>
-        </div>
-        <div class="spanel k-read">
-          <div class="sec-h"><span data-icon="playtests" data-icon-size="15"></span>
-            <h3 class="sec-t">Recorded sessions</h3></div>
-          <div class="compact-list" id="sessions"></div>
-        </div>
-      </section>
+      <!-- REACT ISLAND — frontend/src/views/playtests/. Play & record, the
+           recorded-sessions list, the review overlay (video, triage, telemetry,
+           transcript) and the notepad drawer are all rendered from there. The
+           sessions arrive on pollState()'s /api/state push (store.ts); the
+           recorder polls /api/playtest/status itself, on playtest.* events. -->
+      <section class="deck-view" id="view-playtests"><div data-react="playtests"></div></section>
 
       <!-- REACT ISLAND — frontend/src/views/assets/. The heading actions, the
            review queue, the tracked-binaries table and the detail drawer are
@@ -247,8 +196,9 @@
 
       <section class="deck-view" id="view-world">
         <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible and keep the fiction honest. Everything here is authored by you - the pipeline reads it.</p></div>
-        <div class="seat-subnav" id="world-subnav"></div>
-        <div id="world-root"><div class="empty">loading world…</div></div>
+        <!-- REACT ISLAND — frontend/src/views/world/. The bible editor, its
+             reference anchors and the lore graph; it draws its own sub-nav. -->
+        <div data-react="world"></div>
       </section>
 
       <section class="deck-view" id="view-atlas">
@@ -280,15 +230,9 @@
 </aside>
 
 <div id="lightbox" onclick="this.style.display='none'"><img id="lightimg" alt=""></div>
-<div class="review-overlay" id="review-overlay">
-  <div class="review-shell">
-    <div class="review-head">
-      <h3 id="review-title">Playtest review</h3>
-      <button class="qbtn ghost" onclick="closeReview()">close</button>
-    </div>
-    <div class="review-body" id="review-body"></div>
-  </div>
-</div>
+<!-- The playtest review overlay is mounted on <body> by the Playtests island
+     (frontend/src/views/playtests/Review.tsx) while a session is open. -->
+
 <!-- First run. The whole shell is meaningless without a project, so this covers
      it rather than sitting in a panel behind nine empty nav items. -->
 <div class="firstrun" id="firstrun" hidden>
@@ -309,6 +253,9 @@
 </div>
 <footer id="foot" style="display:none">builders gate · local floor · 127.0.0.1</footer>
 
+<!-- The event bus. Loaded before the page script so its watchers below can
+     replace the timers that used to ask the server whether anything happened. -->
+<script src="/static/events.js"></script>
 <script>
 /* ── colour ground ────────────────────────────────────────────────────────
    "system" removes the attribute rather than resolving it, so the page keeps
@@ -550,12 +497,11 @@ const DECK_CRUMB = {
  * studio…" until you clicked the rail item it was already on. Now the same
  * function runs again once the modules have registered. */
 function activateWorkspace(name){
-  const owners = { studio: "Studio", atlas: "Atlas",
-                   world: "World", assets: "AssetLib",
+  const owners = { studio: "Studio", atlas: "Atlas", assets: "AssetLib",
                    spriteedit: "SpriteEdit", audiolab: "AudioLab", modeledit: "ModelEdit" };
   if (name === "atlas") return setAtlasMode(atlasMode);
-  // Agents needs no owner: the console is a React island now
-  // (frontend/src/shell/agents/) and mounts itself.
+  // Agents and World need no owner: both are React islands now
+  // (frontend/src/shell/agents/, frontend/src/views/world/) and mount themselves.
   const mod = window[owners[name]];
   if (mod && typeof mod.activate === "function") { mod.activate(); return true; }
   return !owners[name];   // a view with no module is already "activated"
@@ -637,9 +583,8 @@ function setWorkspace(name, trigger){
   // that highlights a screen you are not on is worse than no highlight.
   window.dispatchEvent(new CustomEvent("bgate:workspace", { detail:{ name: next } }));
   activateWorkspace(next);
-  // The overview refreshes itself — it is a React island that watches this
-  // deck's .active class and polls only while it is on screen.
-  if (next === "overview"){ ptPreflight(false); }
+  // The overview and the playtests deck refresh themselves — both are React
+  // islands that watch their deck's .active class and poll only on screen.
   const body = document.querySelector(".stage-body"); if (body) body.scrollTop = 0;
 }
 
@@ -743,179 +688,15 @@ function show(rel){
   document.getElementById("lightbox").style.display = "flex";
 }
 
-/* The World view is a WRITE surface now (bible editor, lore graph) and lives in
- * static/world.js — the read-only chip list that used to be rendered here was
- * the producer's whole complaint. It also carried a draggable cut line until
- * the tier system came out; see world.js. */
+/* The World view is a WRITE surface (bible editor, reference anchors, lore
+ * graph) and is a React island, frontend/src/views/world/ — the read-only chip
+ * list that used to be rendered here was the producer's whole complaint. */
 
 
-function renderSessions(sessions){
-  document.getElementById("sessions").innerHTML = sessions.length
-    ? sessions.map(s => `<div class="sess" onclick="openSession(${s.id})"><span class="nm">${esc(s.name)}</span>
-        <span>${s.duration_s ? s.duration_s.toFixed(0)+"s" : ""}</span>
-        <span class="st">${esc(s.processing_stage || s.status)}</span>
-        ${(s.status === "failed" || (s.status === "processing" && s.processing_worker === "stalled")) && s.audio_path
-          ? `<button class="qbtn small ghost" onclick="event.stopPropagation();retrySession(${s.id})">retry</button>` : ""}
-        </div>`).join("")
-    : `<div class="empty">no playtests yet - playtest_check, then playtest_start</div>`;
-}
-async function retrySession(id){
-  const r = await mutate(`/api/playtest/${id}/retry`, {ok:`session ${id} re-queued`});
-  if (!r.ok) return;
-  pollState(); ptPoll();
-}
-
-let activeReviewSession = null;
-function closeReview(){
-  document.getElementById("review-overlay").style.display = "none";
-  activeReviewSession = null;
-  activeReviewOffset = 0;
-}
-/* options() lived here to build the seat and kind <select>s on every feedback
- * card. Those selects are refinements now and are built, lazily, by ptreview.js
- * only for the row whose drawer is open. */
-async function openSession(id){
-  activeReviewSession = id;
-  const overlay = document.getElementById("review-overlay");
-  const body = document.getElementById("review-body");
-  overlay.style.display = "block";
-  body.innerHTML = `<div class="empty">loading session ${id}…</div>`;
-  const d = await readJSON(`/api/playtest/${id}`, null);
-  if (!d || d.__error){
-    body.innerHTML = `<div class="empty err">could not load session ${id} - `
-      + `${esc((d && d.__error) || "no response")}</div>`;
-    return;
-  }
-  activeReviewOffset = Number(d.session.video_offset_s ?? d.video_offset_s ?? 0) || 0;
-  document.getElementById("review-title").textContent = `Playtest ${id} - ${d.session.name}`;
-  const telemetry = d.telemetry_backed
-    ? `<span class="chip">${d.counts.events} telemetry events</span>`
-    : `<span class="chip drift">no telemetry</span>`;
-  const duration = Math.max(Number(d.session.duration_s || 0), 1);
-  const T = d.telemetry || {by_kind:{}, settings:[], moments:[], fps:null, total:0};
-  const fmtT = t => { const s=Math.max(0,Number(t)||0); return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`; };
-  const fmtV = v => (typeof v==="number") ? (Number.isInteger(v)?String(v):v.toFixed(2)) : esc(String(v));
-  const snapshot = d.iteration;
-  body.innerHTML = `
-    ${d.coverage_warnings?.length ? `<div class="coverage-warnings">${d.coverage_warnings.map(w =>
-      `<span class="coverage-warning">${esc(w.message)}</span>`).join("")}</div>` : ""}
-    <div class="review-summary">
-      <span>${esc(d.session.status)}</span><span>${Number(d.session.duration_s||0).toFixed(1)}s</span>
-      <span>${d.counts.items} feedback items</span><span>build ${esc(d.session.build_ref || "unknown")}</span>${telemetry}
-    </div>
-    ${snapshot ? `<div class="work-link">
-      <b>iteration ${snapshot.id}</b>
-      <span>commit ${esc((snapshot.source_commit || "unversioned").slice(0,12))}</span>
-      <span>dirty ${esc((snapshot.dirty_fingerprint || "none").slice(0,12))}</span>
-      <span>source ${esc((snapshot.source_fingerprint || "none").slice(0,12))}</span>
-      <span>export ${esc((snapshot.export_hash || "missing").slice(0,12))}</span>
-      <span>${snapshot.active_artifact_ids.length} active assets</span>
-      <span>tests ${esc(snapshot.tests?.status || "unknown")}</span>
-      <span>telemetry schema v${snapshot.telemetry_schema_version}</span>
-    </div>` : ""}
-    ${d.has_video ? `<div class="video-stage">
-      <video class="review-video" id="review-video" controls src="/api/playtest/${id}/video"></video>
-      <div class="marker-track">${d.timeline_markers.map(marker =>
-        `<button class="timeline-marker" style="left:${Math.min(100,marker.t/duration*100)}%" title="${esc(marker.kind)} · ${esc(marker.text)}" onclick="seekReview(${marker.t})"></button>`
-      ).join("")}</div>
-    </div>` : ""}
-    <!-- TRIAGE SITS DIRECTLY UNDER THE RECORDING, above the telemetry readout.
-         Deciding what to do with the feedback is the reason this overlay opens;
-         it used to be the fifth thing down, under two summaries, a hash dump
-         and a settings log, so the reader scrolled past everything they were
-         not there for to reach the only part with actions on it.
-         Triage is its own surface now: static/ptreview.js. It was 60 lines of
-         template here that put nine controls and three badges at one weight
-         around a single sentence, with no primary action anywhere on the row. -->
-    <div id="pt-triage"></div>
-    <div class="tele-panel">
-      <h2>What the recording captured</h2>
-      <div class="tele-kinds">
-        ${Object.entries(T.by_kind).sort((a,b)=>b[1]-a[1]).map(([k,n])=>
-          `<span class="chip">${esc(k)} ×${n}</span>`).join("")
-          /* THE BADGE NAMES ITS CAUSE NOW, AND OFFERS THE FIX.
-             It said "no telemetry - this session was audio only" and nothing
-             else, on a project that had been recording for 28 sessions with the
-             addon never installed. That is the point at which the absence costs
-             the user something, which is exactly where this panel's own rule
-             says it belongs - it just never said WHY, so there was nothing to
-             act on. `installable` comes from the same preflight check that now
-             reports it before a session too. */
-          || `<span class="chip drift">no telemetry - this session was audio only</span>
-              <span class="tele-why" id="tele-why">checking why…</span>`}
-        ${T.fps ? `<span class="chip">fps ${T.fps.min}–${T.fps.max} · avg ${T.fps.avg}</span>` : ""}
-      </div>
-
-      <h3>Tuning changes you made · ${T.settings.length}</h3>
-      ${T.settings.length ? `<div class="tuning-list">${T.settings.map(s => `
-        <button class="tuning-row" onclick="seekReview(${Number(s.t)})" title="jump to ${fmtT(s.t)} in the video">
-          <span class="tuning-time">${fmtT(s.t)}</span>
-          ${s.group ? `<span class="chip">${esc(s.group)}</span>` : ""}
-          <span class="tuning-key">${esc(s.prop || s.key)}</span>
-          <span class="tuning-delta">${fmtV(s.from)} → <b>${fmtV(s.to)}</b></span>
-          ${s.count > 1 ? `<span class="tuning-count">${s.count} nudges</span>` : ""}
-        </button>`).join("")}</div>`
-        : `<p class="empty" style="margin:0">No settings were changed during this session.</p>`}
-
-      ${T.moments.length ? `<h3>Gameplay moments · ${T.moments.length}</h3>
-      <div class="moment-track">${T.moments.map(m =>
-        `<button class="moment-dot k-${esc(m.kind)}" style="left:${Math.min(100,m.t/duration*100)}%" title="${esc(m.kind)} @ ${fmtT(m.t)}" onclick="seekReview(${Number(m.t)})"></button>`).join("")}</div>` : ""}
-    </div>
-    <div><h2 style="margin-top:4px">Transcript</h2>
-      <div class="transcript" id="review-transcript">${(d.transcript||[]).map((s,index) =>
-        `<div class="transcript-line" id="transcript-${index}" data-start="${Number(s.t_start)}" data-end="${Number(s.t_end)}" onclick="seekReview(${Number(s.t_start)})"><span style="color:var(--text-3)">${Number(s.t_start).toFixed(1)}s</span> ${esc(s.text)}
-          ${s.source === "typed" ? `<span class="chip">typed</span>` : ""}
-          ${(() => {
-            // NOT "confidence -1.17". It is whisper's avg_logprob, always <= 0,
-            // and a negative confidence teaches a human nothing. One translation
-            // in one place (PtReview.heard) so the chip here and the tag on the
-            // triage row can never drift apart.
-            const h = window.PtReview ? PtReview.heard(s.confidence) : null;
-            return h ? `<span class="chip" title="${esc(h.tip)}">${esc(h.word)}</span>` : "";
-          })()}</div>`).join("")
-        || "no transcript"}</div>
-    </div>`;
-  document.getElementById("review-video")?.addEventListener("timeupdate", syncTranscript);
-  PtReview.mount(document.getElementById("pt-triage"), d, {seek:seekReview});
-  /* Only when the recording actually came back empty - the "checking why…"
-     placeholder is not rendered otherwise, and this is a no-op then. */
-  explainNoTelemetry();
-}
-/* Session time vs video time. The capture starts a beat after the session does,
- * so every timestamp the backend stores (transcript, markers, telemetry) is in
- * SESSION time while the video's own clock starts at zero. playtest.py already
- * subtracts video_offset_s when it extracts a frame; seeking did not, so the
- * human watched a moment several seconds off from the one the agent was handed.
- * (Backend still owed: video_offset_s in brief()'s session payload — until it
- * lands this reads 0 and behaves exactly as before, never worse.) */
-let activeReviewOffset = 0;
-const toVideoTime = t => Math.max(0, (Number(t) || 0) - activeReviewOffset);
-
-function seekReview(t){
-  const video = document.getElementById("review-video");
-  if (!video) return;
-  video.currentTime = toVideoTime(t);
-  video.play().catch(()=>{});
-}
-function syncTranscript(){
-  const video = document.getElementById("review-video");
-  if (!video) return;
-  const at = video.currentTime + activeReviewOffset;   // back into session time
-  document.querySelectorAll(".transcript-line").forEach(line => {
-    const active = at >= Number(line.dataset.start) && at <= Number(line.dataset.end);
-    line.classList.toggle("active",active);
-    if (active) line.scrollIntoView({block:"nearest"});
-  });
-}
-/* jumpToFeedback() moved into ptreview.js, where it can do the thing this
- * version could not: the target of a "merged into #57" link is usually a
- * SETTLED item, which now lives in a folded group, and scrollIntoView on a row
- * inside a closed <details> scrolls to nothing. */
-/* promote / dismiss / merge / link moved to static/ptreview.js. They read DOM
- * ids (seat-<n>, kind-<n>, merge-<n>, asset-link-<n>) that no longer exist, and
- * each one ended with openSession(), which rebuilt the whole overlay — throwing
- * away the <video> mid-playback every time you triaged one line. PtReview
- * repaints only its own subtree. */
+/* The recorded-sessions list, the review overlay (openSession / seekReview /
+ * syncTranscript and the video-offset correction), retrySession and the
+ * triage are the Playtests island now — frontend/src/views/playtests/. The
+ * sessions reach it through the BGState push below. */
 
 function showOffline(reason){
   // Blocker: the header must resolve to a DEFINITE state — never a permanent
@@ -996,7 +777,6 @@ async function pollState(){
     setVault(v.ok, v.counts);
     renderFloor(s.seats);
     renderGallery(s.previews);
-    renderControlsHint(s);
     // THE ASSETS DECK IS REACT (frontend/src/views/assets/). It does not fetch
     // /api/state for itself — this poll is already the shell's single reader of
     // the most expensive endpoint on the server, and a second copy would be a
@@ -1007,32 +787,14 @@ async function pollState(){
     // pollQueue() derives its Review lane from the candidates in here, and it
     // runs on its own timer with no `s` of its own.
     window._assetGroups = s.asset_groups || [];
-    renderSessions(s.sessions);
     const rcP = document.getElementById("rc-pt"); if (rcP) rcP.textContent = (s.sessions||[]).length;
     document.getElementById("foot").textContent =
       `builders gate · ${s.seats.length} seats · ${s.assets.length} binaries · canon ${s.lore.canon.length} · last poll ${new Date().toLocaleTimeString()}`;
   }catch(e){ showOffline("backend unreachable"); }
 }
-/* The play panel used to advertise a fighting-game control scheme — punch, kick,
- * block, duck on six keys — in EVERY project, and the shipped 2D template binds
- * exactly three actions: move_left, move_right, jump.
- * The real bindings live in the game's own project.godot [input] section, so the
- * hint renders whatever the backend reports and otherwise promises nothing.
- * (Backend still owed: a `controls` list on /api/state or /api/play/status.) */
-function renderControlsHint(state){
-  const el = document.getElementById("play-controls");
-  if (!el) return;
-  const controls = (state && (state.controls
-    || (state.project && state.project.controls))) || null;
-  const line = Array.isArray(controls) && controls.length
-    ? controls.map(c => typeof c === "string" ? c
-        : `${((c.keys || []).join("/")) || "-"} ${String(c.action || "").replace(/_/g, " ")}`)
-        .join(" · ")
-    : "";
-  el.textContent = line
-    ? `${line} · F1 opens live tuning`
-    : "Controls come from your game's own input map - F1 opens live tuning over the running build.";
-}
+/* The play panel's controls hint (never a fighting-game scheme the template
+ * does not bind) is drawn by the Playtests island from `controls` on the
+ * BGState push — see frontend/src/views/playtests/PlayPanel.tsx. */
 
 /* ── two readouts, two facts ───────────────────────────────────────────────
    These used to be one function writing the same vault state into both the
@@ -1529,634 +1291,9 @@ async function renderArtRail(itemId, running){
 }
 
 
-/* IS THE EXPORT CURRENT WITH THE SOURCE, ANSWERED ON SCREEN.
- *
- * loadGame() below already refuses to serve a stale build - it exports first
- * and then boots - so the button's promise was always kept. What was missing is
- * the SAYING: a reader looking at "boot current build" had no way to know
- * whether that meant "the export is current" or "we will make it current", and
- * no way to rebuild without booting.
- *
- * IT NAMES THE FILE. webbuild.status() returns `newest_source` precisely so the
- * UI can say WHICH file is newer than the build rather than asserting
- * staleness, and nothing had ever read it. "level-2.json is newer than the
- * build" is a sentence somebody can act on; "stale" is one they have to
- * investigate.
- *
- * CHEAP AND ON DEMAND. This walks the game directory server-side, so it runs
- * when the panel opens and after a build - not on a timer. */
-async function refreshBuildFreshness(){
-  const el = document.getElementById("play-fresh");
-  if (!el) return;
-  const st = await readJSON("/api/play/status", {});
-  if (st.__error){ el.innerHTML = ""; return; }
-  if (!st.built){
-    el.innerHTML = `<span style="color:var(--warn)">no build yet</span> · `
-      + `${esc(st.reason || "never exported")} — booting will export it first`;
-    return;
-  }
-  if (st.stale){
-    /* A REBUILD BUTTON ON A MACHINE THAT CANNOT EXPORT IS A TRAP. `blocked` is
-       the same probe `bgate doctor` reports, and it names both versions - so
-       the panel offers the fix rather than a button that was never going to
-       work. Offering to boot the stale build anyway, because a mismatched
-       export template is no reason to refuse to play what is already built. */
-    if (st.blocked){
-      el.innerHTML = `<span style="color:var(--ember)">cannot build</span> · `
-        + `${esc(st.blocked)}`;
-      return;
-    }
-    el.innerHTML = `<span style="color:var(--warn)">build is behind</span> · `
-      + `${esc(st.newest_source || "a source file")} is newer — booting rebuilds first, `
-      + `<button class="qbtn small ghost" onclick="rebuildNow()">rebuild now</button>`;
-    return;
-  }
-  el.innerHTML = `<span style="color:var(--good)">build is current</span> · `
-    + `nothing in the project is newer than the export`;
-}
-
-/* Rebuild WITHOUT booting, which is the thing the panel could not do. Somebody
-   who has just landed a change and wants the export refreshed before they hand
-   the machine to a playtester should not have to launch the game to get it. */
-async function rebuildNow(){
-  const el = document.getElementById("play-fresh");
-  if (el) el.innerHTML = "exporting from current source…";
-  const r = await mutate("/api/play/rebuild", {quiet:true});
-  if (!r.ok){
-    /* THE FAILURE STAYS ON SCREEN. A toast is gone in four seconds and this is
-       the one message that names what to install - and refreshing over it would
-       redraw "build is behind", which is true, unhelpful, and exactly what the
-       user just tried to fix. */
-    if (el) el.innerHTML = `<span style="color:var(--ember)">rebuild failed</span> · `
-      + `${esc(r.error || "godot could not export")} `
-      + `<button class="qbtn small ghost" onclick="rebuildNow()">try again</button>`;
-    toast("rebuild failed - " + r.error);
-    return;
-  }
-  await refreshBuildFreshness();
-}
-
-async function loadGame(){
-  const holder = document.getElementById("play-holder");
-  // Never serve a stale build — rebuild if the source is newer than the export.
-  const st = await readJSON("/api/play/status", {});
-  if (st.stale){
-    holder.innerHTML = `<div class="playbtn" style="cursor:default">rebuilding current build…</div>
-      <div class="playhint">exporting the game from latest source - a few seconds</div>`;
-    const r = await mutate("/api/play/rebuild", {quiet:true});
-    if (!r.ok){
-      /* NAMES THE CAUSE, and offers the stale build anyway - a missing export
-         template is not a reason to refuse to play what is already built. */
-      holder.innerHTML = `<div class="playhint" style="color:var(--ember)">rebuild failed: ${esc(r.error)}</div>
-        <button class="playbtn" onclick="bootFrame()">boot anyway (stale)</button>`;
-      toast("rebuild failed - " + r.error);
-      return;
-    }
-  }
-  bootFrame();
-  refreshBuildFreshness();
-}
-function bootFrame(sessionId=null){
-  const session = sessionId ? `&bgate_session=${encodeURIComponent(sessionId)}` : "";
-  document.getElementById("play-holder").innerHTML =
-    `<iframe id="gameframe" src="/play/?t=${Date.now()}${session}" allow="autoplay; fullscreen"></iframe>`;
-  // Immediately, not on the next poll a second later: the moment there is a
-  // game on screen there has to be a way to end it.
-  syncPtButtons();
-}
-
-/* Tear the game out of the page and put the idle control back.
- *
- * NOT bootFrame(). bootFrame() with no session id does not clear anything --
- * it points the iframe at /play/ with a fresh cache-buster, which BOOTS THE
- * GAME AGAIN. Calling it from the kill path meant "stop everything" killed the
- * native game and then immediately started the web build in its place, which
- * looks exactly like the stop having failed and restarted the thing you asked
- * it to end. A kill has to leave the panel empty. */
-function clearFrame(){
-  const holder = document.getElementById("play-holder");
-  if (!holder) return;
-  holder.innerHTML =
-    '<button class="playbtn" onclick="loadGame()">▶ boot current build</button>'
-    + '<div class="playhint" id="play-controls">Controls come from your game’s '
-    + 'own input map - F1 opens live tuning over the running build.</div>';
-  syncPtButtons();
-}
-
-/* ── playtest recording ──────────────────────────────────────────────── */
-let ptReady = false, ptRecording = false;
-/* Who owns #pt-msg right now. renderPreflight() writes the resting line (and
-   parks a copy in _ptIdleHTML, as HTML, because its not-ready branch embeds the
-   "what do I install?" button); ptPoll() writes over it while a session is
-   recording, processing or broken, and hands it back when none of those is true.
-   Declared here rather than beside ptPoll because renderPreflight is defined
-   above it and a `let` below its first caller is a temporal-dead-zone trap. */
-let _ptIdleHTML = "", _ptTransient = false;
-/* Set while a kill is in flight and until the server stops reporting a live
-   session. ptPoll() AUTO-BOOTS THE GAME FRAME whenever status says something
-   is recording, so a poll landing between the kill and the database catching
-   up re-launched the build the kill had just ended -- the same "it restarted
-   the game" symptom, arriving by a second door. */
-let _ptAborting = false;
-
-/* The literal thing to install, per check. "not ready: transcriber (unavail…"
- * truncated at 60 characters told nobody what to do, and the Record button sat
- * dead forever on a stock install. */
-const PT_FIXES = {
-  /* NO `pip install` AND NO `source checkout` IN THIS TABLE. Somebody running
-   * the packaged app cannot act on either, and telling them to tells them the
-   * install they chose was wrong. Anything the app can fetch for itself gets a
-   * BUTTON instead — see PT_INSTALLABLE and bgate_core/toolbin. What is left
-   * here is only the genuinely human steps: plug in a microphone, start the
-   * game, make a project. */
-  mic: 'no usable input device - connect a microphone and enable it in the OS sound settings',
-  window: 'no game window to capture - start the game first, then re-check; otherwise the whole desktop gets recorded',
-  native_game: 'no game yet - create or open a game project first',
-};
-/* Checks the app can satisfy on its own, mapped to the toolbin name. The panel
- * draws "Install (88 MB)" for these rather than a sentence. */
-const PT_INSTALLABLE = { ffmpeg: "ffmpeg", ffprobe: "ffmpeg" };
-const ptFix = name => PT_FIXES[name] || "";
-
-async function ptInstall(tool, btn){
-  if (btn){ btn.disabled = true; btn.textContent = "downloading…"; }
-  try {
-    await mutate(`/api/tools/${tool}/install`, { ok: `installing ${tool}` });
-    /* Poll until it lands, then re-run the preflight so the row goes green
-       without the user hunting for a refresh. */
-    for (let i = 0; i < 300; i++){
-      const s = await readJSON(`/api/tools/${tool}`, {});
-      const st = (s.running || {}).state;
-      if (btn && (s.running || {}).total)
-        btn.textContent = `${Math.round(100 * s.running.done / s.running.total)}%`;
-      if (st === "done" || s.present){ break; }
-      if (st === "failed"){ toast(s.running.error || "install failed", "err"); break; }
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  } finally {
-    if (btn) btn.disabled = false;
-    if (typeof refreshPreflight === "function") refreshPreflight();
-  }
-}
-
-function togglePtWhy(){
-  const why = document.getElementById("pt-why");
-  if (why) why.hidden = !why.hidden;
-}
-
-/* One row per check that is not satisfied.
- *
- * Three shapes, in descending order of how much the reader has to do:
- *   · the app can fetch it            -> a button with the size on it
- *   · a human has to do something     -> the one sentence describing it
- *   · optional and simply unavailable -> what capability is off, no call to
- *                                        action at all, because there is none
- *
- * What is deliberately absent: `bgate doctor`, pip, and any other terminal
- * instruction. The footer used to send people to a command line to find out
- * what a panel already knew. */
-/* WHY A RECORDING HAS NO TELEMETRY, and the one-press fix when there is one.
-   Asked only when a recording actually came back without events - the moment it
-   costs somebody something. */
-async function explainNoTelemetry(){
-  const el = document.getElementById("tele-why");
-  if (!el) return;
-  const pf = await readJSON("/api/playtest/preflight", {});
-  const t = (pf.checks || {}).telemetry || {};
-  if (t.ok){
-    el.textContent = "the addon is installed - the game emitted nothing this session";
-    return;
-  }
-  el.innerHTML = `${esc(t.reason || "the game has no telemetry autoload")} `
-    + (t.installable
-        ? `<button class="qbtn small" onclick="installTelemetry(this)">Install the addon</button>`
-        : "");
-}
-
-async function installTelemetry(btn){
-  if (btn){ btn.disabled = true; btn.textContent = "installing…"; }
-  const r = await mutate("/api/playtest/telemetry/install", {quiet:true});
-  if (!r.ok){
-    toast("could not install the addon - " + r.error);
-    if (btn){ btn.disabled = false; btn.textContent = "Install the addon"; }
-    return;
-  }
-  /* SAYS WHAT IT DID AND WHAT IS STILL NEEDED. The autoload is registered, but
-     Godot has to reopen the project before it runs - promising telemetry on the
-     very next recording would be the same kind of lie this replaced. */
-  const el = document.getElementById("tele-why");
-  if (el) el.textContent = "addon installed - reopen the game in Godot, then "
-    + "record again and events will arrive";
-  toast("telemetry addon installed", "ok");
-}
-
-function renderPtRows(rows){
-  if (!rows.length) return "";
-  return `<ul class="pt-checks">${rows.map(([name, c]) => {
-    const tool = PT_INSTALLABLE[name];
-    const optional = c.required === false;
-    const action = tool
-      ? `<button class="qbtn small" onclick="ptInstall('${tool}', this)">`
-        + `Install${c.size_mb ? ` (${c.size_mb} MB)` : ""}</button>`
-      : ptFix(name) ? `<span class="fix">→ ${esc(ptFix(name))}</span>` : "";
-    return `<li><b>${esc(name)}</b>${optional ? ' <span class="r">optional</span>' : ""}
-        <span class="r">${esc(optional ? (c.costs || c.reason || "") : (c.reason || "unavailable"))}</span>
-        ${action}</li>`;
-  }).join("")}</ul>`;
-}
-
-function renderPreflight(p){
-  const lamp = document.getElementById("pt-lamp");
-  const btn = document.getElementById("pt-btn");
-  const msg = document.getElementById("pt-msg");
-  const why = document.getElementById("pt-why");
-  const failed = Object.entries(p.checks || {})
-    .filter(([, c]) => !(c.ok ?? c.available));
-  /* BLOCKING ONLY. This used to be `p.ready && !bad.length`, which disabled
-   * Record whenever ANY check failed — including the transcriber, which is not
-   * needed to record and only decides whether you get a transcript. The server
-   * now marks each check required or not (bgate_core/playtest.REQUIRED_CHECKS)
-   * and `ready` already means "nothing blocking", so the extra clause did
-   * nothing but hold the button down. */
-  const bad = failed.filter(([, c]) => c.required !== false);
-  const degraded = failed.filter(([, c]) => c.required === false);
-  ptReady = Boolean(p.ready);
-  if (lamp) lamp.className = "lamp" + (ptReady ? "" : " bad");
-  syncPtButtons();
-  if (!msg) return;
-  if (ptReady){
-    /* READY IS READY. NOTHING ELSE GOES HERE.
-     *
-     * This used to add a "1 feature off" chip and keep a panel of optional
-     * missing things behind it. Both are wrong on a screen that works: a red
-     * block about speech-to-text is the first thing a new user sees on a
-     * feature they can already use, and it reads as "this app is broken"
-     * rather than "one extra is unavailable". Advertising an absent optional
-     * extra as a warning is how you lose somebody who was about to press
-     * Record.
-     *
-     * Where the transcript's absence DOES belong is on the recording itself,
-     * once there is one to open — at the point it costs the user something,
-     * not before. */
-    msg.textContent = "playtest ready - record, play, talk";
-    refreshBuildFreshness();
-    if (why){ why.hidden = true; why.innerHTML = ""; }
-    _ptIdleHTML = msg.innerHTML;
-    return;
-  }
-  msg.innerHTML = `record unavailable · ${bad.length} check${bad.length === 1 ? "" : "s"} failing `
-    + `<button class="qbtn small ghost" onclick="togglePtWhy()">what is missing?</button>`;
-  _ptIdleHTML = msg.innerHTML;
-  if (!why) return;
-  /* No window list here. It printed the title of every window open on the
-   * desktop — mail, chat, whatever — into a panel about installing ffmpeg. The
-   * recorder picks its own target; this was never a control, only a leak. */
-  why.innerHTML = renderPtRows(bad.concat(degraded));
-  why.hidden = false;
-}
-
-/* Polling. This used to fire every 15 seconds forever — and the full preflight
- * OPENS THE MICROPHONE for over a second and loads a whisper model to answer.
- * Now: only while the panel holding the button is on screen, never while
- * recording, cheapest probe first, and a long back-off once it has come back
- * ready (a toolchain does not uninstall itself between ticks). */
-const PT_FRESH_MS = 180000;    // 3 min once ready
-const PT_RETRY_MS = 20000;     // floor between probes while broken
-let _ptLastCheck = 0, _ptDoctorGone = false;
-
-function ptPanelVisible(){
-  const view = document.getElementById("view-overview");
-  return Boolean(view && view.classList.contains("active")
-                 && document.visibilityState !== "hidden");
-}
-
-async function ptPreflight(force){
-  if (ptRecording) return;
-  if (!force && !ptPanelVisible()) return;
-  const now = Date.now();
-  if (!force && now - _ptLastCheck < (ptReady ? PT_FRESH_MS : PT_RETRY_MS)) return;
-  _ptLastCheck = now;
-  const native = document.getElementById("pt-target")?.value === "native";
-
-  // Cheap path: bgate_core.doctor probes the binaries WITHOUT opening an audio
-  // device or spawning a whisper probe. If the toolchain itself is missing we
-  // can say exactly what to install and never touch the hardware at all.
-  if (!_ptDoctorGone){
-    const d = await readJSON("/api/doctor", {});
-    if (d.__error){
-      // No such endpoint on this build — stop asking, fall through forever.
-      _ptDoctorGone = true;
-    } else {
-      const rows = d.checks || d;
-      /* ONLY WHAT ACTUALLY BLOCKS RECORDING. `whisper` used to be in this list,
-         and because this cheap path RETURNS EARLY with a preflight it made up
-         itself, a missing transcriber short-circuited the whole check: the real
-         /api/playtest/preflight — the one that knows transcription is optional
-         and that a mic exists — was never called at all. The panel then showed
-         the doctor's raw reason, with no `required` field on it, so
-         renderPreflight treated it as blocking and disabled Record.
-         Server-side and client-side both have to agree on what is optional, and
-         this line was the half that disagreed. */
-      const need = native ? ["ffmpeg", "godot"] : ["ffmpeg"];
-      const missing = need.filter(k => rows[k] && rows[k].available === false);
-      if (missing.length){
-        renderPreflight({ready:false, checks:Object.fromEntries(
-          missing.map(k => [k === "whisper" ? "transcriber" : k, rows[k]]))});
-        return;
-      }
-    }
-  }
-  // Toolchain is fine (or unknown) — now the expensive check, which is the only
-  // one that can answer "is there a mic" and "what would we capture".
-  const p = await readJSON(`/api/playtest/preflight?native=${native}`, null);
-  if (!p || p.__error){
-    const msg = document.getElementById("pt-msg");
-    if (msg) msg.textContent = "could not check playtest gear - "
-      + ((p && p.__error) || "no response");
-    return;
-  }
-  renderPreflight(p);
-}
-
-/* Guards the whole start/stop transition. Starting a recording runs a
-   preflight, maybe an export, then spawns ffmpeg -- seconds during which the
-   old code left the button reading "● record" and fully clickable, so the
-   honest reaction to "did that work?" was to click it again. That second click
-   raced the first into start(), and both won. The database is atomic about it
-   now; this stops the second request being sent at all, and -- more to the
-   point -- makes the button say what is happening. */
-let _ptBusy = false;
-
-async function toggleRecord(){
-  const btn = document.getElementById("pt-btn");
-  if (_ptBusy) return;
-  _ptBusy = true;
-  const wasLabel = btn ? btn.textContent : "";
-  if (btn){
-    btn.disabled = true;
-    btn.textContent = ptRecording ? "stopping…" : "starting…";
-  }
-  try{
-    await _toggleRecord(btn);
-  } finally {
-    _ptBusy = false;
-    if (btn) btn.disabled = false;
-    // syncPtButtons owns every label, so a failed start cannot leave the
-    // button reading "starting…" forever.
-    syncPtButtons();
-  }
-}
-
-async function _toggleRecord(btn){
-  if (!ptRecording){
-    const target = document.getElementById("pt-target").value;
-
-    /* ONLY REBUILD WHEN WE ARE ABOUT TO BOOT THE BUILD FOR THIS RECORDING.
-     *
-     * The point of the staleness check is that evidence should be about the
-     * code you have, not the code you exported an hour ago -- but it was
-     * running unconditionally, including when the build was ALREADY UP on
-     * screen. That case makes no sense in either direction. If we rebuild and
-     * do not reload, the recording captures the old instance while the export
-     * on disk has moved, so the build_ref stamped on the session is a lie. If
-     * we rebuild and DO reload, we throw away the run the person is sitting in
-     * front of, at the exact moment they asked to start recording it.
-     *
-     * So: a build already running is the build being recorded, full stop. The
-     * rebuild belongs to the path that boots one.
-     */
-    const alreadyRunning = !!document.getElementById("gameframe");
-    const buildStatus = (target === "web" && !alreadyRunning)
-      ? await readJSON("/api/play/status", {}) : {stale:false};
-    if (target === "web" && buildStatus.stale){
-      document.getElementById("pt-msg").textContent = "rebuilding current build before recording…";
-      const rebuilt = await mutate("/api/play/rebuild", {quiet:true});
-      if (!rebuilt.ok){
-        document.getElementById("pt-msg").textContent =
-          "record blocked: current build failed - " + rebuilt.error;
-        toast("record blocked - the current build failed to export: " + rebuilt.error);
-        return;
-      }
-    }
-    const started = await mutate("/api/playtest/start", {
-      body:{
-        name: document.getElementById("pt-goal").value.trim()
-          || "Evaluate current build " + new Date().toLocaleTimeString(),
-        launch_native: target === "native"
-      }});
-    const got = started.ok ? (started.data || {}) : {};
-    if (got.recording){
-      ptRecording = true;
-      /* RELOAD ONLY IF THE FRAME IS NOT ALREADY ON THIS SESSION.
-         The reload is how the session id reaches the game (it reads
-         bgate_session from the query string and stamps its telemetry with it),
-         but it is also a full restart -- so pressing record while already
-         playing threw away the run and dropped you back at the title screen.
-         That is the "game resets" report, and combined with a record button
-         that looked like it had not responded, it is how one session became
-         two. If the frame is already carrying this session, leave it alone. */
-      _ptNativeGame = (target === "native");
-      if (target === "web"){
-        const f = document.getElementById("gameframe");
-        if (!f || !f.src.includes(`bgate_session=${got.session_id}`))
-          bootFrame(got.session_id);
-      }
-      syncPtButtons();
-      document.getElementById("pt-msg").textContent =
-        target === "native"
-          ? `RECORDING - native Godot launched (pid ${got.native_launch?.pid || "?"})`
-          : "RECORDING - play and say what you like and what needs fixing";
-    } else {
-      const why = started.ok ? (got.error || "the recorder did not start") : started.error;
-      document.getElementById("pt-msg").textContent = "start failed: " + why;
-      if (started.ok) toast("recording did not start - " + why);
-      ptPreflight(true);   // whatever broke, re-check the gear and say what
-    }
-  } else {
-    const stopped = await mutate("/api/playtest/stop", {quiet:true});
-    const got = stopped.ok ? (stopped.data || {}) : {};
-    ptRecording = false;
-    syncPtButtons();
-    const fine = stopped.ok && got.ok !== false;
-    if (fine && document.getElementById("pt-target").value === "web") bootFrame();
-    const why = stopped.ok ? (got.error || "?") : stopped.error;
-    document.getElementById("pt-msg").textContent = fine
-      ? `session ${got.session_id} transcribing - a director triage item will land in the queue`
-      : "stop failed: " + why;
-    if (!fine) toast("stop failed - " + why);
-  }
-}
-
-/* Which of the two things is running right now.
- *
- * `build` is the game in the panel (a booted web build, or a native game the
- * recorder launched). `recording` is a playtest session. They are independent
- * and the buttons must never imply otherwise. */
-let _ptNativeGame = false;
-
-function ptState(){
-  return {
-    build: !!document.getElementById("gameframe") || _ptNativeGame,
-    recording: ptRecording,
-  };
-}
-
-/* ONE PLACE DECIDES WHAT BOTH BUTTONS SAY. Labels used to be written at each
-   call site -- start wrote one, stop wrote another, the poller wrote a third --
-   so any path that missed a case left a button lying about what it would do.
-   Every state change calls this instead. */
-function syncPtButtons(){
-  const st = ptState();
-  const build = document.getElementById("pt-build");
-  const rec   = document.getElementById("pt-btn");
-
-  if (build && !_ptBusyBuild){
-    build.textContent = st.build ? "■ stop build" : "▶ start build";
-    build.classList.toggle("pt-on", st.build);
-    build.title = st.build ? "Close the running build"
-                           : "Boot the current build in this panel";
-  }
-  if (rec && !_ptBusy){
-    rec.textContent = st.recording ? "■ stop recording" : "● start recording";
-    rec.classList.toggle("recording", st.recording);
-    rec.title = st.recording ? "End the session, then transcribe and triage it"
-                             : "Record a playtest session";
-    // Disabled until the preflight says the gear is there -- except while a
-    // session is running, when stopping must always be possible.
-    rec.disabled = !ptReady && !st.recording;
-  }
-}
-
-/* Start or stop the BUILD. Never touches the recording. */
-let _ptBusyBuild = false;
-async function toggleBuild(){
-  if (_ptBusyBuild) return;
-  const st = ptState();
-  const btn = document.getElementById("pt-build");
-  _ptBusyBuild = true;
-  if (btn){ btn.disabled = true; btn.textContent = st.build ? "stopping…" : "starting…"; }
-  try{
-    if (st.build) await stopBuild();
-    else          await loadGame();
-  } finally {
-    _ptBusyBuild = false;
-    if (btn) btn.disabled = false;
-    syncPtButtons();
-  }
-}
-
-/* Close the build. Refuses to quietly end a recording that is using it. */
-async function stopBuild(){
-  if (ptRecording &&
-      !confirm("A recording is running on this build.\n\n"
-             + "Stopping the build now ends the recording too, and it is "
-             + "discarded - no transcript, no triage.")) return;
-
-  const r = await mutate("/api/playtest/abort", {quiet:true});
-  const d = r.ok ? (r.data || {}) : {};
-  ptRecording = false;
-  _ptNativeGame = false;
-  _ptAborting = true;
-  clearFrame();
-  const msg = document.getElementById("pt-msg");
-  if (msg){
-    if (!r.ok) msg.textContent = "could not stop the build - " + r.error;
-    else if (d.sessions_stopped?.length) msg.textContent = "build stopped - recording discarded";
-    else msg.textContent = "build stopped";
-  }
-  if (!r.ok) toast("stop build failed - " + r.error);
-  ptPreflight(true);
-}
-
-async function ptPoll(){
-  const msg = document.getElementById("pt-msg");
-  const btn = document.getElementById("pt-btn");
-  let s = null;
-  try{
-    const r = await fetch("/api/playtest/status");
-    s = await r.json();
-    if (!r.ok || !s || typeof s !== "object") throw new Error(apiError(s, r.status));
-  }catch(e){
-    /* NOT an empty catch. This poller is the only thing on the page that
-       notices a recording has started, stopped or died, so a dead backend or a
-       changed shape used to take the whole panel silent — the same failure the
-       partition below fixes, arriving by a different door. Say it once and keep
-       polling; the next good tick puts the real state back. */
-    if (msg && !_ptTransient){
-      _ptTransient = true;
-      msg.textContent = "could not read the recorder - "
-        + ((e && e.message) || "no response");
-    }
-    return;
-  }
-  if (!btn || !msg) return;
-
-  if (s.recording){
-    ptRecording = true;
-    _ptNativeGame = !!s.recording.native;
-    _ptTransient = true;
-    syncPtButtons();
-    const lamp = document.getElementById("pt-lamp");
-    if (lamp) lamp.className =
-      "lamp" + (s.recording.telemetry_events > 0 ? "" : " waiting");
-    const frame = document.getElementById("gameframe");
-    if (!_ptAborting && !s.recording.native &&
-        (!frame || !frame.src.includes(`bgate_session=${s.recording.id}`))){
-      bootFrame(s.recording.id);
-    }
-    btn.disabled = false;
-    btn.textContent = "■ stop";
-    btn.classList.add("recording");
-    msg.textContent =
-      `RECORDING session ${s.recording.id} - ${s.recording.telemetry_events} telemetry events`;
-    return;
-  }
-  if (ptRecording){
-    ptRecording = false;
-    syncPtButtons();
-  }
-
-  /* PARTITION, DO NOT FILTER. A session whose post-processing failed was the
-     one thing this list could hold that mattered, and it was the one thing
-     thrown away: `filter(v => v.stage !== "failed")` left `busy` empty, the
-     `if` below never ran, and #pt-msg kept whatever the recording branch had
-     written. You pressed stop, transcription died, and the panel went on
-     saying "RECORDING session 12" until the page was reloaded. The server has
-     been writing processing_error for exactly this moment - read it, and give
-     the retry that renderSessions already offers a place next to the button
-     the user is actually looking at. */
-  const proc = s.processing || [];
-  const failed = proc.filter(v => v.stage === "failed");
-  const busy = proc.filter(v => v.stage !== "failed");
-  if (failed.length){
-    const f = failed[0];
-    _ptTransient = true;
-    syncPtButtons();
-    msg.innerHTML = `session ${f.id} failed to process`
-      + (f.error ? ` - ${esc(f.error)}` : "")
-      + ` <button class="qbtn small ghost" onclick="retrySession(${f.id})">retry</button>`;
-    return;
-  }
-  if (busy.length){
-    _ptTransient = true;
-    syncPtButtons();
-    msg.textContent = `${busy[0].stage || "processing"} session ${busy[0].id}…`;
-    return;
-  }
-  // Nothing recording and nothing processing: the panel is about the Record
-  // button again. Hand it back the preflight's own line rather than leaving a
-  // finished session's status up as if it were still happening.
-  // Nothing recording and nothing processing -- but a booted build is still
-  // something to stop, so let ptKill decide from the frame rather than
-  // hiding unconditionally.
-  _ptAborting = false;
-  _ptNativeGame = false;
-  syncPtButtons();
-  if (_ptTransient){
-    _ptTransient = false;
-    msg.innerHTML = _ptIdleHTML;
-  }
-}
+/* The play panel — boot/stop the build, the recorder's start/stop, the
+ * preflight and its throttling, the status poll — is the Playtests island
+ * now: frontend/src/views/playtests/PlayPanel.tsx. */
 
 syncThemeButtons();
 let initialWorkspace = "overview";
@@ -2167,32 +1304,28 @@ setWorkspace(initialWorkspace);
 // reached them. Ask again once they exist.
 document.addEventListener("DOMContentLoaded", () => activateWorkspace(initialWorkspace));
 
-ptPoll().then(() => ptPreflight(true));
-document.getElementById("pt-target")?.addEventListener("change", () => ptPreflight(true));
-// The tick is cheap: ptPreflight self-throttles (3 min once ready, 20s while
-// broken) and returns immediately unless the panel holding the button is on
-// screen. It used to open the microphone every 15 seconds, forever.
-setInterval(() => ptPreflight(false), 30000);
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") ptPreflight(false);
-});
-setInterval(ptPoll, 4000);
-
-pollState(); pollActivity(); pollQueue();
-setInterval(pollState, 3000);
-setInterval(pollActivity, 2000);
-setInterval(pollQueue, 3500);
+/* THE TIMERS ARE GONE; THE BUS DOES THE NOTICING. Each watcher runs now, on
+   every matching event (coalesced), on reconnect, and on a slow safety timer
+   for what no event describes. (The recorder's own watcher lives in the
+   Playtests island — PlayPanel.tsx — on the same playtest.* kinds.)
+   pollActivity reads the activity LEDGER, which
+   is wider than the event bus, so it listens to everything and keeps a timer. */
+BGEvents.watch(pollState, { kinds: ["*"], every: 30000 });
+BGEvents.watch(pollActivity, { kinds: ["*"], every: 30000 });
+BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*",
+                                     "budget.*", "playtest.*"], every: 30000 });
 </script>
 
-<!-- askText / askConfirm / askPick. First, because every module below reaches
-     them on window the same way it reaches toast(). -->
-<script src="/static/ask.js"></script>
-<!-- Offers "run anyway" when dispatch refuses on an uncommitted tree. Sits
-     here because it calls askConfirm; it hooks fetch, so it needs no
+<!-- askText / askConfirm / askPick are React now (frontend/src/ask.tsx) and
+     still land on window for every module below, which reaches them the same
+     way it reaches toast(). The bundle is a deferred module, so they exist
+     by the time anything is clicked, not by the time these scripts parse. -->
+<!-- Offers "run anyway" when dispatch refuses on an uncommitted tree. It
+     calls askConfirm at click time; it hooks fetch, so it needs no
      cooperation from the nine modules that post a dispatch. -->
 <script src="/static/dirtygate.js"></script>
 <!-- The file viewer the agent rails open. Above the rails that use it for the
-     same reason ask.js is above everything: it registers window.Peek and one
+     same reason the ask dialogs sit on window: it registers window.Peek and one
      delegated click listener, and the rails only emit data-peek attributes. -->
 <script src="/static/peek.js"></script>
 <!-- Node-editor engine + flows (Studio), then per-seat workspace modules. -->
@@ -2209,31 +1342,14 @@ setInterval(pollQueue, 3500);
 <script src="/static/bgselect.js"></script>
 <!-- Both were written, finished, and never given a script tag — so nothing
      registered them and the Studio showed two flows instead of four. -->
-<!-- BEFORE the console, which mounts it into the deck's chat page on first
-     draw. Self-registering as window.ChatLive and self-styling; the console
-     guards on its absence anyway, so a load failure costs the chat page and
-     nothing else. -->
-<script src="/static/chatlive.js"></script>
-<!-- The header bell and the Settings view. Below the console for one reason:
-     notify.js hands a click on an event row to AgentsGraph.select, and both
-     reach window.readJSON / mutate / toast, which the inline script above
-     defines. Neither module mounts itself — the bell is mounted from the load
-     handler at the bottom of this file (its slot is in the status bar, so no
-     view would ever do it) and the panel by activateWorkspace(). -->
-<script src="/static/notify.js"></script>
-<!-- The streamer-mode chip. Loaded next to notify.js because it lands in the
-     same status bar slot and for the same reason: it must be on screen in every
-     workspace, not behind a panel. -->
+<!-- The live-chat pane and the header bell are React now
+     (frontend/src/shell/agents/ChatLive.tsx, frontend/src/shell/Bell.tsx). -->
+<!-- The streamer-mode chip. It lands beside the bell's #nt-host in the
+     header: it must be on screen in every workspace, not behind a panel. -->
 <script src="/static/streamer.js"></script>
-<!-- THE ONLY SURFACE THAT MAY WRITE AN API KEY. It used to ride
-     SettingsView.activate(); the Settings deck is React now
-     (frontend/src/shell/settings/) and asks ProviderKeys.activate() itself, so
-     this needs settingsview.js no longer. Still self-registering for Studio. -->
-<script src="/static/providerkeys.js"></script>
-<!-- AFTER providerkeys.js, which it wraps: it appends the local half of "what
-     can generate right now" under the hosted half in the Studio tab. Its
-     Settings pane is asked to paint by the React screen, same as above. -->
-<script src="/static/localsetup.js"></script>
+<!-- The provider-key, local-generator and agent-CLI panels are React
+     (frontend/src/shell/settings/); the Settings deck renders them and the
+     Studio "Generators" tab is registered on StudioFlows from the bundle. -->
 <script src="/static/wf.js"></script>
 <script src="/static/wf_steps_asset.js"></script>
 <script src="/static/wf_steps_model.js"></script>
@@ -2252,16 +1368,15 @@ setInterval(pollQueue, 3500);
 <script src="/static/brainstorm.js"></script>
 <!-- _core.js ONLY. The eight per-seat modules it used to drive are React now
      (frontend/src/shell/seats/), but this file is not just their shell: it also
-     exports BGWS — which bible_refs, brainstorm, flows, handoff,
-     overview_history, wf, wf_steps_model, wf_steps_tools and world all use —
-     and SeatStage, which handoff.js uses. Deleting it to tidy up would take
-     nine unrelated views with it. -->
+     exports BGWS — which brainstorm, flows, overview_history, wf,
+     wf_steps_model and wf_steps_tools all use. Deleting it to tidy up would
+     take six unrelated views with it. -->
 <script src="/static/seats/_core.js"></script>
 <script src="/static/atlas.js"></script>
-<!-- The shared "put it in the game" panel. Loaded once, opened by the sprite
-     editor, the audio lab and the 3D model editor — after atlas.js because it
-     uses the scan as its reference picker. -->
-<script src="/static/handoff.js"></script>
+<!-- The shared "put it in the game" panel is React now
+     (frontend/src/shell/handoff/Handoff.tsx), on window.Handoff for the
+     sprite editor, the audio lab and the 3D model editor; it reads the Atlas
+     scan above as its reference picker. -->
 <script src="/static/sceneview.js"></script>
 <script src="/static/scenebuild.js"></script>
 <!-- The editor's engine, then its modes. simple.js must precede
@@ -2301,37 +1416,10 @@ setInterval(pollQueue, 3500);
 <script type="module" src="/static/modeledit.js"></script>
 <script type="module" src="/static/modeledit_tools.js"></script>
 <script src="/static/assetlib.js"></script>
-<!-- The playtest notepad + live frame grab. Self-contained: injects its own
-     style, mounts its own slide-out, and installs its hotkey INTO the game
-     iframe (a parent-document listener never fires while the build has focus). -->
-<script src="/static/ptnotes.js"></script>
-<!-- Triage for a recorded session. Owns the feedback surface inside the review
-     overlay: injects its own style, mounts into #pt-triage, repaints only that
-     subtree so a triage action never restarts the video you are watching. -->
-<script src="/static/ptreview.js"></script>
-<script src="/static/world.js"></script>
 <!-- The Work history panel. Self-contained: it injects its own style and
      mounts itself into #view-overview, so nothing above needs to know it
      exists. -->
 <script src="/static/overview_history.js"></script>
-<script src="/static/bible_refs.js"></script>
-<script>
-  // If the dashboard restored the seats view on load, build its sub-nav once
-  // modules have registered.
-  window.addEventListener("load", () => {
-    // Same for the world view — setWorkspace ran before world.js was parsed.
-    if (window.World &&
-        document.getElementById("view-world")?.classList.contains("active")) World.activate();
-    // THE BELL BELONGS TO NO VIEW, so nothing else would ever mount it. It is
-    // driven by the console's poll (AgentsConsole calls Notify.update) and by
-    // its own slow watchdog when that view has never been opened. mount()
-    // returns false rather than throwing if the slot is missing, so a shell
-    // without #nt-host degrades to no bell instead of a dead page.
-    // (The Settings panel needs no line here: activateWorkspace()'s owners map
-    // mounts it on the DOMContentLoaded restore like every other view module.)
-    if (window.Notify) { try { Notify.mount("nt-host"); } catch (e) {} }
-  });
-</script>
 <script>
   // Swap every [data-icon] placeholder for real geometry, then keep watching:
   // panels render markup long after load, and an un-upgraded placeholder is an

@@ -205,7 +205,7 @@ def test_generate_writes_the_image_and_prices_it_at_zero(comfy, tmp_path,
                             timeout=20)
     assert got["ok"] is True, got.get("error")
     assert out.read_bytes() == PNG
-    assert got["estimated_usd"] == 0.0
+    assert got["usd"] == 0.0
     assert got["provider"] == "local"
     # The graph that actually went over the wire carried this request.
     sent = comfy.submitted[-1]["prompt"]
@@ -272,7 +272,7 @@ def test_chroma_dispatches_to_local(monkeypatch, tmp_path):
         seen.update(prompt=prompt, out_path=str(out_path), kw=kw)
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_bytes(PNG)
-        return {"ok": True, "path": str(out_path), "estimated_usd": 0.0,
+        return {"ok": True, "path": str(out_path), "usd": 0.0,
                 "provider": "local"}
 
     monkeypatch.setattr("bgate_adapters.localgen.generate", fake_generate)

@@ -15,7 +15,9 @@ wall_source contract) ride with it.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Optional
+
+from pydantic import Field
 
 from bgate_core.art import autotile as _autotile
 from bgate_core.art import gameview as _gameview
@@ -128,35 +130,15 @@ def prop_generate(name: str, style: str = "", types: str = "",
                   max_cost_usd: float = 0.0) -> dict:
     """GENERATE THE PROPS FOR A LEVEL - art, cleanup, atlas and manifest.
 
-    ONE CALL. You do not pack an atlas, you do not work out texture origins,
-    you do not build an atlas string, and you do not have to remember which
-    cleanup steps exist. Pass a name and the types you want; hand the manifest
-    this returns to `level_generate(prop_manifest=...)` and the props are in
-    the level.
-
-    THAT IS WHY THIS TOOL EXISTS. The first prop set was made by a hand-written
-    script, and the script silently dropped the palette conform and the
-    defringe: 32-pixel sprites carrying 600 colours, two thirds of them off the
-    pinned palette, with feathered edges. Nobody chose that. There was no
-    pipeline for the decision to live in, the way `animation_generate` is the
-    pipeline for a character cycle - so the steps were skipped by omission.
-
-    THE CHAIN, all of it mandatory:
-      * the project's VIEW decides the camera per prop mount (`game_view_get`)
-      * `props.art_spec` decides the canvas, the ground anchor and how many
-        DRAWINGS each type needs - a wall mount needs one per facing, because
-        the engine mirrors a sprite but NOT its texture_origin
-      * kie draws the sprite. RD is for motion and never for originating a look
-      * the background is keyed client-side, the sprite is stepped down in
-        halves to the contract box, its alpha is hardened to binary, and it is
-        conformed to the pinned palette
-      * the atlas packs on 2x2 slots so no spanning tile can overlap another,
-        which Godot answers by silently dropping the tile
-      * a MANIFEST is written beside the atlas with every coordinate, size,
-        facing and animation
-
-    `types` is a comma list, "" for the default set. `install=False` leaves
-    everything in `.bgate_out/props/` for review.
+    ONE CALL: pass a name and the `types` you want (comma list, "" for the
+    default set), hand the returned manifest to
+    `level_generate(prop_manifest=...)`. The chain is mandatory and complete:
+    the project's VIEW picks the camera per mount (game_view_get),
+    props.art_spec sets canvas and anchor, kie draws, the background is keyed,
+    alpha hardened, palette conformed, the atlas packs on 2x2 slots, and a
+    MANIFEST is written beside it. `install=False` leaves everything in
+    `.bgate_out/props/` for review.
+    Full notes: docs/tools.md#prop_generate
     """
     try:
         from PIL import Image
@@ -216,7 +198,7 @@ def prop_generate(name: str, style: str = "", types: str = "",
                 return {"ok": False, "error": (
                     f"{spec['type']} failed to generate: "
                     f"{str(got.get('error'))[:200]}")}
-            spent += float(got.get("estimated_usd") or 0.02)
+            spent += float(got.get("usd") or 0.02)
             keyed = _rd.key_background(Image.open(raw))
             img = keyed.get("image") if isinstance(keyed, dict) else keyed
             fitted, rep = _propsheet.conform(img, size=spec["cell_px"],
@@ -366,62 +348,24 @@ def _player_jump(godot_dir: _Path, scene_disk: _Path) -> dict:
 
 
 @_tool
-def sidescroll_generate(godot_project: str, scene: str, tileset: str,
-                        length: int = 160, height: int = 16, seed: int = 0,
-                        jump: Optional[dict] = None,
-                        difficulty: float = 0.5, segments: str = "",
-                        prop_manifest: str = "", prop_spacing: int = 9,
-                        player_scene: str = "",
-                        parent: str = ".", names: Optional[dict] = None,
-                        create: bool = False, dry_run: bool = False) -> dict:
+def sidescroll_generate(godot_project: Annotated[str, Field(description='Directory holding project.godot.')], scene: Annotated[str, Field(description='res:// path (or relative to the Godot project) of the .tscn to write layers into.')], tileset: Annotated[str, Field(description='res:// path of the TileSet; its <tileset>.tiles.json sidecar must exist.')],
+                        length: Annotated[int, Field(description='Level width in cells. Default 160.')] = 160, height: Annotated[int, Field(description='Level height in cells. Default 16.')] = 16, seed: Annotated[int, Field(description='Same seed, same level. Default 0.')] = 0,
+                        jump: Annotated[Optional[dict], Field(description='{run, jump_speed, gravity, body_cells} in cells per second; ignored when player_scene is given. Unknown keys refused.')] = None,
+                        difficulty: Annotated[float, Field(description="0-1 dial on how close gaps and climbs sit to the jump's limits. Default 0.5.")] = 0.5, segments: Annotated[str, Field(description='Comma list from flat, pit, stair, hop, blocks, pipe; "" allows all.')] = "",
+                        prop_manifest: Annotated[str, Field(description='Path prop_generate wrote; pass it and props are placed and drawn.')] = "", prop_spacing: Annotated[int, Field(description='Minimum cells between placed props. Default 9.')] = 9,
+                        player_scene: Annotated[str, Field(description="The player's .tscn; its exported tunables become the jump and it is instanced at spawn.")] = "",
+                        parent: Annotated[str, Field(description='Node path the layers are added under. Default "." (the root).')] = ".", names: Annotated[Optional[dict], Field(description='Layer node names: {"solid": ..., "props": ...}.')] = None,
+                        create: Annotated[bool, Field(description='Create the scene file if it does not exist. Default False.')] = False, dry_run: Annotated[bool, Field(description='Build and check the level, return the map, write nothing. Default False.')] = False) -> dict:
     """GENERATE A SIDE-SCROLLING LEVEL and write it into a scene.
 
-    The platformer counterpart of `level_generate`, and a separate tool because
-    it is a separate problem. `level_generate` partitions a SPACE into rooms and
-    guarantees the floor is one connected region. Under gravity that guarantee
-    is meaningless — you cannot walk upward — so this builds a SEQUENCE of
-    segments left to right and guarantees something else entirely: that the
-    goal can be REACHED, by a character with this exact jump.
-
-    THE JUMP IS AN INPUT, not a detail. `jump` is one character's physics -
-    {"run": ..., "jump_speed": ..., "gravity": ..., "body_cells": ...}, the
-    first three in CELLS PER SECOND - and every segment sizes itself from what
-    they allow: a pit is never wider than this character clears, a pipe never
-    taller than it rises. An unclearable gap is unrepresentable rather than
-    generated and rejected. One dict rather than four loose floats because
-    they describe ONE thing, and four separate arguments invite three of them
-    being right. An unknown key is refused by name rather than ignored.
-
-    `player_scene` IS THE WAY TO PASS THEM. Point it at the player's .tscn and
-    the tunables are read from the scene itself — its script's @export
-    defaults, overridden by anything the scene sets — converted to cells by
-    the tileset's own tile size, and the player is INSTANCED AT SPAWN in the
-    written scene. `jump` is then ignored, because two sources of the same
-    number is the drift this parameter closes: a level built for one jump and
-    played with another is the failure the whole parameterisation exists to
-    prevent. `fall_multiplier` is honoured by modelling with the fall gravity,
-    so the error runs only in the safe direction. Without `player_scene` the
-    `jump` numbers are trusted as given — then it is on you to keep the player
-    scene agreeing with them.
-
-    IT REFUSES AN UNPLAYABLE LEVEL rather than reporting one. The checks are
-    `reachable` (the goal is in the flood fill of jump arcs from spawn),
-    `clearance` (the body fits where it must pass), `softlock` (nowhere you can
-    land and never leave) and `stranded` (no platform outside its own jump).
-    A finding here is a bug to report, not a difficulty dial.
-
-    THE TILESET DESCRIBES ITSELF. Where the platform tiles live comes off the
-    `<tileset>.tiles.json` sidecar - written by `tileset_generate` for a set it
-    made, or by `tileset_describe` once for a hand-built one. This tool takes
-    no atlas coordinates; without that file it refuses rather than guessing.
-
-    `segments` is a comma list from flat, pit, stair, hop, blocks, pipe — "" for
-    all of them. `prop_manifest` is what `prop_generate` wrote; pass it and the
-    props are placed and drawn, and the types come from the manifest too.
-    `names` renames the layer nodes, {"solid": ..., "props": ...}.
-
-    Returns the ASCII map, which is the cheapest way to see a level before
-    anything is spent on art for it.
+    Builds segments left to right and guarantees the goal can be REACHED by a
+    character with this exact jump. `jump` is {"run", "jump_speed",
+    "gravity", "body_cells"} in CELLS PER SECOND; unknown keys refused.
+    `player_scene` is the way to pass them: tunables are read from the .tscn,
+    `jump` is ignored, and the player is instanced at spawn. IT REFUSES AN
+    UNPLAYABLE LEVEL (reachable, clearance, softlock, stranded). Needs the
+    `<tileset>.tiles.json` sidecar; refuses without it. Returns the ASCII map.
+    Full notes: docs/tools.md#sidescroll_generate
     """
     try:
         # THE JUMP, BEHIND ONE DOOR. `run`, `jump_speed`, `gravity` and
@@ -669,26 +613,13 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
 def game_view_get() -> dict:
     """WHICH 2D VIEW THIS GAME IS, and everything that follows from it.
 
-    Read this BEFORE generating any level art or any prop. The view is not a
-    style preference, it decides what "correct" means: a barrel showing its lid
-    and a sliver of side is right for a top-down game and wrong for a
-    platformer, and a barrel showing two side faces is right for an isometric
-    game and wrong for both of the others.
-
-    It was not declared anywhere until now, and the cost was measured: a prop
-    batch prompted with "a high 3/4 top-down game view" came back ISOMETRIC —
-    to an image model "three-quarter" means the standard product render — and
-    every prop showed two side faces, to stand on a floor tileset drawn flat
-    top-down. The prompt was the proximate cause. The real one was that the
-    view lived in a prompt instead of in the project, so each agent re-derived
-    it and drifted.
-
-    The result carries the camera clause per prop mount (`cameras`), the tile
-    geometry, which prop mounts exist at all in this view, and how the level
-    generator checks playability. USE `cameras`, do not paraphrase it: the
-    clauses forbid the wrong reading BY NAME, because a clause that only says
-    what it wants inherits the model's default for everything it forgot to
-    forbid.
+    Read this BEFORE generating any level art or any prop: the view decides
+    what "correct" means for a barrel, and a prompt saying "3/4 top-down"
+    came back ISOMETRIC. The result carries the camera clause per prop mount
+    (`cameras`), the tile geometry, which mounts exist in this view, and how
+    the level generator checks playability. USE `cameras` verbatim - the
+    clauses forbid the wrong reading BY NAME.
+    Full notes: docs/tools.md#game_view_get
     """
     try:
         root = _root()
@@ -727,31 +658,19 @@ def game_view_set(view: str) -> dict:
         return _fail(exc)
 
 @_tool
-def tileset_synth(name: str, floors: str, walls: str = "",
-                  tile_px: int = 64, wall_lift: int = 68,
-                  godot_project: str = "", res_dir: str = "assets/tiles",
-                  install: bool = False, collide: bool = True) -> dict:
+def tileset_synth(name: Annotated[str, Field(description='Tileset name; the atlas, resource and sidecar are named from it.')], floors: Annotated[str, Field(description='Semicolon list of name=#rrggbb[,grain][,seam][,speck]; one floor source each.')], walls: Annotated[str, Field(description='Semicolon list in the same form for wall blocks; empty makes no walls.')] = "",
+                  tile_px: Annotated[int, Field(description='Diamond width in pixels. Default 64.')] = 64, wall_lift: Annotated[int, Field(description='Block height in pixels above the floor plane. Default 68.')] = 68,
+                  godot_project: Annotated[str, Field(description='Directory holding project.godot. Needed only when install=True.')] = "", res_dir: Annotated[str, Field(description='res:// directory the tileset installs under. Default assets/tiles.')] = "assets/tiles",
+                  install: Annotated[bool, Field(description='False (default) leaves output in .bgate_out/tiles/; True writes into the Godot project.')] = False, collide: Annotated[bool, Field(description='Give wall tiles collision polygons. Default True.')] = True) -> dict:
     """BUILD AN ISOMETRIC TILESET FROM THE PALETTE, with no image model at all.
 
-    The counterpart to `tileset_generate`, and the right tool for the
-    surfaces a building is mostly made of. A generated texture carries
-    structure at roughly tile scale, so cropping one onto a diamond grid
-    lays a visible lattice of motifs across the floor, and mirroring it to
-    hide the diamond seams trades that lattice for symmetry. The tiles a
-    real project ships are nearly featureless — near-black, a faint grain,
-    at most one soft panel seam — and that is arithmetic's job: per-pixel
-    noise cannot repeat, every value is a palette entry by construction, a
-    variant is a different SEED rather than a different crop, and the whole
-    set costs nothing and arrives in a second.
-
-    Reach for `tileset_generate` when a material's features are meant to be
-    read individually — terrazzo chips, a checkerboard lino, a poster wall.
-    Reach for this for carpet, concrete, vinyl, asphalt and every other
-    surface whose job is to be quiet.
-
-    `floors` and `walls` are semicolon lists of
-    ``name=#rrggbb[,grain][,seam][,speck]`` — one atlas source each, so a
-    level generator can put a different surface in every room.
+    For the quiet surfaces a building is mostly made of - carpet, concrete,
+    vinyl, asphalt: per-pixel noise cannot repeat, every value is a palette
+    entry, a variant is a different SEED, and it costs nothing. Use
+    `tileset_generate` when a material's features are meant to be read
+    individually. `floors` and `walls` are semicolon lists of
+    ``name=#rrggbb[,grain][,seam][,speck]`` - one atlas source each.
+    Full notes: docs/tools.md#tileset_synth
     """
     try:
         from PIL import Image as _Img
@@ -916,53 +835,23 @@ def tileset_synth(name: str, floors: str, walls: str = "",
 
 
 @_tool
-def level_reskin(godot_project: str, scene: str, tileset: str,
-                 out_scene: str = "", floor_layer: str = "",
-                 wall_layer: str = "Walls", sunken: str = "",
-                 doors: str = "", material_map: str = "",
-                 wall_map: str = "", keep_art: bool = True,
-                 parent: str = ".",
-                 dry_run: bool = False) -> dict:
+def level_reskin(godot_project: Annotated[str, Field(description='Directory holding project.godot.')], scene: Annotated[str, Field(description='res:// path of the scene whose layers are read; never modified.')], tileset: Annotated[str, Field(description='res:// path of the NEW TileSet; its .tiles.json sidecar must exist.')],
+                 out_scene: Annotated[str, Field(description='Where the rebuilt scene is written. Default <scene>_reskin.tscn.')] = "", floor_layer: Annotated[str, Field(description='Name of the source floor TileMapLayer; empty picks the first floor-like layer.')] = "",
+                 wall_layer: Annotated[str, Field(description='Name of the source wall TileMapLayer. Default Walls.')] = "Walls", sunken: Annotated[str, Field(description='"x,y,w,h" region that stays on the base plane while everything else rises; reachability into it is checked.')] = "",
+                 doors: Annotated[str, Field(description='"x,y x,y ..." wall cells that are actually openings; they become floor.')] = "", material_map: Annotated[str, Field(description='"<source id>=<material> ..." carrying the source floor\'s atlas sources onto the new set\'s materials so thresholds survive.')] = "",
+                 wall_map: Annotated[str, Field(description='"<source id>=<wall set> ..." carrying the source wall layer\'s atlas sources onto the new set\'s wall sets.')] = "", keep_art: Annotated[bool, Field(description="Keep every floor cell's original atlas source and coordinate instead of re-autotiling it from the new set. Default True.")] = True,
+                 parent: Annotated[str, Field(description='Node path the new layers are added under. Default ".".')] = ".",
+                 dry_run: Annotated[bool, Field(description='Compute and report, write nothing. Default False.')] = False) -> dict:
     """RE-BUILD AN EXISTING LEVEL'S LAYOUT against a different tileset.
 
-    The layout is the expensive part and the art is not. A floor somebody
-    designed by hand — where the rooms are, which cells are corridor, where
-    the walls run — is worth keeping when the tile set under it changes, and
-    re-drawing it by hand in the editor is how a re-skin never happens.
-
-    So this reads the CELL SETS out of a scene's TileMapLayers and emits them
-    again against a new tileset: the floor re-autotiled from its own shape, so
-    every cell gets the edge its neighbours imply rather than the flat tile it
-    had, and the walls placed as whatever the new set uses for a wall — in an
-    isometric project that is the raised BLOCK, which is what turns a flat
-    wall layer into a room you can see the inside of.
-
-    It writes a NEW scene by default (`out_scene`, or `<scene>_reskin.tscn`).
-    The source scene is never modified: a level carries props, scripts,
-    spawns and quest wiring that this tool knows nothing about, and quietly
-    rewriting the layers under them is not a re-skin, it is a demolition.
-
-    `sunken` is "x,y,w,h" — a region that stays on the base plane while
-    everything else rises one level, which is how you get a BASEMENT out of a
-    generator that only knows how to raise things. The rim of the drop is
-    ramped wherever the two heights actually touch, and because the walls of
-    a designed floor already separate its rooms, the only places they touch
-    are its doorways. Reachability is then checked the same way the
-    side-scroller checks its jumps: if a walker cannot get from the high
-    ground into the hole, that is refused rather than rendered.
-
-    `doors` is "x,y x,y ..." — cells the WALL layer holds that are actually
-    openings. A designed floor does not have to leave gaps in its wall layer
-    to have doorways: downsizing's tutorial floor draws a door tile inside
-    the wall run and records the opening in its level data, which is a scene
-    reader's blind spot. Without them the walkable set comes apart into one
-    component per room — measured here, eighteen of them — and any question
-    about reaching anything is answered wrongly rather than refused. Given
-    them, the cells stop being walls and become floor, which is what a
-    doorway looks like when the wall is a solid block.
-
-    Returns the cell counts it moved and the masks the new set could not
-    answer, which is the list to hand an artist.
+    Reads the CELL SETS out of a scene's TileMapLayers and emits them against
+    a new tileset - floor re-autotiled, walls as the new set's wall (raised
+    BLOCKS in isometric). Writes a NEW scene (`out_scene`, default
+    `<scene>_reskin.tscn`); the source is never modified. `sunken` is
+    "x,y,w,h" - a region left on the base plane; reachability into it is
+    checked and refused, not rendered. `doors` is "x,y x,y ..." - wall cells
+    that are openings; without them the walkable set comes apart per room.
+    Full notes: docs/tools.md#level_reskin
     """
     try:
         import re as _re2
@@ -1288,38 +1177,21 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
 
 
 @_tool
-def level_plan(width: int = 48, height: int = 32, seed: int = 0,
-               layout: str = "bsp", rooms: int = 5, side_rooms: int = 1,
-               min_leaf: int = 10, min_room: int = 4, margin: int = 1,
-               max_depth: int = 5, corridor_width: int = 2,
-               room_fill: float = 0.8) -> dict:
+def level_plan(width: Annotated[int, Field(description='Map width in cells. Default 48.')] = 48, height: Annotated[int, Field(description='Map height in cells. Default 32.')] = 32, seed: Annotated[int, Field(description='Same seed, same level, forever. Default 0.')] = 0,
+               layout: Annotated[str, Field(description='Partition algorithm. Default bsp.')] = "bsp", rooms: Annotated[int, Field(description='Target number of main rooms. Default 5.')] = 5, side_rooms: Annotated[int, Field(description='Extra rooms hung off the main set. Default 1.')] = 1,
+               min_leaf: Annotated[int, Field(description='Smallest BSP cell; bigger means fewer, larger rooms. Must be at least min_room + 2*margin. Default 10.')] = 10, min_room: Annotated[int, Field(description='Smallest room edge in cells. Default 4.')] = 4, margin: Annotated[int, Field(description="Gap between a room and its leaf's edge; 0 lets neighbouring rooms fuse. Default 1.")] = 1,
+               max_depth: Annotated[int, Field(description='Caps how many times the map is cut, so it caps room count. Default 5.')] = 5, corridor_width: Annotated[int, Field(description='1 reads as a dungeon, 2+ as a complex. Default 2.')] = 2,
+               room_fill: Annotated[float, Field(description='Share of its BSP cell a room must take, 0-1. Default 0.8.')] = 0.8) -> dict:
     """Lay out a room-and-corridor level and show it, WITHOUT touching a scene.
 
-    `room_fill` is the share of its BSP cell a room must take, and it is the
-    difference between a dungeon and a set of thin rooms with slabs between
-    them: at 0 a room is a uniform-random slice of its cell, so the rest of the
-    cell stays solid. `corridor_width` defaults to 2 because a one-cell passage
-    loses most of its width to the wall the tile art draws inside its own edge.
-
-    BSP: cut the map in two until a piece holds one room, put a room in each
-    piece, then join the two halves of every cut on the way back up. That join
-    is the guarantee - it builds a spanning tree over the rooms, so every room
-    is reachable from every other by construction rather than by luck. The
-    result says `connected` and it is checked with a flood fill, not asserted.
-
-    Read the `ascii` field. It is the fastest way to see that a level is one big
-    room, or two halves joined by nothing, and it costs no engine and no
-    screenshot. Iterate on `seed` here until the shape is right, THEN call
-    level_generate with the same numbers to write it.
-
-    Knobs that actually change the shape:
-      seed            same seed, same level, forever.
-      min_leaf        bigger -> fewer, larger rooms. Must be at least
-                      min_room + 2*margin or nothing fits and it says so.
-      max_depth       caps how many times the map is cut, so it caps room count.
-      corridor_width  1 reads as a dungeon, 2+ as a complex.
-      margin          gap between a room and its leaf's edge; 0 lets neighbouring
-                      rooms fuse into one L-shaped cavity.
+    BSP: cut the map until a piece holds one room, then join the halves of
+    every cut - a spanning tree, so every room is reachable by construction;
+    `connected` is checked with a flood fill. Read the `ascii` field and
+    iterate on `seed`, THEN call level_generate with the same numbers.
+    `room_fill` is the share of its cell a room must take; `corridor_width`
+    defaults to 2. min_leaf must be at least min_room + 2*margin or nothing
+    fits and it says so; margin 0 lets neighbouring rooms fuse.
+    Full notes: docs/tools.md#level_plan
     """
     try:
         # A PARTITION OR A ROUTE. BSP gives rooms that are all the same KIND
@@ -1456,50 +1328,26 @@ def _manifest_floor(meta: dict, name: str):
 
 
 @_tool
-def tileset_describe(godot_project: str, tileset: str,
-                     floor_layout: str = "solid", floor_source: int = 0,
-                     floor_atlas_x: int = 0, floor_atlas_y: int = 0,
-                     floor_columns: int = 4,
-                     wall_layout: str = "blob47", wall_source: int = 0,
-                     wall_atlas_x: int = 0, wall_atlas_y: int = 0,
-                     wall_columns: int = 8,
-                     variants: str = "", interior: str = "",
-                     overwrite: bool = False) -> dict:
+def tileset_describe(godot_project: Annotated[str, Field(description='Directory holding project.godot.')], tileset: Annotated[str, Field(description='res:// path of the TileSet resource the sidecar is written beside.')],
+                     floor_layout: Annotated[str, Field(description='blob47 | grid16 | solid. Default solid.')] = "solid", floor_source: Annotated[int, Field(description='Atlas source id holding the floor tiles. Default 0.')] = 0,
+                     floor_atlas_x: Annotated[int, Field(description='Atlas column the floor tiles start at. Default 0.')] = 0, floor_atlas_y: Annotated[int, Field(description='Atlas row the floor tiles start at. Default 0.')] = 0,
+                     floor_columns: Annotated[int, Field(description='Tiles per row in the floor block. Default 4.')] = 4,
+                     wall_layout: Annotated[str, Field(description='blob47 | grid16 | solid | none. Default blob47.')] = "blob47", wall_source: Annotated[int, Field(description='Atlas source id holding the wall tiles. Default 0.')] = 0,
+                     wall_atlas_x: Annotated[int, Field(description='Atlas column the wall tiles start at. Default 0.')] = 0, wall_atlas_y: Annotated[int, Field(description='Atlas row the wall tiles start at. Default 0.')] = 0,
+                     wall_columns: Annotated[int, Field(description='Tiles per row in the wall block. Default 8.')] = 8,
+                     variants: Annotated[str, Field(description='Space list of alternate floor fill tiles ("3,0 4,0") scattered deterministically over the interior.')] = "", interior: Annotated[str, Field(description='The plain floor fill tile as "x,y".')] = "",
+                     overwrite: Annotated[bool, Field(description='Replace an existing sidecar, including one tileset_generate wrote. Default False.')] = False) -> dict:
     """TEACH THE LEVEL TOOLS A HAND-BUILT TILESET. Once per sheet, then never again.
 
-    A sheet bought from an asset pack or authored in Tilesetter knows where
-    its tiles are; nothing else does. That knowledge used to travel as ten
-    parameters on EVERY `level_generate` call - re-typed per level, per seat,
-    per session, and wrong in exactly one of them. The art seat holds the
-    sheet; gameplay and tech build the levels; a pasted string was the only
-    channel between them.
-
-    So it is written down instead. This produces the same
-    `<tileset>.tiles.json` sidecar `tileset_generate` writes for a set it made
-    itself, which is why `level_generate` now takes no atlas coordinates from
-    anybody: generated or hand-built, the sheet describes itself on disk.
-
-    LAYOUTS, for both floor and wall:
-      blob47   8-bit mask, 47 tiles, row-major from (atlas_x, atlas_y),
-               `columns` wide, masks ascending. Sides plus corners.
-      grid16   4-bit mask, 16 tiles, same layout rule. Sides only - right for
-               a wall one cell thick.
-      solid    one tile everywhere, at (atlas_x, atlas_y). No autotiling.
-      none     no layer of this kind at all (walls only).
-
-    THAT ORDER IS A CONVENTION, NOT A STANDARD, and a wrong one draws a
-    complete, confident, wrong-looking level rather than an error. Check the
-    first screenshot after describing a sheet, not the tenth.
-
-    variants/interior are optional and only affect floors: `interior` is the
-    plain fill tile "x,y" and `variants` is a space list of alternates
-    ("3,0 4,0") scattered deterministically over it, which is what stops a
-    large room reading as one repeated square.
-
-    Re-describing a sheet needs `overwrite=True` - a set generated by
-    `tileset_generate` already has a manifest holding its full mask table, and
-    silently replacing it with a guess is how a working level starts drawing
-    at (0, 0).
+    Writes the `<tileset>.tiles.json` sidecar `tileset_generate` writes for
+    its own sets, so `level_generate` takes no atlas coordinates. LAYOUTS for
+    floor and wall: blob47 (8-bit, 47 tiles row-major from atlas_x/y,
+    `columns` wide, masks ascending), grid16 (4-bit, 16 tiles), solid (one
+    tile), none (walls only). THAT ORDER IS A CONVENTION, NOT A STANDARD -
+    check the first screenshot. `interior` is the plain fill tile "x,y";
+    `variants` a space list of alternates. Re-describing needs
+    `overwrite=True`.
+    Full notes: docs/tools.md#tileset_describe
     """
     try:
         _contained_path(godot_project, "godot_project")
@@ -1710,73 +1558,27 @@ def _manifest_source(tiles_disk: _Path, man: dict) -> int:
 
 
 @_tool
-def level_generate(godot_project: str, scene: str, tileset: str,
-                   width: int = 48, height: int = 32, seed: int = 0,
-                   layout: str = "bsp", walls: bool = True,
-                   tuning: Optional[dict] = None,
-                   levels: int = 1, raised: float = 0.35,
-                   props: bool = False, prop_manifest: str = "",
-                   prop_density: float = 0.1,
-                   parent: str = ".", names: Optional[dict] = None,
-                   create: bool = False,
-                   dry_run: bool = False) -> dict:
+def level_generate(godot_project: Annotated[str, Field(description='Directory holding project.godot.')], scene: Annotated[str, Field(description='res:// path (or relative to the Godot project) of the .tscn to write layers into.')], tileset: Annotated[str, Field(description='res:// path of the TileSet; its <tileset>.tiles.json sidecar must exist.')],
+                   width: Annotated[int, Field(description='Map width in cells. Default 48.')] = 48, height: Annotated[int, Field(description='Map height in cells. Default 32.')] = 32, seed: Annotated[int, Field(description='Same seed, same level. Default 0.')] = 0,
+                   layout: Annotated[str, Field(description='Partition algorithm. Default bsp.')] = "bsp", walls: Annotated[bool, Field(description='Write the wall layer; False writes the floor only. Default True.')] = True,
+                   tuning: Annotated[Optional[dict], Field(description='BSP knobs {min_leaf, min_room, margin, max_depth, corridor_width, room_fill, rooms, side_rooms}, as level_plan takes; unknown keys refused.')] = None,
+                   levels: Annotated[int, Field(description='Height levels on an isometric map; above 1, rooms are terraced up with ramps. Default 1.')] = 1, raised: Annotated[float, Field(description='Probability a room rises one level when levels > 1, 0-1. Default 0.35.')] = 0.35,
+                   props: Annotated[bool, Field(description='Add a dressing layer placed by room purpose; needs prop_manifest. Default False.')] = False, prop_manifest: Annotated[str, Field(description='Path prop_generate wrote beside its atlas; types, coordinates and origins come from it.')] = "",
+                   prop_density: Annotated[float, Field(description='How much of the eligible space props take, 0-1. Default 0.1.')] = 0.1,
+                   parent: Annotated[str, Field(description='Node path the layers are added under. Default ".".')] = ".", names: Annotated[Optional[dict], Field(description='Layer node names {"floor", "walls", "props"}; default Floor/Walls/Props.')] = None,
+                   create: Annotated[bool, Field(description='Create the scene file if it does not exist. Default False.')] = False,
+                   dry_run: Annotated[bool, Field(description='Build and check, return the map, write nothing. Default False.')] = False) -> dict:
     """Generate a level and write it into a scene as TileMapLayer nodes.
 
-    The whole chain: BSP layout -> neighbour-bitmask autotiling -> the packed
-    binary Godot stores tiles in -> a .tscn edit, backed up. No engine and no
-    editor involved, so it runs headless and is a normal reviewable diff.
-
-    THE TILESET DESCRIBES ITSELF, so this call takes NO atlas coordinates.
-    `tileset_generate` writes a `<name>.tiles.json` sidecar for a set it made;
-    for a hand-built or imported sheet, `tileset_describe` writes the same file
-    once. Either way the mask table, the sources and the layouts come off disk.
-    Without that file this refuses rather than guessing - a guessed coordinate
-    draws a complete, confident, wrong-looking level, which is worse than an
-    error. `walls=False` writes the floor layer only.
-
-    WHICH TILE GOES WHERE is decided by a neighbour bitmask, the same job the
-    Godot editor's terrain sets do - and they only run in the editor, which is
-    why it is redone here.
-
-    `props=True` adds a third layer of DRESSING — wall torches, clutter against
-    the architecture, cover in the rooms you walk through, a feature in the dead
-    ends. Placement is by what the room is for (see `bgate_core.art.props`) and every
-    solid prop is refused if it would break the level into two regions, checked
-    by flood filling rather than by reasoning about it. It needs
-    `prop_manifest`, the file `prop_generate` writes beside its atlas: the
-    types, coordinates, spans, texture origins and animation all come from
-    there. `prop_density` is the only dial here, because it is the only one
-    that is about the LEVEL rather than about the sheet.
-
-    EACH TYPE DECLARES ITS OWN CONSTRAINTS and the placer obeys them instead of
-    assuming a prop goes anywhere. A wall mount occupies the WALL cell, so it is
-    attached rather than floating in the room beside it. A side-view or angled
-    sprite declares which walls it can be drawn on — `torch` is ("e", "w"), so it
-    never lands on a horizontal wall where a three-quarter view reads as pasted
-    on. Nothing mounts on the wall south of a room, whose inner face points away
-    from the camera, and nothing mounts on a corner, where the face it needs is
-    interrupted. If your north walls come back dark that is `no_side` in the
-    report, and the fix is a front-facing type such as `sconce` rather than a
-    wider tolerance. Godot's flip bit mirrors a sprite whose type allows it.
-
-    THAT ORDER IS A CONVENTION, NOT A STANDARD. A sheet authored in Tilesetter
-    or bought from an asset pack has its own order, and a wrong order draws a
-    complete, confident, wrong-looking level. Check the first screenshot. If
-    `unmapped` in the result is non-empty, the sheet is missing shapes the level
-    needs and that field says which masks and how often - that is what to hand
-    an artist.
-
-    Re-running REPLACES the layers it wrote rather than adding more, so
-    iterating on `seed` leaves one Floor and one Walls, not eight.
-
-    godot_project: the directory holding project.godot.
-    scene/tileset: res:// paths, or paths relative to that directory.
-    tuning: the eight BSP partition knobs, all optional — min_leaf, min_room,
-      margin, max_depth, corridor_width, room_fill, rooms, side_rooms. The
-      same numbers `level_plan` takes, so preview there and pass the dict
-      here. An unknown key is refused by name rather than ignored.
-    names: layer node names, {"floor": ..., "walls": ..., "props": ...};
-      defaults Floor/Walls/Props.
+    BSP layout -> bitmask autotiling -> Godot's packed tile binary -> a
+    backed-up .tscn edit, headless. Takes NO atlas coordinates and REFUSES
+    without the `<tileset>.tiles.json` sidecar (tileset_generate or
+    tileset_describe). `walls=False` writes the floor only. `props=True` adds
+    a dressing layer and needs `prop_manifest` from prop_generate; a solid
+    prop that would split the level is refused. Re-running REPLACES the
+    layers it wrote. `tuning` takes level_plan's knobs; unknown keys refused.
+    `unmapped` lists masks the sheet is missing.
+    Full notes: docs/tools.md#level_generate
     """
     try:
         # THE EIGHT BSP KNOBS, BEHIND ONE DOOR. They were eight top-level
@@ -2270,38 +2072,14 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
                      label: str = "", timeout: int = 120) -> dict:
     """Run the ACTUAL game and capture the viewport to a PNG at `at` seconds.
 
-    The look-iteration loop: headless checks prove the game boots, this shows
-    what it LOOKS like. A game window appears briefly on the user's screen
-    (rendering needs a display) and closes itself after the capture. The shot
-    is archived to the preview gallery - check it before and after visual work.
-
-    THE WINDOW NEVER GAINS TRUE FOREGROUND FOCUS ON WINDOWS, AND THAT IS THIS
-    TOOL'S ARTIFACT, NOT YOUR GAME'S. Read this before "fixing" anything it
-    seems to reveal about input.
-
-    The capture window is spawned by a background process, so Windows does not
-    hand it the foreground. The mouse is therefore never captured:
-    `Input.mouse_mode` stays VISIBLE no matter what `_ready` asked for, and any
-    code gated on MOUSE_MODE_CAPTURED - a viewfinder, a first-person look
-    controller, a pointer-lock HUD - collapses in the shot while working
-    perfectly for a human running the same build.
-
-    Measured cost of not knowing: a previous pass "fixed" this by re-asserting
-    mouse capture EVERY FRAME from the shot rig, with a comment blaming the
-    game. That masked the real finding for a whole pass. **When a fix has to run
-    every frame forever, it is a symptom, not a cure.**
-
-    So: do not conclude anything about input capture from a screenshot, and do
-    not add per-frame re-capture to make one look right. To check input for
-    real, run the game with `godot_run` and assert on state, or have a human
-    play it. `focus` in the result says this out loud on every call.
-
-    Two more things this tool cannot give you. It returns NO STDOUT, so a
-    windowed run's diagnostics must be written to `user://` and read back. And
-    `res://.bgate_shot.gd` is the harness's own helper - it can error during
-    unrelated headless runs; work around it, do not delete it.
-
-    godot_project: the directory holding project.godot.
+    A game window appears briefly and closes after the capture; the shot is
+    archived to the gallery. THE WINDOW NEVER GAINS TRUE FOREGROUND FOCUS ON
+    WINDOWS - the mouse is never captured, so anything gated on
+    MOUSE_MODE_CAPTURED collapses in the shot while working for a human. Do
+    not conclude anything about input from a screenshot; `focus` in the
+    result says so. Returns NO STDOUT (write diagnostics to user://).
+    `res://.bgate_shot.gd` is the harness's helper - do not delete it.
+    Full notes: docs/tools.md#godot_screenshot
     """
     try:
         _contained_path(godot_project, "godot_project")
@@ -2361,30 +2139,14 @@ def godot_retarget_check(godot_project: str, res_path: str,
                          bone_map_res: str = "", timeout: int = 180) -> dict:
     """Ask the ENGINE whether a rigged character is a humanoid it can retarget.
 
-    The rigs this pipeline builds carry Godot's own SkeletonProfileHumanoid bone
-    names, and the whole point of that is that any humanoid animation library
-    then plays on the character. Nothing tested that claim until this tool. A
-    .glb can export 23 perfectly-named bones in a FLAT hierarchy - blender_rig
-    reports 0 unweighted, godot_deliver_asset photographs it happily, and the
-    character can be animated by nothing except a clip authored for it alone.
-
-    Three answers, and they fail independently:
-
-      missing / extra   coverage against the profile, by exact name.
-      chain[].propagates  rotating a shoulder moves the hand. This is the one
-                        that catches a lost hierarchy, and it is invisible to
-                        every other check in the product.
-      clip.drives       a profile-authored rotation track actually turns the
-                        bone. A NodePath that resolves to nothing plays
-                        silently and moves zero.
-
-    `retargetable` is the verdict. False means the humanoid animation ecosystem
-    is unavailable to this asset - treat it the way you treat `rigged: false`.
-
-    bone_map_res: a res:// path to save the BoneMap to, or "" to skip. Written,
-    it is what the user's import settings point at to retarget real clips.
-
-    res_path must already be imported - godot_import_asset first.
+    A .glb can export 23 perfectly-named bones in a FLAT hierarchy and pass
+    every other check. Three answers that fail independently: missing / extra
+    (profile coverage by name), chain[].propagates (rotating a shoulder moves
+    the hand), clip.drives (a profile-authored track actually turns the
+    bone). `retargetable` False means treat it like `rigged: false`.
+    bone_map_res: a res:// path to save the BoneMap to, or "". res_path must
+    already be imported.
+    Full notes: docs/tools.md#godot_retarget_check
     """
     _contained_path(godot_project, "godot_project")
     result = _godot.retarget_check(godot_project, res_path,
@@ -2464,39 +2226,14 @@ def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = N
                    timeout: int = 120) -> dict:
     """Capture a frame PLUS a screen-space manifest of what is actually where.
 
-    The upgrade over godot_screenshot. A PNG shows what the game looks like; it
-    cannot tell you whether the health bar matches the fighter's real hp,
-    whether a hitbox lines up with its sprite, or whether an entity is on
-    screen at all. This runs the game the same way, then walks the live tree at
-    capture time and reports every measurable node as screen-pixel bounds,
-    visibility, z, and - for progress bars and labels - its RUNTIME VALUE.
-
-    Returns beauty.png, an overlay.png with collision shapes (red) and other
-    bounds (blue) stroked over the frame, and manifest.json with `entities` and
-    `ui`. Pair with `causal_chains` - the manifest says what was on screen, the
-    chains say why it happened.
-
-    CALL IT WITH NO `scene` TO PROVE THE DEFAULT. That is the capture the
-    release gate requires and the one nobody was taking: a 3D benchmark shipped
-    with `application/run/main_scene` still pointing at the scaffold demo while
-    every named-scene test passed, because each of those tests named the scene
-    it tested and none of them named the one the game boots into. With no
-    `scene` this launches exactly what pressing play launches, records the
-    proof against the release gate, and FAILS if the default scene is missing,
-    broken, or still the template's demo room. Named-scene evidence does not
-    substitute for it.
-
-    ENTITIES CAN BE EMPTY ON A POPULATED 3D SCENE, and that used to come back
-    as `ok: true` with `entities: {}`. The manifest walk is screen-space and
-    2D-shaped; on a 3D project it is not authoritative about what is in the
-    world. The result now says so rather than reading as "this scene has
-    nothing in it" - measure 3D contents with godot_inspect_resource.
-
-    THE CAPTURE IS NOT THE EVIDENCE. Record what you saw in the frame with
-    evidence_assert(scene, frame, says=...) - a file on disk that nobody opened
-    is what let a two-tailed character ship for a day.
-
-    godot_project: the directory holding project.godot.
+    Runs the game like godot_screenshot, then walks the live tree and reports
+    every measurable node's screen bounds, visibility, z and runtime value:
+    beauty.png, overlay.png, manifest.json (`entities`, `ui`). CALL IT WITH
+    NO `scene` TO PROVE THE DEFAULT - the capture the release gate requires;
+    it FAILS if the boot scene is missing, broken or still the template demo.
+    On a 3D project `entities` is not authoritative. THE CAPTURE IS NOT THE
+    EVIDENCE - record what you saw with evidence_assert.
+    Full notes: docs/tools.md#godot_evidence
     """
     try:
         _contained_path(godot_project, "godot_project")
@@ -2553,54 +2290,21 @@ def evidence_check_ui(manifest_path: str, expect: dict,
 # four-of-six false-green climbing routes are what happens when it is answered
 # by proxy.
 @_tool
-def traversal_prove(godot_project: str, scene: str, launch: str,
-                    destination: str, inputs: list, name: str = "route",
-                    player: str = "", player_script: str = "",
-                    settle_frames: int = 3, timeout: int = 180) -> dict:
-    """DRIVE THE PLAYER and prove it arrives — settled, in the real volume.
+def traversal_prove(godot_project: Annotated[str, Field(description='Directory holding project.godot.')], scene: Annotated[str, Field(description='res:// path of the scene to run.')], launch: Annotated[str, Field(description='Node path of the surface the player STARTS ON - the real launch surface, not a convenient spawn point.')],
+                    destination: Annotated[str, Field(description="Node path of the destination's OWN Area2D/Area3D; a marker plus radius is what passed mid-jump.")], inputs: Annotated[list, Field(description='[{"action": <input map action>, "frames": N}] pressed in order through the real input map.')], name: Annotated[str, Field(description='Route name for the report. Default route.')] = "route",
+                    player: Annotated[str, Field(description='Node path of the player body to drive; empty lets the driver find it.')] = "", player_script: Annotated[str, Field(description='Path to the controller script; given, a controller without a busy predicate is refused.')] = "",
+                    settle_frames: Annotated[int, Field(description='Consecutive frames the player must hold all three conditions. Default 3.')] = 3, timeout: Annotated[int, Field(description='Seconds before the run is killed. Default 180.')] = 180) -> dict:
+    """DRIVE THE PLAYER and prove it arrives - settled, in the real volume.
 
-    FOUR OF SIX CLIMBING ROUTES PASSED AND WERE NOT TRAVERSABLE. The tests
-    measured vertical rise against jump height. None measured the horizontal
-    edge gap, the launch surface size, the landing pad size, the player's own
-    body width, or what the controller does when you hold the stick that way.
-
-    Then the gate written to catch that produced its own false green, which is
-    the sharpest defect in the whole benchmark: the driver accepted arrival on
-    ANY frame where the body was near the target - including mid-ballistic-arc
-    during a jump that MISSED. Requiring `is_on_floor` was not enough either: a
-    scripted mantle carries that flag from before it began, so the check passed
-    mid-interpolation while an AnimationPlayer was lerping the body through the
-    air.
-
-    So arrival here is three conditions, all required:
-
-      IN THE VOLUME  inside `destination`, which must be the destination's OWN
-                     Area2D/Area3D - the volume the GAME uses to know the
-                     player is there. Not a marker plus a radius; a radius
-                     around a point is what passed mid-jump.
-      SETTLED        grounded AND not inside any scripted or interpolated move
-      HELD           for `settle_frames` CONSECUTIVE frames. One frame is a
-                     sample of a trajectory; N frames is a state.
-
-    YOUR CONTROLLER MUST SAY WHEN IT IS BUSY. Nothing outside a controller can
-    tell "standing on the ledge" from "being lerped by a mantle" - that is
-    exactly why the grounded check failed. Expose
-    `func is_in_scripted_move() -> bool` (or is_busy / is_traversal_busy /
-    is_animation_driving / is_scripted_move_active) returning true while any
-    scripted move owns the body. Pass `player_script` and this REFUSES a
-    controller without one rather than sampling it naively, because sampling it
-    naively is the bug.
-
-    `inputs` is the real input program through the real input map:
-    [{"action": "move_forward", "frames": 20}, {"action": "jump", "frames": 1}]
-
-    Bounded by construction: the run stops at a frame ceiling and prints a
-    heartbeat, because an unbounded wait-until-condition loop is
-    indistinguishable from a hang and three agents were killed after 25 minutes
-    of silence having written nothing.
-
-    Geometry (rise, gap, pad sizes, player bounds) is reported when available
-    as EXPLANATION. It is never the verdict.
+    Arrival is three conditions: IN THE VOLUME (`destination` is the
+    destination's OWN Area2D/Area3D, not a marker plus radius), SETTLED
+    (grounded AND in no scripted move), HELD for `settle_frames` CONSECUTIVE
+    frames. YOUR CONTROLLER MUST SAY WHEN IT IS BUSY: expose
+    `is_in_scripted_move() -> bool` (or is_busy / is_traversal_busy /
+    is_animation_driving / is_scripted_move_active); with `player_script` a
+    controller without one is REFUSED. `inputs`: [{"action": "jump",
+    "frames": 1}]. Bounded by a frame ceiling. Geometry is explanation only.
+    Full notes: docs/tools.md#traversal_prove
     """
     from bgate_core.level import traversal as _traversal
 

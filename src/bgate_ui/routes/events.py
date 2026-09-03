@@ -31,10 +31,13 @@ than a blank panel with a 500 behind it.
 """
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Optional
+import time
+from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import StreamingResponse
 
 from bgate_core.store import db as _db
 from bgate_core.store import events as _events
@@ -161,12 +164,149 @@ def _tail(project, kinds: list[str], limit: int) -> dict:
             "more": False, "head": head, "older": older}
 
 
+# ---------------------------------------------------------------------------
+# The push channel
+# ---------------------------------------------------------------------------
+# ONE SSE STREAM INSTEAD OF FORTY POLLS. Every panel that only wanted to notice
+# that something had changed was asking the server every 1-5 seconds whether it
+# had; the event table already records every consequential transition in id
+# order, so the browser can hold one connection and refetch on arrival instead.
+#
+# The wire format is plain SSE: ``id:`` is the event row id, so a browser that
+# drops and reconnects sends ``Last-Event-ID`` and resumes exactly where it was;
+# ``event:`` is the kind, so a listener can subscribe per kind. A comment line
+# every PING_S keeps the connection from being idled out by a proxy or the
+# WebView2 host. The first frame is ``hello``, carrying the head id (which also
+# becomes the browser's Last-Event-ID) and the kinds the client should listen
+# for. A kind seen mid-stream that was not announced is announced first
+# (``vocabulary``) - EventSource only dispatches named events to a listener
+# registered for that name, and the vocabulary in core is advisory.
+PING_S = 15.0
+TICK_S = 0.5
+STREAM_BATCH = 200
+
+
+def _sse(event: str, data: dict, event_id: Optional[int] = None) -> str:
+    text = json.dumps(data, ensure_ascii=False, default=str)
+    head = f"event: {event}\n"
+    if event_id is not None:
+        head += f"id: {event_id}\n"
+    return head + "data: " + text + "\n\n"
+
+
+def _known_kinds(project) -> list[str]:
+    """The vocabulary plus every kind the log has actually recorded."""
+    out = list(_events.KINDS)
+    try:
+        rows = _db.connect(project).execute(
+            "SELECT DISTINCT kind FROM event").fetchall()
+        for r in rows:
+            if r["kind"] and r["kind"] not in out:
+                out.append(r["kind"])
+    except Exception:
+        pass
+    return out
+
+
+def _resume_from(request: Request, after: Optional[int]) -> Optional[int]:
+    """Where a subscriber wants to start: the header wins over the query."""
+    raw = request.headers.get("last-event-id")
+    if raw is None or not str(raw).strip():
+        return after
+    try:
+        return max(0, int(str(raw).strip()))
+    except ValueError:
+        return after
+
+
+async def _stream(request: Request, project, start: Optional[int],
+                  wanted: list[str], limit: int) -> AsyncIterator[str]:
+    """Rows after ``start`` as they land, forever, or until the client goes.
+
+    ``start`` None means "from now": the backlog is not replayed to a fresh
+    tab - that is what the JSON read is for. ``limit`` > 0 ends the stream
+    after that many rows, which is what makes it testable and curl-able.
+    """
+    head = await asyncio.to_thread(_events.head, project)
+    seq = head if start is None else min(start, head)
+    known = await asyncio.to_thread(_known_kinds, project)
+    gap = False
+    if start is not None:
+        probe = await asyncio.to_thread(_events.since, project, seq, wanted, 1)
+        gap = bool(probe.get("gap"))
+    yield _sse("hello", {"head": head, "seq": seq, "kinds": known, "gap": gap,
+                         "ping_s": PING_S}, event_id=seq)
+    sent = 0
+    last_ping = time.monotonic()
+    while True:
+        if await request.is_disconnected():
+            return
+        batch = await asyncio.to_thread(
+            _events.since, project, seq, wanted, STREAM_BATCH)
+        for ev in batch.get("events") or []:
+            kind = str(ev.get("kind") or "")
+            if kind not in known:
+                known.append(kind)
+                yield _sse("vocabulary", {"kinds": [kind]})
+            yield _sse(kind, ev, event_id=int(ev["id"]))
+            seq = int(ev["id"])
+            sent += 1
+            if limit and sent >= limit:
+                return
+        if batch.get("more"):
+            continue
+        now = time.monotonic()
+        if now - last_ping >= PING_S:
+            last_ping = now
+            yield ": ping\n\n"
+        await asyncio.sleep(TICK_S)
+
+
+def _stream_response(request: Request, after: Optional[int], kinds: str,
+                     limit: int) -> StreamingResponse:
+    project = root()
+    gen = _stream(request, project, _resume_from(request, after),
+                  _wanted(kinds), max(0, int(limit or 0)))
+    return StreamingResponse(gen, media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+    })
+
+
+def _wants_stream(request: Request) -> bool:
+    return "text/event-stream" in (request.headers.get("accept") or "").lower()
+
+
+@router.get("/api/events/stream")
+def events_stream(request: Request,
+                  after: Optional[int] = Query(None, ge=0),
+                  kinds: str = Query(""),
+                  limit: int = Query(0, ge=0)):
+    """The push channel, at its own path. GET, same-origin, no token: it is a
+    read, and the guard exempts reads on purpose (a viewer may look).
+
+    ONLY FOR A CLIENT THAT ASKED FOR A STREAM. A plain GET - a browser
+    address bar, a route smoke test - would otherwise hang on a response that
+    never ends; it gets a 406 that says how to ask instead.
+    """
+    if not _wants_stream(request):
+        raise api.ApiError(406, "send Accept: text/event-stream to subscribe; "
+                                "GET /api/events is the JSON read",
+                           code="not_acceptable")
+    return _stream_response(request, after, kinds, limit)
+
+
 @router.get("/api/events")
-def events_feed(since: Optional[int] = Query(None, ge=0),
-                kinds: str = Query(""),
-                limit: int = Query(_events.DEFAULT_LIMIT, ge=1,
-                                   le=_events.MAX_LIMIT)) -> dict:
+def events_feed(request: Request,
+                      since: Optional[int] = Query(None, ge=0),
+                      kinds: str = Query(""),
+                      limit: int = Query(_events.DEFAULT_LIMIT, ge=1,
+                                         le=_events.MAX_LIMIT)):
     """Events for a drawer or a subscriber, plus the unread count for the bell.
+
+    ``Accept: text/event-stream`` - what EventSource sends - gets the push
+    channel above at this path; ``since`` is then the resume point. Everything
+    else is the JSON read described below.
 
     ``since`` OMITTED means the most recent ``limit`` events (``tail: true``) —
     what a panel wants the first time it opens. ``since=<n>``, including 0, is
@@ -180,6 +320,8 @@ def events_feed(since: Optional[int] = Query(None, ge=0),
     vocabulary is advisory in core and a filter that 400s would break a UI
     against a newer log.
     """
+    if _wants_stream(request):
+        return _stream_response(request, since, kinds, 0)
     project = root()
     wanted = _wanted(kinds)
     if since is None:

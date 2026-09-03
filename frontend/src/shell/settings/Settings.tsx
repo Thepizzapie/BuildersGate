@@ -5,9 +5,11 @@ import {
 } from "@mantine/core";
 import { Ti } from "../Ti";
 import { mutate, readJSON } from "../../bridge";
-import { usePoll, useViewActive } from "../../hooks";
-import { useEffect } from "react";
+import { useEvents, useViewActive } from "../../hooks";
 import { AgentFleet } from "./AgentFleet";
+import { ProviderKeys } from "./ProviderKeys";
+import { LocalGenerators } from "./LocalGenerators";
+import { AgentClis } from "./AgentClis";
 import "./settings.css";
 
 /* 7b · Settings as a FORM.
@@ -32,16 +34,6 @@ import "./settings.css";
  * Env-forced rows are locked and greyed, because a control that silently does
  * nothing is worse than one that says why it cannot.
  */
-
-declare global {
-  interface Window {
-    ProviderKeys?: { activate?(host?: HTMLElement | null): Promise<boolean> | boolean };
-    LocalSetup?: {
-      activate?(host?: HTMLElement | null): Promise<boolean> | boolean;
-      activateAgents?(host?: HTMLElement | null): Promise<boolean> | boolean;
-    };
-  }
-}
 
 type Field = {
   label?: string;
@@ -94,29 +86,15 @@ export function Settings() {
     setDesc(await readJSON<Described>("/api/settings", EMPTY));
   }, []);
 
-  /* THE TWO PANELS THIS SCREEN HOSTS BUT DOES NOT OWN.
-     providerkeys.js is the ONLY surface in the product that may write an API
-     key - deliberately not an MCP tool, because an agent that can write
-     credentials can hand itself a provider nobody paid for - and localsetup.js
-     is the local-generation half of the same question. Both mount themselves
-     into an id and both used to ride SettingsView.activate(), which this screen
-     replaced. React renders their hosts EMPTY and never diffs what they put
-     inside, then asks each one to paint. Same contract as #asset-lib-root. */
-  useEffect(() => {
-    if (!active || group !== GENERATORS) return;
-    window.ProviderKeys?.activate?.();
-    window.LocalSetup?.activate?.();
-    /* THREE PANELS, NOT TWO. localsetup.js has a second surface - the Agent
-       CLIs pane, which reports whether the coding-agent binaries this product
-       spawns are actually installed - and its own header says it lives at
-       #ag-host "and NOWHERE ELSE". It used to be painted by a wrapper around
-       SettingsView.activate(); that wrapper still exists, still checks for
-       window.SettingsView, and has silently bailed since the day this screen
-       replaced it. */
-    window.LocalSetup?.activateAgents?.();
-  }, [active, group]);
+  /* THE THREE GENERATOR PANELS ARE REACT NOW (ProviderKeys.tsx,
+     LocalGenerators.tsx, AgentClis.tsx) and render below when their group is
+     selected. ProviderKeys is still the ONLY surface in the product that may
+     write an API key — deliberately not an MCP tool, because an agent that can
+     write credentials can hand itself a provider nobody paid for — and it never
+     fetches through this file: the providers read stays out of Settings.tsx so
+     a credential can never be described beside a registry value. */
   // Settings do not move on their own; one read on arrival is the whole need.
-  usePoll(refresh, 60000, active);
+  useEvents(refresh, { enabled: active, kinds: ["settings.*", "gate.*"], fallbackMs: 60000 });
 
   /* The PATCH answers with the whole description again, so a save that an env
      var overrode - or that another field's range clamped - comes back stated
@@ -243,13 +221,15 @@ export function Settings() {
                 {(groups.find((x) => x.name === GENERATORS)?.fields ?? [])
                   .map((f) => <Row key={f.key} f={f} onSave={save} />)}
               </Stack>
-              {/* THREE CLASSIC PANELS, HOSTED NOT REBUILT. providerkeys.js is
-                  the only surface in the product that may write an API key - deliberately not an MCP tool - and localsetup.js owns both the
-                  local-generation and the agent-CLI panes. React renders the
-                  hosts empty and never diffs what they put inside. */}
-              <div id="pv-host" />
-              <div id="lc-host" />
-              <div id="ag-host" />
+              {/* THE THREE GENERATOR PANELS. The keys (the only surface that may
+                  write one), the local runtimes, and the agent CLIs — the last
+                  lives here and nowhere else, because Studio is about making
+                  things and an MCP registration makes nothing. `active` is the
+                  deck's; the group selection is accounted for by not rendering
+                  them at all. */}
+              <ProviderKeys active={active} />
+              <LocalGenerators active={active} />
+              <AgentClis active={active} />
             </section>
           ) : (
             groups.filter((g) => g.name === group || q).map((g) => (

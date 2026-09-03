@@ -117,7 +117,10 @@ class TestItIsWiredToTheRealRegistry:
         from bgate_mcp import server
 
         rows = server._registry_rows()
-        assert len(rows) > 200          # the whole surface, not a stub
+        # The whole surface is registered plus parked; a seatless process
+        # holds the director's share and parks the generation crafts.
+        assert len(rows) + len(server._PARKED) > 200
+        assert len(rows) > 100
         registered = {name for name, _ in rows}
         # DERIVED, both directions: the index describes exactly this registry.
         text = toolindex.render(rows)
@@ -146,4 +149,11 @@ class TestItIsWiredToTheRealRegistry:
 
         instructions = server.mcp.instructions or ""
         assert "tool_index()" in instructions
-        assert "image_generate" in instructions
+        assert "queue_add" in instructions
+        assert "EVERY TOOL TAKES `project_dir`" in instructions
+        # A parked craft is named as unlockable, not silently absent.
+        if server._PARKED:
+            assert "NOT LOADED" in instructions
+            assert "image:" in instructions
+        else:
+            assert "image_generate" in instructions

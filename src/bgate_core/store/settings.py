@@ -132,6 +132,7 @@ LABELS: dict[str, str] = {
     "dispatch.model_art": "Model the art seat uses",
     "dispatch.max_turns": "Stop an agent after this many turns",
     # Gates
+    "enforcement.profile": "How hard the board enforces (relaxed, standard, strict)",
     "gate.mode": "Who signs off finished work",
     "qa.require_evidence": "Scene work must show a render before it counts as done",
     "qa.max_rounds": "How many times work may bounce back for fixes",
@@ -369,7 +370,7 @@ SETTINGS: tuple[Setting, ...] = (
              "is judged on taste rather than on whether it parses. Blank "
              "falls back to dispatch.model."),
     Setting(
-        key="dispatch.max_turns", group="Dispatch", kind=INT, default=120,
+        key="dispatch.max_turns", group="Dispatch", kind=INT, default=200,
         minimum=0, maximum=1000, store=("registry", "dispatch.max_turns"),
         scope=MACHINE, env="BGATE_MAX_TURNS", human_only=True,
         help="Hard ceiling on assistant turns per run; 0 disables it. There "
@@ -379,6 +380,17 @@ SETTINGS: tuple[Setting, ...] = (
              "a result boundary, which a grinding agent may not reach."),
 
     # -- Gates --------------------------------------------------------------
+    Setting(
+        key="enforcement.profile", group="Gates", kind=ENUM, default="standard",
+        choices=("relaxed", "standard", "strict"),
+        store=("registry", "enforcement.profile"), env="BGATE_ENFORCEMENT",
+        human_only=True,
+        help="One switch for the four enforcement ladders (director lane, "
+             "worker lanes, project boundary, approval gate). relaxed: "
+             "off/collide/warn/none. standard: collide/warn/block/agent - "
+             "today's defaults. strict: block/block/block/builders. A ladder "
+             "set explicitly (BGATE_DIRECTOR_MODE, BGATE_LANES, BGATE_AEGIS, "
+             "gate.mode / BGATE_QA_GATE) still wins over the profile."),
     Setting(
         key="gate.mode", group="Gates", kind=ENUM, default="agent",
         choices=("none", "agent", "builders"),
@@ -681,28 +693,25 @@ SETTINGS: tuple[Setting, ...] = (
 
     # -- Budget (the spend_budget row; described here, not copied) ----------
     Setting(
-        key="budget.enforced", group="Budget", kind=BOOL, default=False,
+        key="budget.enforced", group="Budget", kind=BOOL, default=True,
         store=("budget", "enforced"), human_only=True,
-        help="Refuse a dispatch that would breach a ceiling. OFF by default "
-             "since 2026-08-19, and deliberately: shipped on, every project "
-             "silently enforced a $5/item, $25/day ceiling nobody chose, and "
-             "the observed agent response to a mid-task budget refusal is to "
-             "hand-roll a substitute asset - worse than either spending or "
-             "asking. Off, every number below is a report; the ledger still "
-             "records everything. Turn it on when YOU want hard ceilings."),
+        help="Refuse a dispatch that would breach a ceiling. ON by default "
+             "under generous ceilings ($10/item, $50/day, $500/project): the "
+             "ceiling is there to catch a runaway, not to ration. Off, every "
+             "number below is a report; the ledger still records everything."),
     Setting(
-        key="budget.per_item_usd", group="Budget", kind=FLOAT, default=5.0,
+        key="budget.per_item_usd", group="Budget", kind=FLOAT, default=10.0,
         minimum=0.0, maximum=10000.0, store=("budget", "per_item_usd"),
         human_only=True,
         help="Ceiling for one agent run, in USD. Also the figure the "
              "dispatcher projects against the daily budget before spawning."),
     Setting(
-        key="budget.per_day_usd", group="Budget", kind=FLOAT, default=25.0,
+        key="budget.per_day_usd", group="Budget", kind=FLOAT, default=50.0,
         minimum=0.0, maximum=100000.0, store=("budget", "per_day_usd"),
         human_only=True,
         help="Ceiling for today, in USD. 0 means no daily ceiling."),
     Setting(
-        key="budget.per_project_usd", group="Budget", kind=FLOAT, default=250.0,
+        key="budget.per_project_usd", group="Budget", kind=FLOAT, default=500.0,
         minimum=0.0, maximum=1000000.0, store=("budget", "per_project_usd"),
         human_only=True,
         help="Lifetime ceiling for this project, in USD. 0 means none."),

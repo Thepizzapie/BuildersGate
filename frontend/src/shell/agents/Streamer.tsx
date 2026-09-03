@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { Ti } from "../Ti";
 import { mutate, readJSON, toast } from "../../bridge";
-import { usePoll } from "../../hooks";
+import { useEvents } from "../../hooks";
 
 /* THE STREAM PANEL — the redaction switch, and the six overlays nobody could
  * reach.
@@ -57,7 +57,7 @@ export function Streamer() {
   const load = useCallback(async () => {
     setSt(await readJSON<Status>("/api/streamer", {}));
   }, []);
-  usePoll(load, 10000, true);
+  useEvents(load, { kinds: ["settings.*"] });
 
   const on = !!st.on;
 

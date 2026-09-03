@@ -154,7 +154,9 @@ class TestErrors:
         def boom(*a, **k):
             raise urllib.error.HTTPError("u", code, "err", {}, None)
 
-        monkeypatch.setattr(krea.urllib.request, "urlopen", boom)
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        from bgate_adapters import _http
+        monkeypatch.setattr(_http, "_sleep", lambda *_: None)
         monkeypatch.setenv("KREA_API_KEY", "k")
 
     def test_402_explains_the_separate_api_balance(self, monkeypatch):
@@ -186,7 +188,7 @@ class TestErrors:
             krea.KreaError("nope")))
         got = krea.generate("x", "out.png")
         assert got["ok"] is False
-        assert set(got) >= {"ok", "error", "provider", "model", "seconds", "estimated_usd"}
+        assert set(got) >= {"ok", "error", "provider", "model", "seconds", "usd"}
         assert got["provider"] == "krea"
 
 

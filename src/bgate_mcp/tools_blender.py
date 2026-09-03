@@ -12,6 +12,10 @@ from bgate_adapters import animcurves as _animcurves
 from bgate_adapters import blender as _blender
 from bgate_adapters import bonepaths as _bonepaths
 from bgate_adapters import skinweights as _skinweights
+from typing import Annotated
+
+from pydantic import Field
+
 from bgate_mcp.server import (  # noqa: F401
     Optional, _Path, _archive_preview, _contained_path,
     _fail, _json, _log, _paid_gate,
@@ -320,31 +324,14 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
                     root_name: str = "Assembled", timeout: int = 300) -> dict:
     """Assemble separately-modelled LAYERS into one rigged .glb, and test it.
 
-    The end of the layered 3D path: model body, clothing, hard accessories and
-    any logo as their own files, then join them here. Built in ONE pass instead,
-    a figure comes back with the parts that lost the attention budget deformed - on a real baseball player, the hands, the cap, and a scrambled team logo.
-
-    `parts` is the layer list, each a path or a dict:
-      {"path": "out/uniform.glb",   # .glb / .gltf / .blend
-       "name": "uniform",           # how it is reported and referenced
-       "at": [0,0,0], "rotate": [0,0,0], "scale": 1.0,
-       "bind": "deform",            # deform | bone:<Name> | none
-       "decal_on": "cap"}           # conform to that layer's surface
-
-    A LOGO OR ANY TEXT GOES IN AS ITS OWN LAYER WITH decal_on. Flush against the
-    surface it z-fights and tears in-engine; shrinkwrap plus an offset fixes it.
-    Hard geometry rides a bone (a cap does not bend), soft geometry deforms.
-    `rig` names the layer holding the armature - without it nothing binds, which
-    is right for a prop and a shipped statue for a character.
-
-    Returns per-layer objects/tris/binding, plus `checks`: `unbound` and
-    `unweighted_verts` name the layer that detaches or tears the first time it
-    animates, so you re-run that layer instead of the whole character.
-
-    The assembled file is REGISTERED as a candidate artifact (`artifact_id`),
-    which is what puts it under the same QA gate every 2D asset passes through.
-    Write out_path inside the project - an artifact cannot be recorded for a
-    file outside it, and an unregistered asset is one no reviewer ever sees.
+    `parts` is the layer list, each a path or {"path", "name", "at",
+    "rotate", "scale", "bind": deform | bone:<Name> | none, "decal_on":
+    <layer>}. A logo or any text goes in as its own layer with decal_on. `rig`
+    names the layer holding the armature - without it nothing binds. Returns
+    per-layer objects/tris/binding plus `checks` (`unbound`,
+    `unweighted_verts`) naming the layer to re-run. REGISTERED as a candidate
+    artifact - write out_path inside the project or it cannot be recorded.
+    Full notes: docs/tools.md#blender_combine
     """
     _contained_path(out_path, "out_path")
     result = _blender.combine(parts, out_path, rig=rig,
@@ -362,44 +349,21 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
 
 
 @_tool
-def character_generate(prompt: str, out_dir: str, name: str = "character",
-                       provider: str = "", backend: str = "",
-                       height: float = 1.8, budget: int = 45000,
-                       size: str = "1024x1536", godot_project: str = "",
-                       dry_run: bool = True, timeout: int = 2400) -> dict:
+def character_generate(prompt: Annotated[str, Field(description='What the character looks like; the pose clause and template conditioning are added.')], out_dir: Annotated[str, Field(description="Directory every stage's artifacts are written into.")], name: Annotated[str, Field(description='Stem for the plate, mesh and rigged files. Default character.')] = "character",
+                       provider: Annotated[str, Field(description='Image provider for the plate; "" uses the project\'s routing.')] = "", backend: Annotated[str, Field(description='Image-to-3D backend; "" asks choose(), which refuses licence-conditioned backends - name one after reading its terms.')] = "",
+                       height: Annotated[float, Field(description='Character height in metres the mesh is scaled to. Default 1.8.')] = 1.8, budget: Annotated[int, Field(description='Target face count after decimation. Default 45000.')] = 45000,
+                       size: Annotated[str, Field(description='Plate image size WxH. Default 1024x1536.')] = "1024x1536", godot_project: Annotated[str, Field(description='Directory holding project.godot; set it to import, wire and load the result in-engine. Empty writes nothing into a game.')] = "",
+                       dry_run: Annotated[bool, Field(description='True (default) quotes the backend and stops; False spends real money at the plate and the mesh.')] = True, timeout: Annotated[int, Field(description='Seconds for the whole chain. Default 2400.')] = 2400) -> dict:
     """"I want a model that looks like X." Plate, mesh, rig, into the engine.
 
-    THE WHOLE CHARACTER PATH AS ONE CALL. Every stage was already reachable and
-    a caller still had to know: condition the plate on the humanoid template or
-    the skeleton will not fit; key it or the backdrop arrives as geometry no
-    bone can reach; which backend takes which knobs; that a bind reports success
-    having weighted nothing. Get any of those wrong and it costs ten GPU minutes
-    to find out. They are the same five steps in the same order every time.
-
-    Each stage gates the next, so a failure costs the stage that found it.
-    Measured on the runs this was built from - an unkeyed plate took 605 s and
-    came back 21% non-manifold, refused by the quality gate, against 216 s and
-    16% for the same subject keyed; a collapse met its triangle budget with
-    20,799 of 39,803 faces inside out; a bind created all 22 vertex groups and
-    filled NONE, 64,878 of 64,878 vertices carrying no weight with every other
-    check green.
-
-    DRY_RUN IS TRUE BY DEFAULT. It quotes the backend and stops. This spends
-    real money at the plate and again at the mesh, and a tool that bills on the
-    first call is a tool nobody trusts twice - pass dry_run=False to run it.
-
-    backend   "" asks choose(), which REFUSES to pick a backend whose licence
-              carries conditions. That refusal is the design: this tool does not
-              know your revenue, territory or monthly actives. Name one after
-              reading its terms.
-    godot_project  set it and the rigged .glb is imported, given a body and
-              collider suited to what it is, wired into a .tscn and loaded
-              through the engine to prove it opens. Leave it empty and nothing
-              is written into a game project.
-
-    Returns every artifact by path, the gate result from each stage, and `stage`
-    naming where it stopped. `ok` is True only if a RIGGED character came out - a mesh that failed to bind reports ok=False with the unweighted count, and
-    that is a refusal, not a warning.
+    THE WHOLE CHARACTER PATH AS ONE CALL; each stage gates the next. DRY_RUN
+    IS TRUE BY DEFAULT: it quotes the backend and stops - pass dry_run=False
+    to spend. backend "" asks choose(), which REFUSES a backend whose licence
+    carries conditions; name one after reading its terms. godot_project set:
+    the rigged .glb is imported, given a body and collider, wired into a
+    .tscn and loaded in-engine. `ok` is True only if a RIGGED character came
+    out; `stage` names where it stopped.
+    Full notes: docs/tools.md#character_generate
     """
     # The decorator injects project_dir on every tool and _root() reads it, so
     # keys and spend land in the project the CALL named rather than whatever a
@@ -427,94 +391,32 @@ def character_generate(prompt: str, out_dir: str, name: str = "character",
 def blender_humanoid_template() -> dict:
     """The shipped humanoid skeleton and the pose plate to generate against.
 
-    START A CHARACTER HERE. Every generated mesh used to invent its own
-    proportions, so the skeleton had to be bent to fit each one and no two
-    characters could share an animation. Conditioning the PLATE on this
-    reference inverts that - the art conforms to the skeleton, and a clip
-    authored for one character plays on the next.
-
-    Measured on one character, bones further than 6 cm from any mesh vertex:
-      template scaled by height only ............ 16 of 24
-      landmark fitting alone ..................... 5 of 23
-      plate conditioned on this reference alone .. 8 of 23
-      BOTH ....................................... 0 of 23, and 0 unweighted
-
-    Returns the reference image to pass as `ref_images` to image_generate, the
-    prompt clause that holds the stance, and the 23 Godot-profile bone names
-    every humanoid from this pipeline carries - so BoneMap retargeting works
-    and animations move between characters.
-
-    The five-step path:
-      1. image_generate(prompt + pose_clause, ref_images=[pose_front])
-      2. key it - an opaque plate becomes geometry, measured 2.8x slower and
-         21% non-manifold against 16% keyed
-      3. blender_generate(plate, out)          draft mesh
-      4. blender_rig(mesh, out)                adopt, fit, bind, PROVE it
-      5. godot_deliver_asset(project, rigged)  .tscn, verified in-engine
+    START A CHARACTER HERE. Conditioning the PLATE on this reference makes the
+    art conform to the skeleton, so a clip authored for one character plays on
+    the next. Returns the reference image to pass as `ref_images` to
+    image_generate, the prompt clause that holds the stance, and the 23
+    Godot-profile bone names. Path: image_generate -> key it ->
+    blender_generate -> blender_rig -> godot_deliver_asset.
+    Full notes: docs/tools.md#blender_humanoid_template
     """
     return _blender.humanoid_template()
 
 
 @_tool
-def blender_rig(model: str, out_path: str, kind: str = "humanoid",
-                height: float = 1.8, budget: int = 0, orient: bool = True,
-                armature_name: str = "Skeleton", symmetrize: str = "auto",
-                timeout: int = 900) -> dict:
+def blender_rig(model: Annotated[str, Field(description='The generated mesh (.glb/.gltf/.blend) to adopt and bind.')], out_path: Annotated[str, Field(description='Where the rigged .glb is written; keep it inside the project.')], kind: Annotated[str, Field(description='humanoid (reads a front from foot reach) or none (refuses to guess; orientation never established). Default humanoid.')] = "humanoid",
+                height: Annotated[float, Field(description='Height in metres the mesh is scaled to. Default 1.8.')] = 1.8, budget: Annotated[int, Field(description='Post-decimation face count; 0 leaves density alone. 45-60k was clean, 8k shattered a character.')] = 0, orient: Annotated[bool, Field(description='Face the mesh +Y and ground it before binding. Default True.')] = True,
+                armature_name: Annotated[str, Field(description='Name of the armature object written. Default Skeleton.')] = "Skeleton", symmetrize: Annotated[str, Field(description="auto mirrors skin weights only when the body's sides are within 2% of height; off skips; force runs on an asymmetric body.")] = "auto",
+                timeout: Annotated[int, Field(description='Seconds for the Blender session. Default 900.')] = 900) -> dict:
     """Take a GENERATED mesh to a bound, weighted character an engine can move.
 
-    Every image-to-3D backend returns `rigged: false` - geometry and nothing
-    else. This is the missing step between that and a character: adopt the mesh
-    (weld, decimate, scale, orient, ground), fit a skeleton to its own measured
-    height, bind it, and PROVE the bind took.
-
-    THE PROOF IS `unweighted`, AND NOTHING CHEAPER WORKS. Blender's parent_set
-    returns cleanly, creates all 22 vertex groups, and can leave every one of
-    them empty. The modifier attaches. Godot loads it and shows a Skeleton3D.
-    The character animates not at all. MEASURED on a real generation: 64,878 of
-    64,878 vertices carrying no weight with every other check green.
-
-    Adopt and bind happen in ONE Blender session on purpose. Round-tripping
-    through a file between them is what produced that failure: glTF re-import
-    carries a root transform, the skeleton lands in a different space from the
-    mesh, and heat finds no vertices near any bone. Same mesh in one session:
-    3 of 19,556.
-
-    Bone heat is tried first because it deforms properly; ARMATURE_ENVELOPE is
-    the fallback and is rigid, so elbows and shoulders pinch. `bound_with` says
-    which one shipped. **`rigged` False means the asset is not animatable** - it is not a warning to pass along, it is a refusal.
-
-    kind    "humanoid" reads a front from foot reach; "none" refuses to guess.
-            A subject with no feet (a prop, a bust) wants "none", and then
-            orientation is NEVER ESTABLISHED - check the turnaround yourself.
-    budget  0 leaves the density alone. A local backend with no face_count knob
-            hands back ~280k faces, and post-decimation here is the only lever
-            those users have. 8k shattered a character; 45-60k was clean.
-
-    symmetrize  "auto" (default) mirrors the skin weights across the body's own
-            centre plane, but ONLY when the audit says the two sides are within
-            2% of the character's height of each other. Heat fails differently
-            on each side - one clean elbow and one bound to the ribs is the
-            normal outcome - and averaging the pair fixes it without picking a
-            winner. "off" skips it. "force" runs it on an asymmetric body, which
-            is right for a cosmetic asymmetry (one pauldron, a cloak) and wrong
-            for anything else.
-
-    THE REPORT NOW CARRIES `audit` BEFORE THE BIND, and it is the part worth
-    reading first. `audit.shells` is the fragmentation count - a real user's
-    character arrived as 940 separate shells, which passes every
-    well-formedness gate and guarantees a bad bind, because heat will not cross
-    the gaps and loose islands weight to whichever bone is nearest.
-    `audit.symmetry.mean` is how far the body is from its own mirror image.
-
-    AND `rigged: true` IS STILL NOT "ANIMATABLE". Run blender_flex on the
-    output: it bends the thing and measures what bending it did.
-
-    `coverage` (kind="humanoid" only) is a fast pre-check for the 15 bone
-    names godot_retarget_check calls essential - Hips, the spine/head chain,
-    both arms, both legs, under the EXACT name a BoneMap-free retarget
-    matches by. It cannot see hierarchy or binding, only naming, so a pass
-    here is not a substitute for retarget_check against the real engine - it just means a naming problem shows up now instead of after the Godot
-    round-trip.
+    Adopts the mesh, fits a skeleton to its measured height, binds it, and
+    PROVES the bind with `unweighted`; `rigged` False is a refusal. kind:
+    "humanoid" reads a front from foot reach; "none" refuses to guess. budget
+    0 leaves density alone; 45-60k faces was clean. symmetrize: auto (mirror
+    weights only when the body is symmetric) | off | force. Read
+    `audit.shells` first - a fragmented mesh guarantees a bad bind. Then run
+    blender_flex; `rigged: true` is still not "animatable".
+    Full notes: docs/tools.md#blender_rig
     """
     _contained_path(out_path, "out_path")
     result = _blender.rig(model, out_path, kind=kind, height=height,
@@ -541,32 +443,14 @@ def blender_flex(model: str, out_dir: str = "", stem: str = "flex",
                  timeout: int = 600) -> dict:
     """Bend a rigged character and report what bending it did to the body.
 
-    THE SECOND HALF OF THE RIG PROOF. `blender_rig` answers "were weights
-    written" with the unweighted count, and that is the only thing it can
-    answer. It says NOTHING about whether the elbow survives being bent, and a
-    rig with zero unweighted vertices routinely collapses a joint to a straw,
-    loses a quarter of its volume in one bend, or drives the forearm through the
-    ribs. Every number stays green while the character animates like a bag of
-    spanners. Run this before you deliver one.
-
-    Poses each joint a walk cycle moves, ONE AT A TIME so a failure is
-    diagnosable, and per pose measures:
-
-      volume_ratio      posed volume over rest volume. A good bind costs 2-6%.
-      worst_pinch       the joint that lost the most cross-section. 1.0 is
-                        rigid, 0.6 is a visible waist, under 0.4 is a straw.
-      new_self_pairs    faces that intersect in this pose and did not at rest.
-                        The increase, not the count - a generated mesh arrives
-                        with overlapping shells and the absolute number is
-                        meaningless.
-      render            a PNG of the pose. LOOK AT IT. The whole lesson of this
-                        pipeline is that green gates are not evidence.
-
-    `verdict.passed` False is a refusal, not a warning: those weights are not
-    animatable as they stand. The usual fixes, in order - raise `budget` on the
-    rig so the joint has enough loops to bend, check `audit.shells` for a
-    fragmented mesh heat could not cross, and re-run the rig with
+    THE SECOND HALF OF THE RIG PROOF: zero unweighted vertices says nothing
+    about whether an elbow survives being bent. Poses each joint ONE AT A
+    TIME and measures volume_ratio (a good bind costs 2-6%), worst_pinch (0.6
+    is a visible waist, under 0.4 a straw), new_self_pairs (the increase, not
+    the count) and a render - LOOK AT IT. `verdict.passed` False is a refusal:
+    raise `budget` on the rig, check `audit.shells`, re-rig with
     symmetrize='force' when only one side failed.
+    Full notes: docs/tools.md#blender_flex
     """
     _contained_path(out_dir, "out_dir")
     result = _blender.flex(model, out_dir, stem=stem, render=render,
@@ -590,30 +474,14 @@ def blender_weights(model: str, threshold: float = 0.02,
                     min_bleed_vertices: int = 3, timeout: int = 300) -> dict:
     """Per deform bone, does its weight paint cover one patch of the mesh or two.
 
-    A THIRD RIG PROOF, ALONGSIDE `blender_rig` AND `blender_flex`. Neither of
-    those catches this: `rig()`'s `unweighted` count only sees vertices with
-    NO weight, and `flex()` only sees a joint after it bends. Bleed is
-    neither - a hand painted mostly to Hand but partly to Spine, because a
-    brush stroke crossed empty space in the viewport rather than the mesh
-    surface, has full weight coverage and may not even move wrong at any of
-    flex's six test poses if the bleed region is small. It still reads as a
-    seam-tearing glitch the moment the spine and the hand pose differently.
-
-    Reports each deform bone's weighted vertices as connected components on
-    the mesh surface, and flags a bone whose paint makes MORE components than
-    the number of separate mesh pieces it touches - a split inside one
-    connected piece of surface, which only a stray stroke explains. Spanning
-    several pieces is not itself a fault: this pipeline assembles bodies from
-    joined primitives, so a hip bone legitimately covers three of them.
-
-    `threshold` is the minimum weight at which a vertex counts as belonging to
-    a bone (0.02). `min_bleed_vertices` (3) is a noise floor - a single stray
-    vertex is a cleanup nit, not the seam-tearing failure this exists to catch.
-
-    `verdict.passed` False names which bones split and how many vertices sit
-    off their own patch. It is also False when nothing could be measured - a
-    bind with no weights above `threshold` reports `checked: 0` and refuses,
-    rather than passing an empty result as a clean one.
+    A THIRD RIG PROOF: bleed - a hand painted partly to Spine by a stroke
+    that crossed empty viewport - has full coverage and may pass flex, yet
+    tears the moment the parts pose differently. Flags a bone whose paint
+    makes MORE connected components than the mesh pieces it touches.
+    `threshold` (0.02) is the minimum weight that counts; `min_bleed_vertices`
+    (3) is the noise floor. `verdict.passed` False names the bones; also
+    False when nothing could be measured (`checked: 0`).
+    Full notes: docs/tools.md#blender_weights
     """
     report = _blender.weight_islands(model, threshold=threshold, timeout=timeout)
     if report.get("ok"):
@@ -635,34 +503,14 @@ def blender_template_deviation(model: str, reference: str = "",
                                timeout: int = 300) -> dict:
     """How far a rigged character's joints sit from the shipped humanoid template.
 
-    A FOURTH RIG PROOF. `blender_rig`, `blender_flex`, and `blender_weights`
-    all ask questions about ONE character in isolation - is it bound, does it
-    survive bending, is the paint contiguous. None of them can tell you the
-    fit itself landed a bone somewhere anatomically wrong, because a bone
-    can be fully weighted, pinch-free, and bleed-free while still sitting in
-    the wrong place on the body if height/limb fitting mis-solved.
-
-    Compares bone LENGTHS against HUMANOID_SKELETON (or a supplied
-    `reference`), matched by name and each expressed as a fraction of its own
-    file's body height, so two characters of different heights aren't
-    penalised for that alone. Lengths rather than joint positions because the
-    two skeletons are never posed alike - this pipeline rigs in an A-pose and
-    the template is a T-pose, and a positional check reports that difference
-    as a fault on every correctly-rigged character. Bone length does not move
-    when a joint rotates. Parent links are compared too, so a rig that kept
-    the 23 names but rewired the chain is caught.
-
-    NOT a weight comparison - the reference skeleton and a generated character
-    never share mesh topology, so there is nothing to diff vertex-for-vertex.
-
-    `max_deviation` (0.08 body-heights) is a GROSS-ERROR line - a limb
-    collapsed to nothing or stretched across the body - not a proportional-
-    fidelity one. Fitting is meant to adapt the template to each body.
-
-    `verdict.passed` False names which bones are mis-proportioned or
-    misparented. It is also False when nothing could be compared: a candidate
-    whose bones are named on another scheme entirely reports `checked: 0` and
-    refuses, rather than passing an empty intersection as agreement.
+    A FOURTH RIG PROOF: a bone can be weighted, pinch-free and bleed-free and
+    still sit in the wrong place. Compares bone LENGTHS (as fractions of body
+    height, so poses and sizes do not matter) and parent links against
+    HUMANOID_SKELETON or a supplied `reference`. NOT a weight comparison.
+    `max_deviation` (0.08 body-heights) is a gross-error line, not a fidelity
+    one. `verdict.passed` False names mis-proportioned or misparented bones;
+    also False when nothing could be compared (`checked: 0`).
+    Full notes: docs/tools.md#blender_template_deviation
     """
     report = _blender.template_deviation(
         model, reference=(reference or None), timeout=timeout)
@@ -684,31 +532,14 @@ def blender_silhouette(model: str, min_ratio: float = 0.15,
                        max_ratio: float = 4.0, timeout: int = 600) -> dict:
     """The character's projected 2D outline across flex's own pose sweep.
 
-    EXPERIMENTAL - no production rig-QA tool anywhere this project's
-    research found automates a pose-sweep silhouette check; studios render
-    the sweep and a human watches it. This is a real attempt at that, not
-    an adopted technique.
-
-    A DIFFERENT QUESTION FROM blender_flex. Volume and pinch are 3D
-    measures against the mesh itself and cannot see a failure that only
-    shows up from a CAMERA's point of view - a limb that folds directly
-    behind the torso and vanishes from the silhouette while its 3D volume
-    stays intact, or a shoulder that balloons on screen without losing any
-    measured volume. This projects the SAME pose sweep through the SAME
-    fixed, rest-fitted camera flex() uses (never refit per pose) and
-    measures the projected convex-hull area.
-
-    'Preserved' means SANITY BOUNDS, not 'unchanged' - a pose is EXPECTED
-    to change how a character reads on screen. `verdict.passed` False means
-    the silhouette nearly vanished (min_ratio) or ballooned far past what a
-    single joint's rotation should produce (max_ratio), not that anything
-    changed at all.
-
-    It is ALSO False on a sweep that proves nothing: every pose skipped for
-    want of the bones it rotates, or every pose projecting the identical
-    outline as rest. The second is the important one - an unbound mesh does
-    exactly that, and bounds that only fire far from 1.0 would otherwise call
-    a ratio of exactly 1.0 across the whole sweep a perfect result.
+    EXPERIMENTAL. Catches what volume and pinch cannot: a limb that folds
+    behind the torso and vanishes on screen, or a shoulder that balloons
+    without losing volume. Projects flex's sweep through flex's fixed camera
+    and measures convex-hull area. `verdict.passed` False means the silhouette
+    nearly vanished (min_ratio) or ballooned (max_ratio) - or that the sweep
+    proved nothing: every pose skipped, or every pose identical to rest,
+    which is what an unbound mesh does.
+    Full notes: docs/tools.md#blender_silhouette
     """
     report = _blender.silhouette(model, timeout=timeout)
     if report.get("ok"):
@@ -725,62 +556,23 @@ def blender_silhouette(model: str, min_ratio: float = 0.15,
 
 
 @_tool
-def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
-                     ground_axis: int = 1, max_cruising_fraction: float = 0.6,
-                     min_sparc: float = -8.0, max_skating_frames: int = 0,
-                     check_anticipation: bool = True,
-                     min_anticipation_width: float = 6.0,
-                     max_burst_ratio: float = 3.0) -> dict:
+def animation_curves(model: Annotated[str, Field(description='The exported .glb whose animation channels are read.')], foot_bones: Annotated[Optional[list[str]], Field(description='Channel node names (exact match) that also get the foot_skate check.')] = None,
+                     ground_axis: Annotated[int, Field(description='Index of the up axis in the file (0=x, 1=y, 2=z). Default 1.')] = 1, max_cruising_fraction: Annotated[float, Field(description='velocity_profile fails above this share of the clip spent near peak speed. Default 0.6.')] = 0.6,
+                     min_sparc: Annotated[float, Field(description='sparc fails below this spectral arc length. Default -8.0; a starting point, not validated on stylized clips.')] = -8.0, max_skating_frames: Annotated[int, Field(description='foot_skate fails past this many sliding frames. Default 0.')] = 0,
+                     check_anticipation: Annotated[bool, Field(description='Run the EXPERIMENTAL anticipation detector. Default True; set False to skip it.')] = True,
+                     min_anticipation_width: Annotated[float, Field(description='Minimum curvature spread (frames) that counts as a shaped transition. Default 6.0.')] = 6.0,
+                     max_burst_ratio: Annotated[float, Field(description='concentration fails above this multiple of even pacing. Default 3.0.')] = 3.0) -> dict:
     """Measure an exported animation clip's curves - no Blender/Godot needed.
 
-    Reads a GLB's animation channels directly (glTF is a public format, so
-    this is a plain file parse, not another headless spawn) and reports, per
-    channel:
-
-      arc_deviation      (translation only) how far the path bows from the
-                         straight line between its endpoints. DESCRIPTIVE,
-                         not pass/fail - an arc is right for a swinging limb
-                         and wrong for a jab's extension, and this cannot
-                         tell which the clip is doing.
-      velocity_profile   what fraction of the clip's DURATION is spent near
-                         its own peak speed. High means the motion travels
-                         at near-constant speed rather than easing in/out - the curve-math signature of raw linear-interpolated
-                         keyframes.
-      concentration      THE OPPOSITE TAIL OF THAT SAME PROFILE, and
-                         velocity_profile is blind to it: what share of a
-                         track's whole travel lands in its fastest tenth of
-                         frames, against what even pacing would put there.
-                         1.0 is evenly paced, 1.5 a clean sine swing; a clip
-                         whose entire pose change happens in two frames with
-                         a drift around it runs 4x and up. A snap is about as
-                         far from constant-speed as a curve gets, so it sails
-                         through the check above.
-      sparc              spectral arc length of the speed profile - a
-                         smoothness/jitter measure from the mocap-cleanup
-                         literature. Its threshold is a starting point
-                         borrowed from gait research, not yet validated on
-                         this project's own stylized clips - treat FAILs as
-                         worth a look, not as certain defects.
-      anticipation       EXPERIMENTAL, per axis. Laplacian-of-Gaussian
-                         correlation looking for curvature spread across a
-                         transition (shaped, eased, wound-up) vs. a narrow
-                         spike (a raw interpolated corner). No prior art
-                         exists for this as a detector - the cited research
-                         (Wang/Xu/Cohen SIGGRAPH 2006) shows the FORWARD
-                         direction, that this filter CREATES anticipation;
-                         using it to detect whether anticipation is already
-                         present is this project's own experiment. Also has
-                         a real resolution floor: quick transitions sampled
-                         at only a few frames are unreliable to call either
-                         way. Set check_anticipation=False to skip it.
-
-    `foot_bones` (channel node names, exact match) additionally get
-    foot_skate: frames where the bone sits near its lowest point in the clip
-    but still moves horizontally - a planted foot sliding.
-
-    None of this measures appeal or exaggeration - nothing computational
-    does. A clean pass here means "no obvious curve-math defect", not
-    "looks good"; it is a floor, not a ceiling.
+    Parses a GLB's channels directly and reports per channel: arc_deviation
+    (descriptive only), velocity_profile (share of duration near peak speed -
+    the linear-keyframe signature), concentration (share of travel in the
+    fastest tenth of frames; a snap runs 4x and up), sparc (smoothness;
+    threshold borrowed from gait research, treat FAILs as worth a look), and
+    anticipation (EXPERIMENTAL; check_anticipation=False skips it).
+    `foot_bones` additionally get foot_skate. A pass means "no obvious
+    curve-math defect", not "looks good".
+    Full notes: docs/tools.md#animation_curves
     """
     data = _animcurves.extract_animations(model)
     if not data.get("ok"):
@@ -897,58 +689,14 @@ def skin_dominance(model: str, max_ratio: float = 3.0,
                    min_weight: float = 0.5, sample: int = 0) -> dict:
     """Is each vertex driven by a bone that is anywhere NEAR it - no Blender needed.
 
-    A FIFTH RIG PROOF, and the one that catches a character which tears when
-    it animates while every other gate reports it clean. Found on a shipped
-    cat whose walk and run were reported as tearing, with the idle tail wag
-    the only motion that read as smooth. At that moment:
-
-      blender_rig            passed - `unweighted` was 0, every vertex had weight
-      weights summed to 1.0  on every single vertex
-      blender_weights        passed - the guilty bone's paint was ONE connected
-                             patch; it just ran too far down the legs, and a
-                             patch that is too big is not a patch that split
-      blender_flex           passed - its six poses did not open the seam far
-                             enough to trip the volume/pinch bounds
-      blender_template_dev.  passed - the SKELETON was correct. Names, lengths
-                             and parenting were all fine. Only the paint was wrong
-
-    The defect: 42% of the vertices in the lower third of the model - the legs
-    and paws - had their dominant weight on `spine`, `hips`, `chest` or `neck`.
-    The worst sat at y=0.005, ON THE FLOOR, driven by a bone 0.15 m up inside
-    the body. That geometry cannot follow the leg it belongs to, so the leg
-    stretches away from the body as soon as the leg swings. It is invisible in
-    bind pose, which is what every stand-up photograph in this pipeline
-    captures, and invisible to every check above.
-
-    Measures, per vertex, the distance to the BONE SEGMENT that dominates it
-    against the distance to the nearest deform bone segment available. Segments
-    rather than joint origins because a vertex halfway down a thigh is far from
-    both the hip and the knee. A ratio rather than a distance because a
-    tolerance in metres would need retuning per asset, which means it would not
-    get run.
-
-    ONLY DEFORM BONES ARE CANDIDATES for "nearest" - a root or an IK target
-    skins nothing and is often parked at the origin, and comparing against one
-    inflated this check's own first run to a 6.91x false positive.
-
-    Defaults are set from two rigs measured in the same project, one known-good
-    and one known-bad:
-
-                        median   p95    max    rigid
-        good rig          1.00   1.06   1.56      9%
-        the torn cat      1.00   2.32   3.76     57%
-
-    THE MEDIAN IS 1.00 FOR BOTH. Most vertices in a broken bind are painted
-    correctly; the defect lives entirely in the tail, so any average hides it.
-    That is why the verdict reads the maximum and the rigid share.
-
-    `flag_dead_bones` is off by default: every rig legitimately carries bones
-    that deform nothing, and the good rig above fails on exactly that when it
-    is on. They are always listed in the report as information.
-
-    `verdict.passed` False names the bones that reach too far and, separately,
-    a bind with no falloff at all. It is False rather than True when nothing
-    could be measured - an unrigged file refuses instead of passing empty.
+    A FIFTH RIG PROOF, catching the character that tears in motion while every
+    other gate passes (legs weighted to the spine). Per vertex: distance to
+    its dominant bone SEGMENT over distance to the nearest deform bone. THE
+    MEDIAN IS 1.00 ON BROKEN RIGS TOO - the verdict reads the maximum
+    (max_ratio) and the rigid share (max_rigid_fraction). `flag_dead_bones`
+    is off by default. `verdict.passed` False names the bones; an unrigged
+    file refuses rather than passing empty.
+    Full notes: docs/tools.md#skin_dominance
     """
     path = _contained_path(model, "model")
     report = _skinweights.dominance(path, min_weight=min_weight, sample=sample)
@@ -969,56 +717,24 @@ def skin_dominance(model: str, max_ratio: float = 3.0,
 
 
 @_tool
-def blender_texture(model: str, image: str, out_path: str, material: str = "",
-                    all_slots: bool = False, roughness: str = "",
-                    metallic: str = "", normal: str = "", emission: str = "",
-                    normal_strength: float = 1.0, alpha: str = "auto",
-                    alpha_cutoff: float = 0.5,
-                    backface_cull: Optional[bool] = None, decal: bool = False,
-                    timeout: int = 240) -> dict:
+def blender_texture(model: Annotated[str, Field(description='The layer (.glb/.gltf/.blend) whose material gets the maps.')], image: Annotated[str, Field(description='Albedo / base colour map (sRGB). "" applies the other maps without changing the base colour.')], out_path: Annotated[str, Field(description='Where the re-exported layer is written; keep it inside the project so it can be registered.')], material: Annotated[str, Field(description='The ONE material slot to paint. Effectively required on a model with more than one; a name matching no slot fails.')] = "",
+                    all_slots: Annotated[bool, Field(description='Explicit opt-in to paint every material slot. Default False.')] = False, roughness: Annotated[str, Field(description='Roughness map path (Non-Color); how glossy, per texel.')] = "",
+                    metallic: Annotated[str, Field(description='Metallic map path (Non-Color); 0 dielectric, 1 metal.')] = "", normal: Annotated[str, Field(description='Tangent-space normal map path (Non-Color).')] = "", emission: Annotated[str, Field(description='Emission map path (sRGB); what glows.')] = "",
+                    normal_strength: Annotated[float, Field(description='Scales the Normal Map node. Default 1.0.')] = 1.0, alpha: Annotated[str, Field(description='auto | opaque | clip | blend. auto picks clip only when the base image actually carries transparent pixels; a decal needs clip.')] = "auto",
+                    alpha_cutoff: Annotated[float, Field(description='Threshold for alphaMode MASK when alpha is clip. Default 0.5.')] = 0.5,
+                    backface_cull: Annotated[Optional[bool], Field(description='Force backface culling on or off; omitted, decal decides.')] = None, decal: Annotated[bool, Field(description='Shorthand for a conformed graphic: implies backface culling. Default False.')] = False,
+                    timeout: Annotated[int, Field(description='Seconds for the Blender session. Default 240.')] = 240) -> dict:
     """Put GENERATED maps on a 3D layer's material and re-export it.
 
-    The surface half of the layered path. Measured on the first real character
-    run: the assembled asset carried 21 materials and ZERO images - every
-    surface a flat colour an agent typed by hand, because nothing connected the
-    image adapter to the 3D layers. Generate the maps with image_generate
-    (task_kind="texture", conditioned on the pinned refs via use_pinned), then
-    apply them here, per layer, before blender_combine.
-
-    `image` is the albedo / base colour and is what the one-image call has
-    always meant. The rest are optional and each drives its own BSDF input.
-    WITHOUT THEM EVERY SURFACE IS THE SAME PLASTIC - the modelling kit types
-    rough=0.6, metal=0.0, so cloth, leather, skin and steel all ship as one
-    dielectric and colour is the only thing that varies across an asset:
-      roughness   how glossy, per texel        metallic  0 dielectric, 1 metal
-      normal      tangent-space normals        emission  what glows
-    Those four are DATA and are loaded Non-Color; `image` and `emission` feed
-    colour sockets and stay sRGB. Pass image="" to apply maps without changing
-    the base colour. normal_strength scales the Normal Map node.
-
-    ALPHA - auto | opaque | clip | blend. MEASURED: a decal needs alpha="clip"
-    to export `alphaMode: MASK`. Without it the logo layer ships as a solid
-    rectangle of key colour glued over the cap, which is worse than the
-    z-fighting the decal layer exists to prevent. `auto` inspects the base image
-    and picks clip only when it ACTUALLY carries transparent pixels - an opaque
-    PNG with an RGBA header is not a cut-out - so say clip explicitly when you
-    know it is one. alpha_cutoff is the MASK threshold. decal=True is shorthand
-    for a conformed graphic and implies backface culling; backface_cull
-    overrides it either way.
-
-    `material` names ONE slot. IT IS EFFECTIVELY REQUIRED on a model carrying
-    more than one authored material: `all_slots=True` is the explicit opt-in
-    that says you meant to paint every slot, because that used to be the DEFAULT
-    and it put one image over skin, eyes and mouth and called the layer
-    textured. A named material matching no slot is a failure, not a cheerful
-    ok=True with an empty list. Meshes with no UVs are unwrapped first - a map
-    on an unwrapped mesh is silently ignored, which looks exactly like the
-    generation having failed.
-
-    The re-exported layer is REGISTERED as a candidate artifact (`artifact_id`)
-    and carries the maps it was given, so the surface a reviewer is judging can
-    be traced to the images that produced it. Write out_path inside the
-    project; a file outside it cannot be recorded.
+    Generate maps with image_generate(task_kind="texture"); apply per layer
+    before blender_combine. `image` is the albedo; roughness / metallic /
+    normal / emission each drive their own BSDF input. image="" applies maps
+    without changing the base colour. alpha: auto | opaque | clip | blend - a
+    decal NEEDS clip. `material` names ONE slot and is effectively required
+    on a multi-material model; all_slots=True is the explicit opt-in. Meshes
+    with no UVs are unwrapped first. Registered as a candidate artifact -
+    write out_path inside the project.
+    Full notes: docs/tools.md#blender_texture
     """
     _contained_path(out_path, "out_path")
     maps = {"roughness": roughness, "metallic": metallic,
@@ -1067,25 +783,13 @@ def blender_turnaround(model: str, out_dir: str, stem: str = "turnaround",
                        exposure: float = 0.0, timeout: int = 480) -> dict:
     """Render a model from four angles under a fixed rig - and JUDGE each frame.
 
-    THE FRAMES COME BACK IN THIS RESULT AS IMAGES, not as paths you are trusted
-    to go and open. Measured: four turnarounds of a correctly-coloured model
-    came back white because the lights were far too hot, and were reported as
-    finished without anybody opening them. The model was fine; the render was
-    not, and nothing could tell the difference. Look at what you were handed,
-    and read the verdicts - they are the half of the check you cannot argue with.
-
-    Camera and three-point lighting are scaled to the subject's own bounding
-    box, so a giant and a doll both frame correctly. Every frame returns a
-    `blown`/`mean` reading and a verdict; `ok` is False when any frame is
-    unreadable, and the verdict of the frame that failed is the `error`. A
-    failing frame is a lighting problem, not a modelling one - do not go back
-    and change the mesh because a render was white.
-
-    Each frame is archived to the preview gallery and REGISTERED as a candidate
-    artifact, so a turnaround can be handed to an independent reviewer by
-    `artifact_id` (see art_qa_verdict) and shows up in the dashboard beside the
-    2D work. Point out_dir INSIDE the project - frames written outside it cannot
-    be registered, and an unregistered render is one nobody reviews.
+    THE FRAMES COME BACK IN THIS RESULT AS IMAGES. Camera and three-point
+    lighting scale to the subject's bounding box. Every frame returns
+    `blown`/`mean` and a verdict; `ok` is False when any frame is unreadable -
+    a lighting problem, not a modelling one. Each frame is archived and
+    REGISTERED as a candidate artifact (`artifact_id`); point out_dir INSIDE
+    the project or frames cannot be registered.
+    Full notes: docs/tools.md#blender_turnaround
     """
     _contained_path(out_dir, "out_dir")
     result = _blender.turnaround(model, out_dir, stem=stem,
@@ -1139,46 +843,15 @@ def blender_generate(image: str, out_path: str, backend: str = "",
                      options: Optional[dict] = None) -> dict:
     """Turn ONE generated image into a draft mesh. The other way to get geometry.
 
-    The primitive path (blender_run + the kit) is for props, vehicles, terrain
-    and block-out - things made of boxes and cylinders. It tops out at a
-    proportioned blockout with no face and no fingers, so a hero character
-    seen close up comes from here instead: generate the plate with
-    image_generate, then hand it over.
-
-    WHAT COMES BACK IS A DRAFT, NOT AN ASSET. Expect dense, unpredictable
-    topology, no armature, no unit convention, and possibly baked lighting in
-    the texture. It has to be scaled to 1.8 m, faced +Y, cleaned, unwrapped
-    and weighted to a skeleton before blender_combine will make anything of
-    it - bg_human's rig is the one to weight it to. `draft` is True in the
-    result and `next_steps` says so; there is no path straight to
-    godot_deliver_asset and that is deliberate.
-
-    Nothing runs until you configure a backend (see .env.example) - this
-    machine ships no model and downloads none. blender_status reports what is
-    reachable. A local backend costs nothing per generation; a hosted one is
-    priced before it submits, and `dry_run=True` returns that quote plus the
-    licence verdict without spending anything.
-
-    LICENCE IS PART OF THE RESULT. A local server is only a transport, so the
-    model must be declared (BGATE_LOCAL_MODEL) - undeclared reads as unknown,
-    never as permission. Some grants exclude whole territories and some
-    forbid commercial use outright, which is a shipping problem rather than a
-    technical one, so read `licence` before building on the mesh.
-
-    parts=True ASKS FOR A BODY IN PIECES, and for a character it is the better
-    request. A monolithic generation gives one blob - measured on a real user's
-    asset, 940 disconnected shells with no relationship to anatomy - and bone
-    heat then has to guess where the arm stops and the torso starts, which is
-    how fingers end up weighted to a hip. A part-aware graph returns a head, a
-    torso, arms and legs as SEPARATE meshes, and every step after it gets
-    easier: `out_path` is read as a DIRECTORY, the result carries `parts` and a
-    `combine` list ready for blender_combine, and a run that comes back with
-    one mesh is flagged rather than reported as a success.
-
-    It needs its own workflow (BGATE_COMFY_PARTS_WORKFLOW) whose saver writes
-    one file per part. Without it this says so instead of quietly falling back
-    to the monolith, because a silent fallback here is indistinguishable from
-    the feature working.
+    WHAT COMES BACK IS A DRAFT, NOT AN ASSET: it goes through blender_rig /
+    blender_combine, never straight to godot_deliver_asset. Nothing runs
+    until a backend is configured (blender_status); a hosted one is priced
+    first and `dry_run=True` returns the quote plus the licence verdict.
+    LICENCE IS PART OF THE RESULT - read it. parts=True asks for a body in
+    PIECES (better for characters): `out_path` becomes a DIRECTORY and the
+    result carries `parts` and a `combine` list; needs
+    BGATE_COMFY_PARTS_WORKFLOW and says so rather than falling back.
+    Full notes: docs/tools.md#blender_generate
     """
     try:
         _contained_path(out_path, "out_path")
@@ -1270,17 +943,12 @@ def blender_sweep(out_path: str, dry_run: bool = True,
                   keep_renders: bool = True) -> dict:
     """Delete a finished asset's intermediate layer files, keeping the record.
 
-    A character run leaves a per-layer .glb each, a .blend rig, the assembled
-    asset and its renders - fourteen files for one request. This removes the
-    layer sources listed in that asset's manifest and NOTHING ELSE, so a
-    neighbouring asset's layers survive.
-
-    Kept: the assembled file, its manifest, the renders. What was removed is
-    written back into the manifest, so the run's history outlives its files and
-    a single layer can still be identified and rebuilt later.
-
-    Defaults to dry_run=True. Look at the list, then call again with
-    dry_run=False.
+    Removes the layer sources listed in that asset's manifest and NOTHING
+    ELSE. Kept: the assembled file, its manifest, the renders. What was
+    removed is written back into the manifest so a layer can still be
+    rebuilt (blender_layer_rerun). Defaults to dry_run=True - look at the
+    list, then call again with dry_run=False.
+    Full notes: docs/tools.md#blender_sweep
     """
     _contained_path(out_path, "out_path")
     return _blender.sweep(out_path, dry_run=dry_run,
@@ -1309,40 +977,14 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
     """Rebuild ONE layer of an assembled asset and re-assemble it. Not the
     character - the layer.
 
-    "Re-run that one layer, not the whole character" is the promise the layered
-    3D path is built on, and until this tool existed there was no way to keep
-    it: the recipe lived in the manifest and nothing read it back, so a bad cap
-    meant re-modelling, re-texturing and re-assembling everything beside it.
-    blender_combine names the layer that failed (`checks`: unbound,
-    unweighted_verts, and the per-layer tri counts) - this is what you do with
-    that name.
-
-    `asset` is the ASSEMBLED .glb (the manifest sits beside it). `layer` is the
-    layer name as blender_combine reported it. Then ONE of:
-      script   bpy source for that layer, run and exported over the layer's own
-               file. The modelling kit is injected (kit=True) exactly as in
-               blender_run, and the script is recorded beside the layer so the
-               next re-run has it.
-      source   a .glb/.gltf/.blend you already built - used in place, nothing
-               is run.
-      neither  the layer's RECORDED script is re-run. After blender_sweep the
-               layer files are gone and this is the recovery path: each swept
-               layer's manifest entry carries the script that built it. If the
-               file is still on disk and no script is given, it is reused as-is.
-
-    Everything else - placement, rotation, scale, binding, decal_on, which layer
-    holds the rig, the root name - comes back off the manifest untouched. A
-    layer put back at the origin unrotated is a different asset, which is why
-    those arguments are recorded rather than re-typed.
-
-    Refuses BEFORE spending time in Blender when another layer's source is
-    missing, and names those layers: combine would otherwise assemble happily
-    around the hole and hand back a character with no arms. Re-run those first.
-
-    The re-assembled file is registered under the SAME logical name, so it is
-    revision N+1 of the asset a reviewer already saw, not a new one. Returns the
-    combine result plus `changed` - the layer's tri and object counts before and
-    after - so "did that fix it" is a number rather than an impression.
+    `asset` is the ASSEMBLED .glb (manifest beside it); `layer` the name
+    blender_combine reported. Then ONE of: `script` (bpy source, recorded
+    beside the layer), `source` (a file you built), or neither (the RECORDED
+    script is re-run - the recovery path after blender_sweep). Placement,
+    binding and the rig layer come off the manifest. Refuses when another
+    layer's source is missing. Registered as revision N+1; returns the combine
+    result plus `changed`.
+    Full notes: docs/tools.md#blender_layer_rerun
     """
     _contained_path(out_path, "out_path")
     recipe = _blender.manifest_recipe(asset)
@@ -1440,22 +1082,20 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
 
 
 @_tool
-def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
-                    width: int = 128, height: int = 128,
-                    engine: str = "BLENDER_EEVEE_NEXT", fps: float = 8.0,
-                    res_dir: str = "assets/sprites", out_dir: Optional[str] = None,
-                    timeout: int = 420) -> dict:
+def blender_sprites(base_script: Annotated[str, Field(description='bpy source that builds the model, lights and (optionally) camera once.')], poses: Annotated[list[dict], Field(description='[{"name", "script"}]; each script tweaks the scene and renders one frame named after the pose.')], name: Annotated[str, Field(description='Sheet name; emits <name>_sheet.png and <name>_frames.tres. Default sprite.')] = "sprite",
+                    width: Annotated[int, Field(description='Frame width in px. Default 128.')] = 128, height: Annotated[int, Field(description='Frame height in px. Default 128.')] = 128,
+                    engine: Annotated[str, Field(description='Render engine: BLENDER_EEVEE_NEXT (default), BLENDER_WORKBENCH or CYCLES.')] = "BLENDER_EEVEE_NEXT", fps: Annotated[float, Field(description='Playback speed written into the SpriteFrames. Default 8.')] = 8.0,
+                    res_dir: Annotated[str, Field(description='res:// directory the sheet is meant to import under. Default assets/sprites.')] = "assets/sprites", out_dir: Annotated[Optional[str], Field(description="Where the PNGs and sheet are written; omitted uses the project's sprite output directory.")] = None,
+                    timeout: Annotated[int, Field(description='Seconds for the whole render. Default 420.')] = 420) -> dict:
     """Render a Blender-built character as a transparent 2D sprite set.
 
-    THE 2D art path: build the model once in base_script (bpy; lights included - camera optional, an auto-framed ORTHO one is added if missing), then each
-    pose in poses=[{"name","script"}] tweaks the scene and renders one frame.
-    Output: per-pose PNGs + <name>_sheet.png + <name>_frames.tres (a Godot
-    SpriteFrames with one animation per pose) ready for an AnimatedSprite2D via
-    godot_import_asset into res_dir. Rendered sprites cannot drift between
-    poses the way hand-drawn ones do - same rig, camera, light every frame.
-
-    A pose script that errors fails only that pose; check `failed` in the result.
-    The sheet is archived to the preview gallery.
+    Build the model once in base_script (bpy; lights included, an auto-framed
+    ORTHO camera is added if missing), then each pose in poses=[{"name",
+    "script"}] tweaks the scene and renders one frame. Output: per-pose PNGs
+    + <name>_sheet.png + <name>_frames.tres, ready for godot_import_asset
+    into res_dir. A pose script that errors fails only that pose - check
+    `failed`. The sheet is archived to the preview gallery.
+    Full notes: docs/tools.md#blender_sprites
     """
     try:
         _contained_path(out_dir, "out_dir")
@@ -1494,50 +1134,25 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
 
 
 @_tool
-def animation_contacts(model: str, feet: Optional[list[str]] = None,
-                       gait: Optional[str] = None,
-                       clip: Optional[str] = None,
-                       ground_axis: int = 1,
-                       band_fraction: float = 0.25,
-                       max_slide: float = 0.02,
-                       max_variation: float = 0.20,
-                       floor: Optional[float] = None) -> dict:
+def animation_contacts(model: Annotated[str, Field(description='The exported .glb whose skeleton and clip are evaluated.')], feet: Annotated[Optional[list[str]], Field(description="Exact contact joint names (LeftFoot/RightFoot on this project's humanoids, four paws on a quadruped); omitted, guessed and reported.")] = None,
+                       gait: Annotated[Optional[str], Field(description='What the clip was MEANT to be: walk, run, stand, any. No default - the support verdict refuses without it.')] = None,
+                       clip: Annotated[Optional[str], Field(description='Animation name to evaluate when the file carries several; omitted, the first.')] = None,
+                       ground_axis: Annotated[int, Field(description='Index of the up axis (0=x, 1=y, 2=z). Default 1.')] = 1,
+                       band_fraction: Annotated[float, Field(description="Height band above a foot's lowest point that counts as down, as a fraction of its vertical travel. Default 0.25.")] = 0.25,
+                       max_slide: Annotated[float, Field(description='Planted-foot ground-plane speed allowed on a ROOT-MOTION clip, metres per frame. Default 0.02.')] = 0.02,
+                       max_variation: Annotated[float, Field(description="Allowed variation of the planted foot's slide speed on an IN-PLACE clip, as a fraction. Default 0.2.")] = 0.20,
+                       floor: Annotated[Optional[float], Field(description="The real floor height (usually 0.0); omitted, clearance is judged against each foot's own resting contact.")] = None) -> dict:
     """Where a character's feet ACTUALLY are, frame by frame - the question
     animation_curves structurally cannot answer.
 
-    Every metric in animation_curves reads a channel's raw local values, which
-    is right for "is this curve smooth" and wrong for anything about where a
-    body part IS. A foot bone on a skinned humanoid has no translation channel
-    at all - it moves because a hip and a knee rotate above it - so the foot
-    skate check over there has never run on a real character. It read a
-    constant and honestly said so.
-
-    This runs forward kinematics off the file, composing each joint onto its
-    parent per frame, and then measures what only world positions can show:
-
-      support      how many feet are down on each frame, and FLIGHT - frames
-                   with nothing down at all. Judged only against a DECLARED
-                   `gait`, because the identical number is correct for a run
-                   and impossible for a walk; an undeclared gait returns the
-                   measurement with a refusal rather than a pass.
-      contact      the planted foot's ground-plane speed. Judged against the
-                   clip's own convention, which the evaluator detects: a
-                   ROOT-MOTION clip should hold its planted foot still, an
-                   IN-PLACE clip must slide it at a STEADY speed, because
-                   there the foot is the ground. Judging in-place clips
-                   against zero would fail every correct locomotion loop in
-                   the project.
-      clearance    frames where a foot passes below the floor. Pass `floor`
-                   (usually 0.0) for the real one; the default asks the weaker
-                   question of whether it dips below its own resting contact.
-
-    `feet` names the contact joints exactly (LeftFoot/RightFoot on this
-    project's humanoids, the four paws on a quadruped). Without it, joints
-    whose names look like feet are used and the guess is reported.
-
-    `gait` is one of walk, run, stand, any. It is a declaration about what the
-    clip was MEANT to be, and there is deliberately no default - see the
-    support verdict.
+    Forward kinematics off the file, then: support (feet down per frame, and
+    FLIGHT - judged only against a DECLARED `gait`; undeclared returns the
+    measurement with a refusal), contact (planted-foot speed judged by the
+    clip's detected convention: root-motion holds still, in-place slides
+    steadily), clearance (below `floor`, or below the foot's own rest by
+    default). `feet` names the joints exactly; omitted, guessed and reported.
+    `gait`: walk, run, stand, any - no default.
+    Full notes: docs/tools.md#animation_contacts
     """
     src = _Path(model)
     paths = _bonepaths.joint_paths(src, clip=clip)

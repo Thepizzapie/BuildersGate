@@ -15,6 +15,9 @@
  * escapes its own children.
  */
 
+import { push as pushQuestions } from "./notify-store";
+import type { askText as askTextFn } from "./ask";
+
 type Json = Record<string, unknown>;
 
 /** The page's mutate options — NOT a RequestInit. `quiet` suppresses the toast
@@ -55,24 +58,15 @@ declare global {
     watchAgent?(id: number): void;
     setWorkspace?(name: string, trigger?: Element | null): void;
     BGATE_SETTINGS?: Record<string, unknown>;
-    /** The in-page replacement for prompt(). Resolves the string, or NULL on
-     *  cancel — "" means confirmed-empty and null means backed out, and the two
-     *  must not be collapsed. */
-    askText?(opts: {
-      title?: string; body?: string; label?: string;
-      placeholder?: string; ok?: string;
-    }): Promise<string | null>;
+    /** ask.tsx installs this for the classic decks; React code should import
+     *  askText from this module instead of reaching for the window copy. */
+    askText?: typeof askTextFn;
     /** The shell's pollers. An island that has just changed server state asks
      *  for the next poll now instead of waiting out the interval. */
     pollState?(): Promise<void> | void;
     pollQueue?(): Promise<void> | void;
     /** The full-screen image lightbox. */
     show?(rel: string): void;
-    /** The bell. It belongs to no view and is fed by whoever polls
-     *  /api/console/state — which was the classic console and is now the React
-     *  one. Without a driver it falls back to its own slow watchdog, so a
-     *  missed call is a stale badge rather than a broken page. */
-    Notify?: { update?(state: unknown): void; mount?(id: string): boolean };
     /** Prefill the director's box. Registered by the agents console WHILE IT IS
      *  MOUNTED, which is why `compose()` below cannot simply call it. */
     BGCompose?(task: { seat?: string; title?: string; brief?: string }): void;
@@ -88,13 +82,11 @@ declare global {
 export const previewURL = (rel: string) =>
   `/api/preview?rel=${encodeURIComponent(rel)}`;
 
-export async function askText(opts: {
-  title?: string; body?: string; label?: string;
-  placeholder?: string; ok?: string;
-}): Promise<string | null> {
-  if (!window.askText) return null;   // no dialog is a cancel, never a submit
-  return window.askText(opts);
-}
+/** The in-page replacement for prompt(). Resolves the string, or NULL on
+ *  cancel — "" means confirmed-empty and null means backed out, and the two
+ *  must not be collapsed. Lives in ask.tsx now; re-exported so the islands
+ *  keep one import for everything the shell provides. */
+export { askText, askConfirm, askPick } from "./ask";
 
 /** Send a task to the director's box, from any screen.
  *
@@ -207,7 +199,9 @@ export function moduleOff(name: string): boolean {
   return Array.isArray(raw) && raw.map(String).includes(name);
 }
 
-/** Feed the notification bell the console state we just read. */
+/** Feed the notification bell the console state we just read. The bell
+ *  (shell/Bell.tsx) belongs to no view; the open questions on the console
+ *  payload are what it cannot learn from the event log alone. */
 export function notifyUpdate(state: unknown): void {
-  try { window.Notify?.update?.(state); } catch { /* never the console's problem */ }
+  try { pushQuestions(state); } catch { /* never the console's problem */ }
 }

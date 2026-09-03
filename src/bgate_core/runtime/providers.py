@@ -2,7 +2,8 @@
 
 WHY THIS EXISTS. OpenAI and Krea were each wired in by hand, separately, in five
 places — ``imagegen.available``, ``krea.available``, ``imageto3d``'s backend
-table, ``doctor._probe_openai_key`` and ``_pick_provider`` in the MCP server —
+table, ``doctor._probe_openai_key`` and a ``_pick_provider`` in the MCP server
+(since deleted; every caller routes through :func:`provider_for` now) —
 and every one of them learned about Krea late and on its own. Two of those
 mistakes are on the record: ``image_status`` probed OPENAI_API_KEY alone and
 told a project holding a working Krea key that painted art was unavailable, and
@@ -126,6 +127,16 @@ def _probe_deepgram(root: Any = None) -> dict:
     return dict(deepgram.available(root))
 
 
+def _probe_imageto3d(backend: str) -> Callable[[Any], dict]:
+    """A hosted image-to-3D backend's own verdict, borrowed from the adapter
+    that owns its table - the env name lives in ``imageto3d.BACKENDS`` and
+    is repeated in the row below only so the .env writer can see it."""
+    def probe(root: Any = None) -> dict:
+        from bgate_adapters import imageto3d
+        return dict(imageto3d.available(backend, root))
+    return probe
+
+
 def _probe_twitch(root: Any = None) -> dict:
     """Whether chat can be read AT ALL, which is not whether a key is set.
 
@@ -146,6 +157,20 @@ def _probe_twitch(root: Any = None) -> dict:
             "anonymous": config.anonymous}
 
 
+# THE PAINTED-ART LEG IS NARROWER THAN "ART". `image_status` answers "can
+# this machine make an image", and the image-to-3D backends joined the
+# registry carrying model_3d - which is art, and is not this question. A
+# report derived from art_providers() started naming four mesh services as
+# missing image legs the moment they were registered.
+IMAGE_CAPABILITIES = frozenset({"image_2d", "animation_2d"})
+
+
+def image_providers() -> tuple["Provider", ...]:
+    """The providers that paint a 2D image or animate one - `image_status`."""
+    return tuple(one for one in PROVIDERS
+                 if IMAGE_CAPABILITIES.intersection(one.powers))
+
+
 def art_providers() -> tuple["Provider", ...]:
     """Only the providers that can generate something the game ships.
 
@@ -156,9 +181,9 @@ def art_providers() -> tuple["Provider", ...]:
                  if ART_CAPABILITIES.intersection(one.powers))
 
 
-# ORDER IS THE AUTO-SELECT ORDER, and it matches _pick_provider in the MCP
-# server on purpose: openai first, then krea, then kie. A panel that lists them
-# in a different order than the code picks them teaches the wrong default.
+# ORDER IS THE PANEL ORDER. The pick itself is provider_for / gateway
+# doctrine order (kie, krea, openai); there is no second picker in the MCP
+# server any more, so nothing else can disagree with this list.
 #
 # kie is LAST among the image providers, and THE REASON THIS COMMENT USED TO
 # GIVE IS NO LONGER TRUE. It said kie was the only provider here that cannot
@@ -227,6 +252,51 @@ PROVIDERS: tuple[Provider, ...] = (
              "one of your own character frames ($0.14/cycle), plus free "
              "pixel-grid repair. The model that knows what a walk cycle is.",
         probe=_probe_retrodiffusion,
+    ),
+    # THE HOSTED IMAGE-TO-3D BACKENDS. imageto3d.BACKENDS has read these four
+    # keys since it was written, and nothing else in the product knew: `bgate
+    # key` could not set them, doctor could not see them, and the gateway's
+    # three_d row named krea alone. Their order here is the gateway's 3D
+    # order after krea (gateway.CAPABILITIES["three_d"]).
+    Provider(
+        id="stability",
+        label="Stability AI",
+        env="STABILITY_API_KEY",
+        powers=("model_3d",),
+        key_url="https://platform.stability.ai/account/keys",
+        help="Stable Fast 3D image-to-mesh, synchronous, $0.10 a generation. "
+             "The cleanest hosted 3D terms and the cheapest.",
+        probe=_probe_imageto3d("stability"),
+    ),
+    Provider(
+        id="tripo",
+        label="Tripo",
+        env="TRIPO_API_KEY",
+        powers=("model_3d",),
+        key_url="https://platform.tripo3d.ai/api-keys",
+        help="Tripo v2 image-to-3D with quad remesh and seven rig archetypes. "
+             "Credit-billed; download URLs expire in five minutes.",
+        probe=_probe_imageto3d("tripo"),
+    ),
+    Provider(
+        id="meshy",
+        label="Meshy",
+        env="MESHY_API_KEY",
+        powers=("model_3d",),
+        key_url="https://app.meshy.ai/settings/api",
+        help="Meshy image-to-3D with a T-pose option and a separate rig task. "
+             "Credit-billed, $20/mo floor, no published per-credit rate.",
+        probe=_probe_imageto3d("meshy"),
+    ),
+    Provider(
+        id="rodin",
+        label="Rodin / Hyper3D",
+        env="RODIN_API_KEY",
+        powers=("model_3d",),
+        key_url="https://hyper3d.ai/settings/api",
+        help="Rodin Gen-2.5 image-to-3D, up to five input views. Business "
+             "plan only; no published credit rate.",
+        probe=_probe_imageto3d("rodin"),
     ),
     # LAST, AND NOT IN THE AUTO-SELECT ORDER AT ALL, because it competes with
     # nothing above it: it is the only entry here that generates no art, so
@@ -370,6 +440,25 @@ def provider_for(task_kind: str = "", *, asked: str = "",
     # familiar "OPENAI_API_KEY not set" rather than a surprise about a provider
     # they never mentioned.
     return "openai"
+
+
+def chain(task_kind: str = "", *, asked: str = "",
+          root: str | os.PathLike | None = None) -> list[str]:
+    """Every image provider to TRY, in order - :func:`provider_for` first.
+
+    A list rather than a pick, because a key that exists but has no credit
+    left is still present: a storyboard whose openai account had run dry
+    picked openai, took insufficient_quota, and reported that image
+    generation was unavailable while a working krea key sat in the same
+    .env. The pick leads only when it is routable or was explicitly asked
+    for; an unkeyed stored preference must not turn "try everything" into
+    "fail on the favourite". Empty means nothing hosted is configured.
+    """
+    live = _routable(_gateway_order("image"), root)
+    first = provider_for(task_kind, asked=asked, root=root)
+    if first in live or (asked or "").strip():
+        return [first] + [p for p in live if p != first]
+    return live
 
 
 def _gateway_order(capability: str) -> tuple[str, ...]:

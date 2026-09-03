@@ -173,11 +173,11 @@ from PIL import Image
 
 # Where the sheets are generated (the sandbox) and where they are installed.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _floorpaths import REPO, sandbox  # noqa: E402
+from _floorpaths import REPO, sandbox, FLOOR_IMG  # noqa: E402
 
 CAST = sandbox() / ".bgate_out" / "art" / "cast"
 ANIM = CAST / "anim"
-INSTALL = REPO / "frontend" / "public" / "img" / "floor"
+INSTALL = FLOOR_IMG
 CAST_FRAMES_TS = REPO / "frontend" / "src" / "shell" / "agents" / "castFrames.ts"
 
 NAMES = ["art", "audio", "narrative", "gameplay", "qa", "cinematic", "tech",

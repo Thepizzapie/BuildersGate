@@ -211,7 +211,7 @@ class TestGeneration:
                 from pathlib import Path
 
                 Path(out_path).write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
-                return {"ok": True, "model": "fake", "estimated_usd": 0.04,
+                return {"ok": True, "model": "fake", "usd": 0.04,
                         "seconds": 1.0}
             return {"ok": False, "error": "provider said no"}
 

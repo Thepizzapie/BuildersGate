@@ -1,0 +1,150 @@
+/* The generator panels: hosted providers (keys), local runtimes, agent CLIs.
+   Ported from providerkeys.js / localsetup.js, which injected these as <style>
+   blocks. One prefix (gen-) for all three, because they are one page in
+   Settings and one tab in Studio. Every colour is a theme variable, and
+   anything carrying text sits on --solid-N rather than --surface-N (orbit's
+   ground is translucent; text on it is unreadable). */
+
+.gen-wrap { margin-top: 22px }
+.gen-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px }
+.gen-head h3 { margin: 0; font-size: 15px; font-weight: var(--fw-semi); color: var(--text) }
+.gen-eyebrow {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .2em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.gen-note { font-size: 12px; color: var(--text-3); line-height: 1.55; margin: 0 0 14px; max-width: 76ch }
+.gen-note code, .gen-mono { font-family: var(--mono); font-size: 11px; color: var(--text-2) }
+.gen-note b { color: var(--text-2) }
+
+/* The one-line verdict, the same sentence bgate doctor prints. */
+.gen-sum {
+  display: flex; align-items: flex-start; gap: 8px;
+  border: 1px solid var(--line); background: var(--solid-1); border-radius: 9px;
+  padding: 9px 11px; margin: 0 0 13px; font-size: 12px; color: var(--text-2); line-height: 1.5;
+}
+.gen-sum .ti { flex: 0 0 auto; margin-top: 2px; color: var(--text-3) }
+.gen-sum.good { border-color: var(--good-line); background: var(--good-soft); color: var(--good) }
+.gen-sum.good .ti { color: var(--good) }
+
+.gen-warn {
+  display: flex; gap: 9px; align-items: flex-start;
+  border: 1px solid var(--bad-line); background: var(--bad-soft); border-radius: 9px;
+  padding: 10px 12px; font-size: 12px; color: var(--text-2); line-height: 1.5; margin-bottom: 14px;
+}
+.gen-warn b { color: var(--bad) }
+.gen-warn .ti { color: var(--bad); flex: none; margin-top: 2px }
+
+.gen-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; align-items: start }
+.gen-grid.wide { grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)) }
+
+.gen-card { border: 1px solid var(--line); background: var(--solid-2); border-radius: 11px; padding: 13px 14px; min-width: 0 }
+.gen-card.s-ready { border-left: 2px solid var(--good) }
+.gen-card.s-blocked, .gen-card.s-unreachable, .gen-card.s-unhealthy { border-left: 2px solid var(--warn) }
+.gen-card.s-unset, .gen-card.s-unconfigured, .gen-card.s-configured, .gen-card.s-unavailable { border-left: 2px solid var(--line) }
+
+.gen-top { display: flex; align-items: center; gap: 9px; margin-bottom: 8px }
+.gen-top .ti { color: var(--text-3) }
+.gen-name { font-size: 13.5px; font-weight: var(--fw-semi); color: var(--text) }
+.gen-lamp {
+  margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em;
+  text-transform: uppercase; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--text-3); white-space: nowrap;
+}
+.gen-lamp.good { color: var(--good); border-color: var(--good-line); background: var(--good-soft) }
+.gen-lamp.warn { color: var(--warn); border-color: var(--warn-line); background: var(--warn-soft) }
+
+.gen-pills { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px }
+.gen-pill {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-3); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px;
+}
+.gen-pill.free { color: var(--good); border-color: var(--good-line) }
+
+.gen-help { font-size: 11.5px; color: var(--text-3); line-height: 1.55; margin-bottom: 10px }
+.gen-help b { color: var(--text-2) }
+.gen-why {
+  font-size: 11.5px; color: var(--warn); line-height: 1.55; margin-bottom: 10px;
+  border-left: 2px solid var(--warn-line); padding-left: 9px;
+}
+.gen-ok { font-size: 11.5px; color: var(--good); line-height: 1.55; margin-bottom: 10px }
+
+.gen-start {
+  border: 1px dashed var(--line); border-radius: 9px; padding: 9px 11px;
+  margin-bottom: 11px; background: var(--solid-1);
+}
+.gen-start b { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-2); margin-bottom: 5px; font-weight: var(--fw-semi) }
+.gen-start ol { margin: 0; padding-left: 17px }
+.gen-start li { font-size: 11.5px; color: var(--text-3); line-height: 1.6 }
+
+.gen-f { border-top: 1px solid var(--line); padding-top: 9px; margin-top: 9px }
+.gen-flab { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; margin-bottom: 4px }
+.gen-flab .n { font-size: 12px; color: var(--text-2); font-weight: var(--fw-semi) }
+.gen-flab .v { font-family: var(--mono); font-size: 9px; letter-spacing: .06em; color: var(--text-3) }
+.gen-req { font-family: var(--mono); font-size: 8.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--warn) }
+.gen-fhelp { font-size: 11px; color: var(--text-3); line-height: 1.55; margin-bottom: 7px; max-width: 72ch }
+
+.gen-row { display: flex; gap: 7px; align-items: center; flex-wrap: wrap }
+.gen-row .grow { flex: 1 1 180px; min-width: 0 }
+.gen-row input, .gen-row .mantine-Input-input { font-family: var(--mono) }
+.gen-key input { letter-spacing: .08em }
+.gen-key input::placeholder { letter-spacing: 0; font-family: var(--sans) }
+.gen-row input.bad, .gen-row .bad input { border-color: var(--bad-line) }
+
+.gen-fnote { font-family: var(--mono); font-size: 9.5px; color: var(--text-3); margin-top: 5px; line-height: 1.5 }
+.gen-fnote .warn { color: var(--warn) }
+.gen-fnote .good { color: var(--good) }
+.gen-fnote code { font-family: var(--mono); color: var(--text-2) }
+
+.gen-scope { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; color: var(--text-3) }
+
+.gen-foot {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 11px;
+  padding-top: 9px; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 10px; color: var(--text-3);
+}
+.gen-foot.plain { border-top: 0; padding-top: 0; margin-top: 9px }
+.gen-fp { color: var(--text-2) }
+.gen-drained { color: var(--bad); font-weight: 600 }
+.gen-link {
+  color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent;
+  cursor: pointer; background: none; border-top: 0; border-left: 0; border-right: 0;
+  font: inherit; padding: 0;
+}
+.gen-link:hover { border-bottom-color: var(--accent) }
+.gen-balbtn { margin-left: auto }
+
+.gen-sec { margin-bottom: 20px }
+.gen-sech {
+  display: flex; align-items: baseline; gap: 9px; font-family: var(--mono); font-size: 10px;
+  letter-spacing: .18em; text-transform: uppercase; color: var(--text-3);
+  margin-bottom: 9px; padding-bottom: 6px; border-bottom: 1px solid var(--line);
+}
+.gen-sech .n { color: var(--text-2) }
+.gen-none { font-size: 12px; color: var(--text-3); padding: 10px 0 }
+
+/* ---- inspect ---- */
+.gen-insp { margin-top: 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--solid-1); padding: 11px 12px }
+.gen-ih { font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--text-3); margin: 0 0 7px }
+.gen-ib { margin-bottom: 13px }
+.gen-ib:last-child { margin-bottom: 0 }
+.gen-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 11.5px; color: var(--text-3) }
+.gen-kv .k { font-family: var(--mono); font-size: 10px; color: var(--text-3); white-space: nowrap }
+.gen-kv .v { color: var(--text-2); word-break: break-word }
+.gen-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px }
+.gen-chip { font-family: var(--mono); font-size: 9.5px; color: var(--text-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; background: var(--solid-2) }
+.gen-chip.more { color: var(--text-3); border-style: dashed }
+.gen-node { display: flex; gap: 8px; align-items: baseline; font-size: 11.5px; padding: 4px 0; border-bottom: 1px solid var(--line) }
+.gen-node:last-child { border-bottom: 0 }
+.gen-node .id { font-family: var(--mono); font-size: 9.5px; color: var(--text-3); min-width: 26px }
+.gen-node .cls { color: var(--text-2); font-weight: var(--fw-semi) }
+.gen-node .ttl { color: var(--text-3) }
+.gen-inj { color: var(--accent); font-family: var(--mono); font-size: 10px }
+.gen-shots { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px }
+.gen-shots img { width: 62px; height: 62px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); background: var(--solid-2) }
+
+/* The command line / paste block. Selectable, wraps, never overflows the card. */
+.gen-cmd {
+  font-family: var(--mono); font-size: 10.5px; color: var(--text-2); background: var(--solid-1);
+  border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; margin: 7px 0;
+  word-break: break-all; white-space: pre-wrap; line-height: 1.6; max-height: 260px; overflow: auto;
+}

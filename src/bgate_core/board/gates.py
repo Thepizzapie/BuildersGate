@@ -85,6 +85,10 @@ def mode(root: str | os.PathLike[str]) -> str:
     """
     try:
         got = str(_settings.get(root, SETTING) or "").strip()
+        if _settings.source(root, SETTING) == _settings.SOURCE_DEFAULT:
+            # Nothing set it explicitly: the enforcement profile decides.
+            from . import enforcement
+            return enforcement.ladder("gate", root)
         return got if got in MODES else DEFAULT
     except Exception:
         pass

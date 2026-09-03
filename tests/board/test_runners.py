@@ -199,7 +199,7 @@ class TestTurnCeiling:
         assert "--max-turns" not in argv
 
     def test_the_default_is_a_real_ceiling(self, root):
-        assert dispatch._max_turns(root) == 120
+        assert dispatch._max_turns(root) == 200
 
     def test_codex_takes_the_argument_and_drops_it(self):
         """One call site in dispatch. A caller branching on runner name to

@@ -77,12 +77,15 @@ from typing import Any, Optional
 
 from bgate_core.store import envfile
 
+from . import _http
+from . import _result as _shape
+
 # Windows: keep every subprocess from flashing a console window. Same constant,
 # same reason, as blender.py and transcribe.py.
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
-class ImageTo3DError(RuntimeError):
+class ImageTo3DError(_http.ProviderError):
     """A generation failed in a way the caller should surface, not retry blindly."""
 
 
@@ -1201,11 +1204,15 @@ def _alive(backend: str, *, timeout: float = 1.5) -> dict:
         return {"ok": False, "reason": "this backend declares no health endpoint"}
     url = base_url(backend) + path
     try:
-        req = urllib.request.Request(url, method="GET",
-                                     headers={"Accept": "*/*"})
-        with urllib.request.urlopen(req, timeout=timeout):
-            return {"ok": True, "reason": ""}
-    except urllib.error.HTTPError as exc:
+        _http.request("GET", url, headers={"Accept": "*/*"}, timeout=timeout,
+                      retries=1, provider=backend)
+        return {"ok": True, "reason": ""}
+    except _http.ProviderError as exc:
+        if exc.status == 0:
+            return {"ok": False,
+                    "reason": f"nothing answered at {url} ({exc.body}) — start "
+                              f"the server, or point "
+                              f"{spec.get('base_env') or 'the base URL'} at it"}
         # ANY HTTP STATUS PROVES A SERVER IS THERE, INCLUDING 404. urlopen
         # raises on 4xx/5xx, so a blanket except reported "nothing answered"
         # for a backend that was running perfectly — reported from the field
@@ -1219,15 +1226,9 @@ def _alive(backend: str, *, timeout: float = 1.5) -> dict:
         # something implements this particular path is a different question, and
         # not one a reachability check should refuse a working server over.
         return {"ok": True, "reason": "",
-                "note": f"{url} answered {exc.code} rather than a health body — "
+                "note": f"{url} answered {exc.status} rather than a health body — "
                         f"the server is up; this build does not implement that "
                         f"path"}
-    except Exception as exc:                                     # noqa: BLE001
-        reason = getattr(exc, "reason", None) or exc
-        return {"ok": False,
-                "reason": f"nothing answered at {url} ({reason}) — start the "
-                          f"server, or point "
-                          f"{spec.get('base_env') or 'the base URL'} at it"}
 
 
 def status(root: Any = None, *, probe: bool = False) -> dict:
@@ -1511,77 +1512,66 @@ def _headers(backend: str, key: str) -> dict:
     return headers
 
 
-def _http_error(backend: str, exc: urllib.error.HTTPError, method: str,
-                path: str) -> ImageTo3DError:
+def _error(backend: str, exc: _http.ProviderError, method: str,
+           path: str) -> ImageTo3DError:
     """One message per failure mode, naming the FIX rather than the status code.
 
     An agent that reads "HTTP 402" retries. An agent that reads where the
-    balance lives does something useful.
+    balance lives does something useful. A transport failure (status 0) on a
+    LOCAL backend gets a completely different message: there is no key to
+    check, there is a process to start.
     """
     spec = BACKENDS.get(backend) or {}
     label = spec.get("label", backend)
-    detail = ""
-    try:
-        detail = exc.read().decode("utf-8", "replace")[:400]
-    except Exception:                                            # noqa: BLE001
-        pass
-    if exc.code in (401, 403):
+    code, detail = exc.status, exc.body
+    meta = dict(provider=backend, status=code, body=detail, billing=exc.billing)
+    if code == 0:
+        if spec.get("kind") == "local":
+            return ImageTo3DError(
+                f"could not reach {label} at {base_url(backend)} ({detail}) — "
+                f"is the server running? Point "
+                f"{spec.get('base_env') or 'the base URL'} at it if it is on "
+                "another host or port.", **meta)
+        return ImageTo3DError(f"could not reach {label} ({detail})", **meta)
+    if code in (401, 403):
         return ImageTo3DError(
-            f"{label} rejected the API key (HTTP {exc.code}) — check "
-            f"{spec.get('env') or 'the credentials'} in the project's .env")
-    if exc.code == 402:
+            f"{label} rejected the API key (HTTP {code}) — check "
+            f"{spec.get('env') or 'the credentials'} in the project's .env",
+            **meta)
+    if code == 402:
         return ImageTo3DError(
             f"{label} has no credit for this request (HTTP 402) — top up the "
-            "account's API balance and retry; nothing was charged.")
-    if exc.code == 429:
+            "account's API balance and retry; nothing was charged.", **meta)
+    if code == 429:
         return ImageTo3DError(
             f"{label} rate-limited this request (HTTP 429) — slow the fan-out "
-            "or retry in a moment.")
-    if exc.code in (400, 422):
+            "or retry in a moment.", **meta)
+    if code in (400, 422):
         return ImageTo3DError(
             f"{label} refused the request shape: {detail} (each backend has "
-            "its own schema — see BACKENDS[...]['supports'])")
-    if exc.code == 404 and spec.get("kind") == "local":
+            "its own schema — see BACKENDS[...]['supports'])", **meta)
+    if code == 404 and spec.get("kind") == "local":
         return ImageTo3DError(
             f"{label} answered 404 on {method} {path} — something IS running at "
             f"{base_url(backend)}, but it is not the server this backend "
-            "expects. Check the port.")
-    return ImageTo3DError(f"{label} HTTP {exc.code} on {method} {path}: {detail}")
-
-
-def _url_error(backend: str, exc: Exception) -> ImageTo3DError:
-    """Unreachable. For a local backend the useful message is a completely
-    different one: there is no key to check, there is a process to start."""
-    spec = BACKENDS.get(backend) or {}
-    label = spec.get("label", backend)
-    reason = getattr(exc, "reason", None) or exc
-    if spec.get("kind") == "local":
-        return ImageTo3DError(
-            f"could not reach {label} at {base_url(backend)} ({reason}) — is "
-            f"the server running? Point {spec.get('base_env') or 'the base URL'} "
-            "at it if it is on another host or port.")
-    return ImageTo3DError(f"could not reach {label} ({reason})")
+            "expects. Check the port.", **meta)
+    return ImageTo3DError(f"{label} HTTP {code} on {method} {path}: {detail}",
+                          **meta)
 
 
 def _request(backend: str, path: str, key: str = "", *,
              payload: Optional[dict] = None, method: str = "GET",
              timeout: float = 60.0) -> dict:
     url = path if path.startswith("http") else base_url(backend) + path
-    body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(url, data=body, method=method,
-                                 headers=_headers(backend, key))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", "replace") or "{}"
-    except urllib.error.HTTPError as exc:
-        raise _http_error(backend, exc, method, path) from exc
-    except urllib.error.URLError as exc:
-        raise _url_error(backend, exc) from exc
+        got = _http.request(method, url, headers=_headers(backend, key),
+                            json=payload, timeout=timeout, provider=backend)
+    except _http.ProviderError as exc:
+        raise _error(backend, exc, method, path) from exc
     try:
-        return json.loads(raw)
-    except ValueError as exc:
-        raise ImageTo3DError(
-            f"{backend} returned a non-JSON response: {raw[:200]}") from exc
+        return got.json(provider=backend)
+    except _http.ProviderError as exc:
+        raise ImageTo3DError(str(exc), provider=backend) from exc
 
 
 # The image types this pipeline actually uploads, resolved without asking the
@@ -1803,15 +1793,12 @@ def upload(backend: str, path: str | os.PathLike[str], *, root: Any = None,
     headers = {"Accept": "application/json", "Content-Type": content_type}
     if spec.get("auth") == "bearer" and key:
         headers["Authorization"] = f"Bearer {key}"
-    req = urllib.request.Request(base_url(backend) + endpoint, data=body,
-                                 method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            got = json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        raise _http_error(backend, exc, "POST", endpoint) from exc
-    except urllib.error.URLError as exc:
-        raise _url_error(backend, exc) from exc
+        got = _http.request("POST", base_url(backend) + endpoint, data=body,
+                            headers=headers, timeout=timeout,
+                            provider=backend).json(provider=backend)
+    except _http.ProviderError as exc:
+        raise _error(backend, exc, "POST", endpoint) from exc
     token = _dig(got, spec.get("upload_token_key", "")) if spec.get(
         "upload_token_key") else ""
     # ComfyUI answers {name, subfolder, type} and the workflow references the
@@ -2015,50 +2002,51 @@ def poll(backend: str, task: str, *, root: Any = None, timeout: float = 900.0,
     if not path:
         raise ImageTo3DError(f"{spec['label']} is synchronous — there is no "
                              "job to poll")
-    deadline = time.monotonic() + max(10.0, float(timeout))
-    wait = max(0.5, float(interval))
-    last: dict = {}
-    while time.monotonic() < deadline:
+    def step() -> Optional[dict]:
         last = _request(backend, path.format(task=task), key, timeout=60.0)
         if spec.get("poll_style") == "history":
             # /history is EMPTY until the run is done and populated afterwards.
             # Treating a missing key as "not finished" is the whole protocol.
-            if last.get(task):
-                return last
-        else:
-            state = str(_dig(last, spec.get("status_key", "status")) or "")
-            if state in (spec.get("done") or ()):
-                return last
-            if state in (spec.get("dead") or ()):
-                raise ImageTo3DError(
-                    f"{spec['label']} job {state}: "
-                    + str(last.get("error") or last.get("message")
-                          or "no reason given")[:300])
-            if state and state not in (spec.get("running") or ()):
-                # An unknown state is not an excuse to spin — say so and stop.
-                raise ImageTo3DError(
-                    f"{spec['label']} returned unknown status {state!r}")
-        time.sleep(wait)
-        wait = min(8.0, wait * 1.2)
-    raise ImageTo3DError(
-        f"{spec['label']} job {task} did not finish within {timeout:.0f}s")
+            return last if last.get(task) else None
+        state = str(_dig(last, spec.get("status_key", "status")) or "")
+        if state in (spec.get("done") or ()):
+            return last
+        if state in (spec.get("dead") or ()):
+            raise ImageTo3DError(
+                f"{spec['label']} job {state}: "
+                + str(last.get("error") or last.get("message")
+                      or "no reason given")[:300])
+        if state and state not in (spec.get("running") or ()):
+            # An unknown state is not an excuse to spin — say so and stop.
+            raise _http.PollUnknown(
+                f"{spec['label']} returned unknown status {state!r}")
+        return None
+
+    try:
+        return _http.poll(step, first=max(0.5, float(interval)),
+                          max_wait=max(10.0, float(timeout)), factor=1.2,
+                          ceiling=8.0, unknown_is_fatal=True, provider=backend,
+                          label=f"job {task}")
+    except ImageTo3DError:
+        raise
+    except _http.PollUnknown as exc:
+        raise ImageTo3DError(str(exc), provider=backend) from exc
+    except _http.ProviderError as exc:
+        raise ImageTo3DError(
+            f"{spec['label']} job {task} did not finish within {timeout:.0f}s",
+            provider=backend) from exc
 
 
 def download(url: str, out_path: str | os.PathLike[str], *,
              timeout: float = 300.0) -> int:
     """Fetch a finished model to disk. Returns bytes written."""
-    out = Path(out_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"Accept": "*/*"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except Exception as exc:                                     # noqa: BLE001
-        raise ImageTo3DError(f"could not download the finished model: {exc}") from exc
-    if not data:
-        raise ImageTo3DError("the download was empty")
-    out.write_bytes(data)
-    return len(data)
+        return _http.download(url, out_path, timeout=timeout,
+                              provider="image-to-3d")
+    except _http.ProviderError as exc:
+        raise ImageTo3DError(
+            f"could not download the finished model: {exc}",
+            status=exc.status) from exc
 
 
 def _write_b64(blob: str, out_path: str | os.PathLike[str]) -> int:
@@ -2089,7 +2077,7 @@ def _result(backend: str, **fields) -> dict:
         "ok": False, "path": "", "bytes": 0,
         "backend": backend, "kind": spec.get("kind", ""),
         "label": spec.get("label", backend),
-        "task": "", "seconds": 0.0, "estimated_usd": None,
+        "task": "", "seconds": 0.0, "usd": None,
         "format": DEFAULT_FORMAT,
         # WHAT THE MESH IS, which is what the conditioning steps need to know.
         # `draft=True` is not decoration: nothing downstream may treat this as
@@ -2100,7 +2088,8 @@ def _result(backend: str, **fields) -> dict:
         "checks": [], "warnings": [], "notes": [],
     }
     base.update(fields)
-    return base
+    return _shape.shape(base, provider=backend, model=str(
+        base.get("model") or spec.get("model") or ""))
 
 
 # What every generated mesh needs before anything downstream may trust it. Put
@@ -2160,7 +2149,7 @@ def generate(image_path: str | os.PathLike[str],
     # when the run is going to be refused — otherwise the only way to learn the
     # price is to have everything else already correct.
     out = _result(backend, source_image=str(image_path),
-                  estimated_usd=price_for(
+                  usd=price_for(
                       backend, texture=bool(options.get("texture", True)),
                       quad=bool(options.get("quad"))),
                   format=str(options.get("out_format", DEFAULT_FORMAT)))
@@ -2247,7 +2236,7 @@ def generate_parts(image_path: str | os.PathLike[str],
                              f"whose capabilities include 'parts'")
 
     out = _result(backend, source_image=str(image_path),
-                  estimated_usd=price_for(backend), format="glb")
+                  usd=price_for(backend), format="glb")
     verdict = check_input(image_path)
     out["warnings"] += list(verdict["warnings"])
     if not verdict["ok"]:
@@ -2427,20 +2416,18 @@ def _run_sync(backend: str, image_path, out_path, *, root, timeout: float,
     p = Path(image_path)
     body, content_type = multipart(form, p.name, p.read_bytes(),
                                     field=spec.get("upload_field", "image"))
-    req = urllib.request.Request(
-        base_url(backend) + spec["submit_path"], data=body, method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": content_type,
-                 # model/* is what these endpoints answer with; asking for JSON
-                 # gets a JSON-wrapped base64 instead, which is a second
-                 # decode for no reason.
-                 "Accept": "*/*"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except urllib.error.HTTPError as exc:
-        raise _http_error(backend, exc, "POST", spec["submit_path"]) from exc
-    except urllib.error.URLError as exc:
-        raise _url_error(backend, exc) from exc
+        data = _http.request(
+            "POST", base_url(backend) + spec["submit_path"], data=body,
+            timeout=timeout, provider=backend,
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type": content_type,
+                     # model/* is what these endpoints answer with; asking
+                     # for JSON gets a JSON-wrapped base64 instead, which is
+                     # a second decode for no reason.
+                     "Accept": "*/*"}).body
+    except _http.ProviderError as exc:
+        raise _error(backend, exc, "POST", spec["submit_path"]) from exc
     if not data:
         raise ImageTo3DError(f"{spec['label']} returned an empty model")
     out = Path(out_path)
@@ -2454,12 +2441,12 @@ def _account(result: dict, root: Any, logical_name: str,
     """Write the estimated spend to the ledger. Best-effort by construction:
     losing a ledger row must never lose the mesh that was paid for. A local
     generation costs nothing and records nothing."""
-    if not root or not result.get("ok") or not result.get("estimated_usd"):
+    if not root or not result.get("ok") or not result.get("usd"):
         return
     try:
         from bgate_core.board import spend
 
-        spend.record(root, float(result["estimated_usd"]),
+        spend.record(root, float(result["usd"]),
                      kind="other", work_item_id=work_item_id,
                      logical_name=logical_name or "",
                      detail=f"image-to-3d via {result.get('backend')}")

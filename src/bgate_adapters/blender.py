@@ -4890,7 +4890,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
         64,878 of 64,878 vertices carrying no weight, every other check green.
 
     dry_run quotes the plate and the mesh and stops. It is the honest default
-    for a caller who has not decided to spend — `estimated_usd` is the sum, and
+    for a caller who has not decided to spend — `usd` is the sum, and
     a backend that publishes no rate reports None rather than 0.0.
 
     Returns every artifact by path, the gate result from each stage, and
@@ -4902,7 +4902,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
     out = Path(out_dir)
     steps: list[dict] = []
     result: dict = {"ok": False, "stage": "template", "name": name,
-                    "steps": steps, "estimated_usd": None}
+                    "steps": steps, "usd": None}
 
     tpl = humanoid_template()
     if not tpl["ok"]:
@@ -4923,7 +4923,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
 
     if dry_run:
         return {**result, "ok": True, "stage": "quote", "dry_run": True,
-                "backend": picked, "estimated_usd": mesh_quote,
+                "backend": picked, "usd": mesh_quote,
                 "note": "plate is billed separately by the image provider; "
                         "mesh quote is a floor, not a rate"}
 
@@ -4956,7 +4956,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
         plate_prompt, str(raw_plate), size=size, task_kind="character",
         ref_paths=[tpl["pose_front"]], ref_strength=0.45, root=root)
     step = {"step": "plate", "ok": bool(shot.get("ok")),
-            "usd": shot.get("estimated_usd"), "error": shot.get("error") or ""}
+            "usd": shot.get("usd"), "error": shot.get("error") or ""}
     if shot.get("ok"):
         # Keyed HERE with despill off. Despill removes the key colour's spill
         # from the subject, which is right for green and wrong for grey: on a
@@ -4987,7 +4987,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
                              resolution="1024")
     steps.append({"step": "mesh", "ok": bool(gen.get("ok")),
                   "path": str(raw) if gen.get("ok") else "",
-                  "backend": picked, "usd": gen.get("estimated_usd"),
+                  "backend": picked, "usd": gen.get("usd"),
                   "warnings": list(gen.get("warnings") or []),
                   "error": gen.get("error") or ""})
     if not gen.get("ok"):
@@ -5016,7 +5016,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
     result["rigged"] = str(rigged_path)
     result["rig"] = rigged
 
-    result["estimated_usd"] = _sum_usd(steps)
+    result["usd"] = _sum_usd(steps)
 
     # 4. INTO THE ENGINE, only if asked. A caller who wants the .glb should not
     #    have a Godot project written into as a side effect.

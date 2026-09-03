@@ -1033,7 +1033,7 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
     reading — and which must be safe to press twice at once.
 
     Returns the adapters' shared shape — ``{ok, text, model, seconds,
-    estimated_usd}`` or ``{ok: False, error}`` — because a failure here is
+    usd}`` or ``{ok: False, error}`` — because a failure here is
     RETURNED rather than raised: the caller has already stored the human's
     sentence and must not lose it to a CLI that would not start.
 
@@ -1045,7 +1045,7 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
     ready = available(root)
     if not ready["available"]:
         return {"ok": False, "error": ready["reason"], "seconds": 0.0,
-                "estimated_usd": 0.0, "runner": ready["runner"]}
+                "usd": 0.0, "runner": ready["runner"]}
     runner = runner_for(root)
     ceiling = _ceiling(root)
     key = _key(root, session_id, seat)
@@ -1060,7 +1060,7 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
         # the CONVERSATION, which outlives any one of them. Refused rather than
         # silently respawned, because a respawn is exactly how a per-process
         # ceiling gets laundered into no ceiling at all.
-        return {"ok": False, "seconds": 0.0, "estimated_usd": 0.0,
+        return {"ok": False, "seconds": 0.0, "usd": 0.0,
                 "runner": runner.name,
                 "error": f"this brainstorm has spent ${entry['spent_usd']:.2f} "
                          f"of its ${ceiling:.2f} ceiling — raise "
@@ -1073,7 +1073,7 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
                        persist=persist, tag=tag, seat=seat)
         if isinstance(entry, dict) and entry.get("failed"):
             return {"ok": False, "error": entry["failed"], "seconds": 0.0,
-                    "estimated_usd": 0.0, "runner": runner.name}
+                    "usd": 0.0, "runner": runner.name}
 
     got, cost = _turn(root, key, entry, turns, session_id, timeout, detail,
                       persist, seat=seat)
@@ -1092,7 +1092,7 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
                        persist=persist, tag=tag, allow_resume=False, seat=seat)
         if isinstance(entry, dict) and entry.get("failed"):
             return {"ok": False, "error": entry["failed"], "seconds": 0.0,
-                    "estimated_usd": round(cost, 4), "runner": runner.name}
+                    "usd": round(cost, 4), "runner": runner.name}
         again, more = _turn(root, key, entry, turns, session_id, timeout,
                             detail, persist, seat=seat)
         got, cost = again, cost + more
@@ -1104,13 +1104,13 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
                 "error": str(got.get("error")
                              or f"the thinking session answered nothing "
                                 f"({got.get('subtype') or 'no result'})")[:400],
-                "seconds": seconds, "estimated_usd": round(cost, 4),
+                "seconds": seconds, "usd": round(cost, 4),
                 "runner": runner.name}
     return {"ok": True, "text": got["text"],
             "model": got.get("model") or ready["model"],
             "runner": runner.name, "seconds": seconds,
             "seat": _seat_tag(seat),
-            "estimated_usd": round(cost, 4),
+            "usd": round(cost, 4),
             "resumed": bool(entry.get("resumed")),
             "replayed": bool(got.get("replayed")),
             "cli_session_id": entry.get("cli_session_id", "")}

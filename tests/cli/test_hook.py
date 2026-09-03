@@ -1180,3 +1180,93 @@ class TestRefusalsRoute:
                                 hook.session_owner(data), "block")
         assert code == hook.BLOCK
         assert "queue_add(seat, ...)" in msg
+
+
+class TestPowerShellWrites:
+    """PowerShell writes are parsed where the cmdlet names its target and
+    fenced where it does not - and a SEATED worker fails closed on the fence
+    in every lane mode, while a hand-started director keeps the advisory
+    behaviour of an unparseable Bash line."""
+
+    def _ps(self, command: str, cwd) -> dict:
+        return {"tool_name": "PowerShell", "cwd": str(cwd),
+                "tool_input": {"command": command}}
+
+    def seated(self, monkeypatch, root, mode="block"):
+        from bgate_core.board import aegis
+        monkeypatch.setenv("BGATE_SEAT", "gameplay")
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+        monkeypatch.setenv("BGATE_AEGIS", mode)
+        monkeypatch.setattr(aegis, "allowlist_dirs", lambda: [])
+
+    @pytest.mark.parametrize("command", [
+        "Set-Content game/scripts/player.gd 'x'",
+        "'x' | Out-File -FilePath game/scripts/player.gd",
+        "Add-Content -Path game/scripts/player.gd -Value 'x'",
+        "New-Item -Path game/scripts -Name new.gd -ItemType File",
+        "Copy-Item C:/elsewhere/a.gd -Destination game/scripts/a.gd",
+        "Move-Item game/scripts/a.gd game/scripts/b.gd",
+        "Remove-Item game/scripts/old.gd -Force",
+        "echo hi > game/scripts/notes.gd",
+        "echo hi 2>&1",
+    ])
+    def test_a_target_in_lane_lands(self, root, monkeypatch, command):
+        self.seated(monkeypatch, root)
+        code, _ = hook.decide(self._ps(command, root), "gameplay", "item-1",
+                              "warn")
+        assert code == hook.ALLOW
+
+    @pytest.mark.parametrize("command", [
+        "Set-Content game/assets/rock.png 'x'",
+        "Copy-Item a.png -Destination game/assets/rock.png",
+        "Remove-Item game/assets/rock.png",
+        "Rename-Item game/assets/old.png rock.png",
+        "echo x >> game/assets/rock.png",
+    ])
+    def test_an_out_of_lane_target_is_judged_like_a_bash_write(
+            self, root, monkeypatch, command):
+        self.seated(monkeypatch, root)
+        code, msg = hook.decide(self._ps(command, root), "gameplay", "item-1",
+                                "block")
+        assert code == hook.BLOCK
+        assert "PowerShell" in msg and "lanes" in msg
+
+    def test_containment_applies_to_an_extracted_target(
+            self, root, monkeypatch, tmp_path_factory):
+        outside = tmp_path_factory.mktemp("elsewhere") / "notes.txt"
+        self.seated(monkeypatch, root)
+        code, msg = hook.decide(
+            self._ps(f"Copy-Item README.md -Destination '{outside}'", root),
+            "gameplay", "item-1", "collide")
+        assert code == hook.BLOCK
+        assert "may not write" in msg
+
+    @pytest.mark.parametrize("mode", ["collide", "warn", "block"])
+    def test_a_seated_worker_fails_closed_on_an_unreadable_target(
+            self, root, monkeypatch, mode):
+        self.seated(monkeypatch, root)
+        code, msg = hook.decide(self._ps("Set-Content $p 'x'", root),
+                                "gameplay", "item-1", mode)
+        assert code == hook.BLOCK
+        assert "cannot be read" in msg
+
+    @pytest.mark.parametrize("command", [
+        "iex 'Remove-Item game'",
+        "[io.file]::WriteAllText('game/x.gd', 'x')",
+        "Start-Process notepad game/x.gd",
+    ])
+    def test_the_escape_hatches_are_unreadable(self, root, monkeypatch, command):
+        self.seated(monkeypatch, root)
+        code, _ = hook.decide(self._ps(command, root), "gameplay", "item-1",
+                              "collide")
+        assert code == hook.BLOCK
+
+    def test_a_seatless_director_keeps_the_advisory_behaviour(
+            self, root, monkeypatch):
+        monkeypatch.delenv("BGATE_SEAT", raising=False)
+        code, _ = hook.decide(self._ps("Set-Content $p 'x'", root),
+                              hook.DIRECTOR_SEAT, "session:x", "collide")
+        assert code == hook.ALLOW
+        code, _ = hook.decide(self._ps("Set-Content $p 'x'", root),
+                              hook.DIRECTOR_SEAT, "session:x", "block")
+        assert code == hook.BLOCK

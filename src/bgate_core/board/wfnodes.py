@@ -1398,7 +1398,7 @@ def harvest(root, spec: ToolNode, raw: dict) -> dict:
             break
 
     usd = 0.0
-    for key in ("estimated_usd", "usd", "cost_usd", "spend_usd"):
+    for key in ("usd", "usd", "cost_usd", "spend_usd"):
         try:
             if raw.get(key) is not None:
                 usd = float(raw[key])

@@ -21,7 +21,7 @@
  *
  * Load order does not matter (it patches whatever fetch is current at parse
  * time and the callers all call window.fetch late), but it is registered next
- * to ask.js because it depends on askConfirm.
+ * to the ask dialogs (frontend/src/ask.tsx) because it depends on askConfirm.
  */
 (function () {
   "use strict";

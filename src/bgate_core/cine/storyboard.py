@@ -358,7 +358,7 @@ def write_script(root: str | os.PathLike[str], name: str, premise: str, *,
     ready = _script_available(root)
     if not ready["available"]:
         return {"ok": False, "error": ready["reason"], "stage": "no_key",
-                "estimated_usd": 0.0}
+                "usd": 0.0}
 
     cast = _clean_refs(root, cast_refs or [])
     ask = _script_ask(root, text, want, cast, characters, style, style_note)
@@ -379,7 +379,7 @@ def write_script(root: str | os.PathLike[str], name: str, premise: str, *,
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                 "stage": "model", "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": 0.0}
+                "usd": 0.0}
 
     try:
         parsed = json.loads(raw)
@@ -387,14 +387,14 @@ def write_script(root: str | os.PathLike[str], name: str, premise: str, *,
         return {"ok": False, "error": "the model did not return usable JSON",
                 "stage": "parse", "raw": raw[:2000],
                 "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": SCRIPT_USD_PER_CALL}
+                "usd": SCRIPT_USD_PER_CALL}
 
     beats = _beats_from(parsed, want)
     if not beats:
         return {"ok": False, "error": "the model returned no frames",
                 "stage": "parse", "raw": raw[:2000],
                 "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": SCRIPT_USD_PER_CALL}
+                "usd": SCRIPT_USD_PER_CALL}
 
     _record_spend(root, SCRIPT_USD_PER_CALL, "script", name, work_item_id)
 
@@ -409,7 +409,7 @@ def write_script(root: str | os.PathLike[str], name: str, premise: str, *,
                work_item_id=work_item_id)
     out["ok"] = True
     out["seconds"] = round(time.monotonic() - started, 2)
-    out["estimated_usd"] = SCRIPT_USD_PER_CALL
+    out["usd"] = SCRIPT_USD_PER_CALL
     return out
 
 
@@ -420,11 +420,14 @@ def _script_available(root: Any) -> dict:
         envfile.load_project_env(root)
     except Exception:
         pass
-    if not (os.environ.get("OPENAI_API_KEY") or "").strip():
+    from ..runtime import providers as _providers
+
+    row = _providers.status_for(root, "openai")
+    if not row.get("available"):
         return {"available": False,
-                "reason": "OPENAI_API_KEY not set - put it in the project's "
-                          ".env (gitignored, loaded per project). You can still "
-                          "write the board by hand with storyboard_plan."}
+                "reason": f"{row.get('reason') or 'OPENAI_API_KEY not set'}. "
+                          "You can still write the board by hand with "
+                          "storyboard_plan."}
     return {"available": True}
 
 
@@ -543,7 +546,7 @@ def frame_generate(root: str | os.PathLike[str], name: str, idx: int, *,
         return {"ok": False, "stage": "spend_gate",
                 "error": "the project budget refuses this frame: "
                          + (verdict.get("reason") or "ceiling reached"),
-                "estimated_usd": 0.0}
+                "usd": 0.0}
 
     out_rel = _frame_rel(b, frame)
     out_path = Path(root) / out_rel
@@ -591,7 +594,7 @@ def frame_generate(root: str | os.PathLike[str], name: str, idx: int, *,
                 "error": "; ".join(f"{t['provider']}: {t['error']}"
                                    for t in tried) or "no image returned",
                 "tried": tried,
-                "estimated_usd": result.get("estimated_usd", 0.0)}
+                "usd": result.get("usd", 0.0)}
 
     art = artifacts.register(
         root, _logical(b, frame), out_path, producer="storyboard",
@@ -616,7 +619,7 @@ def frame_generate(root: str | os.PathLike[str], name: str, idx: int, *,
             "fell_back_from": [t["provider"] for t in tried],
             "model": result.get("model", ""),
             "seconds": result.get("seconds", 0.0),
-            "estimated_usd": result.get("estimated_usd", 0.0),
+            "usd": result.get("usd", 0.0),
             "frame": _frame_view(root, _frame_row(root, b["id"], idx))}
 
 
@@ -870,7 +873,7 @@ def auto(root: str | os.PathLike[str], name: str, premise: str = "", *,
             continue
         shot = frame_generate(root, name, idx, quality=quality,
                               work_item_id=work_item_id)
-        spent += float(shot.get("estimated_usd") or 0.0)
+        spent += float(shot.get("usd") or 0.0)
         if shot.get("ok"):
             drawn.append(idx)
             if approve:
@@ -883,7 +886,7 @@ def auto(root: str | os.PathLike[str], name: str, premise: str = "", *,
     out = board(root, name)
     result = {"ok": bool(drawn) or not failed, "board": out["name"],
               "drawn": drawn, "failed": failed, "cast_refs": cast,
-              "estimated_usd": round(spent, 4), "steps": steps,
+              "usd": round(spent, 4), "steps": steps,
               "ready": out["ready"]}
 
     if promote_to or (approve and not failed):
@@ -1279,45 +1282,21 @@ def _is_account_failure(error: Any) -> bool:
 def _providers(root: str | os.PathLike[str]) -> list[str]:
     """Every provider this project could draw a frame with, in order to try.
 
-    A LIST, NOT A PICK, AND THAT DISTINCTION COST A CUTSCENE. The first version
-    returned the FIRST provider whose key was present and stopped there. A key
-    that exists but has no credits left is still present — so a project whose
-    OpenAI account had run dry picked openai, took `insufficient_quota`, and
-    reported that image generation was unavailable, while a working KREA_API_KEY
-    sat in the same .env and was never tried. The seat then correctly reported
-    that it could not draw the board, which made a bug look like a considered
-    answer and parked a cutscene waiting on credits it did not need.
+    A LIST, NOT A PICK, AND THAT DISTINCTION COST A CUTSCENE: a key that
+    exists but has no credits left is still present, so the first version
+    picked a dry openai account and never tried the working krea key beside
+    it. The order now comes from the one router (providers.chain - the
+    stored art.provider preference, the routing rule, the gateway's doctrine
+    order minus drained accounts) rather than from a second reading of the
+    environment here, which is how this list once lacked kie.
 
-    KIE IS IN THIS LIST, and leaving it out was the second half of the same
-    mistake. It was excluded on the grounds that its image fields take public
-    URLs rather than local files, so it could not be conditioned on a pinned
-    character — true of the raw endpoint, and irrelevant, because
-    kie.upload_file has always been able to mint those URLs and is exactly what
-    the video path uses for first_frame. Excluding it meant the CINEMATIC seat,
-    whose entire funded account is kie, could not draw its own storyboard.
-
-    It sits after krea because krea takes an anchor inline in the same request
-    while kie needs a separate upload whose product expires in three days. That
-    is a reason to prefer krea, not a reason to refuse kie.
-
-    Local is LAST despite being free, because it needs a workflow configured and
-    silently drawing from a graph nobody set up is worse than saying the hosted
-    account is dry.
+    Local is LAST despite being free, because it needs a workflow configured
+    and silently drawing from a graph nobody set up is worse than saying the
+    hosted account is dry.
     """
-    try:
-        from ..store import envfile
+    from ..runtime import providers as _providers
 
-        envfile.load_project_env(root)
-    except Exception:
-        pass
-
-    out = []
-    if (os.environ.get("OPENAI_API_KEY") or "").strip():
-        out.append("openai")
-    if (os.environ.get("KREA_API_KEY") or "").strip():
-        out.append("krea")
-    if (os.environ.get("KIE_API_KEY") or "").strip():
-        out.append("kie")
+    out = _providers.chain("concept", root=root)
     try:
         from bgate_adapters import localgen
 
@@ -1325,22 +1304,6 @@ def _providers(root: str | os.PathLike[str]) -> list[str]:
             out.append("local")
     except Exception:
         pass
-
-    # THE STORED PREFERENCE LEADS THE CHAIN. The order above is the failover
-    # rationale, not the choice: a project that named art.provider tries it
-    # first and only then walks the rest. Only reordered when the preferred
-    # provider is actually in the configured list — an unconfigured
-    # preference must not turn "try everything" into "fail on the favourite".
-    try:
-        from ..store import settings as _settings
-
-        preferred = str(_settings.get(root, "art.provider") or "").strip().lower()
-        if preferred in out:
-            out.remove(preferred)
-            out.insert(0, preferred)
-    except Exception:
-        pass
-
     if not out:
         raise StoryboardError(
             "no image provider configured - set OPENAI_API_KEY, KREA_API_KEY or "

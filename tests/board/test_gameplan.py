@@ -342,6 +342,23 @@ class TestSpendAttributionAndGates:
         assert got["week_usd"] == 3.0 and got["month_usd"] == 3.0
         assert "agent_runs" in got
 
+    def test_agent_spend_is_visible_beside_the_ceilings(self, root, monkeypatch):
+        """Agent runs bill as subscription and never gate; they are reported
+        in the two windows the ceilings use so a panel can print them side by
+        side with per_day_usd / per_project_usd."""
+        from bgate_core.board import spend
+        monkeypatch.setenv("BGATE_SEAT", "code")
+        spend.record(root, 2.5, kind="agent")
+        spend.record(root, 1.0, kind="image")
+        got = spend.totals(root)
+        assert got["agent_usd_day"] == 2.5
+        assert got["agent_usd_project"] == 2.5
+        assert got["today_usd"] == 1.0
+        spend.set_budget(root, enforced=1, per_day_usd=100.0)
+        verdict = spend.check(root)
+        assert verdict["allowed"]
+        assert verdict["agent_usd_day"] == 2.5
+
     def test_every_paid_image_tool_asks_the_budget(self):
         # The gate guarded ONE tool of twelve. This is the regression that
         # notices if a paid path is added (or reverted) without one.

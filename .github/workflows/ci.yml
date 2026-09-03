@@ -78,6 +78,12 @@ jobs:
     # the whole toolchain pinned by package-lock.json — two consecutive builds
     # hash identically. If a future vite upgrade breaks that, this job goes red
     # on every PR at once and the fix is one rebuild-and-commit.
+    #
+    # The second half guards the OTHER tree: src/bgate_ui/static/ outside dist/
+    # is a verbatim copy of frontend/public/, and because it is gitignored a
+    # fix hand-typed into the generated copy is invisible to git and gone on
+    # the next build. Seven files had drifted that way when this was added,
+    # one of them with a real fix that existed only in the generated tree.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -131,6 +137,28 @@ jobs:
           EOF
             echo "::error::src/bgate_ui/static/dist is stale: it is not what frontend/ builds."
             echo "::error::Fix locally: cd frontend && npm run build, then commit src/bgate_ui/static/dist."
+            exit 1
+          fi
+
+      - name: The build must leave the static tree clean
+        # Anything the build changed, added or removed under static/ that git
+        # can see. --porcelain so a stray file is a line, not a paragraph.
+        run: |
+          status="$(git status --porcelain -- src/bgate_ui/static)"
+          if [ -n "$status" ]; then
+            echo "$status"
+            echo "::error::npm run build changed tracked files under src/bgate_ui/static; rebuild and commit."
+            exit 1
+          fi
+
+      - name: Served static files must be frontend/public, byte for byte
+        # The generated tree minus dist/ IS frontend/public/. A difference means
+        # either the build skipped a file or somebody edited the generated copy
+        # (which is gitignored, so that edit is already lost to everyone else).
+        # CRLF is ignored: a Windows checkout with autocrlf must not fail this.
+        run: |
+          if ! diff -rq --strip-trailing-cr --exclude=dist --exclude=__pycache__ frontend/public src/bgate_ui/static; then
+            echo "::error::src/bgate_ui/static (outside dist/) differs from frontend/public. Edit frontend/public, then npm run build."
             exit 1
           fi
 

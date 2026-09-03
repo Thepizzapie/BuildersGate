@@ -44,16 +44,15 @@ we use is four HTTP calls wide.
 from __future__ import annotations
 
 import base64
-import json
 import os
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 from bgate_adapters import imageto3d as _i3d
 from bgate_core.store import envfile
+
+from . import _http, _result
 
 API_BASE = "https://api.krea.ai"
 
@@ -329,7 +328,7 @@ ASPECTS = ("1:1", "4:3", "3:2", "16:9", "2.35:1", "4:5", "2:3", "9:16")
 CREATIVITY = ("raw", "low", "medium", "high")
 
 
-class KreaError(RuntimeError):
+class KreaError(_http.ProviderError):
     """A Krea call failed in a way the caller should surface, not retry blindly."""
 
 
@@ -486,60 +485,57 @@ def price_for(model: str = DEFAULT_MODEL, *, style_refs: int = 0,
 def _request(path: str, key: str, *, payload: Optional[dict] = None,
              method: str = "GET", timeout: float = 60.0,
              extra_headers: Optional[dict] = None) -> dict:
-    """One call, with the error advice every Krea endpoint should get.
+    """One call through the shared layer, with Krea's own words on failure.
 
     ``extra_headers`` exists for the ONE caller that needs a header this does
     not send — submit_3d's webhook. It used to hand-roll its own urlopen for
-    that, and the copy diverged where it mattered rather than where it differed:
-    its handler dropped the response body and every one of the code-specific
-    messages below, so a 402 through the webhook path read "Krea HTTP 402" and
-    said nothing about the API balance being billed separately from a
-    subscription — which is the single most confusing failure this provider has.
-    Same provider, same auth, two different error surfaces for no stated reason
-    is exactly the shape that hid kie's 1010 for a release.
+    that, and the copy diverged where it mattered: a 402 through it said
+    nothing about the API balance being billed separately from a
+    subscription — the single most confusing failure this provider has.
     """
     url = path if path.startswith("http") else API_BASE + path
-    body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(url, data=body, method=method, headers={
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        **(extra_headers or {}),
-    })
+    headers = {"Authorization": f"Bearer {key}", **(extra_headers or {})}
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", "replace")[:400]
-        except Exception:
-            pass
-        # The three a caller will actually hit, each with the fix rather than
-        # the status code. 402 is the surprising one: a Krea SUBSCRIPTION does
-        # not pay for API calls — the API balance is topped up separately, and
-        # the raw message does not say where to go.
-        if exc.code in (401, 403):
-            raise KreaError(
-                "Krea rejected the API key (HTTP %s) — check KREA_API_KEY in the "
-                "project's .env; tokens come from krea.ai/settings/api-tokens"
-                % exc.code) from exc
-        if exc.code == 402:
-            raise KreaError(
-                "Krea has no API credit — the API balance is billed separately "
-                "from a workspace/subscription plan. Top it up at "
-                "krea.ai/settings (billing), then retry; nothing was charged.") from exc
-        if exc.code == 429:
-            raise KreaError(
-                "Krea rate-limited this request (HTTP 429) — slow the fan-out or "
-                "retry in a moment.") from exc
-        if exc.code == 422:
-            raise KreaError(
-                f"Krea refused the request shape for this model: {detail} "
-                "(each model has its own parameter schema — see MODELS)") from exc
-        raise KreaError(f"Krea HTTP {exc.code} on {method} {path}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise KreaError(f"could not reach Krea ({exc.reason})") from exc
+        got = _http.request(method, url, headers=headers, json=payload,
+                            timeout=timeout, provider="krea")
+    except _http.ProviderError as exc:
+        raise _krea_error(exc, method, path) from exc
+    try:
+        return got.json(provider="krea")
+    except _http.ProviderError as exc:
+        raise KreaError(str(exc), provider="krea", status=exc.status,
+                        body=exc.body) from exc
+
+
+def _krea_error(exc: _http.ProviderError, method: str, path: str) -> KreaError:
+    """The three a caller will actually hit, each with the fix rather than
+    the status code. 402 is the surprising one: a Krea SUBSCRIPTION does not
+    pay for API calls — the API balance is topped up separately, and the raw
+    message does not say where to go."""
+    code, detail = exc.status, exc.body
+    meta = dict(provider="krea", status=code, body=detail, billing=exc.billing)
+    if code == 0:
+        return KreaError(f"could not reach Krea ({detail})", **meta)
+    if code in (401, 403):
+        return KreaError(
+            "Krea rejected the API key (HTTP %s) — check KREA_API_KEY in the "
+            "project's .env; tokens come from krea.ai/settings/api-tokens"
+            % code, **meta)
+    if code == 402:
+        return KreaError(
+            "Krea has no API credit — the API balance is billed separately "
+            "from a workspace/subscription plan. Top it up at "
+            "krea.ai/settings (billing), then retry; nothing was charged.",
+            **meta)
+    if code == 429:
+        return KreaError(
+            "Krea rate-limited this request (HTTP 429) — slow the fan-out or "
+            "retry in a moment.", **meta)
+    if code == 422:
+        return KreaError(
+            f"Krea refused the request shape for this model: {detail} "
+            "(each model has its own parameter schema — see MODELS)", **meta)
+    return KreaError(f"Krea HTTP {code} on {method} {path}: {detail}", **meta)
 
 
 def submit(prompt: str, *, model: str = DEFAULT_MODEL, size: str = "1024x1024",
@@ -633,7 +629,7 @@ def submit(prompt: str, *, model: str = DEFAULT_MODEL, size: str = "1024x1024",
     ref_field = spec.get("ref_field", "image_style_references")
     job = _request(spec["path"], key, payload=payload, method="POST", timeout=timeout)
     job["_model"] = model
-    job["_estimated_usd"] = price_for(
+    job["_usd"] = price_for(
         model, style_refs=len(payload.get(ref_field) or []))
     if dropped:
         job["_warning"] = (f"{model} accepts {spec.get('ref_max', 10)} style "
@@ -751,23 +747,20 @@ def upload(path: str | os.PathLike, *, description: str = "",
                         f"{'/'.join(sorted(s.lstrip('.') for s in TRAIN_SUFFIXES))} only")
     body, content_type = _multipart({"description": description or p.stem},
                                     p.name, p.read_bytes())
-    req = urllib.request.Request(API_BASE + "/assets", data=body, method="POST",
-                                 headers={"Authorization": f"Bearer {key}",
-                                          "Content-Type": content_type,
-                                          "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            got = json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", "replace")[:400]
-        except Exception:
-            pass
+        got = _http.request(
+            "POST", API_BASE + "/assets", data=body, timeout=timeout,
+            provider="krea", headers={"Authorization": f"Bearer {key}",
+                                      "Content-Type": content_type}
+        ).json(provider="krea")
+    except _http.ProviderError as exc:
+        if exc.status == 0:
+            raise KreaError(f"could not reach Krea to upload {p.name} "
+                            f"({exc.body})", provider="krea") from exc
         raise KreaError(f"Krea rejected the upload of {p.name} "
-                        f"(HTTP {exc.code}): {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise KreaError(f"could not reach Krea to upload {p.name} ({exc.reason})") from exc
+                        f"(HTTP {exc.status}): {exc.body}", provider="krea",
+                        status=exc.status, body=exc.body,
+                        billing=exc.billing) from exc
     url = got.get("image_url") or got.get("url")
     if not url:
         raise KreaError(f"Krea accepted {p.name} but returned no image_url: "
@@ -970,7 +963,7 @@ def train(name: str, paths: list, *, kind: str = "Style", model: str = "flux_dev
         "resized": resized,
         "check": verdict, "pending": False,
         # Deliberately not a number: see TRAIN_USD.
-        "estimated_usd": TRAIN_USD,
+        "usd": TRAIN_USD,
         "seconds": round(time.monotonic() - started, 2),
     }
 
@@ -989,19 +982,16 @@ def style(style_id: str, strength: float = 0.85) -> dict:
 
 def poll(job_id: str, *, root: Any = None, timeout: float = 300.0,
          interval: float = 2.0) -> dict:
-    """Wait for a job to reach a terminal state.
-
-    Bounded on purpose: a job that never finishes must fail the caller rather
-    than hold a seat's agent forever. The docs suggest 2s; we back off gently so
-    a slow model does not turn into a poll storm.
-    """
+    """Wait for a job to reach a terminal state. Bounded: a job that never
+    finishes must fail the caller rather than hold a seat's agent forever."""
     key = api_key(root)
     if not key:
         raise KreaError(available(root)["reason"])
-    deadline = time.monotonic() + max(5.0, float(timeout))
-    wait = max(0.5, float(interval))
+
     last: dict = {}
-    while time.monotonic() < deadline:
+
+    def step() -> Optional[dict]:
+        nonlocal last
         last = _request(f"/jobs/{job_id}", key, timeout=30.0)
         status = str(last.get("status") or "")
         if status == DONE:
@@ -1011,13 +1001,23 @@ def poll(job_id: str, *, root: Any = None, timeout: float = 300.0,
             raise KreaError(
                 f"Krea job {status}: {err.get('message') or err.get('code') or 'no reason given'}")
         if status and status not in RUNNING:
-            # An unknown state is not an excuse to spin — say so and stop.
-            raise KreaError(f"Krea job returned unknown status {status!r}")
-        time.sleep(wait)
-        wait = min(5.0, wait * 1.25)
-    raise KreaError(
-        f"Krea job {job_id} did not finish within {timeout:.0f}s (last status "
-        f"{last.get('status') or 'unknown'})")
+            raise _http.PollUnknown(f"Krea job returned unknown status {status!r}")
+        return None
+
+    try:
+        return _http.poll(step, first=max(0.5, float(interval)),
+                          max_wait=max(5.0, float(timeout)), factor=1.25,
+                          ceiling=5.0, unknown_is_fatal=True, provider="krea",
+                          label=f"job {job_id}")
+    except KreaError:
+        raise
+    except _http.PollUnknown as exc:
+        raise KreaError(str(exc), provider="krea") from exc
+    except _http.ProviderError as exc:
+        raise KreaError(
+            f"Krea job {job_id} did not finish within {timeout:.0f}s (last "
+            f"status {last.get('status') or 'unknown'})",
+            provider="krea") from exc
 
 
 def download(url: str, out_path: str, *, timeout: float = 120.0,
@@ -1028,18 +1028,11 @@ def download(url: str, out_path: str, *, timeout: float = 120.0,
     that honours Accept would be within its rights to refuse `image/*` for a
     model. Default unchanged, so every image caller is untouched.
     """
-    out = Path(out_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"Accept": accept})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except Exception as exc:
-        raise KreaError(f"could not download the finished file: {exc}") from exc
-    if not data:
-        raise KreaError("Krea returned an empty image")
-    out.write_bytes(data)
-    return len(data)
+        return _http.download(url, out_path, timeout=timeout,
+                              headers={"Accept": accept}, provider="krea")
+    except _http.ProviderError as exc:
+        raise KreaError(str(exc), provider="krea", status=exc.status) from exc
 
 
 def _account(result: dict, root: Any, *, task_kind: str = "",
@@ -1066,7 +1059,7 @@ def _account(result: dict, root: Any, *, task_kind: str = "",
     try:
         from bgate_core.board import spend
 
-        usd = result.get("estimated_usd")
+        usd = result.get("usd")
         note = detail or f"krea {result.get('model', '')}"
         if usd is None:
             note += " (cost unknown - Krea publishes no price for this call)"
@@ -1090,13 +1083,13 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
     """Submit, wait, download. The whole three-step dance as one call.
 
     Shaped to match imagegen.generate's return so the art pipeline does not care
-    which provider produced the file: {ok, path, bytes, seconds, estimated_usd}.
+    which provider produced the file: {ok, path, bytes, seconds, usd}.
 
     ``ref_paths`` are LOCAL anchor files and are the ergonomic half of
     ``style_refs``: they are turned into the reference array here rather than
     every caller learning :func:`style_ref`. The two ADD — a caller already
     holding built refs keeps them, and paths are appended — so this is additive
-    for anyone who was already passing ``style_refs``. ``estimated_usd`` counts
+    for anyone who was already passing ``style_refs``. ``usd`` counts
     the merged set, because Krea charges more for a request WITH references
     (krea-2-large is $0.06 plain and $0.065 anchored) and a quote that reads
     only the model name under-quotes every anchored generation the art seat
@@ -1120,7 +1113,7 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         # this function that can honestly say so.
         return {"ok": False, "error": str(exc), "provider": "krea",
                 "model": model, "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": 0.0}
+                "usd": 0.0}
     try:
         job = submit(prompt, model=model, size=size, seed=seed,
                      style_refs=refs or None, image_url=image_url,
@@ -1141,7 +1134,7 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         # the whole 2D pipeline runs through, kept doing exactly what that fix
         # was written about. Once there is a job_id the generation is accepted
         # and may already be paid for: dropping the id makes a finished image
-        # unrecoverable, and reporting estimated_usd 0.0 tells a spend ledger a
+        # unrecoverable, and reporting usd 0.0 tells a spend ledger a
         # charge that happened did not.
         #
         # None, not the quote: it is not known whether this one billed, and this
@@ -1149,7 +1142,7 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         return {"ok": False, "error": str(exc), "provider": "krea",
                 "model": model, "job_id": job_id,
                 "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": None if job_id else 0.0,
+                "usd": None if job_id else 0.0,
                 "recover": (f"the job may be done and paid for — poll "
                             f"/jobs/{job_id} and download from its result")
                            if job_id else "",
@@ -1157,13 +1150,13 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
                               "cost is UNKNOWN rather than zero — it would have "
                               f"quoted ${price_for(model, style_refs=len(refs)):.4f}")
                              if job_id else ""}
-    result = {
+    result = _result.shape({
         "ok": True, "path": str(out_path), "bytes": written,
         "provider": "krea", "model": model,
         "job_id": str(job_id), "url": urls[0],
         "seconds": round(time.monotonic() - started, 2),
-        "estimated_usd": price_for(model, style_refs=len(refs)),
-    }
+        "usd": price_for(model, style_refs=len(refs)),
+    })
     _account(result, root, task_kind=task_kind,
              detail=f"krea {model} {size}"
                     + (f" +{len(refs)} ref" if refs else ""))
@@ -1434,7 +1427,7 @@ def generate_3d(out_path: str, *, prompt: str = "", images=(),
 
     `confirm_unpriced` is not ceremony. Krea publishes no 3D price, so unlike
     every other spend in this module the cost cannot be quoted first and the
-    caller has to accept an unknown charge out loud. `estimated_usd` stays None
+    caller has to accept an unknown charge out loud. `usd` stays None
     throughout — never 0.0, which reads as free.
 
     The timeout defaults high because a 3D job runs in minutes where an image
@@ -1443,7 +1436,7 @@ def generate_3d(out_path: str, *, prompt: str = "", images=(),
     started = time.monotonic()
     quote = price_for_3d(model)
     base = {"provider": "krea", "model": model, "kind": "3d",
-            "estimated_usd": quote, "draft": True}
+            "usd": quote, "draft": True}
     job_id = ""
     finished: dict = {}
 
@@ -1488,10 +1481,10 @@ def generate_3d(out_path: str, *, prompt: str = "", images=(),
                 "recover": (f"the job is done and paid for — poll /jobs/{job_id} "
                             "and download from its result") if job_id else "",
                 "seconds": round(time.monotonic() - started, 2)}
-    out = {**base, "ok": True, "path": str(out_path), "bytes": written,
-           "job_id": str(job_id), "url": url,
-           "seconds": round(time.monotonic() - started, 2)}
-    # Krea publishes no 3D price, so estimated_usd is None here and _account
+    out = _result.shape({**base, "ok": True, "path": str(out_path),
+                         "bytes": written, "job_id": str(job_id), "url": url,
+                         "seconds": round(time.monotonic() - started, 2)})
+    # Krea publishes no 3D price, so usd is None here and _account
     # writes a 0.00 row that SAYS the cost is unknown. A mesh costing roughly
     # $0.30-0.60 that leaves no trace at all is how a project discovers its
     # spend on an invoice instead of on its own ledger.

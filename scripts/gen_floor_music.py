@@ -40,10 +40,11 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from _floorpaths import FLOOR_AUDIO  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-OUT = ROOT / "frontend" / "public" / "audio" / "floor"
+OUT = FLOOR_AUDIO
 MANIFEST = OUT / "manifest.json"
 
 sys.path.insert(0, str(ROOT))

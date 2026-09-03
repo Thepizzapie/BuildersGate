@@ -1,83 +1,52 @@
-"""Build the optional floor-assets wheel from this repo's own trees.
+"""Build the optional floor-assets wheel from packaging/floor-assets/.
 
-The studio floor's paintings (static/img/floor) and ambience
-(static/audio/floor) are ~30MB of a 39MB static tree — decoration every
-install used to pay for. The main wheel now excludes them (see
-exclude-package-data in pyproject.toml) and this script packages the SAME
-files, unchanged, as `builders-gate-floor-assets`: a one-module package whose
-whole API is `path()`, which bgate_ui.app uses to mount the assets when the
-local tree is absent.
+The studio floor's paintings (img/) and ambience (audio/) are ~30MB of
+decoration that every install used to pay for. They live in their own package
+now — `builders-gate-floor-assets`, source in packaging/floor-assets/ — whose
+whole API is `path()`, which bgate_ui.app mounts under /static/img/floor and
+/static/audio/floor when the package imports.
 
     python packaging/build_floor_assets.py        # wheel lands in dist/
 
-Versioned in lockstep with the main package — the assets change when the
-floor's art changes, and one number to reason about beats two drifting.
+Versioned in lockstep with the main package: this script refuses to build if
+the two pyproject files disagree, because one number to reason about beats
+two drifting.
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-STATIC = REPO / "src" / "bgate_ui" / "static"
+SRC = REPO / "packaging" / "floor-assets"
+PKG = SRC / "builders_gate_floor_assets"
 DIST = REPO / "dist"
-STAGE = REPO / "build" / "floor_assets_stage"
-
-INIT = '''"""The Builders Gate studio-floor assets. One function; see path()."""
-from pathlib import Path
 
 
-def path() -> str:
-    """The directory holding img/ and audio/ — what the dashboard mounts."""
-    return str(Path(__file__).resolve().parent)
-'''
-
-PYPROJECT = '''[project]
-name = "builders-gate-floor-assets"
-version = "{version}"
-description = "Studio-floor paintings and ambience for Builders Gate (optional)."
-requires-python = ">=3.11"
-
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["bgate_floor_assets"]
-
-[tool.setuptools.package-data]
-bgate_floor_assets = ["img/**/*", "audio/**/*"]
-'''
+def _version(pyproject: Path) -> str:
+    return tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
 
 
 def main() -> int:
-    version = tomllib.loads(
-        (REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    main_version = _version(REPO / "pyproject.toml")
+    pack_version = _version(SRC / "pyproject.toml")
+    if main_version != pack_version:
+        print(f"error: pyproject.toml says {main_version} but "
+              f"packaging/floor-assets/pyproject.toml says {pack_version} — "
+              "bump them together")
+        return 1
 
-    for sub in ("img/floor", "audio/floor"):
-        if not (STATIC / sub).is_dir():
-            print(f"error: {STATIC / sub} is missing — build from a source "
-                  "checkout (the wheel deliberately does not carry these)")
+    for sub in ("img", "audio"):
+        if not any((PKG / sub).rglob("*")):
+            print(f"error: {PKG / sub} is empty — build from a source checkout")
             return 1
-
-    if STAGE.exists():
-        shutil.rmtree(STAGE)
-    pkg = STAGE / "bgate_floor_assets"
-    pkg.mkdir(parents=True)
-    (pkg / "__init__.py").write_text(INIT, encoding="utf-8")
-    (STAGE / "pyproject.toml").write_text(
-        PYPROJECT.format(version=version), encoding="utf-8")
-    shutil.copytree(STATIC / "img" / "floor", pkg / "img")
-    shutil.copytree(STATIC / "audio" / "floor", pkg / "audio")
 
     DIST.mkdir(exist_ok=True)
     got = subprocess.run(
         [sys.executable, "-m", "pip", "wheel", "--no-deps",
-         "--wheel-dir", str(DIST), str(STAGE)],
+         "--wheel-dir", str(DIST), str(SRC)],
         capture_output=True, text=True)
     if got.returncode != 0:
         print(got.stdout[-2000:])

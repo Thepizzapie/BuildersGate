@@ -201,9 +201,16 @@ function Banter({ line, on, onToggle }: {
 
    NOTHING IS DRAWN WHEN NO SET IS GENERATED. A mute button for silence is a
    control that answers nothing, and the line that says so belongs in the
-   generator's output, not in the middle of the floor. */
+   generator's output, not in the middle of the floor. The one exception is a
+   set that is absent because the floor-assets PACKAGE is not installed: the
+   server says so in the manifest, and that sentence is drawn where the radio
+   would be, because "pip install builders-gate[floor]" is an action the
+   reader can take and silence is not. */
 function Music({ deck }: { deck: MusicDeck }) {
-  if (!deck.tracks || deck.tracks.length === 0) return null;
+  if (!deck.tracks || deck.tracks.length === 0) {
+    if (!deck.note) return null;
+    return <div className="bg4-music bg4-music-note" title={deck.note}>{deck.note}</div>;
+  }
   return (
     <div className="bg4-music" data-on={deck.on ? "true" : undefined}>
       {/* THE SWITCH LIVES ON THE FLOOR, NOT HERE. It is the radio in the

@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { readJSON } from "../bridge";
-import { usePoll } from "../hooks";
+import { useEvents, FALLBACK_MS } from "../hooks";
 
 /* The floor's data: what is running, what is queued, what just happened.
  *
@@ -147,6 +147,6 @@ export function useFloor(ms = 4000, enabled = true): Floor {
     });
   }, []);
 
-  usePoll(refresh, ms, enabled);
+  useEvents(refresh, { enabled, fallbackMs: Math.max(ms, FALLBACK_MS) });
   return floor;
 }

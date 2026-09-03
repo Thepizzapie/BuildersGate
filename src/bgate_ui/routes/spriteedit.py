@@ -456,7 +456,7 @@ def sprite_regen(payload: dict) -> dict:
         "png": base64.b64encode(buf.getvalue()).decode(),
         "size": [grid["cell_w"], grid["cell_h"]],
         "seconds": result.get("seconds"),
-        "estimated_usd": result.get("estimated_usd"),
+        "usd": result.get("usd"),
         "model": result.get("model"),
         "revised_prompt": result.get("revised_prompt"),
         # Nothing was written to the sheet. Said explicitly because "the API

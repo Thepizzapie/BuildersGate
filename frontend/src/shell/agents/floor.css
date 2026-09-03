@@ -262,6 +262,7 @@
   color: var(--text-3);
 }
 .bg4-music[data-on] { border-color: var(--line); background: var(--solid-1) }
+.bg4-music-note { color: var(--text-3, var(--text-2)); font-size: 11px; padding: 2px 8px; white-space: nowrap }
 
 .bg4-music-toggle, .bg4-music-skip {
   display: inline-flex; align-items: center; justify-content: center;

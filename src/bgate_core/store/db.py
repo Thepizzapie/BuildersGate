@@ -2119,6 +2119,41 @@ _MIGRATIONS: list = [
     ALTER TABLE work_item ADD COLUMN exhausted_at TEXT;
     ALTER TABLE work_item ADD COLUMN exhausted_why TEXT NOT NULL DEFAULT '';
     """,
+    # 0044 — ONE RUN REGISTRY.
+    #
+    # A spawned agent was recorded in three places: dispatch's in-memory
+    # `_done` table (gone with the process), `.bgate/agents/pids.json` (a
+    # read-modify-write JSON file shared by every thread that spawns), and a
+    # file per run under ~/.bgate/agents for the machine-wide fleet view. Each
+    # answered a different question and none agreed after a crash.
+    #
+    # This table is the record. A row is written at spawn (pid plus the
+    # process start time, the one thing a recycled pid cannot fake), and
+    # finished at reap with the outcome, the agent's last word and what the
+    # run cost. ended_at IS NULL is "running as far as anyone recorded"; the
+    # fleet view reads that across every registered project, the orphan sweep
+    # reads it for this one, and the dashboard's finished-runs window is a
+    # query over ended_at rather than a dict that forgets on restart.
+    """
+    CREATE TABLE agent_runs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        project      TEXT NOT NULL DEFAULT '',
+        item_id      INTEGER NOT NULL,
+        pid          INTEGER NOT NULL DEFAULT 0,
+        proc_started REAL,
+        proc_name    TEXT NOT NULL DEFAULT '',
+        seat         TEXT NOT NULL DEFAULT '',
+        runner       TEXT NOT NULL DEFAULT '',
+        log          TEXT NOT NULL DEFAULT '',
+        started_at   REAL NOT NULL,
+        ended_at     REAL,
+        status       TEXT NOT NULL DEFAULT 'running',
+        result_json  TEXT NOT NULL DEFAULT '{}',
+        cost_usd     REAL NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_agent_runs_item ON agent_runs(item_id, started_at);
+    CREATE INDEX idx_agent_runs_open ON agent_runs(ended_at, started_at);
+    """,
 ]
 
 

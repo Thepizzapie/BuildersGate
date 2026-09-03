@@ -155,7 +155,7 @@ class TestTheDoorItReachesGenerationBy:
             Path(out_path).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40)
             return {"ok": True, "path": str(out_path), "bytes": 48,
                     "provider": "krea", "model": "krea-2-medium",
-                    "estimated_usd": 0.03, "seconds": 0.1}
+                    "usd": 0.03, "seconds": 0.1}
 
         from bgate_adapters import krea
         monkeypatch.setattr(krea, "generate", fake)

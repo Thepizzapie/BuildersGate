@@ -60,6 +60,7 @@ import os
 import re
 import shlex
 import sys
+from typing import Optional
 
 # Tool → the input key that carries the file path.
 _PATH_KEYS = {
@@ -134,10 +135,21 @@ DIRECTOR_MODES = ("off", "collide", "warn", "block")
 DEFAULT_DIRECTOR_MODE = "collide"
 
 
-def director_mode() -> str:
-    """How hard to check a session that adopted no seat. Never raises."""
+def director_mode(root=None) -> str:
+    """How hard to check a session that adopted no seat. Never raises.
+
+    An explicit BGATE_DIRECTOR_MODE wins; otherwise the enforcement profile
+    (bgate_core.board.enforcement) supplies the mode.
+    """
     mode = os.environ.get("BGATE_DIRECTOR_MODE", "").strip().lower()
-    return mode if mode in DIRECTOR_MODES else DEFAULT_DIRECTOR_MODE
+    if mode in DIRECTOR_MODES:
+        return mode
+    try:
+        from bgate_core.board import enforcement
+
+        return enforcement.ladder("director", root)
+    except Exception:
+        return DEFAULT_DIRECTOR_MODE
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +175,7 @@ def director_mode() -> str:
 #            human on exit 1. The write lands; the agent is not interrupted.
 #   block    the old behaviour - out of lane is refused. For projects whose
 #            lane table is curated and trusted.
-def worker_lane_mode() -> str:
+def worker_lane_mode(root=None) -> str:
     """How hard to enforce a SEATED worker's lane. Never raises.
 
     Imported lazily like every bgate_core import here - the hook is a fresh
@@ -171,7 +183,7 @@ def worker_lane_mode() -> str:
     """
     from bgate_core.board import seats
 
-    return seats.lane_mode()
+    return seats.lane_mode(root)
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +208,7 @@ def worker_lane_mode() -> str:
 #   block  DEFAULT since 2026-08-19. A seated agent touching another tree is
 #          refused. The boundary hardened the same day the lane gate went
 #          advisory: a seat is a toolset plus THIS line.
-def aegis_mode() -> str:
+def aegis_mode(root=None) -> str:
     """How hard to enforce the project boundary. Never raises.
 
     Imported lazily, like every other bgate_core import in this module: the
@@ -205,7 +217,7 @@ def aegis_mode() -> str:
     """
     from bgate_core.board import aegis
 
-    return aegis.mode()
+    return aegis.mode(root)
 
 
 def __getattr__(name: str):
@@ -705,6 +717,22 @@ def decide(payload: dict, seat: str, owner: str = "",
     return ALLOW, ""  # neither a read nor a write - not this hook's business
 
 
+def _payload_root(payload: dict) -> Optional[str]:
+    """The project the session is standing in, for profile lookup. The pinned
+    BGATE_ROOT wins for a dispatched worker; a hand-started session is judged
+    by the project under its cwd. None outside any project."""
+    pinned = os.environ.get("BGATE_ROOT", "").strip()
+    if pinned:
+        return pinned
+    try:
+        from bgate_core.store import db
+
+        found = db.resolve_root(_session_cwd(payload))
+        return str(found) if found else None
+    except Exception:
+        return None
+
+
 def _session_cwd(payload: dict):
     """A relative path is relative to the SESSION's cwd (in the payload), never
     to this hook process's - resolving against the wrong one lets relative
@@ -984,34 +1012,242 @@ _PS_WRITES = re.compile(
     re.I)
 
 
+# THE COMMON WRITE CMDLETS AND WHERE THEIR TARGET SITS. Best-effort by design:
+# a target this table can read is judged exactly like a Bash write; one it
+# cannot is "unclear", and a seated worker is refused on unclear.
+_PS_SEPARATORS = {";", "|", "&&", "||", "&", "(", ")", "{", "}"}
+_PS_CONTENT = {"set-content", "add-content", "out-file", "clear-content",
+               "sc", "ac"}
+_PS_NEW = {"new-item", "ni", "mkdir", "md"}
+_PS_COPY = {"copy-item", "move-item", "cpi", "mi", "cp", "mv", "copy",
+            "move"}
+_PS_RENAME = {"rename-item", "rni", "ren"}
+_PS_REMOVE = {"remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"}
+_PS_OPAQUE = {"invoke-expression", "iex", "start-process", "saps", "start"}
+# Flags that take no value, so the token after them is positional.
+_PS_SWITCHES = {"force", "recurse", "confirm", "whatif", "nonewline", "append",
+                "passthru", "verbose", "debug", "noclobber", "raw", "wait",
+                "asbytestream", "usetransaction", "container"}
+_PS_PATH_PARAMS = ("path", "literalpath", "filepath")
+_PS_TARGET_RE = re.compile(r"[\s,]+")
+
+
+def _ps_tokens(command: str) -> list[str]:
+    """Shell-split a PowerShell line. Quotes are honoured; separators and
+    redirects come back as their own tokens."""
+    lex = shlex.shlex(command, posix=True, punctuation_chars=";|&()<>{}")
+    lex.whitespace_split = True
+    lex.commenters = "#"
+    return list(lex)
+
+
+def _ps_param(token: str) -> tuple[str, Optional[str]]:
+    """``-Path``, ``-Path:x`` and ``-Dest`` (a prefix) -> ("path", value)."""
+    name, _, inline = token[1:].partition(":")
+    return name.lower(), (inline if _ else None)
+
+
+def _ps_full(name: str, known: tuple[str, ...]) -> str:
+    """PowerShell accepts any unambiguous prefix of a parameter name."""
+    for full in known:
+        if full.startswith(name):
+            return full
+    return name
+
+
+def _ps_segment(tokens: list[str]) -> tuple[list[str], list[str], bool]:
+    """``(writes, unclear, handled)`` for one pipeline segment; ``handled``
+    says a recognised construct was read, even if it named no file."""
+    if not tokens:
+        return [], [], False
+    writes: list[str] = []
+    unclear: list[str] = []
+    # `> file` and `>> file` anywhere in the segment.
+    rest: list[str] = []
+    handled = False
+    k = 0
+    while k < len(tokens):
+        tok = tokens[k]
+        if tok.startswith(">"):
+            handled = True
+            if "&" in tok:          # `2>&1`: a stream, not a file
+                k += 1
+                continue
+            nxt = tokens[k + 1] if k + 1 < len(tokens) else ""
+            if nxt.startswith("&"):
+                k += 2
+                continue
+            (writes if nxt and "$" not in nxt else unclear).append(
+                nxt or "redirect with no target")
+            k += 2
+            continue
+        rest.append(tok)
+        k += 1
+    if not rest:
+        return writes, unclear, handled
+    prog = rest[0]
+    if prog == "&" and len(rest) > 1:
+        prog, rest = rest[1], rest[1:]
+    prog = os.path.basename(prog.replace("\\", "/")).lower()
+    if prog.endswith(".exe"):
+        prog = prog[:-4]
+    if prog in _PS_OPAQUE or "[io.file]" in prog or "::write" in prog:
+        unclear.append(f"{rest[0]} runs something this hook cannot read")
+        return writes, unclear, True
+    interesting = prog in (_PS_CONTENT | _PS_NEW | _PS_COPY | _PS_RENAME
+                           | _PS_REMOVE)
+    if not interesting:
+        return writes, unclear, handled
+
+    named: dict[str, list[str]] = {}
+    positional: list[str] = []
+    k = 1
+    while k < len(rest):
+        tok = rest[k]
+        if tok.startswith("-") and len(tok) > 1 and not tok[1].isdigit():
+            name, inline = _ps_param(tok)
+            name = _ps_full(name, _PS_PATH_PARAMS + ("destination", "newname",
+                                                     "value", "name", "itemtype",
+                                                     "encoding", "erroraction",
+                                                     "include", "exclude",
+                                                     "filter"))
+            if inline is not None:
+                named.setdefault(name, []).append(inline)
+            elif name in _PS_SWITCHES:
+                pass
+            elif k + 1 < len(rest) and not rest[k + 1].startswith("-"):
+                named.setdefault(name, []).append(rest[k + 1])
+                k += 1
+            k += 1
+            continue
+        positional.append(tok)
+        k += 1
+
+    def paths(*keys: str) -> list[str]:
+        out: list[str] = []
+        for key in keys:
+            for raw in named.get(key, ()):
+                out.extend(p for p in _PS_TARGET_RE.split(raw) if p)
+        return out
+
+    if prog in _PS_COPY:
+        chosen = paths("destination") or positional[1:2]
+    elif prog in _PS_RENAME:
+        source = paths(*_PS_PATH_PARAMS) or positional[:1]
+        newname = paths("newname") or positional[1:2]
+        chosen = [os.path.join(os.path.dirname(source[0]), newname[0])
+                  if source and newname and not os.path.isabs(newname[0])
+                  else (newname[0] if newname else "")]
+        chosen = [c for c in chosen if c]
+    elif prog in _PS_REMOVE:
+        chosen = paths(*_PS_PATH_PARAMS) or positional
+    elif prog in _PS_NEW:
+        chosen = paths(*_PS_PATH_PARAMS) or positional[:1]
+        name = paths("name")
+        if chosen and name:
+            chosen = [os.path.join(chosen[0], name[0])]
+        elif name:
+            chosen = name
+    else:  # content cmdlets
+        chosen = paths(*_PS_PATH_PARAMS) or positional[:1]
+
+    if not chosen:
+        unclear.append(f"{rest[0]} names no target this hook can read")
+    for target in chosen:
+        if "$" in target or "`" in target:
+            unclear.append(f"{rest[0]} targets an expression ({target})")
+            continue
+        # A wildcard is judged by the directory it fans out from.
+        parts = target.replace("\\", "/").split("/")
+        for n, part in enumerate(parts):
+            if "*" in part or "?" in part:
+                target = "/".join(parts[:n]) or "."
+                break
+        writes.append(target)
+    return writes, unclear, True
+
+
+def analyse_powershell(command: str) -> dict:
+    """``{"writes": [...], "unclear": [...]}`` for a PowerShell command line.
+
+    Covers the cmdlets an agent actually reaches for - Set/Add/Clear-Content,
+    Out-File, New-Item, Copy/Move/Rename/Remove-Item, and ``>``/``>>`` - and
+    says "unclear" about the rest of the write-shaped grammar rather than
+    guessing. An unparseable line is one unclear entry, never a raise.
+    """
+    try:
+        tokens = _ps_tokens(command)
+    except ValueError as exc:
+        return {"writes": [], "unclear": [f"cannot tokenise: {exc}"]}
+    writes: list[str] = []
+    unclear: list[str] = []
+    segment: list[str] = []
+    handled = False
+    for tok in tokens + [";"]:
+        if tok in _PS_SEPARATORS:
+            w, u, h = _ps_segment(segment)
+            writes.extend(w)
+            unclear.extend(u)
+            handled = handled or h
+            segment = []
+            continue
+        segment.append(tok)
+    if not handled and _PS_WRITES.search(command):
+        unclear.append("write-shaped syntax this hook does not parse")
+    return {"writes": writes, "unclear": unclear}
+
+
 def _decide_powershell(command: str, payload: dict, seat: str,
                        owner: str, mode: str = "block") -> tuple[int, str]:
-    """PowerShell is FENCED, not parsed.
+    """PowerShell: parsed where it can be, fenced where it cannot.
 
     The desktop harness offers a PowerShell tool that only ``Bash`` handling
-    ever saw — ``Set-Content game/foo.gd`` walked past every lane, lock and
-    lease. Building a second analyser for a second shell's grammar is how this
-    hook stops being 'deliberately small', so instead: a command that LOOKS
-    like it writes is refused for an enforced seat with directions to the
-    checked tools, and everything read-shaped passes. Same fail-closed policy
-    and the same softenings as an unparseable Bash command: outside a project
-    nothing is protected, and a seatless session's collide/warn mode is
-    advisory here exactly as it is there.
+    ever saw - ``Set-Content game/foo.gd`` walked past every lane, lock and
+    lease. Targets the extractor can read (see :func:`analyse_powershell`) go
+    through the same containment + lane + lock chain a Bash write does. A
+    write-shaped command whose target it cannot read is refused for a SEATED
+    session in every lane mode - a worker fails closed - and stays advisory
+    for a seatless director in collide/warn, exactly like an unparseable Bash
+    command.
     """
     if not command.strip():
         return ALLOW, ""
     if not _PS_WRITES.search(command):
         return ALLOW, ""
-    from bgate_core.store import db
-    if db.resolve_root(_session_cwd(payload)) is None:
+    analysis = analyse_powershell(command)
+    if not analysis["writes"] and not analysis["unclear"]:
         return ALLOW, ""
-    if mode in ("collide", "warn"):
-        return ALLOW, ""
-    return BLOCK, (
-        "[builders-gate] refusing a PowerShell command that appears to write: "
-        "seat lanes cannot be read off PowerShell syntax, so writes there are "
-        "not checkable. Use Write/Edit on the specific file, or Bash with "
-        "explicit paths - both are checked precisely.")
+
+    warning = ""
+    for target in analysis["writes"]:
+        code, message = _judge_path(target, payload, seat, owner, mode)
+        if code == BLOCK:
+            return BLOCK, (message + "\n[builders-gate] that write was in a "
+                                     "PowerShell command; the lane rules are "
+                                     "the same there.")
+        if code == WARN and not warning:
+            warning = message
+
+    if analysis["unclear"]:
+        seated = bool(os.environ.get("BGATE_SEAT", "").strip())
+        if seated:
+            return BLOCK, (
+                "[builders-gate] refusing a PowerShell command whose write "
+                "target cannot be read: " + "; ".join(analysis["unclear"])
+                + ". A seated worker's writes must be checkable. Use "
+                "Write/Edit on the specific file, or a cmdlet with an explicit "
+                "-Path/-Destination - both are checked precisely.")
+        from bgate_core.store import db
+        if db.resolve_root(_session_cwd(payload)) is None:
+            return ALLOW, ""
+        if mode in ("collide", "warn"):
+            return ALLOW, ""
+        return BLOCK, (
+            "[builders-gate] refusing a PowerShell command that appears to "
+            "write: " + "; ".join(analysis["unclear"]) + ". Use Write/Edit on "
+            "the specific file, or a cmdlet with an explicit path - both are "
+            "checked precisely.")
+    return (WARN, warning) if warning else (ALLOW, "")
 
 
 def _decide_bash(command: str, payload: dict, seat: str,
@@ -1283,12 +1519,12 @@ def selftest(start=None, seat: str = "") -> dict:
     owner = os.environ.get("BGATE_LOCK_OWNER", "").strip()
     # A seatless session is checked now, so reporting it as inert would be the
     # status command telling the same lie the hook used to.
-    mode = "block" if seat else director_mode()
+    root = db.resolve_root(start or os.getcwd())
+    mode = "block" if seat else director_mode(root)
     seated = bool(seat)
     if not seated and mode != "off":
         seat = DIRECTOR_SEAT
         owner = owner or "session:selftest"
-    root = db.resolve_root(start or os.getcwd())
     out: dict = {
         "seat": seat,
         "seated": seated,
@@ -1302,9 +1538,10 @@ def selftest(start=None, seat: str = "") -> dict:
         # Reported whether or not it is biting, because "which project am I
         # pinned to" is the first thing to check when an agent is being refused
         # its own files - and an EMPTY pinned root is itself the finding.
-        "aegis": aegis_mode(),
+        "aegis": aegis_mode(root),
         "pinned_root": os.environ.get("BGATE_ROOT", ""),
         "containment": recent_containment(start),
+        "enforcement": _describe_enforcement(root),
     }
     if root is not None:
         settings = Path(root) / ".claude" / "settings.json"
@@ -1380,6 +1617,17 @@ def selftest(start=None, seat: str = "") -> dict:
     return out
 
 
+def _describe_enforcement(root) -> str:
+    """The composed policy, or an empty string if it cannot be read - the
+    status command must not fail on the sentence that explains it."""
+    try:
+        from bgate_core.board import enforcement
+
+        return enforcement.describe(str(root) if root else None)
+    except Exception:
+        return ""
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--selftest" in argv or "--status" in argv:
@@ -1389,23 +1637,25 @@ def main(argv: list[str] | None = None) -> int:
     try:
         seat = os.environ.get("BGATE_SEAT", "").strip()
         owner = os.environ.get("BGATE_LOCK_OWNER", "").strip()
+        # stdin must be read before any decision now: the session identity for a
+        # hand-started session lives in the payload, not the environment - and
+        # so does the project whose stored enforcement profile applies.
+        payload = json.loads(sys.stdin.read() or "{}")
+        root = _payload_root(payload)
         # A dispatched worker's lane is advisory by default (BGATE_LANES) -
         # the project boundary (aegis) is what a seat enforces. See
         # WORKER_LANE_MODES.
-        mode = worker_lane_mode()
+        mode = worker_lane_mode(root)
         if not seat:
             # THIS LINE USED TO BE `return ALLOW`. It read as "no adopted
             # identity, nothing to enforce", and the first half was true - but a
             # seatless session is not identity-less, it is the DIRECTOR, and the
             # thing worth enforcing on it is not its lane but whether somebody
             # else is already in the file. See DIRECTOR_MODES.
-            mode = director_mode()
+            mode = director_mode(root)
             if mode == "off":
                 return ALLOW
             seat = DIRECTOR_SEAT
-        # stdin must be read before any decision now: the session identity for a
-        # hand-started session lives in the payload, not the environment.
-        payload = json.loads(sys.stdin.read() or "{}")
         if mode != "block":
             # A dispatched worker already has BGATE_LOCK_OWNER=item-<id>;
             # session_owner is the fallback for a hand-started session. A

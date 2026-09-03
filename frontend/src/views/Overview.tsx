@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { readJSON, seatColor, watchAgent } from "../bridge";
-import { usePoll, useViewActive } from "../hooks";
+import { useEvents, useViewActive } from "../hooks";
 import { Icon } from "../components/Icon";
 
 /* The Overview deck — the studio at a glance.
@@ -20,8 +20,6 @@ type QueueItem = { id: number; title?: string; seat?: string; status?: string };
 type Agent = { item_id: number; state?: string };
 type Artifact = { status?: string };
 type Event = { seat?: string; summary?: string; kind?: string };
-
-const POLL_MS = 4000;
 
 export default function Overview() {
   const host = useRef<HTMLDivElement>(null);
@@ -52,7 +50,7 @@ export default function Overview() {
     setEvents(act.events || []);
   }, []);
 
-  usePoll(refresh, POLL_MS, active);
+  useEvents(refresh, { enabled: active });
 
   const live = agents.filter((a) => a.state === "running");
   const byId = new Map(items.map((i) => [i.id, i]));

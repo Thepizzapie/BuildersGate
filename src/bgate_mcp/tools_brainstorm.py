@@ -46,18 +46,12 @@ def brainstorm_list(seat: Optional[str] = None, status: Optional[str] = None,
                     limit: int = 50) -> dict:
     """The brainstorm file drawer - what has been thought about, and what it filed.
 
-    THE CHEAP ROOM. A brainstorm session is where an idea is still an idea:
-    conversation, a writing pad and a drawing pad, none of which queue anything.
-    The board is the expensive room. Read a session before proposing work in its
-    area - half the "new" ideas an agent files were already argued out and cut
-    in a room nobody looked in.
-
-    seat: director (what to BUILD) | narrative (what is TRUE).
-    status: open | deployed | archived. Archived sorts last whatever you pass.
-
-    Titles and counts only - never the pads, which come one session at a time
-    from brainstorm_open, because an index that ships every scratch document is
-    an index nobody can afford to poll.
+    THE CHEAP ROOM: nothing here queues anything. Read a session before
+    proposing work in its area - half the "new" ideas were already argued out
+    and cut. seat: director (what to BUILD) | narrative (what is TRUE).
+    status: open | deployed | archived (archived sorts last). Titles and
+    counts only; the pads come from brainstorm_open.
+    Full notes: docs/tools.md#brainstorm_list
     """
     root = _root()
     if seat and seat not in _bs.SEATS:
@@ -74,16 +68,11 @@ def brainstorm_list(seat: Optional[str] = None, status: Optional[str] = None,
 def brainstorm_new(seat: str = "director", title: str = "") -> dict:
     """Open a brainstorm session. Nothing about this reaches the board.
 
-    Use it when the human is thinking rather than asking - "what if the hub had
-    weather" is not a work order, and turning it into one costs a spawned
-    session per half-thought and leaves a board full of items nobody meant to
-    file. Everything said here stays here until a human deploys it.
-
-    seat picks what the room is FOR, and it is enforced at plan time rather than
-    trusted to the prompt:
-      director   what to BUILD. May propose work for any seat.
-      narrative  what is TRUE - canon, lore, the bible. May propose narrative
-                 work only.
+    For when the human is thinking rather than asking. Everything said here
+    stays here until a human deploys it. seat picks what the room is FOR,
+    enforced at plan time: director (what to BUILD; may propose work for any
+    seat) | narrative (what is TRUE; may propose narrative work only).
+    Full notes: docs/tools.md#brainstorm_new
     """
     return _bs.create(_root(), seat=seat, title=title)
 
@@ -92,21 +81,13 @@ def brainstorm_new(seat: str = "director", title: str = "") -> dict:
 def brainstorm_open(session_id: int) -> dict:
     """One session, whole: the conversation, the notes pad, the drawing, what it filed.
 
-    THE DRAWING COMES BACK AS WORDS. `drawing_text` is the pad's elements
-    rendered as lines - "rectangle#hub-1 'hub'", "arrow#a1 hub-1 -> shrine-1" - which is the content of the board and is readable without vision. The raw
-    `drawing` scene is there too, and the ids in it are what you reuse if you
-    write elements back with brainstorm_note. `drawing_png` is a preview path
-    the browser renders; it is never the source of truth.
-
-    `deploys` is what this session has already put on the board. Read it before
-    proposing more: a session that filed three items last week is not a blank
-    page.
-
-    `thinker` is who else is in the room: which runner and model this session's
-    partner runs on, whether a process is live right now, what the conversation
-    has cost, and the path to its raw transcript. Worth a glance before you pass
-    `reply=` to brainstorm_say - if a partner is already live, its answers and
-    yours are two voices in one conversation.
+    `drawing_text` is the pad rendered as lines, readable without vision; the
+    raw `drawing` scene carries the ids to reuse with brainstorm_note;
+    `drawing_png` is a preview, never the source of truth. `deploys` is what
+    this session already put on the board - read it before proposing more.
+    `thinker` says which runner/model the partner runs on, whether it is live,
+    what it cost, and where its transcript is.
+    Full notes: docs/tools.md#brainstorm_open
     """
     root = _root()
     session = _bs.read(root, int(session_id))
@@ -119,37 +100,15 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
                    to: str = "") -> dict:
     """Say something in a brainstorm session. NOTHING ELSE HAPPENS.
 
-    No work item, no dispatched agent, no approval gate: a turn here is two rows
-    in a table. queue_add and brainstorm_deploy are the two calls that file
-    work, and neither is reachable from this one.
-
-    `reply` IS THE POINT OF THIS DOOR, and it is worth more now than it was.
-    YOU are a model and you are already holding the session, so pass your own
-    answer and it is stored as the assistant turn - no second session, no CLI,
-    no cost, and no key was ever needed for it. Leave it empty and the dashboard's
-    partner answers instead, which spawns a real (tool-less, read-only) CLI
-    session and bills a turn against the subscription. Between an answer you
-    already have and a process you have to start, the answer you already have is
-    strictly better.
-
-    So: a MACHINE must pass `reply=`. A caller stamped as an agent that leaves it
-    empty is refused rather than allowed to spawn a nested thinking session - an agent already inside a CLI session paying to start another one to think
-    for it is a loop with a bill attached, and it was one flag away from being
-    the default behaviour of this tool.
-
-    Either way the human's sentence is stored BEFORE anything is asked, so a
-    dead partner costs a reply and never what was typed.
-
-    `to` ADDRESSES ONE SEAT that has been invited into the room
-    (brainstorm_invite). Leave it empty and everyone present answers - one CLI
-    turn each, in invite order, the room's own partner first - which is what you
-    want for "what does everybody think" and is four times the cost for "what
-    does the art seat think". `to` is ignored when you pass `reply=`, because
-    then YOU are the one answering and there is nobody to address.
-
-    Push back in the reply when something does not hold together, and say which
-    part. Do not write a task list here - proposing the work is a separate step
-    (brainstorm_synthesize) that a human takes when they are ready.
+    No work item, no agent, no gate. `reply` IS THE POINT: you are a model
+    already holding the session, so pass your own answer and it is stored as
+    the assistant turn at no cost. Empty, the dashboard's partner answers by
+    spawning a paid CLI turn - so a MACHINE must pass `reply=`, and an agent
+    that leaves it empty is refused. The human's sentence is stored before
+    anything is asked. `to` addresses ONE invited seat (ignored with reply=);
+    empty, everyone present answers. Push back in the reply; do not write a
+    task list here.
+    Full notes: docs/tools.md#brainstorm_say
     """
     root = _root()
     session = _bs.read(root, int(session_id))
@@ -161,7 +120,7 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
     speaking = ([""] if answered
                 else _bs.answerers(root, int(session_id), to))
     said = _bs.append_message(root, int(session_id), "user", text)
-    model = {"ok": True, "answered_by": "the caller", "estimated_usd": 0.0}
+    model = {"ok": True, "answered_by": "the caller", "usd": 0.0}
     replies: list = []
     if not answered and _caller_is_agent():
         model = {"ok": False, "error":
@@ -234,24 +193,13 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
 def brainstorm_invite(session_id: int, seat: str) -> dict:
     """INVITE A SEAT INTO A BRAINSTORM. It arrives WITHOUT ITS TOOLS.
 
-    The room had two voices - the human and the owning seat's thinking partner - and the question a human actually has ("would weather in the hub be cheap or
-    a fortnight") is one only the seat that would BUILD it can answer. This is
-    how that seat gets asked.
-
-    WHAT AN INVITED SEAT IS. A CLI session spawned by the same read-only path as
-    the room's own partner: an empty built-in tool set, --strict-mcp-config so
-    it cannot inherit the server you are reading this on, and at most the
-    two-tool pad server. It is the seat's JUDGEMENT, not the seat's HANDS. It
-    cannot write a file, run a command, claim work or file anything, and nothing
-    it says becomes work on its own - a human still reads a synthesis and
-    presses Deploy. Compare queue_add, which puts a real agent with real tools
-    on the board; that is the other room and this is deliberately not it.
-
-    Refused, each saying which: a seat that is not a seat, a seat this project
-    has disabled, a seat already in the room (including the seat that OWNS it,
-    whose partner is the room's own voice), a room already at its limit, and a
-    runner that has not declared a read-only mode - that last one is refused
-    rather than started with dispatch flags, which is the whole guarantee.
+    A read-only CLI session with an empty built-in tool set and
+    --strict-mcp-config: the seat's JUDGEMENT, not its hands. It cannot write,
+    run, claim or file anything; a human still reads a synthesis and presses
+    Deploy. Refused, each saying which: a non-seat, a disabled seat, a seat
+    already in the room (including the owner), a room at its limit, and a
+    runner with no declared read-only mode.
+    Full notes: docs/tools.md#brainstorm_invite
     """
     root = _root()
     out = _bs.invite(root, int(session_id), str(seat or ""))
@@ -281,17 +229,12 @@ def brainstorm_note(session_id: int, notes: Optional[str] = None,
                     drawing: Optional[dict] = None) -> dict:
     """Write the session's pads - the title, the writing pad, the drawing scene.
 
-    `notes` REPLACES the whole pad. It is one text area a person types into, not
-    a patch protocol, so brainstorm_open it and send the whole document back if
-    you are adding to somebody's writing - a partial write here deletes the rest
-    of their hour.
-
-    `drawing` is the pad's structured scene ({"elements": [...], "appState":
-    {...}}), which is the whole reason a text model can work on it: reuse the
-    element ids brainstorm_open showed you rather than inventing new ones, or
-    the arrows come back unbound. The flattened PNG is not settable here - only the browser renders one.
-
-    Omitted fields are left alone. Nothing here queues anything.
+    `notes` REPLACES the whole pad - brainstorm_open it and send the whole
+    document back, or a partial write deletes the rest of someone's hour.
+    `drawing` is the structured scene ({"elements": [...], "appState": {...}});
+    reuse the element ids brainstorm_open showed you or the arrows come back
+    unbound. Omitted fields are left alone. Nothing here queues anything.
+    Full notes: docs/tools.md#brainstorm_note
     """
     root = _root()
     session = _bs.read(root, int(session_id))
@@ -318,20 +261,12 @@ def brainstorm_note(session_id: int, notes: Optional[str] = None,
 def brainstorm_synthesize(session_id: int) -> dict:
     """THE PREVIEW: what work this session adds up to. WRITES NOTHING.
 
-    Not a work item, not the session's status, not even the plan - a stored plan
-    would be a fourth thing that can go stale. Safe to press, and safe to press
-    twice.
-
-    What comes back under `plan` is exactly the shape brainstorm_deploy takes:
-    {"summary", "chained", "questions", "items": [{"seat", "title", "brief"}]}.
-    `plan.notes` lists every repair made to the model's answer (a seat it named
-    that a narrative session may not file, an item with no brief) - those are
-    corrections a human should see, not silent fixes.
-
-    HAND THE RESULT TO THE HUMAN. You may not deploy it; see brainstorm_deploy
-    for why. If there is no thinking partner on this machine the call fails and
-    you can write the plan yourself in that same shape - the review step is what
-    matters, not which model drafted it.
+    Safe to press twice. `plan` is exactly the shape brainstorm_deploy takes:
+    {"summary", "chained", "questions", "items": [{"seat", "title", "brief"}]};
+    `plan.notes` lists every repair made to the model's answer. HAND THE
+    RESULT TO THE HUMAN - you may not deploy it. With no thinking partner on
+    this machine the call fails; write the plan yourself in the same shape.
+    Full notes: docs/tools.md#brainstorm_synthesize
     """
     root = _root()
     session = _bs.read(root, int(session_id))
@@ -358,35 +293,20 @@ def brainstorm_synthesize(session_id: int) -> dict:
             "already_filed": _bs.already_filed(session, plan),
             "model": {k: answer[k]
                       for k in ("model", "runner", "seconds",
-                                "estimated_usd") if k in answer}}
+                                "usd") if k in answer}}
 
 
 @_tool
 def brainstorm_deploy(session_id: int, plan: dict, again: bool = False) -> dict:
     """File a confirmed plan onto the board. HUMAN-ONLY, AND THE ONLY ONE HERE.
 
-    WHY A MACHINE IS REFUSED. This whole room exists so a human reads a plan
-    before agents are dispatched against it. An agent that can deploy closes
-    that loop on itself: it writes the session, synthesizes a plan out of its
-    own sentences, files N items, and each of those spawns another agent - a
-    work generator with a review step nobody attended. The same reasoning
-    already refuses a machine the write lanes in seat_configure and the
-    human-only settings in bgate_core.store.settings, and the same fail-closed test is
-    used: BGATE_SEAT / BGATE_WORK_ITEM, not the actor string alone, because a
-    gate that reads one stamp is disabled by forgetting one line.
-
-    A human's own session - no seat, no work item - deploys normally. Nothing is
-    taken away by this rule: that session could already call queue_add, and
-    routing through here is what keeps `source=brainstorm` on the items so the
-    board can name the conversation they came from.
-
-    `plan` is what brainstorm_synthesize returned, as the human approved it - edits included, since their text is the point. Items are validated strictly
-    rather than repaired: quietly rewriting a confirmed plan files something
-    other than what was agreed. Set "chained": true ONLY when each item needs
-    what the one before it produced; that becomes a real dependency chain rather
-    than a priority preference two agents can start in the same tick.
-
-    `again=True` overrides the guard against filing the identical plan twice.
+    A machine is refused (fail-closed on BGATE_SEAT / BGATE_WORK_ITEM) so a
+    human reads a plan before agents are dispatched against it. `plan` is what
+    brainstorm_synthesize returned, as the human approved it; items are
+    validated strictly, not repaired. Set "chained": true ONLY when each item
+    needs what the one before it produced. `again=True` overrides the guard
+    against filing the identical plan twice.
+    Full notes: docs/tools.md#brainstorm_deploy
     """
     try:
         if _caller_is_agent():
@@ -428,20 +348,11 @@ def brainstorm_deploy(session_id: int, plan: dict, again: bool = False) -> dict:
 def brainstorm_close(session_id: int) -> dict:
     """End the session's THINKING PARTNER process. Keeps everything it said.
 
-    THREE WORDS THAT ALL SOUND FINAL, kept apart on purpose:
-      close     (this) stops the spawned CLI process. The conversation, the
-                notes and the drawing are untouched, and the next message
-                reopens it - resuming the same CLI session where it left off, or
-                replaying the transcript if the CLI no longer has it. It is
-                about the PROCESS. Nothing is decided and nothing is lost.
-      archive   files the SESSION away as a record: no new turns, notes or
-                deploys until reopened. Implies a close.
-      deployed  a STATUS, not an ending: this session put work on the board.
-                Usually still open, and usually still being talked in.
-
-    Available to a machine, unlike deploy and delete: stopping a process costs
-    nobody their work, and an agent that noticed a room has gone quiet should be
-    able to stop it paying for a listener. Idempotent.
+    close stops the spawned CLI process; conversation, notes and drawing are
+    untouched and the next message reopens it. archive files the SESSION away
+    (implies a close). deployed is a STATUS, not an ending. Available to a
+    machine, unlike deploy and delete. Idempotent.
+    Full notes: docs/tools.md#brainstorm_close
     """
     return _bs.close_partner(_root(), int(session_id))
 
@@ -466,18 +377,11 @@ def brainstorm_discuss(session_id: int, rounds: int) -> dict:
 def brainstorm_reset(session_id: int, keep_pads: bool = True) -> dict:
     """START THE THREAD OVER in the same room. Stops the partner, drops the transcript.
 
-    THE FOURTH END-STATE, and the one people reach for most: the conversation
-    has gone circular or is arguing from a premise that stopped being true, and
-    what is wanted is a clean head - NOT a closed process that resumes the same
-    dead thread, and NOT a delete that takes an hour of notes and diagram with
-    it. brainstorm_close resumes where it left off; this one makes the next
-    message the first message.
-
-    The notes and the drawing SURVIVE by default: they are the human's own
-    document, not the conversation. `keep_pads=False` clears those too.
-
-    Deploys are never touched - work already on the board outlives the thread
-    that thought of it.
+    For a conversation gone circular: brainstorm_close resumes the same dead
+    thread; this makes the next message the first message. Notes and drawing
+    SURVIVE by default (`keep_pads=False` clears them). Deploys are never
+    touched.
+    Full notes: docs/tools.md#brainstorm_reset
     """
     return _bs.reset(_root(), int(session_id), keep_pads=bool(keep_pads))
 
@@ -486,15 +390,12 @@ def brainstorm_reset(session_id: int, keep_pads: bool = True) -> dict:
 def brainstorm_feed(session_id: int, cursor: int = 0) -> dict:
     """What the session's partner PROCESS actually emitted - the terminal channel.
 
-    Not the conversation (brainstorm_open has that): this is the raw stream the
-    spawned CLI wrote - run boundaries, its own `init` event stating the tool
-    list it really built, its calls to the two-tool pad server, their results,
-    and its prose. Read forward from `cursor`; keep the one you are handed and
-    pass it back to get only what is new.
-
-    Worth reading when a human asks what the partner has been doing, or when you
-    want to check the room's promise rather than take it on trust: the `init`
-    step names every tool the process holds, and there should be exactly two.
+    Not the conversation: the raw stream the spawned CLI wrote - run
+    boundaries, its `init` event naming the tool list it really built (there
+    should be exactly two), pad-server calls, results, prose. Read forward
+    from `cursor`; keep the one you are handed and pass it back for only what
+    is new.
+    Full notes: docs/tools.md#brainstorm_feed
     """
     return _bs.feed(_root(), int(session_id), cursor=int(cursor or 0))
 

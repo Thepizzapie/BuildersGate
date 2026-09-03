@@ -21,12 +21,12 @@ import base64
 import json
 import os
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 from bgate_core.store import envfile
+
+from . import _http, _result
 
 BASE = "https://api.retrodiffusion.ai/v1"
 ENV_KEY = "RETRO_DIFFUSION_API_KEY"
@@ -63,7 +63,7 @@ POLL_SECONDS = 2.0
 PROMPT_MAX_CHARS = 140
 
 
-class RetroDiffusionError(RuntimeError):
+class RetroDiffusionError(_http.ProviderError):
     """A call that failed in words worth surfacing. Charges on failed jobs
     are refunded upstream, so an error here is annoyance, not loss."""
 
@@ -106,30 +106,39 @@ def _headers(root: Any) -> dict:
 
 def _request(method: str, path: str, payload: Optional[dict], root: Any,
              timeout: float) -> dict:
-    req = urllib.request.Request(
-        BASE + path,
-        data=None if payload is None else json.dumps(payload).encode(),
-        method=method, headers=_headers(root))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            body = json.loads(exc.read())
-            raw = body.get("detail")
-            if isinstance(raw, list):
-                detail = "; ".join(str(e.get("msg", e)) for e in raw)
-            elif isinstance(raw, dict):
-                detail = str(raw.get("message") or raw)
-            else:
-                detail = str(raw or body)
-        except Exception:
-            pass
+        got = _http.request(method, BASE + path, headers=_headers(root),
+                            json=payload, timeout=timeout,
+                            provider="retrodiffusion")
+    except _http.ProviderError as exc:
+        if exc.status == 0:
+            raise RetroDiffusionError(f"RD unreachable: {exc.body}",
+                                      provider="retrodiffusion") from exc
+        detail = _detail(exc.body)
         raise RetroDiffusionError(
-            f"RD {method} {path} -> {exc.code}: {detail or exc.reason}") from exc
-    except urllib.error.URLError as exc:
-        raise RetroDiffusionError(f"RD unreachable: {exc.reason}") from exc
+            f"RD {method} {path} -> {exc.status}: {detail or exc.body}",
+            provider="retrodiffusion", status=exc.status, body=exc.body,
+            billing=exc.billing or _http.is_billing(0, detail)) from exc
+    try:
+        return got.json(provider="retrodiffusion")
+    except _http.ProviderError as exc:
+        raise RetroDiffusionError(str(exc), provider="retrodiffusion") from exc
+
+
+def _detail(body: str) -> str:
+    """RD answers errors as {"detail": {...}} AND {"detail": [...]}; both
+    become one sentence."""
+    try:
+        parsed = json.loads(body)
+        raw = parsed.get("detail")
+    except Exception:                                            # noqa: BLE001
+        return ""
+    if isinstance(raw, list):
+        return "; ".join(str(e.get("msg", e)) if isinstance(e, dict) else str(e)
+                         for e in raw)
+    if isinstance(raw, dict):
+        return str(raw.get("message") or raw)
+    return str(raw or parsed)
 
 
 def _get(path: str, *, root: Any = None, timeout: float = 30.0) -> dict:
@@ -224,8 +233,9 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
             frames: int = 8, size: Optional[tuple[int, int]] = None,
             prompt: str = "", palette: Optional[str | os.PathLike[str]] = None,
             bg: tuple[int, int, int] = (255, 255, 255),
+            out_path: Optional[str | os.PathLike[str]] = None,
             root: Any = None, timeout: float = 600.0) -> dict:
-    """One character frame -> one animation spritesheet. Blocking.
+    """One character frame -> one animation spritesheet, written to disk.
 
     ``prompt`` describes the MOTION, not the art ("confident, steady steps");
     the style id carries the pixel rendering. ``size`` defaults to the start
@@ -255,8 +265,9 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
     job in animation_generate, not this timeout's — a killed call now
     re-adopts finished directions instead of re-buying them.
 
-    Returns {ok, sheet_b64, usd, balance, frames, size}. The caller decodes
-    and slices; this adapter does not write files.
+    Returns the shared result shape {ok, path, usd, provider, model, seconds,
+    balance, frames, size, sheet_b64}. ``out_path`` defaults to a sibling of
+    the start frame; ``sheet_b64`` stays for callers that want bytes.
     """
     from PIL import Image
 
@@ -272,30 +283,50 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
         body["input_palette"] = _b64_rgb(palette, (0, 0, 0))
     body["async"] = True
 
+    started = time.monotonic()
     got = _post("/inferences", body, root=root)
     task = got.get("task_id")
     if not task:
         raise RetroDiffusionError(f"job not accepted: {got}")
-    deadline = time.monotonic() + timeout
-    status: dict = {}
-    while time.monotonic() < deadline:
-        time.sleep(POLL_SECONDS)
+
+    def step() -> Optional[dict]:
         status = _get(f"/inferences/tasks/{task}", root=root)
         if status.get("status") in ("succeeded", "failed"):
-            break
-    if status.get("status") != "succeeded":
-        err = status.get("error") or {"detail": f"still {status.get('status')!r} "
-                                                f"after {timeout:.0f}s"}
+            return status
+        return None
+
+    try:
+        status = _http.poll(step, first=POLL_SECONDS, max_wait=timeout,
+                            factor=1.0, ceiling=POLL_SECONDS,
+                            provider="retrodiffusion", label=f"job {task}")
+    except RetroDiffusionError:
+        raise
+    except _http.ProviderError as exc:
         raise RetroDiffusionError(
-            f"animation job {task} did not succeed: {err}")
+            f"animation job {task} did not succeed: "
+            f"{{'detail': 'still running after {timeout:.0f}s'}}",
+            provider="retrodiffusion") from exc
+    if status.get("status") != "succeeded":
+        raise RetroDiffusionError(
+            f"animation job {task} did not succeed: {status.get('error')}",
+            provider="retrodiffusion",
+            billing=_http.is_billing(0, str(status.get("error"))))
     result = status.get("result") or {}
     images = result.get("base64_images") or []
     if not images:
         raise RetroDiffusionError("job succeeded but returned no images")
-    return {"ok": True, "sheet_b64": images[0],
-            "usd": result.get("balance_cost"),
-            "balance": result.get("remaining_balance"),
-            "frames": frames, "size": [int(size[0]), int(size[1])]}
+    dest = Path(out_path) if out_path else src.with_name(
+        f"{src.stem}_{action}_{frames}.png")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(base64.b64decode(images[0]))
+    return _result.shape({
+        "ok": True, "path": str(dest), "sheet_b64": images[0],
+        "usd": result.get("balance_cost"),
+        "provider": "retrodiffusion",
+        "model": body.get("prompt_style", ""),
+        "seconds": round(time.monotonic() - started, 2),
+        "balance": result.get("remaining_balance"),
+        "frames": frames, "size": [int(size[0]), int(size[1])]})
 
 
 def submit(start_frame: str | os.PathLike[str], action: str, *,
@@ -350,7 +381,9 @@ def collect(task_id: str, *, root: Any = None) -> dict:
                 "task_id": task_id}
     if state == "failed":
         raise RetroDiffusionError(
-            f"animation job {task_id} failed: {status.get('error')}")
+            f"animation job {task_id} failed: {status.get('error')}",
+            provider="retrodiffusion",
+            billing=_http.is_billing(0, str(status.get("error"))))
     result = status.get("result") or {}
     images = result.get("base64_images") or []
     if not images:

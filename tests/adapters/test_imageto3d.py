@@ -544,7 +544,9 @@ class TestErrors:
     def _http(self, monkeypatch, code, body=b"{}"):
         def boom(*a, **k):
             raise urllib.error.HTTPError("u", code, "err", {}, None)
-        monkeypatch.setattr(imageto3d.urllib.request, "urlopen", boom)
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        from bgate_adapters import _http
+        monkeypatch.setattr(_http, "_sleep", lambda *_: None)
 
     def test_401_points_at_the_key_by_name(self, monkeypatch):
         self._http(monkeypatch, 401)
@@ -578,7 +580,9 @@ class TestErrors:
     def test_unreachable_local_says_start_it_not_check_your_key(self, monkeypatch):
         def boom(*a, **k):
             raise urllib.error.URLError("connection refused")
-        monkeypatch.setattr(imageto3d.urllib.request, "urlopen", boom)
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        from bgate_adapters import _http
+        monkeypatch.setattr(_http, "_sleep", lambda *_: None)
         with pytest.raises(imageto3d.ImageTo3DError) as exc:
             imageto3d._request("hunyuan-local", "/send", "", payload={},
                                method="POST")
@@ -588,7 +592,9 @@ class TestErrors:
     def test_unreachable_hosted_does_not_talk_about_starting_a_server(self, monkeypatch):
         def boom(*a, **k):
             raise urllib.error.URLError("dns")
-        monkeypatch.setattr(imageto3d.urllib.request, "urlopen", boom)
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        from bgate_adapters import _http
+        monkeypatch.setattr(_http, "_sleep", lambda *_: None)
         with pytest.raises(imageto3d.ImageTo3DError) as exc:
             imageto3d._request("tripo", "/task", "k", payload={}, method="POST")
         assert "server running" not in str(exc.value)
@@ -642,18 +648,18 @@ class TestResultShape:
         got = imageto3d.generate(tmp_path / "gone.png", tmp_path / "out.glb",
                                  backend="tripo")
         assert set(got) >= {"ok", "path", "bytes", "backend", "kind", "seconds",
-                            "estimated_usd", "checks", "warnings", "notes",
+                            "usd", "checks", "warnings", "notes",
                             "licence", "draft", "textured", "rigged", "stage"}
 
     def test_the_quote_is_on_the_result_before_anything_is_spent(self, tmp_path, no_gpu):
         got = imageto3d.generate(tmp_path / "gone.png", tmp_path / "o.glb",
                                  backend="tripo")
-        assert got["estimated_usd"] == 0.30
+        assert got["usd"] == 0.30
 
     def test_an_unpriceable_backend_carries_None_and_the_reason(self, tmp_path, no_gpu):
         got = imageto3d.generate(tmp_path / "gone.png", tmp_path / "o.glb",
                                  backend="meshy")
-        assert got["estimated_usd"] is None
+        assert got["usd"] is None
         assert any("per-credit" in w for w in got["warnings"])
 
     def test_choosing_nothing_is_reported_at_the_choose_stage(self, tmp_path, no_gpu):
@@ -790,7 +796,7 @@ class TestKreaBackend:
         assert got["stage"] == "input"
         # the quote is attached even on refusal — a caller asking "what would
         # this cost" must get an answer without a successful run
-        assert got["estimated_usd"] == 0.3
+        assert got["usd"] == 0.3
 
 
 class TestBackendDiscovery:

@@ -31,7 +31,8 @@ from ..store import db
 # ships and this is conversation that produces no file, and the two are metered
 # on different axes (minutes listened vs characters spoken). Summed together
 # neither number answers anything. Migration 0024 widened the CHECK to match.
-KINDS = ("agent", "image", "audio", "video", "mesh", "speech", "other")
+KINDS = ("agent", "image", "animation", "audio", "video", "mesh",
+         "speech", "other")
 
 # WHICH BILL A ROW LANDS ON. The ledger used to sum these together, which is
 # how a project total came to match no statement anywhere.
@@ -262,11 +263,17 @@ def totals(root: str | os.PathLike[str]) -> dict:
     # fan-out consumes. Reported alongside rather than folded in — a plan user's
     # runs genuinely are not dollars — but never again invisible.
     agent = conn.execute(
-        "SELECT COALESCE(SUM(usd), 0) AS usd, COUNT(*) AS runs "
-        "FROM spend_event WHERE kind = 'agent'").fetchone()
+        "SELECT COALESCE(SUM(usd), 0) AS usd, COUNT(*) AS runs, "
+        "COALESCE(SUM(CASE WHEN created_at >= date('now') THEN usd END), 0) "
+        "AS today_usd FROM spend_event WHERE kind = 'agent'").fetchone()
+    # THE SAME TWO WINDOWS THE CEILINGS USE, as top-level columns, so a panel
+    # can print agent spend BESIDE per_day_usd / per_project_usd without
+    # changing what those ceilings gate. Reported, never summed in.
+    out["agent_usd_day"] = round(float(agent["today_usd"] or 0), 4)
+    out["agent_usd_project"] = round(float(agent["usd"] or 0), 4)
     out["agent_runs"] = {
         "runs": int(agent["runs"] or 0),
-        "usd": round(float(agent["usd"] or 0), 4),
+        "usd": out["agent_usd_project"],
         "note": "agent sessions bill as subscription, so they are NOT counted "
                 "in project_usd/today_usd or against per_day_usd — the token "
                 "figures below are what actually runs out on a plan",
@@ -425,6 +432,8 @@ def check(root: str | os.PathLike[str], *, projected_usd: float = 0.0) -> dict:
                 "unpriced_rows": blind, "blind_spot": caveat}
     return {"allowed": True, "reason": "", "enforced": True,
             "today_usd": day, "project_usd": project,
+            "agent_usd_day": t["agent_usd_day"],
+            "agent_usd_project": t["agent_usd_project"],
             "spend_line": spend_line(project, unpriced),
             "today_spend_line": spend_line(day, unpriced, today=True),
             "unpriced_rows": blind, "blind_spot": caveat}
@@ -552,7 +561,7 @@ def reserve(root: str | os.PathLike[str], usd: float, *,
                 if spent + pending + projected > ceiling:
                     return {
                         "ok": False, "scope": "run", "spent": round(spent, 4),
-                        "held": round(pending, 4), "estimated_usd": projected,
+                        "held": round(pending, 4), "usd": projected,
                         "ceiling": ceiling,
                         "reason": "the $%.2f ceiling for this run is spent: "
                                   "$%.2f already charged%s, and %s is estimated "
@@ -580,7 +589,7 @@ def reserve(root: str | os.PathLike[str], usd: float, *,
                 if per_day and day + projected > per_day:
                     return {"ok": False, "scope": "day", "spent": round(day, 4),
                             "held": round(pending_all, 4), "ceiling": per_day,
-                            "estimated_usd": projected,
+                            "usd": projected,
                             "reason": "daily budget reached - $%.2f of $%.2f "
                                       "committed today" % (day, per_day)}
                 if per_project and project + projected > per_project:
@@ -588,7 +597,7 @@ def reserve(root: str | os.PathLike[str], usd: float, *,
                             "spent": round(project, 4),
                             "held": round(pending_all, 4),
                             "ceiling": per_project,
-                            "estimated_usd": projected,
+                            "usd": projected,
                             "reason": "project budget reached - $%.2f of $%.2f "
                                       "committed" % (project, per_project)}
             baseline, baseline_rows = 0.0, 0
@@ -609,7 +618,7 @@ def reserve(root: str | os.PathLike[str], usd: float, *,
     except Exception:
         return {"ok": True, "token": "", "enforced": False}
     return {"ok": True, "token": token, "enforced": True,
-            "estimated_usd": projected}
+            "usd": projected}
 
 
 def release(root: str | os.PathLike[str], token: str) -> bool:

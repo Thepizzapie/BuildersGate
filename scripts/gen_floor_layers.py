@@ -55,7 +55,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from _floorpaths import sandbox  # noqa: E402
+from _floorpaths import sandbox, FLOOR_IMG  # noqa: E402
 
 from PIL import Image  # noqa: E402
 
@@ -66,7 +66,7 @@ from slice_floor_cast import despeckle  # noqa: E402
 ART_ROOT = sandbox()
 # The finished single-layer rooms. These are the anchor for both layers and are
 # not thrown away: a room whose split fails still has one to fall back to.
-WHOLE = ROOT / "frontend" / "public" / "img" / "floor" / "rooms"
+WHOLE = FLOOR_IMG / "rooms"
 OUT = WHOLE
 RAW = ART_ROOT / ".bgate_out" / "art" / "floor-layers"
 

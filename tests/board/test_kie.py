@@ -399,10 +399,10 @@ class TestSpend:
         monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
         got = kie._finish({"taskId": "t", "creditsConsumed": 40},
                           model="nano-banana", kind="image")
-        assert got["credits_consumed"] == 40 and got["estimated_usd"] == 0.2
+        assert got["credits_consumed"] == 40 and got["usd"] == 0.2
 
     def test_an_unpriced_success_says_so_instead_of_writing_a_dollar(self, root):
-        result = kie._account({"ok": True, "estimated_usd": None,
+        result = kie._account({"ok": True, "usd": None,
                                "credits_consumed": 30},
                               root, kind="image")
         # No dollar figure is invented; the result states the gap and keeps the
@@ -418,10 +418,10 @@ class TestSpend:
         # project must not read as cheap just because kie bills in credits.
         from bgate_core.board import spend
 
-        kie._account({"ok": True, "estimated_usd": None, "credits_consumed": 30,
+        kie._account({"ok": True, "usd": None, "credits_consumed": 30,
                       "model": "seedance-2"},
                      root, kind="video", logical_name="chase")
-        kie._account({"ok": True, "estimated_usd": None, "credits_consumed": 12},
+        kie._account({"ok": True, "usd": None, "credits_consumed": 12},
                      root, kind="image", logical_name="hero")
         totals = spend.totals(root)
         # No invented rate: the dollar totals stay honest at zero...
@@ -438,7 +438,7 @@ class TestSpend:
         # ROW still counts — a charge with no number at all is still a charge.
         from bgate_core.board import spend
 
-        kie._account({"ok": True, "estimated_usd": None,
+        kie._account({"ok": True, "usd": None,
                       "credits_consumed": None},
                      root, kind="audio", logical_name="loop")
         un = spend.totals(root)["unaccounted"]
@@ -449,7 +449,7 @@ class TestSpend:
         from bgate_core.board import spend
 
         monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
-        kie._account({"ok": True, "estimated_usd": kie.cost_usd(200),
+        kie._account({"ok": True, "usd": kie.cost_usd(200),
                       "credits_consumed": 200},
                      root, kind="video", logical_name="chase")
         un = spend.totals(root)["unaccounted"]
@@ -460,7 +460,7 @@ class TestSpend:
         # be inventing in the other direction.
         from bgate_core.board import spend
 
-        kie._account({"ok": False, "estimated_usd": None,
+        kie._account({"ok": False, "usd": None,
                       "credits_consumed": 30}, root, kind="image")
         assert spend.totals(root)["unaccounted"]["rows"] == 0
 
@@ -469,7 +469,7 @@ class TestSpend:
         from bgate_core.board import spend
 
         monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
-        kie._account({"ok": True, "estimated_usd": kie.cost_usd(200),
+        kie._account({"ok": True, "usd": kie.cost_usd(200),
                       "model": "seedance-2"},
                      root, kind="video", logical_name="chase")
         totals = spend.totals(root)
@@ -479,7 +479,7 @@ class TestSpend:
         assert spend.for_logical(root, "chase") == pytest.approx(1.0)
 
     def test_a_failure_is_never_accounted(self, root):
-        result = kie._account({"ok": False, "estimated_usd": 5.0}, root,
+        result = kie._account({"ok": False, "usd": 5.0}, root,
                               kind="image")
         assert result["accounted"] is False
 
@@ -561,7 +561,7 @@ class TestWiring:
         def _gen(prompt, out_path, **kw):
             seen.update(model=kw.get("model"), urls=kw.get("image_urls"))
             pathlib.Path(out_path).write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
-            return {"ok": True, "model": kw.get("model"), "estimated_usd": 0.0}
+            return {"ok": True, "model": kw.get("model"), "usd": 0.0}
 
         monkeypatch.setattr(kie, "generate_image", _gen)
 

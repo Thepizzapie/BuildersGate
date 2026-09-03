@@ -7,7 +7,7 @@ import { AgentMade } from "./AgentMade";
 import { SEAT_COLOR } from "./nav";
 import { setSelection, useSelection } from "./selection";
 import { askText, lightbox, mutate, readJSON, toast, watchAgent } from "../bridge";
-import { usePoll } from "../hooks";
+import { useEvents, FALLBACK_MS, WORK_KINDS } from "../hooks";
 
 
 /** Did this step fail? Read from the payload rather than from the step's own
@@ -235,7 +235,8 @@ export function Inspector() {
      leaves `sel` in place on purpose (re-opening should show what you were
      looking at), so keying the poll on itemId alone kept a 3s
      /api/agent-activity request running behind every other screen. */
-  usePoll(refresh, 3000, !!itemId && !!sel);
+  useEvents(refresh, { enabled: !!itemId && !!sel, kinds: WORK_KINDS, key: itemId,
+                       fallbackMs: act.running ? 3000 : FALLBACK_MS });
 
   // Escape closes it. Bound while open only — a global key handler that runs
   // when the panel is shut is a keystroke stolen from whatever is focused.

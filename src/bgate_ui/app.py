@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bgate_core.board import activity, seats
 from bgate_core.store import artifacts, assets, db, project, scaffold
+from bgate_core.store import events as _events
 from bgate_core.design import bible, lore
 from bgate_core.qa import playtest
 from bgate_core.board import agentreg as _agentreg
@@ -700,26 +701,43 @@ def _inject_token(html: str) -> str:
     return shim + html
 
 
-# THE FLOOR'S ASSETS MAY LIVE IN A SEPARATE PACKAGE. The wheel excludes
-# static/img/floor and static/audio/floor (~30MB of decoration — see the
-# `floor` extra in pyproject); a source checkout still has them, and an
-# install that added builders-gate-floor-assets serves them from that package
-# instead. Mounted BEFORE the general /static mount because starlette matches
-# mounts in registration order, and only when the local tree is absent — the
-# checkout's own files always win. No assets anywhere: the paths 404 and the
-# floor draws the procedural fallback it has always carried.
-try:
-    if not (_STATIC / "img" / "floor").is_dir():
-        import bgate_floor_assets  # the optional pack
+# THE FLOOR'S ASSETS LIVE IN A SEPARATE PACKAGE. img/floor and audio/floor
+# (~30MB of decoration) are not in frontend/public any more; their source is
+# packaging/floor-assets/, installed as builders-gate-floor-assets (the `floor`
+# extra). Resolution order: that package if it imports, else a local static
+# tree that still carries them (an older build), else nothing — the floor
+# draws the procedural fallback it has always carried, and the radio's
+# manifest says why so the silence is explained rather than mysterious.
+# Mounted BEFORE the general /static mount because starlette matches mounts
+# in registration order.
+FLOOR_ASSETS_HINT = "floor assets not installed: pip install builders-gate[floor]"
 
-        _pack = Path(bgate_floor_assets.path())
-        for _sub, _mount in (("img", "/static/img/floor"),
-                             ("audio", "/static/audio/floor")):
-            if (_pack / _sub).is_dir():
-                app.mount(_mount, StaticFiles(directory=str(_pack / _sub)),
-                          name=f"floor-assets-{_sub}")
-except Exception:
-    pass  # no pack is a quieter floor, never a broken dashboard
+
+def _floor_assets_root() -> Optional[Path]:
+    try:
+        import builders_gate_floor_assets  # the optional pack
+
+        root = Path(builders_gate_floor_assets.path())
+        if (root / "img").is_dir():
+            return root
+    except Exception:
+        pass  # no pack is a quieter floor, never a broken dashboard
+    return None
+
+
+_FLOOR_ROOT = _floor_assets_root()
+_FLOOR_LOCAL = _FLOOR_ROOT is None and (_STATIC / "img" / "floor").is_dir()
+if _FLOOR_ROOT is not None:
+    for _sub, _mount in (("img", "/static/img/floor"), ("audio", "/static/audio/floor")):
+        if (_FLOOR_ROOT / _sub).is_dir():
+            app.mount(_mount, StaticFiles(directory=str(_FLOOR_ROOT / _sub)),
+                      name=f"floor-assets-{_sub}")
+elif not _FLOOR_LOCAL:
+    @app.get("/static/audio/floor/manifest.json", include_in_schema=False)
+    def _floor_manifest_missing():
+        # The radio reads this file; an empty track list with a note is how the
+        # floor pane says "not installed" instead of drawing nothing.
+        return JSONResponse({"tracks": [], "note": FLOOR_ASSETS_HINT})
 
 # Per-seat workspace JS modules live under static/ and load as /static/seats/*.js.
 # StaticFiles is part of starlette (ships with FastAPI) — no new dependency.
@@ -1667,6 +1685,7 @@ def _finish_playtest(root: Path, session_id: int, *, resume: bool = False) -> No
                 "processing_stage = 'ready', processing_error = '' WHERE id = ?",
                 (session_id,))
         _pt_processing[session_id] = "ready"
+        _events.emit(root, "playtest.processed", ref=str(session_id))
     except Exception as exc:
         with db.tx(root) as conn:
             conn.execute(
@@ -1674,6 +1693,8 @@ def _finish_playtest(root: Path, session_id: int, *, resume: bool = False) -> No
                 "processing_stage = 'failed', processing_error = ?, error = ? "
                 "WHERE id = ?", (str(exc), str(exc), session_id))
         _pt_processing[session_id] = f"failed: {exc}"
+        _events.emit(root, "playtest.failed", ref=str(session_id),
+                     payload={"error": str(exc)[:400]})
 
 
 @app.get("/api/playtest/preflight")
@@ -1685,11 +1706,18 @@ def pt_preflight(native: bool = False) -> dict:
 def pt_start(payload: Optional[dict] = None) -> dict:
     payload = payload or {}
     try:
-        return playtest.start(_root(), payload.get("name") or "app session",
-                              window_title=payload.get("window_title"),
-                              mic_device=payload.get("mic_device"),
-                              game_cmd=payload.get("game_cmd", ""),
-                              launch_native=bool(payload.get("launch_native")))
+        got = playtest.start(_root(), payload.get("name") or "app session",
+                             window_title=payload.get("window_title"),
+                             mic_device=payload.get("mic_device"),
+                             game_cmd=payload.get("game_cmd", ""),
+                             launch_native=bool(payload.get("launch_native")))
+        # On the bus, so the recorder panel (and any other tab) learns of it
+        # from the stream rather than a 4s timer. emit() never raises.
+        rec = (got or {}).get("recording") if isinstance(got, dict) else None
+        if rec:
+            _events.emit(_root(), "playtest.started",
+                         ref=str(rec.get("id") or ""), payload={"name": rec.get("name")})
+        return got
     except Exception as exc:
         # Sentence + code at 200, like dispatch(): the record button renders
         # `error` as prose next to a still-usable control, and a preflight that
@@ -1722,6 +1750,7 @@ def pt_stop() -> dict:
 
     threading.Thread(
         target=_finish_playtest, args=(root, sid), daemon=True).start()
+    _events.emit(root, "playtest.stopped", ref=str(sid))
     return {"ok": True, "session_id": sid, "processing": True}
 
 
@@ -1741,6 +1770,7 @@ def pt_abort() -> dict:
     """
     root = _root()
     result = playtest.abort(root)
+    _events.emit(root, "playtest.aborted")
     for sid in result["sessions_stopped"] + result["orphans_cleared"]:
         _pt_processing.pop(sid, None)
     return {"ok": True, **result}

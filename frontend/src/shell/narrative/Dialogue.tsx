@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@mantine/core";
 import { Ti } from "../Ti";
-import { usePoll } from "../../hooks";
+import { useEvents } from "../../hooks";
 import { compose } from "../../bridge";
 import {
   dialogueList, dialogueRead, dialogueValidate, EMPTY_TREE,
@@ -69,7 +69,7 @@ export function Dialogue({ head, active }: { head: HeadSlot; active: boolean }) 
     setTrees(rows);
     setName((n) => n || rows[0]?.name || "");
   }, []);
-  usePoll(refresh, LIST_MS, active);
+  useEvents(refresh, { enabled: active, kinds: [], fallbackMs: LIST_MS });
 
   /* The name whose READ came back without an error, so "this tree is empty" can
      be told apart from "no tree is open". They rendered identically before, and

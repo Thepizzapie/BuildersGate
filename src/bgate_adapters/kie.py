@@ -77,20 +77,17 @@ Everything is stdlib. No SDK, no new dependency.
 """
 from __future__ import annotations
 
-import collections
 import json
 import os
 import re
-import sys
-import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 from bgate_core.store import envfile
+
+from . import _http, _result
 
 API_BASE = "https://api.kie.ai"
 
@@ -259,7 +256,7 @@ _CODE_HELP = {
 }
 
 
-class KieError(RuntimeError):
+class KieError(_http.ProviderError):
     """A kie call failed in a way the caller should surface, not retry blindly."""
 
 
@@ -1642,7 +1639,9 @@ def _envelope(body: dict, *, what: str) -> dict:
     msg = str(body.get("msg") or "").strip()
     raise KieError(f"kie refused {what} (code {code})"
                    + (f": {msg}" if msg else "")
-                   + (f" — {help_text}" if help_text else ""))
+                   + (f" — {help_text}" if help_text else ""),
+                   provider="kie", status=code, body=msg,
+                   billing=_http.is_billing(code, msg))
 
 
 # THE RATE LIMIT, AS KIE STATED IT: 20 new requests per 10 seconds, with 100+
@@ -1665,173 +1664,64 @@ def _envelope(body: dict, *, what: str) -> dict:
 # acceptable rather than dangerous.
 _RATE_WINDOW_SECONDS = 10.0
 _RATE_WINDOW_MAX = 18
+_GATE = _http.RateGate(_RATE_WINDOW_SECONDS, _RATE_WINDOW_MAX)
 
-_rate_lock = threading.Lock()
-_rate_window: "collections.deque[float]" = collections.deque()
-
-
-def _rate_gate() -> None:
-    """Hold here until this process is allowed another kie request.
-
-    A SLIDING WINDOW, NOT A FIXED ONE, because the limit kie described is
-    sliding: "20 new requests per 10 seconds" is violated by 20 requests in the
-    last ten seconds no matter which wall-clock bucket they fall in. A fixed
-    bucket would allow 20 at 9.9s and 20 more at 10.1s, which is 40 inside one
-    real window and exactly the burst that gets an account flagged.
-
-    THE WAIT IS COMPUTED FROM THE OLDEST ENTRY, so a caller sleeps precisely
-    long enough for one slot to free rather than a guessed interval. Under the
-    limit this costs one lock and one deque trim, which is nothing next to a
-    network call.
-    """
-    while True:
-        with _rate_lock:
-            now = time.monotonic()
-            while _rate_window and now - _rate_window[0] >= _RATE_WINDOW_SECONDS:
-                _rate_window.popleft()
-            if len(_rate_window) < _RATE_WINDOW_MAX:
-                _rate_window.append(now)
-                return
-            # The oldest call in the window is the one whose expiry frees a
-            # slot. Computed inside the lock and slept OUTSIDE it, so a waiting
-            # thread never holds the gate shut for the others.
-            wait = _RATE_WINDOW_SECONDS - (now - _rate_window[0])
-        time.sleep(max(wait, 0.01))
-
-
-# HOW LONG TO WAIT WHEN KIE SAYS SLOW DOWN, and how many times to try.
-#
-# The 429 row in _CODE_HELP has always said "slow the fan-out or retry in a
-# moment" and NOTHING IN THIS PRODUCT DID EITHER. That advice was aimed at a
-# human reading a traceback, while the caller that actually hit the limit was a
-# seat agent in a fan-out that had already moved on. A rate limit is the one
-# failure here that is guaranteed to be temporary and is guaranteed to come back
-# if nobody waits, so it is the one worth retrying in the adapter rather than
-# surfacing.
-#
-# THREE ATTEMPTS AND THEN IT IS THE CALLER'S PROBLEM. A limit that survives
-# three backed-off waits is not a burst any client-side politeness can absorb;
-# it is a cap that has to be raised or a fan-out that has to be narrowed, and
-# quietly retrying past that point turns a visible error into a slow one.
+# HOW LONG TO WAIT WHEN KIE SAYS SLOW DOWN, and how many times to try. The
+# 429 row in _CODE_HELP says "retry in a moment", and this is the retry: three
+# attempts, doubling waits long enough to clear a per-minute bucket, kie's
+# own Retry-After winning (capped) whenever it sends one. A 429 is SAFE ON A
+# SUBMIT because the request was refused, so nothing was charged - which is
+# exactly why a 500 is NOT retried on one: an internal error can land on
+# either side of the charge, and a blind retry there is how one submit
+# becomes two paid jobs. The shared layer encodes both rules.
 _RATE_LIMIT_TRIES = 3
-# Doubling, and the first wait is long enough to actually clear a per-minute
-# bucket rather than spending an attempt discovering it has not.
 _RATE_LIMIT_BACKOFF = (5.0, 15.0)
-# kie's own Retry-After wins over the table above whenever it sends one, capped
-# so a header nobody sanity-checked cannot park an agent for an hour.
-_RETRY_AFTER_CAP = 120.0
-
-
-def _retry_after(exc: "urllib.error.HTTPError", attempt: int) -> float:
-    """How long to hold before trying again, preferring what kie asked for.
-
-    A server that names a number knows something the client does not, so its
-    header outranks the local schedule - but it is CLAMPED, because an absurd
-    value is indistinguishable from a correct one at the point of reading it and
-    the cost of trusting it blindly is an agent that looks hung.
-    """
-    raw = ""
-    try:
-        raw = (exc.headers or {}).get("Retry-After", "") or ""
-    except Exception:                                            # noqa: BLE001
-        raw = ""
-    try:
-        asked = float(str(raw).strip())
-        if asked > 0:
-            return min(asked, _RETRY_AFTER_CAP)
-    except (TypeError, ValueError):
-        # Retry-After may also be an HTTP date. Not parsed: the schedule below
-        # is a fine answer and a half-parsed date is a worse one.
-        pass
-    idx = min(attempt, len(_RATE_LIMIT_BACKOFF) - 1)
-    return _RATE_LIMIT_BACKOFF[idx]
 
 
 def _request(path: str, key: str, *, payload: Optional[dict] = None,
              params: Optional[dict] = None, method: str = "GET",
              timeout: float = 60.0) -> dict:
-    """One call, unwrapped. The key rides in the header and nowhere else.
-
-    RETRIES A 429 AND NOTHING ELSE. Every other status here is either a fact
-    about the request (422, 404), a fact about the account (401, 433) or a fact
-    about kie (500, 455) - and retrying any of them is spending time to receive
-    the same answer. A rate limit is the only one where waiting IS the fix.
-
-    IT IS SAFE ON A SUBMIT, which is the question worth asking before retrying
-    anything that costs money: a 429 means the request was REFUSED, so no job
-    was created and nothing was charged. That is exactly why a 500 is not
-    retried here - an internal error can land on either side of the charge, and
-    a blind retry there is how one submit becomes two paid jobs.
-    """
+    """One call, unwrapped. The key rides in the header and nowhere else."""
     url = path if path.startswith("http") else API_BASE + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(url, data=body, method=method, headers={
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        # THE SAME 1010 THAT ALREADY BIT THE DOWNLOAD PATH, one door further
-        # up. DOWNLOAD_UA was added because kie's Cloudflare front refuses
-        # urllib's default agent — and the API host does too, but only on some
-        # endpoints, so it went unnoticed until file-base64-upload started
-        # answering 403 "browser_signature_banned" for every anchored shot.
-        # Measured: identical POST, Bearer key valid, no UA -> 403 error_code
-        # 1010; with a UA -> the endpoint answers normally.
-        #
-        # This is not evasion of a paywall, a rate limit or a bot gate meant to
-        # keep us out: it is our own key, our own credits, and a documented
-        # endpoint that this product is entitled to call. urllib simply
-        # announces itself in a way a generic Cloudflare rule bans.
-        "User-Agent": DOWNLOAD_UA,
-    })
     what = f"{method} {path}"
-    raw = ""
-    for attempt in range(_RATE_LIMIT_TRIES):
-        # BEFORE EVERY ATTEMPT, INCLUDING RETRIES. A retry is a new request as
-        # far as the limit is concerned, so exempting it would mean the one
-        # moment we are provably near the cap is the one moment we stop
-        # counting.
-        _rate_gate()
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8") or "{}"
-            break
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", "replace")[:400]
-            except Exception:                                    # noqa: BLE001
-                pass
-            if exc.code == 429 and attempt < _RATE_LIMIT_TRIES - 1:
-                wait = _retry_after(exc, attempt)
-                # SAID OUT LOUD, on stderr, because a call that takes twenty
-                # seconds longer than usual with no explanation is
-                # indistinguishable from one that has hung - and the whole
-                # point of this is that somebody watching a seat should be able
-                # to tell "being throttled" from "stuck".
-                print(f"kie rate-limited {what}; waiting {wait:.0f}s "
-                      f"(attempt {attempt + 1} of {_RATE_LIMIT_TRIES})",
-                      file=sys.stderr)
-                time.sleep(wait)
-                continue
-            # A transport-level failure carries the SAME numbers as the
-            # body-level one, so the same advice applies and there is no second
-            # table.
-            help_text = _CODE_HELP.get(exc.code, "")
-            raise KieError(f"kie HTTP {exc.code} on {what}"
-                           + (f": {detail}" if detail else "")
-                           + (f" — {help_text}" if help_text else "")) from exc
-        except urllib.error.URLError as exc:
-            raise KieError(f"could not reach kie ({exc.reason})") from exc
+    try:
+        got = _http.request(
+            method, url, json=payload, timeout=timeout, provider="kie",
+            retries=_RATE_LIMIT_TRIES, backoff=_RATE_LIMIT_BACKOFF, gate=_GATE,
+            headers={
+                "Authorization": f"Bearer {key}",
+                # THE SAME 1010 THAT ALREADY BIT THE DOWNLOAD PATH, one door
+                # further up: kie's Cloudflare front refuses urllib's default
+                # agent on some API endpoints too (measured on
+                # file-base64-upload). Our own key, our own credits, a
+                # documented endpoint - urllib simply announces itself in a
+                # way a generic rule bans.
+                "User-Agent": DOWNLOAD_UA,
+            })
+    except _http.ProviderError as exc:
+        if exc.status == 0:
+            raise KieError(f"could not reach kie ({exc.body})",
+                           provider="kie") from exc
+        # A transport-level failure carries the SAME numbers as the
+        # body-level one, so the same advice applies and there is no second
+        # table.
+        help_text = _CODE_HELP.get(exc.status, "")
+        raise KieError(f"kie HTTP {exc.status} on {what}"
+                       + (f": {exc.body}" if exc.body else "")
+                       + (f" — {help_text}" if help_text else ""),
+                       provider="kie", status=exc.status, body=exc.body,
+                       billing=exc.billing) from exc
+    raw = got.text() or "{}"
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise KieError(f"kie returned something that is not JSON on {what}: "
-                       f"{raw[:200]}") from exc
+                       f"{raw[:200]}", provider="kie") from exc
     if not isinstance(parsed, dict):
         raise KieError(f"kie returned {type(parsed).__name__}, not an object, "
-                       f"on {what}")
+                       f"on {what}", provider="kie")
     return _envelope(parsed, what=what)
 
 
@@ -2190,10 +2080,11 @@ def poll(task_id: str, *, root: Any = None, timeout: float = 900.0,
     key = api_key(root)
     if not key:
         raise KieError(available(root)["reason"])
-    deadline = time.monotonic() + max(5.0, float(timeout))
-    wait = max(1.0, float(interval))
+
     last: dict = {}
-    while time.monotonic() < deadline:
+
+    def step() -> Optional[dict]:
+        nonlocal last
         last = record(task_id, root=root)
         state = str(last.get("state") or "")
         if state == JOB_DONE:
@@ -2203,12 +2094,23 @@ def poll(task_id: str, *, root: Any = None, timeout: float = 900.0,
                 f"kie job failed ({last.get('failCode') or 'no code'}): "
                 f"{last.get('failMsg') or 'no reason given'}")
         if state and state not in JOB_RUNNING:
-            # An unknown state is not an excuse to spin — say so and stop.
-            raise KieError(f"kie job returned unknown state {state!r}")
-        time.sleep(wait)
-        wait = min(10.0, wait * 1.25)
-    raise KieError(f"kie job {task_id} did not finish within {timeout:.0f}s "
-                   f"(last state {last.get('state') or 'unknown'})")
+            raise _http.PollUnknown(f"kie job returned unknown state {state!r}")
+        return None
+
+    try:
+        return _http.poll(step, first=max(1.0, float(interval)),
+                          max_wait=max(5.0, float(timeout)), factor=1.25,
+                          ceiling=10.0, unknown_is_fatal=True, provider="kie",
+                          label=f"job {task_id}")
+    except KieError:
+        raise
+    except _http.PollUnknown as exc:
+        raise KieError(str(exc), provider="kie") from exc
+    except _http.ProviderError as exc:
+        raise KieError(f"kie job {task_id} did not finish within "
+                       f"{timeout:.0f}s (last state "
+                       f"{last.get('state') or 'unknown'})",
+                       provider="kie") from exc
 
 
 # kie serves finished files from a Cloudflare-fronted host that BLOCKS
@@ -2231,27 +2133,19 @@ DOWNLOAD_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) BuildersGate/1.0 "
 def download(url: str, out_path: str | os.PathLike[str], *,
              timeout: float = 300.0, accept: str = "*/*") -> int:
     """Fetch a finished file to disk. Returns bytes written."""
-    out = Path(out_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(str(url), headers={"Accept": accept,
-                                                    "User-Agent": DOWNLOAD_UA})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except urllib.error.HTTPError as exc:                        # noqa: BLE001
+        return _http.download(str(url), out_path, timeout=timeout,
+                              provider="kie",
+                              headers={"Accept": accept,
+                                       "User-Agent": DOWNLOAD_UA})
+    except _http.ProviderError as exc:
         hint = ""
-        if exc.code == 403:
+        if exc.status == 403:
             hint = (" — a 403 here is usually the CDN refusing the request "
                     "shape rather than an expired link; kie's URLs live "
                     f"{SUNO_URL_TTL_DAYS} days")
-        raise KieError(
-            f"could not download the finished file: HTTP {exc.code}{hint}") from exc
-    except Exception as exc:                                     # noqa: BLE001
-        raise KieError(f"could not download the finished file: {exc}") from exc
-    if not data:
-        raise KieError("kie returned an empty file")
-    out.write_bytes(data)
-    return len(data)
+        raise KieError(f"{exc}{hint}", provider="kie", status=exc.status,
+                       body=exc.body) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -2274,7 +2168,7 @@ def _account(result: dict, root: Any, *, kind: str, logical_name: str = "",
     spend.totals can report "+ N unpriced kie rows" instead of nothing.
     """
     result["credits_consumed"] = result.get("credits_consumed")
-    usd = result.get("estimated_usd")
+    usd = result.get("usd")
     if not root or not result.get("ok") or not usd:
         result["accounted"] = False
         if result.get("ok") and not usd:
@@ -2309,12 +2203,12 @@ def _account(result: dict, root: Any, *, kind: str, logical_name: str = "",
 def _finish(rec: dict, *, model: str, kind: str) -> dict:
     """The bits of a completed record every generate() reports the same way."""
     consumed = rec.get("creditsConsumed")
-    return {
+    return _result.shape({
         "provider": "kie", "model": model, "kind": kind,
         "task_id": str(rec.get("taskId") or ""),
         "credits_consumed": consumed,
-        "estimated_usd": cost_usd(consumed),
-    }
+        "usd": cost_usd(consumed),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -2329,7 +2223,7 @@ def generate_image(prompt: str, out_path: str | os.PathLike[str], *,
                    timeout: float = 300.0, task_kind: str = "",
                    tileable: bool = False, **extra: Any) -> dict:
     """Submit, wait, download. Shaped to match imagegen/krea's result exactly —
-    {ok, path, bytes, seconds, estimated_usd} — so the art pipeline does not
+    {ok, path, bytes, seconds, usd} — so the art pipeline does not
     care which provider produced the file.
 
     ``size`` is WxH because that is what the rest of this codebase speaks; it is
@@ -2339,7 +2233,7 @@ def generate_image(prompt: str, out_path: str | os.PathLike[str], *,
     started = time.monotonic()
     spec = MODELS.get(model)
     base = {"ok": False, "provider": "kie", "model": model, "kind": "image",
-            "estimated_usd": None}
+            "usd": None}
     if spec is None or spec["kind"] != "image":
         return {**base, "error": f"{model!r} is not a kie image model — "
                                  f"known: {sorted(IMAGE_MODELS)}",
@@ -2525,7 +2419,7 @@ def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
     model = model or DEFAULT_VIDEO_MODEL
     spec = MODELS.get(model)
     base = {"ok": False, "provider": "kie", "model": model, "kind": "video",
-            "estimated_usd": None}
+            "usd": None}
     if spec is None or spec["kind"] != "video":
         return {**base, "error": f"{model!r} is not a kie video model — "
                                  f"known: {sorted(VIDEO_MODELS)}",
@@ -2816,8 +2710,6 @@ def poll_music(task_id: str, *, root: Any = None, timeout: float = 900.0,
     key = api_key(root)
     if not key:
         raise KieError(available(root)["reason"])
-    deadline = time.monotonic() + max(5.0, float(timeout))
-    wait = max(1.0, float(interval))
     last: dict = {}
     seen = ""
 
@@ -2829,7 +2721,8 @@ def poll_music(task_id: str, *, root: Any = None, timeout: float = 900.0,
         fraction, words = SUNO_STAGE.get(state, (0.25, f"Suno reports {state}"))
         on_progress(fraction, words, state)
 
-    while time.monotonic() < deadline:
+    def step() -> Optional[dict]:
+        nonlocal last
         last = music_record(task_id, root=root)
         status = str(last.get("status") or "").upper()
         announce(status or "PENDING")
@@ -2857,10 +2750,21 @@ def poll_music(task_id: str, *, root: Any = None, timeout: float = 900.0,
                            + hint)
         if status and status not in SUNO_RUNNING:
             raise KieError(f"kie/Suno returned unknown status {status!r}")
-        time.sleep(wait)
-        wait = min(10.0, wait * 1.25)
-    raise KieError(f"kie/Suno task {task_id} did not finish within "
-                   f"{timeout:.0f}s (last status {last.get('status') or 'unknown'})")
+        return None
+
+    try:
+        return _http.poll(step, first=max(1.0, float(interval)),
+                          max_wait=max(5.0, float(timeout)), factor=1.25,
+                          ceiling=10.0, provider="kie", label="Suno task")
+    except KieError:
+        raise
+    except _http.PollUnknown as exc:
+        raise KieError(str(exc), provider="kie") from exc
+    except _http.ProviderError as exc:
+        raise KieError(
+            f"kie/Suno task {task_id} did not finish within {timeout:.0f}s "
+            f"(last status {last.get('status') or 'unknown'})",
+            provider="kie") from exc
 
 
 def _free_path(path: Path) -> Path:
@@ -2962,16 +2866,16 @@ def generate_music(prompt: str, out_dir: str | os.PathLike[str], *,
     """
     started = time.monotonic()
     # UNKNOWN, STATED, ON EVERY PATH — not absent, and never 0.0. The success
-    # path below has always said `credits_source` and left `estimated_usd` None
+    # path below has always said `credits_source` and left `usd` None
     # when the rate is unconfigured, but a FAILED run returned none of these
     # keys at all, so a caller reading `result.get("credits_consumed", 0)` or
-    # summing `estimated_usd or 0` scored a charge that may well have happened
+    # summing `usd or 0` scored a charge that may well have happened
     # as free. Same rule estimate_usd holds for video: the two unknowns are
     # named separately and neither folds to zero.
     base = {"ok": False, "provider": "kie", "kind": "audio",
             "model": str(options.get("model") or DEFAULT_SUNO_MODEL),
             "credits_consumed": None, "credits_source": "unavailable",
-            "accounted": False, "estimated_usd": None}
+            "accounted": False, "usd": None}
     task_id = ""
     # BEFORE THE SUBMIT, not before the download: the charge lands when the job
     # is accepted. Best effort — a balance that cannot be read must not stop a
@@ -3033,19 +2937,19 @@ def generate_music(prompt: str, out_dir: str | os.PathLike[str], *,
             # mid-run, a cached balance, or an account this key does not own.
             source = "balance_delta_unusable"
 
-    result = {**base, "ok": True, "task_id": task_id, "tracks": written,
-              "count": len(written),
+    result = _result.shape({**base, "ok": True, "task_id": task_id,
+              "tracks": written, "count": len(written),
               "credits_consumed": spent,
               "credits_source": source,
               "credits_note":
                   "the Suno record carries no creditsConsumed field — this is "
                   "the account balance before minus after, so a concurrent "
                   "generation on the same key would be counted here too",
-              "estimated_usd": cost_usd(spent),
+              "usd": cost_usd(spent),
               "retention_days": SUNO_URL_TTL_DAYS,
               "expires_at": _expires_at(SUNO_URL_TTL_DAYS),
               "callback_failed": bool(rec.get("callback_failed")),
-              "seconds": round(time.monotonic() - started, 2)}
+              "seconds": round(time.monotonic() - started, 2)})
     return _account(result, root, kind="audio", logical_name=logical_name,
                     work_item_id=work_item_id, detail="kie music (Suno)")
 

@@ -83,7 +83,7 @@ class Provider:
         out.write_bytes(b"\x89PNG-stub-" + model.encode())
         return {"ok": True, "path": str(out), "bytes": out.stat().st_size,
                 "provider": provider, "model": model, "seconds": 0.1,
-                "estimated_usd": 0.03}
+                "usd": 0.03}
 
     def overlapped(self) -> bool:
         """True if any two calls were in flight at the same moment."""
