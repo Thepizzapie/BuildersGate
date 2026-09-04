@@ -4980,8 +4980,7 @@ def godot_export_probe(pck: Annotated[str, Field(description='The exported .pck 
             return {"ok": False, "error": f"probe timed out after {timeout}s", "pck": str(pck_path)}
         out = proc.stdout or ""
         err = proc.stderr or ""
-        errors = [ln for ln in (out + "
-" + err).splitlines()
+        errors = [ln for ln in (out + "\n" + err).splitlines()
                   if "SCRIPT ERROR" in ln or ln.startswith("ERROR:")]
         return {"ok": proc.returncode == 0 and not any("SCRIPT ERROR" in e for e in errors),
                 "pck": str(pck_path), "exit_code": proc.returncode,
