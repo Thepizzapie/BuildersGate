@@ -20,7 +20,7 @@
  * dashboard — that is the product's whole execution model, and it is why the
  * node graph compiles to one queue item per agent step rather than calling a
  * generator directly. A form here that bypassed the board would be a second,
- * quieter execution path with no lane check, no QA gate and no spend row. So a
+ * quieter execution path with no lane check and no QA gate. So a
  * recipe files the same well-formed work the graph would have filed, and the
  * board runs it.
  *

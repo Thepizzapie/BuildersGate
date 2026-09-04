@@ -242,7 +242,7 @@ class TestAMessageCannotDispatch:
         write a file wrote none.
         """
         argv = _runners.RUNNERS["claude"].chat.build_args(
-            "claude", system="think with me", model="sonnet", max_usd=2.0)
+            "claude", system="think with me", model="sonnet")
         pairs = list(zip(argv, argv[1:]))
 
         # The BUILT-IN tool set is EMPTY. Not allowlisted — empty. No Write, no
@@ -594,8 +594,10 @@ class TestFileableAndRetrievable:
         assert who["live"] is False          # nothing spawned by a read
         assert who["log"].endswith(f"session-{session['id']}.log")
         assert set(who) >= {"available", "runner", "model", "label", "readonly",
-                            "cost_tracked", "live", "turns", "spent_usd",
-                            "cli_session_id", "max_usd", "log", "session_id"}
+                            "cost_tracked", "live", "turns",
+                            "cli_session_id", "log", "session_id"}
+        # No money on the roster: this product keeps no ledger.
+        assert "spent_usd" not in who and "max_usd" not in who
 
 
 # ---------------------------------------------------------------------------
@@ -961,13 +963,13 @@ def _seed_room(root):
     from bgate_core.store import db as _db
     session = _bs.create(root, "director", "Combat feel")
     with _db.tx(root) as conn:
-        for seat, state, spent in (("gameplay", "live", 0.28),
-                                   ("art", "invited", 0.19),
-                                   ("audio", "left", 0.06)):
+        for seat, state in (("gameplay", "live"),
+                            ("art", "invited"),
+                            ("audio", "left")):
             conn.execute(
                 "INSERT INTO brainstorm_participant "
-                "(session_id, seat, state, turns, spent_usd) VALUES (?,?,?,1,?)",
-                (session["id"], seat, state, spent))
+                "(session_id, seat, state, turns) VALUES (?,?,?,1)",
+                (session["id"], seat, state))
     return session
 
 
@@ -976,16 +978,10 @@ def test_listing_names_only_the_seats_still_in_the_room(tmp_path):
     assert sorted(_bs.list_sessions(tmp_path)[0]["guests"]) == ["art", "gameplay"]
 
 
-def test_listing_spend_keeps_a_seat_that_left(tmp_path):
-    """A room must not get cheaper because somebody tidied the roster."""
-    _seed_room(tmp_path)
-    assert round(_bs.list_sessions(tmp_path)[0]["spent_usd"], 2) == 0.53
-
-
 def test_listing_has_no_guests_when_nobody_was_invited(tmp_path):
     _bs.create(tmp_path, "director", "Empty")
     row = _bs.list_sessions(tmp_path)[0]
-    assert row["guests"] == [] and row["spent_usd"] == 0
+    assert row["guests"] == []
 
 
 class TestPartnerEnvironmentIsScrubbed:

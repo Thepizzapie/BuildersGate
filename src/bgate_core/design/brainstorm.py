@@ -300,10 +300,7 @@ def list_sessions(root: str | os.PathLike[str], *, seat: Optional[str] = None,
            "        WHERE m.session_id = s.id) AS messages, "
            "       (SELECT group_concat(p.seat) FROM brainstorm_participant p "
            f"        WHERE p.session_id = s.id AND p.state IN ({present})) "
-           "           AS guest_seats, "
-           "       (SELECT COALESCE(sum(p.spent_usd), 0) "
-           "          FROM brainstorm_participant p "
-           "         WHERE p.session_id = s.id) AS spent_usd "
+           "           AS guest_seats "
            "FROM brainstorm_session s WHERE 1=1")
     params: list = list(PRESENT)
     if seat:
@@ -934,26 +931,23 @@ def mark_all_idle(root: str | os.PathLike[str], session_id: int) -> None:
 
 def record_turn(root: str | os.PathLike[str], session_id: int, seat: str,
                 answer: dict) -> None:
-    """Bill one answer to the seat that gave it. Never raises.
+    """Count one answer against the seat that gave it. Never raises.
 
-    The spend ledger already has its own row per turn (brainsession writes it,
-    seat-stamped). This is the ROSTER's copy: the number drawn next to the seat,
-    readable in the same query as its state, and summing across the whole
-    session rather than dying with the process that spent it.
+    Turns, and only turns. There used to be a per-seat dollar total beside this
+    one; it is gone with the rest of the money accounting, because a running
+    sum this product keeps is not what anybody was actually billed.
 
-    Swallowed on failure for the same reason spend.record is: losing the
-    accounting must not lose the answer that produced it.
+    Swallowed on failure: losing the count must not lose the answer that
+    produced it.
     """
     if not seat:
         return                    # the room's own partner has no roster row
     try:
-        usd = max(0.0, float(answer.get("usd") or 0.0))
         with db.tx(root) as conn:
             conn.execute(
-                "UPDATE brainstorm_participant "
-                "SET turns = turns + ?, spent_usd = spent_usd + ? "
+                "UPDATE brainstorm_participant SET turns = turns + ? "
                 "WHERE session_id = ? AND seat = ?",
-                (1 if answer.get("ok") else 0, usd, int(session_id), str(seat)))
+                (1 if answer.get("ok") else 0, int(session_id), str(seat)))
     except Exception:                                           # noqa: BLE001
         pass
 
@@ -1586,10 +1580,9 @@ SYNTH_TIMEOUT = 240.0
 
 # What the CALLER is told a turn costs when the runner does not report a price.
 # Every runner that reports one (claude does, per turn, as total_cost_usd)
-# overrides these with the real figure and writes it to the spend ledger — which
-# the old chat-completions path never did, on the reasoning that fractions of a
-# cent would bury the image bills. A spawned session is not fractions of a cent:
-# one trivial measured turn was $0.06, so brainstorm turns are now LEDGERED.
+# overrides these with the real figure, which lands on the roster row for that
+# seat. A spawned session is not fractions of a cent: one trivial measured turn
+# was $0.06.
 USD_PER_CHAT = 0.0
 USD_PER_SYNTH = 0.0
 
@@ -1710,7 +1703,7 @@ def thinker(root: Any, session_id: int, seat: str = "") -> dict:
         return _partner().thinker(root, int(session_id), seat=seat)
     except Exception as exc:
         return {**available(root), "live": False, "turns": 0,
-                "spent_usd": 0.0, "cli_session_id": "", "seat": str(seat or ""),
+                "cli_session_id": "", "seat": str(seat or ""),
                 "session_id": int(session_id),
                 "reason": f"{type(exc).__name__}: {exc}"[:300]}
 

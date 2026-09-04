@@ -18,8 +18,12 @@ narrative, QA, audio, tech. They share one database, so they do not contradict e
 other, and file locks stop two of them editing the same asset. A local dashboard
 shows what each one is doing, and is where you dispatch work and approve output.
 
-Three limits are enforced in code: generation stops at a spend ceiling, a file
+Three limits are enforced in code: a run is killed at a wall-clock ceiling, a file
 locked by one seat cannot be written by another, and no agent approves its own art.
+
+There is no spend ceiling and no ledger. Builders Gate does not meter money: the
+only budget that exists is the balance on your own provider account, and
+`provider_status` reads it from the provider.
 
 **For:** people running Claude Code on a game who want more than one session working
 on it at once. It is more machinery than a small project needs.
@@ -198,7 +202,7 @@ Builders Gate is built on stream at
 [twitch.tv/thepizzzapie](https://twitch.tv/thepizzzapie), using the tool to make a
 game, which is how most of its gates get found.
 
-**Streamer mode** (Settings → Privacy) hides absolute paths, your username, hostname
+**Privacy mode** (Settings → Privacy) hides absolute paths, your username, hostname
 and every API key from the dashboard, the logs and the CLI, so the screen is safe to
 show. **Feedback sessions** bring the stream's chat into the dashboard and capture
 its reactions against the build you are playing; closing one hands the session to
@@ -214,7 +218,7 @@ allowlist that closes DNS rebinding, same-origin checks on `sec-fetch-site` and
 gitignored) and required on every mutation.
 
 Approval is human-only throughout. A dispatched agent carries
-`BGATE_ACTOR=agent:item-<id>` and is refused the bible, the budget, the revert,
+`BGATE_ACTOR=agent:item-<id>` and is refused the bible, provider keys, the revert,
 workflow gates, and promoting a candidate into the build.
 
 It does not protect against a hostile local user (anything that can read `.bgate/`

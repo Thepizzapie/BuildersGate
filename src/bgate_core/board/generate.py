@@ -16,11 +16,13 @@ put two rungs of the same ladder side by side.
 Two boundaries are load-bearing:
 
   * :func:`call_provider` is the ONLY place a provider is touched. Everything
-    else in the node — budget, artifact registration, spend — is provider
-    agnostic, and a test stubs this one function instead of the network.
-  * money is checked BEFORE each candidate, not once for the batch. A node that
-    asks for six candidates and can afford two must produce two and say why it
-    stopped, rather than discovering the ceiling after spending past it.
+    else in the node — artifact registration, the per-call price the provider
+    reports — is provider agnostic, and a test stubs this one function instead
+    of the network.
+  * the ``usd`` a node returns is what the providers said this run cost,
+    summed for that run and nothing else. Builders Gate keeps no ledger and
+    holds no budget: the only running total that means anything is the balance
+    on the user's own provider account.
 """
 from __future__ import annotations
 
@@ -31,7 +33,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 from bgate_adapters import imagegen, kie, krea
 from ..art import chroma
-from . import activity, spend as _spend, tiers as _tiers
+from . import activity, tiers as _tiers
 from ..store import artifacts as _artifacts
 
 PROVIDERS = ("krea", "openai", "kie", "local")
@@ -122,28 +124,27 @@ def plan(config: dict, *, style_refs: int = 0, root: Any = None) -> dict:
                 raise GenerateRefused(
                     f"kie has no image model {model!r} — known: "
                     f"{sorted(kie.IMAGE_MODELS)}")
-            # UNPRICED, AND THAT REFUSES THE NODE RATHER THAN COSTING IT ZERO.
-            # kie publishes no per-model price, and plan()'s unit price feeds
-            # spend.check — a 0.0 here would let a six-candidate fan-out through
-            # a ceiling that exists precisely to stop one. The same reasoning as
+            # UNPRICED, AND THAT REFUSES THE NODE RATHER THAN QUOTING ZERO.
+            # kie publishes no per-model price, and the plan's unit price is
+            # what a human reads before a six-candidate fan-out runs — a 0.0
+            # here would tell them it is free. The same reasoning as
             # krea.generate_3d's confirm_unpriced gate, applied at plan time
             # because that is where this engine decides.
             if kie.usd_per_credit() is None:
                 raise GenerateRefused(
                     "kie publishes no per-generation price, so this node cannot "
-                    "be quoted before it runs and the spend ceiling would read "
-                    "it as free. Set BGATE_KIE_USD_PER_CREDIT to your account's "
+                    "be quoted before it runs and a zero would read as free. "
+                    "Set BGATE_KIE_USD_PER_CREDIT to your account's "
                     "credit rate, or use a provider with a published price. "
                     + kie.PRICE_NOTE)
             # Still not a quote — it is the ceiling for the largest image job
             # kie's own quickstart describes ("typically 10-50 credits"), which
-            # is the honest thing to charge a budget check with.
+            # is the honest thing to quote.
             unit = kie.cost_usd(50) or 0.0
             note = (kie.MODELS.get(model) or {}).get("note", "")
         elif provider == "local":
-            # FREE, AND SAYING SO IS THE ANSWER. The spend gate reads a number
-            # as permission, and 0.0 is the correct number for a generation
-            # that runs on the user's own card.
+            # FREE, AND SAYING SO IS THE ANSWER. 0.0 is the correct number
+            # for a generation that runs on the user's own card.
             unit = 0.0
             note = "local ComfyUI — no spend, and the licence is the model's"
         else:
@@ -264,8 +265,6 @@ def _write_prompt(root: str | os.PathLike[str], *, config: dict,
         return {"ok": False, "error": written.get("error", "prompt writing failed"),
                 "artifacts": [], "usd": 0.0, "provider": "openai",
                 "model": written.get("model", "")}
-    _spend.record(root, written.get("usd", 0.0), kind="other",
-                  detail=f"prompt writer ({label or 'llm.prompt'})")
     return {"ok": True, "error": "", "artifacts": [], "provider": "openai",
             "model": written.get("model", ""),
             "usd": round(written.get("usd", 0.0), 4),
@@ -319,13 +318,6 @@ def run(root: str | os.PathLike[str], *, run_id: int, node_id: str,
     stopped = ""
 
     for index in range(spec["count"]):
-        # Money first, every single time. The ceiling is a refusal, not a
-        # warning, and checking once for the batch would walk straight past it
-        # on candidate two.
-        verdict = _spend.check(root, projected_usd=spec["unit_usd"])
-        if not verdict.get("allowed"):
-            stopped = str(verdict.get("reason") or "the spend budget refused this generation")
-            break
         out_path = target / f"{name}_{index + 1}.png"
         result = call_provider(
             spec["provider"], spec["model"], prompt, str(out_path),
@@ -342,10 +334,6 @@ def run(root: str | os.PathLike[str], *, run_id: int, node_id: str,
                              f"{result.get('error') or 'no reason given'}"}
 
         usd = float(result.get("usd") or spec["unit_usd"])
-        _spend.record(root, usd, kind="image", work_item_id=work_item_id,
-                      logical_name=name,
-                      detail=f"workflow run {run_id} node {node_id} "
-                             f"({spec['provider']}/{spec['model']})")
         spent += usd
         artifact = _artifacts.register(
             root, name, result.get("path") or str(out_path),

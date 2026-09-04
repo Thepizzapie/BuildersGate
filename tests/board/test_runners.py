@@ -246,12 +246,15 @@ class TestImagePolicy:
 # The guards that do not apply, saying so
 # ---------------------------------------------------------------------------
 class TestUntrackedCost:
-    def test_a_cost_ceiling_is_skipped_rather_than_read_as_zero(self):
-        """_observed_cost returns 0.00 forever on a runner that reports no
-        price, so the ceiling would sit there looking live and never fire. The
-        entry says cost_tracked=False and the check steps aside."""
-        entry = {"cost_tracked": False, "max_cost_usd": 5.0}
-        assert bool(entry.get("max_cost_usd")) and not entry.get("cost_tracked", True)
+    def test_a_runner_that_reports_no_price_says_so(self):
+        """codex reports tokens and no dollars, so a run on it never says what
+        it cost. Nothing depends on that number any more — there is no ledger
+        and no ceiling — but the payload still declares the gap rather than
+        showing $0.00, which reads as free."""
+        from bgate_ui.agents import runners
+
+        assert runners.RUNNERS["codex"].cost_tracked is False
+        assert runners.RUNNERS["claude"].cost_tracked is True
 
     def test_steering_a_codex_agent_is_refused_by_name(self, root, monkeypatch):
         """Not 'channel closed' — there was never a channel. Sending the

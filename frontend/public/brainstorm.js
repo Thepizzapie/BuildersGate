@@ -2217,15 +2217,11 @@
     if (!this.session || !t) { el.hidden = true; return; }
     el.hidden = false;
     var live = !!t.live;
-    var cost = Number(t.spent_usd || 0);
     el.className = "bs-pill bs-partner" + (live ? " good" : "");
-    // Cost is shown WHENEVER any was spent, live or not. A room that quietly
-    // billed for six turns and then went idle should still say so — that is
-    // the whole reason spend.py exists.
     el.innerHTML = icon(live ? "run" : "stop", 12) +
       "<span>" + (live ? "partner live" : (t.resumable ? "closed · resumes" : "closed")) +
       (t.turns ? " · " + t.turns + " turn" + (t.turns === 1 ? "" : "s") : "") +
-      (cost ? " · $" + cost.toFixed(2) : "") + "</span>" +
+      "</span>" +
       (live ? icon("close", 11) : "");
     el.disabled = !live;
     el.title = live

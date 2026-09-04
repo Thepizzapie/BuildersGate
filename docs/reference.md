@@ -6,10 +6,11 @@ made, and [gotchas.md](gotchas.md) covers what went wrong on the way.
 
 Verified against the source on 2026-08-12.
 
-Three gates run throughout: a spend budget refuses an over-ceiling agent, the
-project boundary refuses a write into any other tree (lanes inside it are
-advisory by default — an out-of-lane write lands and is reported), and
-watchdogs kill a wedged run. Approval is human-only. An agent records a
+Two gates run throughout: the project boundary refuses a write into any other
+tree (lanes inside it are advisory by default — an out-of-lane write lands and
+is reported), and watchdogs kill a wedged run. There is no money gate: Builders
+Gate keeps no ledger and holds no budget, and the only balance that exists is
+the one `provider_status` reads off your own provider account. Approval is human-only. An agent records a
 verdict, it does not sign off.
 
 ## The dashboard
@@ -28,7 +29,7 @@ Twelve views, grouped in the nav rail:
 |---|---|---|
 | Command | Overview | Live agents, the queue, the build, a play/record panel |
 | Command | Agents | Dispatch work to a seat, then watch and steer it live. A run spawns on a captured git base commit, so its work reads as per-file diffs and undoes with a scoped revert. The revert is refused if anything it touched changed since, unless you look at the diff and insist |
-| Command | Settings | Every switch from one registry: dispatch, approval gate, follow-up, notifications, budget, console. Each row says whether the value is default, stored, or overridden by an environment variable. A switch that widens a safety guard (`dispatch.allow_dirty`) asks before it is turned off and records that it was |
+| Command | Settings | Every switch from one registry: dispatch, approval gate, follow-up, notifications, limits, console. Each row says whether the value is default, stored, or overridden by an environment variable. A switch that widens a safety guard (`dispatch.allow_dirty`) asks before it is turned off and records that it was |
 | Build | Studio | Node editors over the existing endpoints: workflow graphs and a Godot-style game workspace. Steps queue seat work, consistency nodes carry a measured score, and a `gate` node stops the run until a human approves or rejects |
 | Build | Seat workspaces | One workspace per seat. Art's shows every candidate revision beside the reference it was drawn against, two frames stacked with an opacity slider, a `difference` blend, a palette delta, batch approve-reject over a selection, and a dispatch button for an independent QA reviewer |
 | Build | Playtests | Recorded sessions: video, transcript, telemetry, the director's triage, editable repro steps, and a bug report exported as markdown or as a zip with linked frames |
@@ -55,7 +56,7 @@ channel that leaves the machine.
 The cockpit owns user-facing mutations: queue and dispatch, recording, feedback
 disposition, bible authoring, artifact approval. Production mutations stay MCP
 tools attributable to a seat. The dashboard identifies an agent session by
-`BGATE_ACTOR` and refuses it the bible, the scope filing, the budget, the
+`BGATE_ACTOR` and refuses it the bible, the scope filing, provider keys, the
 revert, a workflow gate, and promoting a candidate to the build.
 
 127.0.0.1 is not a security boundary: any page in your browser can POST to
@@ -250,6 +251,43 @@ by nothing except a clip authored for it alone.
 Related mesh gates: `blender_weights`, `blender_silhouette`,
 `blender_template_deviation`, `animation_curves`, `blender_turnaround`.
 
+## Putting clips on it
+
+`blender_animate` is the step after the rig proves out. It authors clips ON
+the rig it is given - forward, left and leg length measured off the bones,
+feet solved by IK, spine bending cumulatively, arms counter-swinging - and
+renders a proof sheet per clip that comes back as images.
+
+```text
+blender_animate(model="out/hero_rigged.glb", out_path="out/hero_anim.glb")
+   → clips[]           idle, walk, run, crouch_idle, pickup, look_around by
+                       default; kinds also sneak, wave, hit, jump, and "keyed"
+                       for a clip authored in character terms (lean, hips_up,
+                       reach_r, ...) - never a bone rotation. Or a LIBRARY
+                       clip, {"clip": "Walk_Loop", "name": "walk"}: animator-
+                       keyed CC0 motion retargeted onto the rig. Prefer it
+                       where the pack has the motion.
+   → sheets[]          one PNG per clip: side row over three-quarter row. LOOK.
+   → support           foot contact off the exported file, per clip, judged
+                       against what the clip was meant to be
+   → facing            whether the skin's toes agree with the skeleton's foot
+                       bones about forward. `refused` True is this gate; pass
+                       facing="repair" to re-aim the foot bones to the skin
+   → strays            unbound meshes found inside the rig, dropped
+```
+
+Do not hand-write a bpy pose script for a humanoid. It was done once: every
+clip walked backwards with its feet planted and every gate green.
+
+The pack is fetched once per machine by the owner, never by a tool:
+
+```text
+bgate animlib fetch quaternius-ual   # CC0, commit-pinned, SHA-256 checked
+bgate animlib list quaternius-ual    # 46 clips: locomotion, crouch, jump, sit,
+                                     # pickup, combat, hits, death, dance, swim
+animation_library(pack="quaternius-ual")   # the same list, from a seat
+```
+
 ## Cutout characters: parts on a skeleton
 
 The other way to animate in 2D. The frame pipeline pays per character per
@@ -334,9 +372,9 @@ BGATE_KIE_VIDEO_CREDITS='{"seedance-2":{"per_second":41}}'  # what invoices say
 ```
 
 A model with no rate yields `known: false` and no number rather than zero. A
-fabricated figure in front of a spend gate reads as "free", not "unpriced". kie
-reports `creditsConsumed` on the finished record, so with the rate set, ledger
-rows are exact.
+fabricated figure reads as "free", not "unpriced". kie reports
+`creditsConsumed` on the finished record, so with the rate set a finished call
+reports exact dollars.
 
 **Known gap:** `imagegen.IMAGE_PRICE_USD` prices gpt-image by quality tier only
 and ignores size, although gpt-image-1's published price moves with resolution.
@@ -628,7 +666,7 @@ src/              every importable package, and the data tree that must sit
                   serve, app, publish, doctor, key, panic, hook-*, un-adopt
   bgate_core/     ten subpackages, one per craft, and nothing at the top level:
                   store/    db, project, settings, assets, artifacts, events
-                  board/    seats, queue, workflows, spend, gates, gitwork
+                  board/    seats, queue, workflows, runlimits, gates, gitwork
                   design/   bible, lore, canon, decisions, greenlight, brainstorm
                   runtime/  providers, doctor, external binaries, proc
                   art/      chroma, sprites, tiles, items, props, styles

@@ -181,6 +181,45 @@ does. A clean pass here means "no obvious curve-math defect", not
 "looks good"; it is a floor, not a ceiling.
 ```
 
+## animation_library
+
+```text
+Which hand-keyed CC0 clip packs are fetched, and what is in them.
+
+THE OTHER SOURCE OF CLIPS. blender_animate's procedural clips are correct
+and engine-generic; a pack keyed by an animator is the difference between
+the character walking and the character being someone. A library clip rides
+into blender_animate as {"clip": "Walk_Loop", "name": "walk"} (pack defaults
+to quaternius-ual) and is RETARGETED onto the rig: world-space rotation
+deltas from the pack skeleton's rest, turned by the yaw between the two
+rigs' measured forwards, applied to the target's rest after each bone has
+been aligned along the pack bone's rest direction - so a T-posed pack drives
+an A-posed rig, bone roll is irrelevant, and a rig facing the other way
+still lands. Hips translation scales by the ratio of hip heights. Fingers
+are not mapped (no rig here has them) and are listed as unmapped.
+
+THIS TOOL NEVER DOWNLOADS. A missing pack is fetched by the owner:
+
+    bgate animlib status              what is fetched, and the command if not
+    bgate animlib fetch quaternius-ual  commit-pinned zip, SHA-256 checked
+    bgate animlib list quaternius-ual   every clip, its length, loop / root-motion
+
+into ~/.bgate/animlib (BGATE_HOME moves it), shared by every project, in no
+repository. `bgate doctor` carries an anim_library row. The same rule keeps
+key-writing out of an agent's hands: a tool that can pull files onto the
+machine is a tool that can be talked into pulling the wrong one.
+
+Packs: quaternius-ual - Quaternius' Universal Animation Library, Standard
+tier, glTF mirror (CC0-1.0, github.com/J-Ponzo/gltf-universal-animation-
+library). 46 clips: Idle_Loop, Walk_Loop, Jog_Fwd_Loop, Sprint_Loop,
+Crouch_Idle_Loop, Crouch_Fwd_Loop, Jump_Start/Loop/Land, PickUp_Table,
+Interact, Sitting_*, Pistol_*, Sword_*, Spell_Simple_*, Punch_*, Hit_Chest,
+Hit_Head, Death01, Dance_Loop, Push_Loop, Swim_*, Roll, Roll_RM, Driving,
+Fixing_Kneeling, Idle_Talking_Loop, Idle_Torch_Loop, Walk_Formal_Loop,
+A_TPose. Names ending _Loop cycle; _RM variants carry root motion on the
+pack's own root bone, which is not retargeted - use the in-place twin.
+```
+
 ## animation_generate
 
 ```text
@@ -468,6 +507,81 @@ suggest=True adds `suggestions`: sections whose PROSE names a pin (people
 typed "(pinned: concept-battle / concept-battle-dark)" into titles because
 there was nowhere structured to put it). It is a proposal only - attach the
 ones that are right with bible_ref_attach, and leave the titles alone.
+```
+
+## blender_animate
+
+```text
+Put gameplay clips on a rigged humanoid, export the .glb, and SHOW them.
+
+THE ANIMATION LAYER THE 3D PATH WAS MISSING. blender_rig binds, blender_flex
+proves the bind bends, godot_retarget_check proves an engine can drive it -
+and nothing could put a clip on it. Every agent asked for animations wrote
+its own bpy pose script, and the one that shipped assumed the rig faced +Y
+with its left on -X, aimed bones at absolute directions and interpolated
+nine sparse keys. MEASURED: every clip strode backwards (the rig sat 180
+degrees from the assumed frame), the torso never bent past 28 degrees
+(absolute aims do not accumulate down a chain), the arms hung like a
+mannequin's - and every automated gate passed it, because a moonwalk still
+plants its feet and still keys smoothly.
+
+WHAT THIS DOES INSTEAD, and each line is a defect it closes:
+  * forward, left, leg length and hip height are MEASURED off the bones it
+    is given, so a rig whose Left bones sit on +X lands its clips correctly
+  * poses are ANATOMICAL - lean, reach, elbow, head_yaw - carried through
+    the parent's pose; nobody needs a bone's roll and no clip breaks when
+    the roll changes
+  * feet are solved by two-bone IK against ankle targets with the knee
+    pushed forward, and the hip height is DERIVED from what the legs can
+    reach at full stride
+  * the spine bends cumulatively, arms counter-swing their own leg, the
+    pelvis yaws and the torso counters it, the head stays on the horizon,
+    feet roll heel-to-toe
+  * every distance is a fraction of THIS rig's leg length, so the same
+    parameters walk a 1.2 m child and a 2.2 m brute at their own stride
+
+ORIENTATION. The pipeline's forward is +Y in Blender, which the exporter
+lands on -Z - the axis Godot moves and looks along. A rig whose skin and
+skeleton agree with each other can still both face -Y (one that never went
+through blender_rig), and the game then plays every clip walking away from
+the direction the body travels. orient=True (default) turns bones and skin
+180 degrees in the DATA before authoring and reports `oriented`.
+
+THE FACING GATE. The single failure that ate four work items was a skin
+facing -Y bound to a skeleton whose feet pointed +Y. This refuses when the
+skin's toes and the skeleton's foot bones disagree (facing='check', the
+default), re-aims the foot bones to the skin with facing='repair' (weights
+are by name and stay put), or trusts the bones with facing='skeleton'.
+`refused` True in the result is this gate; `error` says which fix to make.
+
+STRAYS. An unbound mesh in the scene ships as a statue inside the
+character. The usual one is not in the file at all: the glTF importer
+builds a 42-vertex "Icosphere" bone shape at the origin for every rigged
+.glb (a character measured 2.71 m tall through it). Dropped by default,
+always listed under `strays`.
+
+THE PROOF. `proof_frames` frames per clip from the side and the front
+three-quarter, composited into one sheet per clip and returned as IMAGES.
+Look at them: a number cannot say whether a walk reads as a walk. `support`
+is the foot-contact gate off the EXPORTED file (forward kinematics, so what
+the engine will play), judged against what each clip was meant to be - a
+run with no flight frame fails as "a fast walk".
+
+CLIPS. A LIBRARY clip is {"clip": "Walk_Loop", "name": "walk"} (see
+animation_library) and is retargeted, animator-keyed motion; prefer it
+where the pack has the motion, and mix freely with the procedural kinds
+below in one call. kind: idle | walk | run | sneak (cycles; "overrides" tunes stride,
+lift, lean, arm, elbow, pelvis_yaw, cycle_s - fractions of leg length where
+they are distances) | crouch_idle | pickup | look_around | wave | hit | jump
+(presets) | keyed. A keyed clip is {"keys": [{"t": seconds, "lean": deg,
+"hips_up": metres, "reach_r": deg, "elbow_l": deg, "foot_l_forward": metres,
+...}], "loop": bool, "ease": "inout"|"linear"} - every field is in character
+terms (humanpose.KEY_FIELDS), never a bone rotation. A looping keyed clip
+that ends elsewhere gets its first key appended so the loop closes.
+
+loop_suffix=True names looping actions "<name>-loop", which Godot's importer
+reads as a loop hint. Off by default: it changes the animation names a
+scene references.
 ```
 
 ## blender_combine
@@ -1511,8 +1625,9 @@ afterwards, so it fights the score, cannot be ducked under dialogue and
 cannot be localised. The picture is this seat's; the sound is the audio
 seat's, laid over the top where it stays editable.
 
-Local conditioning frames are uploaded to the provider automatically. Both
-the budget and the encoder are checked BEFORE anything is charged.
+Local conditioning frames are uploaded to the provider automatically. The
+encoder is checked BEFORE anything is charged, so a project with no
+libtheora finds out before it buys a sequence it cannot play.
 ```
 
 ## cinematic_keep
@@ -2562,23 +2677,20 @@ linear filtering, where sampling at a region edge otherwise pulls in the
 neighbouring frame. Sheets long enough to exceed the safe texture width wrap
 into a padded grid automatically whatever this says.
 
-THIS IS THE MOST EXPENSIVE TOOL HERE and it is capped like it. The plan is
-priced before anything is bought and REFUSED if it exceeds
-limits["max_cost_usd"] (or, unset, the work item's ceiling / the project's
-per_item_usd) or the project /day budget; the running tally is re-checked
-before every pose, so a retry storm stops mid-set instead of discovering
-the overrun on the invoice.
+THIS IS THE MOST EXPENSIVE TOOL HERE. The plan is priced before anything is
+bought and the estimate is reported, so a human sees what a set costs before
+they buy it. Nothing refuses it on money: this product keeps no ledger and
+holds no budget, and the balance that decides is your provider account's.
 
-limits: {"max_retries": 1, "max_cost_usd": 0.0, "timeout": 300,
-"max_seconds": 1800} - how much this run may spend, in money and in wall
-clock, all optional. `timeout` bounds ONE image call and `max_seconds` the
-whole run; past the deadline the remaining poses are reported as skipped
-and whatever was made is still assembled, because half a sheet plus a
-reason beats a hung call. `max_cost_usd` 0 means the project's own ceiling
-decides rather than "free". An unknown key is refused by name.
+limits: {"max_retries": 1, "timeout": 300, "max_seconds": 1800} - how long
+this run may take and how hard it may retry, all optional. `timeout` bounds
+ONE image call and `max_seconds` the whole run; past the deadline the
+remaining poses are reported as skipped and whatever was made is still
+assembled, because half a sheet plus a reason beats a hung call. An unknown
+key is refused by name.
 
 Returns the assembled sheet result, or {ok: false, stage, error} when the
-spend gate, the reference gate or every pose fails. The result carries a
+provider preflight, the reference gate or every pose fails. The result carries a
 `motion` block - duplicated frames, popped poses, cycles that do not close,
 figures in more than one piece - which is the half of quality the identity
 judge cannot see, because every one of those faults is perfectly on-model.
@@ -2684,8 +2796,8 @@ Runs in MINUTES, not seconds; the default timeout is half an hour.
 filename lands under .bgate_out/video/.
 
 THIS IS THE RAW DOOR, AND IT IS PROBABLY NOT THE ONE YOU WANT. It buys one
-unmanaged .mp4 - no shot list, no provenance row, no budget row against a
-sequence, and Godot CANNOT PLAY AN .mp4 at all, so nothing here reaches a
+unmanaged .mp4 - no shot list, no provenance row against a sequence, and
+Godot CANNOT PLAY AN .mp4 at all, so nothing here reaches a
 game. Use it for a one-off reference clip a human watches. For anything the
 project ships, cinematic_plan / cinematic_generate_shot / cinematic_keep run
 the same clip through the candidate -> human decision -> transcoded asset
@@ -2888,7 +3000,7 @@ WHAT IT COST MAY BE UNKNOWN. The Suno record carries no creditsConsumed, so
 the charge is measured as the account-balance delta around the call and the
 result says which number it is (`credits_source`). With no rate configured
 (BGATE_KIE_USD_PER_CREDIT) the run is reported UNPRICED and `accounted` is
-false - it is never filed as $0.00, which a budget check would read as free.
+false - it is never reported as $0.00, which reads as free.
 
 Runs for one to three minutes. This blocks for the whole batch.
 ```
@@ -3317,6 +3429,30 @@ QA agent is spawned to verify the claim; under the builder's gate it goes to
 'review' and waits for the human - you are finished either way, but anything
 chained behind it does not start until it reaches 'done'. Do not "fix" a
 'review' status by re-reporting: it is the gate working.
+
+`next_approach` — FAILURES ONLY, AND NOT A SUBSTITUTE FOR TRYING IT.
+
+Two failures wear the same word. BLOCKED — a missing key, a credit block, an
+asset that does not exist, a lane this seat cannot write to — fails
+identically however many times it runs; fail it fast, leave next_approach
+empty, and the item goes to a human on the first round. OUT OF IDEAS is the
+other kind: iterative work that NARROWED the problem and ran out of turns.
+
+Naming the one concrete thing you would try next buys the item exactly one
+automatic round beyond the normal cap, and that round's brief OPENS with your
+sentence instead of burying it under the post-mortem. It is a bonus, not a
+bypass: worth one round however many times it is named, and qa.max_rounds
+still ends the item.
+
+It does not buy you out of the work. If the thing you are about to name is in
+your lane and you can afford it, RUN IT BEFORE YOU CLOSE — handing the next
+agent a suggestion you could have executed yourself pays for a whole cold
+start (a fresh session, a re-read of every file you already hold, a re-run of
+the probes you already paid for) to arrive where you were already standing.
+MEASURED: a rig repair closed 'failed' at three rounds having gone knee
+weight-bleed → ankle non-manifold damage → that patch cleaned to zero
+non-manifold faces, seam remaining, and handed a human a diagnosis instead of
+an asset while holding a cheaper approach it had just written down.
 
 `premise_refuted` — THE BRIEF CONTAINED A MEASURED CLAIM THAT IS NOT TRUE.
 Pass {"claim": ..., "measured": ..., "did_instead": ...} and it becomes a

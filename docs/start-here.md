@@ -27,7 +27,7 @@ What that buys you:
 | An agent reports the jump works and has never run the game. | `godot_run` runs the project headless, `godot_screenshot` captures a frame. |
 | Sprite frame one and frame four are different characters. | References are pinned as files. Generation conditions on them, and `consistency_check` scores frames against the pinned anchor. |
 | Two sessions edit one file and one silently loses. | Seats hold write locks. A PreToolUse hook refuses the second writer. |
-| Image generation costs more than you expected. | Per-item, per-day and per-project spend ceilings, enforced before the call. |
+| Image generation costs more than you expected. | Every paid tool quotes the call before it runs, and `provider_status` reads your account balance from the provider. Builders Gate does not meter money or hold a ceiling. |
 
 This is more machinery than a small project needs.
 
@@ -295,17 +295,16 @@ When you dispatch a work item, `src/bgate_ui/agents/dispatch.py`:
 
 1. Refuses a chain link whose predecessor has not landed.
 2. Checks the concurrency cap (default 4).
-3. Checks the spend ceilings: per item, per day, per project.
-4. Refuses a dirty git tree unless you insist.
-5. Captures the current commit, so the run reads as a diff afterwards. A
+3. Refuses a dirty git tree unless you insist.
+4. Captures the current commit, so the run reads as a diff afterwards. A
    per-item git worktree is available behind `BGATE_GIT_ISOLATION=1`, off by
    default.
-6. Spawns a `claude` process with `BGATE_SEAT`, `BGATE_ROOT`,
+5. Spawns a `claude` process with `BGATE_SEAT`, `BGATE_ROOT`,
    `BGATE_WORK_ITEM` and `BGATE_ACTOR=agent:item-<id>` in its environment. That
    last one is what stops a spawned agent inheriting your identity and
    approving its own work.
-7. Starts a watchdog that kills the process if it passes its runtime or cost
-   ceiling, and marks the item failed with the reason.
+6. Starts a watchdog that kills the process if it passes its runtime ceiling
+   or goes silent, and marks the item failed with the reason.
 
 **Exit 0 is not success.** A session that exits cleanly without a terminal
 result event is marked failed, because that is what a killed or wedged agent
@@ -337,16 +336,22 @@ off and re-queue it.
 
 | Backstop | Default | What it catches |
 |---|---|---|
-| Cost ceiling | `$5` per item | a run that keeps paying to go nowhere |
 | Runtime ceiling | 30 min (`max_runtime_s`) | a run that never finishes |
-| Hard runtime cap | 2 h (`BGATE_MAX_RUNTIME_S`) | a budget with its runtime set to 0 |
+| Hard runtime cap | 2 h (`BGATE_MAX_RUNTIME_S`) | a project with its runtime set to 0 |
 | Stall timeout | 25 min (`BGATE_STALL_S`) | a hung session: alive, silent, holding a slot |
 | Concurrency cap | 4 agents (`max_concurrent`) | the whole fleet at once |
 
 Silence is measured against real output, the log plus files under `.bgate_out/`
 and the game's assets, because a 30-minute image batch writes nothing until it
-returns. The ceilings live in the project's budget; the environment variables
-are escape hatches.
+returns. The ceilings live in the project's `run_limits` row; the environment
+variables are escape hatches.
+
+**None of them is a money ceiling, and there is not going to be one.** This
+product used to keep a ledger and enforce per-item / per-day / per-project
+dollar caps; every figure in it was a guessed unit price multiplied by a count,
+so it matched no statement anywhere and refused real work on behalf of
+imaginary spend. The only budget that exists is the balance on your own
+provider account, which `provider_status` reads from the provider.
 
 ## Two things that will bite you
 

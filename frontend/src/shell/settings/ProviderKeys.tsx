@@ -131,8 +131,8 @@ export function StorageNote({ data }: { data: ProvidersData }) {
           Generations made with no project open land in{" "}
           <code>{data.scratch_root}</code>
           {data.scratch_exists ? "" : " (created the first time something needs it)"}
-          {" "}— a real project, so they get the same artifact registry, spend
-          ledger and review queue as anything else.
+          {" "}— a real project, so they get the same artifact registry and
+          review queue as anything else.
           {data.scratch_active && <b> This dashboard is looking at it right now.</b>}
         </p>
       )}
@@ -318,16 +318,20 @@ export function ProviderKeys({ active }: { active: boolean }) {
   if (data.__error) {
     return <div className="gen-wrap"><div className="gen-none">could not read the providers — {data.__error}</div></div>;
   }
+  const configured = data.providers.filter((p) => p.configured).length;
+  const ready = data.providers.filter((p) => p.available).length;
   return (
     <div className="gen-wrap" data-panel="provider-keys">
-      <div className="gen-head">
-        <span className="gen-eyebrow">Credentials</span>
-        <h3>Art providers</h3>
+      <div className="gen-toolbar">
         <button type="button" className="gen-link gen-balbtn"
                 title="Balances are cached for ~2 minutes — press after topping an account up."
                 onClick={() => loadBalances(true)}>
-          re-check balances
+          Check balances
         </button>
+      </div>
+      <div className={`gen-sum${ready ? " good" : ""}`}>
+        <Ti name="stethoscope" size={13} />
+        <span>{ready} of {data.providers.length} ready, {configured} configured</span>
       </div>
       <StorageNote data={data} />
       <div className="gen-grid">

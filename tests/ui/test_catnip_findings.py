@@ -24,7 +24,7 @@ import pytest
 
 from bgate_core.store import assets, db, project
 from bgate_core.runtime import enginetests
-from bgate_core.board import findings, gitwork, queue, salvage, spend, steerbox
+from bgate_core.board import findings, gitwork, queue, salvage, steerbox
 from bgate_core.design import greenlight
 from bgate_core.three_d import scalecontract
 from bgate_core.level import sceneproof, traversal
@@ -1002,44 +1002,6 @@ class TestPremiseRefuted:
         digest = gameplan.digest(root, hours=24)
         assert digest["premise_refuted"]
         assert "0.14 m" in digest["premise_refuted"][0]["claim"]
-
-
-# ---------------------------------------------------------------------------
-# §22 A total that silently omits a channel
-# ---------------------------------------------------------------------------
-class TestSpendIsWhole:
-    """board_digest reported 84 credits across 11 kie calls that were in no
-    spend figure and in no budget ceiling."""
-
-    def test_the_total_carries_the_unpriced_channel_with_it(self, root):
-        for _ in range(11):
-            spend.record_unpriced(root, 7.64, kind="image", logical_name="cat")
-        totals = spend.totals(root)
-        assert totals["complete"] is False
-        assert "unpriced credits" in totals["spend_line"]
-        assert "11 calls" in totals["spend_line"]
-        assert "BGATE_KIE_USD_PER_CREDIT" in totals["spend_line"]
-
-    def test_a_project_with_no_unpriced_rows_prints_a_plain_total(self, root):
-        spend.record(root, 4.12, kind="image")
-        totals = spend.totals(root)
-        assert totals["complete"] is True
-        assert totals["spend_line"] == "$4.12"
-
-    def test_the_budget_verdict_declares_its_own_blind_spot(self, root):
-        spend.set_budget(root, per_project_usd=100, enforced=1)
-        spend.record_unpriced(root, 84, kind="image")
-        verdict = spend.check(root, projected_usd=1.0)
-        assert verdict["allowed"] is True
-        assert verdict["unpriced_rows"] == 1
-        assert "cannot see them" in verdict["blind_spot"]
-
-    def test_the_digest_prints_the_combined_line(self, root):
-        from bgate_core.design import gameplan
-        spend.record_unpriced(root, 84, kind="image")
-        digest = gameplan.digest(root, hours=24)
-        assert digest["spend"]["complete"] is False
-        assert "unpriced credits" in digest["spend"]["line"]
 
 
 # ---------------------------------------------------------------------------

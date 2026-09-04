@@ -28,6 +28,7 @@ export function DirectorChat({ active, onSent }: {
 }) {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [running, setRunning] = useState(false);
+  const [waiting, setWaiting] = useState("");
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const seen = useRef(0);
@@ -43,6 +44,7 @@ export function DirectorChat({ active, onSent }: {
       setMsgs((was) => [...was, ...fresh]);
     }
     setRunning(!!got.running);
+    setWaiting(String(got.waiting || ""));
     // The board only changes when a turn ends, so refresh it then rather than
     // on every tick of this poll.
     if (wasRunning.current && !got.running) onSent?.();
@@ -106,7 +108,7 @@ export function DirectorChat({ active, onSent }: {
         {running && (
           <div className="bg4-msg dir live">
             <div className="who">director</div>
-            <div className="txt thinking">working…</div>
+            <div className="txt thinking">{waiting || "working…"}</div>
           </div>
         )}
       </ScrollArea>

@@ -11,10 +11,8 @@ WHAT IS ACTUALLY BEING PINNED, since most of this is one call deep:
   * the four Suno facts that cost money to get wrong — the per-model character
     ceilings, duration being V5_5-only, style/title being custom-mode-only, and
     CALLBACK_EXCEPTION not meaning the audio failed;
-  * that an UNPRICED run reports as unpriced and never lands in the dollar
-    totals as $0.00 — it writes a zero-dollar MARKER row that spend.totals
-    reports apart as `unaccounted`, so the report names the gap instead of
-    silently under-counting the main provider;
+  * that an UNPRICED run reports as unpriced and never as $0.00, so a caller
+    reading the result sees the gap instead of a figure that means free;
   * that a generated take is a CANDIDATE and only a human's keep() puts it
     where the game can load it.
 """
@@ -30,7 +28,6 @@ from fastapi.testclient import TestClient
 from bgate_adapters import kie
 from bgate_core.store import artifacts
 from bgate_core.audio import music
-from bgate_core.board import spend
 from bgate_ui.app import app
 
 # One request, two takes — what the record-info reference's own example shows.
@@ -244,22 +241,12 @@ class TestUnpricedSaysSo:
         assert result["usd"] is None
         assert result["accounted"] is False
         assert result["cost_note"]                     # says why, in words
-        totals = spend.totals(root)
-        # No invented dollars anywhere...
-        assert totals["by_kind"].get("audio") in (None, 0)
-        assert totals["project_usd"] == 0
-        # ...but the charge is NOT silently dropped from the report: with
-        # budgets off by default the totals ARE the product, and a kie-heavy
-        # project must not read as free.
-        assert totals["unaccounted"]["rows"] == 1
-        assert totals["unaccounted"]["credits"] == pytest.approx(24.0)
 
-    def test_a_configured_rate_lands_in_the_ledger(self, root, fake, monkeypatch):
+    def test_a_configured_rate_prices_the_run(self, root, fake, monkeypatch):
         monkeypatch.setenv("BGATE_KIE_USD_PER_CREDIT", "0.002")
         result = music.generate(root, "a calm loop", name="calm")
         assert result["usd"] == pytest.approx(0.048)
         assert result["accounted"] is True
-        assert spend.totals(root)["by_kind"]["audio"] == pytest.approx(0.048)
 
     def test_an_unreadable_balance_leaves_the_run_unpriced(self, root, fake,
                                                            monkeypatch):
@@ -268,10 +255,7 @@ class TestUnpricedSaysSo:
         assert result["credits_consumed"] is None
         assert result["credits_source"] == "unavailable"
         assert result["usd"] is None
-        # Even with no credit count, the CHARGE is real: it still lands as an
-        # unaccounted row, with the credits marked unknown rather than zero.
-        un = spend.totals(root)["unaccounted"]
-        assert un["rows"] == 1 and un["credits_unknown_rows"] == 1
+        assert result["accounted"] is False
 
     def test_a_topup_mid_run_is_not_reported_as_free(self, root, fake):
         # Negative delta = the balance went UP. That is not a price of zero.

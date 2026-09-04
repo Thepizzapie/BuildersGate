@@ -69,7 +69,7 @@ import threading
 import time
 from typing import Iterable, Optional
 
-from bgate_core.board import activity, gates as _gates, queue as _queue, spend as _spend
+from bgate_core.board import activity, gates as _gates, queue as _queue
 from bgate_core.store import db, events as _events, settings as _settings, writelog
 from bgate_ui.agents import qa_gate as _qa_gate
 from bgate_ui.pumps.pump import Pump
@@ -129,6 +129,23 @@ FAIL_ESCALATION_PRIORITY = 9
 # reason qa_gate.MAX_ROUNDS errs at its shipped value — a router that cannot
 # read its cap must not run uncapped.
 MAX_AUTO_RETRIES = 1
+
+# ONE EXTRA AUTOMATIC ROUND, FOR A FAILURE THAT NAMED ITS NEXT MOVE.
+#
+# The cap above is right about the failure it was written for: a STRUCTURAL
+# one - a missing key, a credit block, an absent asset, an unwritable lane -
+# fails identically every round, so retrying it is money spent rediscovering
+# the same blocker. It is wrong about the other kind. Iterative craft work
+# fails by NARROWING, each round cheaper and more specific than the last, and
+# under a flat cap of one such an item is escalated to a human mid-narrowing
+# with a diagnosis in place of a deliverable.
+#
+# The two are told apart by the only party that can: the agent that hit the
+# failure, declaring it through queue_complete(next_approach=...). That is a
+# BONUS, not a bypass - it is worth exactly one round, it stacks on nothing,
+# qa.max_rounds still ends the item, and a cap the operator has set to 0
+# ("escalate on the first failure") is an instruction that overrules it.
+PROGRESS_BONUS = 1
 
 # Below the QA gate (8) and the escalation (9): a debrief is a decision about
 # work that already landed, so it must not outrank verifying that it landed.
@@ -653,6 +670,10 @@ def _branch_failed(ev: dict, item: dict, settings: dict,
     rounds = attempts + 1
     auto = int(item.get("auto_retries") or 0)
     auto_cap = _as_int(settings.get("max_auto_retries"), MAX_AUTO_RETRIES)
+    # WHAT THE FAILED RUN SAID TO TRY NEXT - the retry-class signal, and the
+    # only thing here the agent itself gets a vote on. See PROGRESS_BONUS.
+    nxt = _queue.next_approach_of(item)
+    bonus = PROGRESS_BONUS if (nxt and auto_cap) else 0
 
     # 1. A HUMAN ENDED THIS RUN. queue.stop banks a stop as 'failed' on purpose
     # (reopen, the QA query, the chain interlock and the console's lanes all key
@@ -677,13 +698,16 @@ def _branch_failed(ev: dict, item: dict, settings: dict,
                         "branch exists to break")]
 
     retry_off = not settings.get("auto_reopen_failures")
-    budget_gone = auto >= auto_cap or rounds >= cap
+    budget_gone = auto >= auto_cap + bonus or rounds >= cap
     no_dispatcher = not board.get("dispatcher", True)
     if retry_off or budget_gone or no_dispatcher:
         why = ("followup.auto_reopen_failures is off" if retry_off else
                "there is no live dispatcher to run a retry" if no_dispatcher
-               else f"its automatic retry budget is spent ({auto} of {auto_cap} "
-                    f"automatic rounds used, {rounds} attempts in total)")
+               else f"its automatic retry budget is spent ({auto} of "
+                    f"{auto_cap + bonus} automatic rounds used"
+                    + (" — including the extra round its own next_approach "
+                       "bought, which did not land it either" if bonus else "")
+                    + f", {rounds} attempts in total)")
         return _escalate_actions(ev, item, settings, board, why,
                                  auto=auto, auto_cap=auto_cap, rounds=rounds)
 
@@ -693,13 +717,25 @@ def _branch_failed(ev: dict, item: dict, settings: dict,
     # batches, and a replay that retried again is the cap not holding).
     return [_action(
         "reopen", 1, ev, f"item:{item_id}:failed",
-        f"auto-reopening #{item_id} — automatic retry {auto + 1} of {auto_cap}",
+        f"auto-reopening #{item_id} — automatic retry {auto + 1} of "
+        f"{auto_cap + bonus}" + (" (the extra round its next_approach bought)"
+                                 if bonus and auto >= auto_cap else ""),
         item=item_id, attempts=attempts, auto_retries=auto,
-        reason=("AUTO-REOPENED by the follow-up router — the previous attempt "
+        # THE NEXT MOVE GOES FIRST, ABOVE THE POST-MORTEM. A reopen brief is read
+        # top-down by an agent holding no context, and burying the one sentence
+        # that says where to start under 1200 characters of what went wrong is how
+        # a retry re-derives the dead end it was bought to skip.
+        reason=((f"START HERE — the previous attempt named this as the thing to "
+                 f"try next, and naming it is what bought this round:\n\n  {nxt}"
+                 "\n\n"
+                 "It is a lead, not an order: if reading the failure below shows "
+                 "it is wrong, say so in your result and do the better thing."
+                 "\n\n" if nxt else "")
+                + "AUTO-REOPENED by the follow-up router — the previous attempt "
                 f"reported FAILED (attempt {rounds}; automatic retry "
-                f"{auto + 1} of {auto_cap}, and there is no third chance: if "
-                "this fails again the item goes to the director instead of "
-                "being run again).\n\nREAD THE FAILURE BEFORE YOU START. If it "
+                f"{auto + 1} of {auto_cap + bonus}, and there is no further "
+                "chance: if this fails again the item goes to the director "
+                "instead of being run again).\n\nREAD THE FAILURE BEFORE YOU START. If it "
                 "names something you cannot fix from this seat — a missing key, "
                 "a credit block, an asset that does not exist, a path this seat "
                 "cannot write to — do NOT repeat the run. Say so in your result "
@@ -1062,8 +1098,6 @@ def _line(ev: dict) -> str:
                 f"{payload.get('count')} linked items")
     if kind == "director.question":
         return f"the director is asking you: {str(payload.get('question') or '')[:120]}"
-    if kind == "budget.refused":
-        return f"a dispatch was refused for spend: {str(payload.get('reason') or '')[:120]}"
     if kind == "gate.mode":
         return f"the approval gate is now {payload.get('mode') or '?'}"
     return f"{kind} {ev.get('ref') or ''}".strip()
@@ -1355,17 +1389,6 @@ def _do_debrief(root, action: dict) -> dict:
         return {"why": "the board could not be read"}
     if cap and already >= cap:
         return {"why": f"the debrief rate cap ({cap}/h) is reached"}
-    # The ordinary spend gate. A debrief IS a dispatch, so it queues behind the
-    # same ceiling as any other agent rather than getting a private allowance.
-    try:
-        verdict = _spend.check(root, projected_usd=_spend.item_ceiling(root, item))
-    except Exception:
-        verdict = {"allowed": True}
-    if not verdict.get("allowed"):
-        _events.emit(root, "budget.refused", ref=str(item_id),
-                     payload={"what": "director debrief", "item": item_id,
-                              "reason": str(verdict.get("reason") or "")})
-        return {"why": f"budget: {verdict.get('reason')}"}
     row = _queue.add(
         root, "director",
         f"Debrief #{item_id}: {str(item.get('title') or '')[:60]} — decide the "
@@ -1518,7 +1541,6 @@ def failure_escalation_brief(root: str | os.PathLike[str], item: dict,
     lines.append("")
 
     lines.append(_chain_block(root, item))
-    lines.append(_budget_block(root))
 
     lines.append("YOUR MOVES — pick exactly one")
     lines.append(
@@ -1550,13 +1572,13 @@ def failure_escalation_brief(root: str | os.PathLike[str], item: dict,
 def debrief_brief(root: str | os.PathLike[str], item: dict) -> str:
     """The brief a director debrief carries. Everything it needs to decide once.
 
-    Six things, and each is here because deciding without it produces a wrong
+    Five things, and each is here because deciding without it produces a wrong
     decision rather than a slower one: what finished and its result note; the
     HARNESS-OBSERVED file list (``writelog``, not the agent's self-report, which
     has already been wrong in the one seat whose job is disbelieving claims); the
-    chain and what is behind it; the active gate mode; the budget left; and the
-    fact that the tree is DIRTY, because a director that assumes a clean tree
-    reads ``git status`` and concludes somebody else has work in progress.
+    chain and what is behind it; the active gate mode; and the fact that the
+    tree is DIRTY, because a director that assumes a clean tree reads
+    ``git status`` and concludes somebody else has work in progress.
 
     Then exactly three legal moves, and the standing rule that it may not do seat
     work itself — restated because a debrief holding a fresh diff is the most
@@ -1613,7 +1635,6 @@ def debrief_brief(root: str | os.PathLike[str], item: dict) -> str:
 
     lines.append(_chain_block(root, item))
     lines.append(_gate_block(root))
-    lines.append(_budget_block(root))
 
     lines.append("YOUR THREE LEGAL MOVES — pick exactly one")
     lines.append(
@@ -1665,38 +1686,6 @@ def _chain_block(root, item: dict) -> str:
 def _gate_block(root) -> str:
     try:
         return "THE GATE\n  " + _gates.describe(root) + "\n"
-    except Exception:
-        return ""
-
-
-def _budget_block(root) -> str:
-    """What is left to spend, so a follow-up is priced before it is filed."""
-    try:
-        totals = _spend.totals(root)
-        budget = totals.get("budget") or {}
-        day_cap = float(budget.get("per_day_usd") or 0)
-        project_cap = float(budget.get("per_project_usd") or 0)
-        today = float(totals.get("today_usd") or 0)
-        life = float(totals.get("project_usd") or 0)
-        left = f"${max(0.0, day_cap - today):.2f} left today" if day_cap else \
-            "no daily ceiling set"
-        enforced = "enforced" if budget.get("enforced") else \
-            "NOT enforced — the numbers are a report, not a limit"
-        # Charges kie made in credits under no configured dollar rate. They are
-        # NOT in the dollar figures above, and a report that hides them reads
-        # low exactly when kie is the main provider.
-        unpriced = totals.get("unaccounted") or {}
-        extra = ""
-        if int(unpriced.get("rows") or 0):
-            extra = (f" Plus {unpriced['rows']} unpriced kie row(s)"
-                     + (f" ({unpriced['credits']:g} credits)"
-                        if unpriced.get("credits") else "")
-                     + " not counted in these totals.")
-        return (f"BUDGET\n  ${today:.2f} spent today"
-                + (f" of ${day_cap:.2f}" if day_cap else "")
-                + f" ({left}); ${life:.2f} on this project"
-                + (f" of ${project_cap:.2f}" if project_cap else "")
-                + f". Ceilings are {enforced}.{extra}\n")
     except Exception:
         return ""
 

@@ -37,7 +37,7 @@ from bgate_core.board import gitwork as _git
 from bgate_core.board import queue as _queue
 from bgate_core.board import seats as _seatmod
 from bgate_core.store import settings as _settings
-from bgate_core.board import spend as _spend
+from bgate_core.board import runlimits as _runlimits
 from bgate_ui.agents import runners as _runners
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -72,8 +72,8 @@ MAX_FEEDS = 200      # parsed feeds held at once
 
 # The two backstops that make "no rogue agents" true rather than aspirational.
 #
-# HARD_RUNTIME_S is the ceiling that applies when the project's budget names
-# none (max_runtime_s = 0 used to mean forever). STALL_S kills a session that is
+# HARD_RUNTIME_S is the ceiling that applies when the project names none
+# (max_runtime_s = 0 used to mean forever). STALL_S kills a session that is
 # alive but has produced no observable output at all - no log line, no file - # for that long: that is a wedged process holding a concurrency slot, not work.
 # Both are deliberately generous; they are the difference between a bad run and
 # an unbounded one, not a performance policy.
@@ -128,9 +128,9 @@ def _emit(root, kind: str, ref: str = "", payload: Optional[dict] = None) -> Non
     Same shape and same reasoning as ``queue._emit``: the event log is a
     notification substrate, so a locked database - or an events module that will
     not import at all, on a project whose migration has not run - loses the line
-    and nothing else. Without it ``agent.spawned``/``agent.exited`` and
-    ``budget.refused`` are three of the fourteen kinds the vocabulary offers a
-    notification checkbox for and nobody writes.
+    and nothing else. Without it ``agent.spawned`` and ``agent.exited`` are two
+    of the kinds the vocabulary offers a notification checkbox for and nobody
+    writes.
     """
     try:
         from bgate_core.store import events as _events
@@ -227,10 +227,10 @@ def _model_for(root: str, seat: str) -> Optional[str]:
 def _max_turns(root: str) -> int:
     """The per-run turn ceiling, or 0 for none.
 
-    Separate from the cost ceiling because they fail differently: _observed_cost
-    only sees a price at a result boundary, so an agent grinding through a long
-    tool loop can run far past its dollar ceiling without ever offering the
-    dispatcher a place to stop it. Turns are counted by the CLI itself.
+    Separate from the wall clock because they bound different runaways: a
+    session can burn an hour on one long tool call, and it can also spin
+    through two hundred cheap turns getting nowhere. Turns are counted by the
+    CLI itself.
     """
     try:
         return max(0, int(_settings.get(root, "dispatch.max_turns") or 0))
@@ -719,12 +719,12 @@ def dispatch(root: str, item_id: int, **kwargs) -> dict:
     """Spawn one agent for one item, with the start RESERVED against a race.
 
     Everything _spawn does between its `_live` check and the actual Popen - the
-    scope check, the budget check, git dirty-state, cutting a worktree - takes
-    seconds, and the lock is not held across it. Two callers racing through that
-    window both saw `_live` empty and both spawned a claude tree; the second
-    entry overwrote the first in `_live`, so the first process was never reaped,
-    never budget-checked and never killed. It billed until somebody found it in
-    Task Manager, and it also let the concurrency cap be exceeded.
+    scope check, git dirty-state, cutting a worktree - takes seconds, and the
+    lock is not held across it. Two callers racing through that window both saw
+    `_live` empty and both spawned a claude tree; the second entry overwrote the
+    first in `_live`, so the first process was never reaped and never killed. It
+    ran until somebody found it in Task Manager, and it also let the concurrency
+    cap be exceeded.
 
     That race is now routine rather than theoretical: the auto-deploy thread
     ticks every few seconds and the autopilot endpoint calls tick() inline on a
@@ -764,15 +764,14 @@ def dispatch(root: str, item_id: int, **kwargs) -> dict:
 
 def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
            model: Optional[str] = None, max_runtime_s: Optional[int] = None,
-           max_cost_usd: Optional[float] = None,
            allow_dirty: Optional[bool] = None,
            actor: str = "") -> dict:
     """Spawn a Claude session against a queued item. One per item.
 
-    Four things must be true before a process exists: the CLI is there, the item
-    is dispatchable, the fleet is under its concurrency cap, and the projected
-    cost fits the budget. Then the git boundary is captured - without a
-    base_commit nothing downstream can show or undo what the agent did.
+    Three things must be true before a process exists: the CLI is there, the
+    item is dispatchable, and the fleet is under its concurrency cap. Then the
+    git boundary is captured - without a base_commit nothing downstream can
+    show or undo what the agent did.
     """
     try:
         item = _queue.get(root, item_id)
@@ -810,35 +809,18 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         # Server-side, because the dashboard's "dispatch all" loops every queued
         # item with no cap of its own - 20 agents is 20 claude trees, each with
         # its own MCP children, on one laptop.
-        cap = int(_spend.budget(root).get("max_concurrent") or 0)
+        cap = _runlimits.concurrency_cap(root)
         running = _live_count()
         if cap and running >= cap:
             return _refuse("concurrency_limit",
                            f"{running} agents already running - the cap is {cap}",
                            running=running, max_concurrent=cap)
 
-    # Ceilings: the item's own overrides win, then this call's, then the budget.
-    ceiling_usd = float(max_cost_usd or _spend.item_ceiling(root, item) or 0)
-    ceiling_s = int(max_runtime_s or _spend.runtime_ceiling(root, item) or 0)
-    verdict = _spend.check(root, projected_usd=ceiling_usd)
-    if not verdict["allowed"]:
-        # budget.refused ships in the default notify.kinds, and this is the
-        # refusal it is for: a board that stops dispatching because it hit a
-        # ceiling looks exactly like a board with nothing to do, and the console
-        # shows the reason only in the "last refusal" slot of whoever asked.
-        _emit(root, "budget.refused", ref=str(item_id),
-              payload={"what": "agent dispatch", "item": item_id,
-                       "seat": item.get("seat") or "",
-                       "title": str(item.get("title") or "")[:200],
-                       "reason": str(verdict.get("reason") or ""),
-                       "projected_usd": ceiling_usd,
-                       "scope": verdict.get("scope"),
-                       "spent": verdict.get("spent"),
-                       "ceiling": verdict.get("ceiling")})
-        return _refuse("budget_exceeded", verdict["reason"],
-                       projected_usd=ceiling_usd, **{
-                           k: v for k, v in verdict.items()
-                           if k in ("scope", "spent", "ceiling")})
+    # The wall-clock ceiling: the item's own override wins, then this call's,
+    # then the project default. There is no money ceiling — a dollar cap on a
+    # run was always a guess multiplied by a guess, and what actually stopped
+    # runaway work in every benchmark was the clock.
+    ceiling_s = int(max_runtime_s or _runlimits.runtime_ceiling(root, item) or 0)
 
     # THE RESERVATION - the queued->dispatched transition, taken atomically and
     # FIRST. There are two dispatchers now (this function, and a worker's
@@ -868,9 +850,8 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         # reported it correctly to whoever thought to ask, and nobody did.
         # Measured: an art seat and an audio seat idled for about an hour while
         # the director wrote gameplay code and kept the tree dirty. The refusal
-        # now emits like budget.refused does, so the same notification path that
-        # already covers "the board stopped for money" covers "the board
-        # stopped for git".
+        # now emits, so the notification path that covers "an agent spawned"
+        # also covers "the board stopped for git".
         _emit(root, "dispatch.blocked", ref=str(item_id),
               payload={"code": "dirty_tree", "item": item_id,
                        "seat": item.get("seat") or "",
@@ -1078,9 +1059,23 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                           + "\n").encode("utf-8"))
         log_handle.flush()
         run_start_pos = log_handle.tell()
+        # THE LOG IS STAMPED AS IT IS WRITTEN, which is why the agent's output
+        # goes through a pipe and a pump thread instead of straight down the
+        # file handle. The CLI's stream-json carries no wall clock, so before
+        # this the only time any reader could attach to a step was the moment
+        # it PARSED the line - fine for the dashboard's incremental feed,
+        # useless for anything re-reading a log (every step in a twenty-minute
+        # run dated to the instant of the read). One line, one `bgate_ts`, put
+        # there by the process that received it. stderr joins stdout so the
+        # interleaving on disk is the interleaving that happened.
         proc = subprocess.Popen(args, cwd=cwd, env=env,
-                                stdin=subprocess.PIPE, stdout=log_handle,
-                                stderr=log_handle, creationflags=_NO_WINDOW)
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                creationflags=_NO_WINDOW)
+        # A process object with no pipe still dispatches: the stamp is an
+        # improvement to the log, never a precondition for running an agent.
+        if getattr(proc, "stdout", None) is not None:
+            _pump_stamped(proc.stdout, log_handle, item_id)
     except OSError:
         log_handle.close()
         return _refused("spawn_failed",
@@ -1142,7 +1137,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                           # ask "was that write concurrent with this run".
                           # monotonic answers no such question across processes.
                           "started_wall": _time.strftime("%Y-%m-%d %H:%M:%S"),
-                          "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd,
+                          "max_runtime_s": ceiling_s,
                           "base_commit": base_commit, "cwd": cwd,
                           # The project this run belongs to. status()/stop() and
                           # the sweep all need it and only the spawner knows it;
@@ -1161,7 +1156,6 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         _queue.set_run_fields(root, item_id, base_commit=base_commit,
                               branch=branch, worktree=worktree,
                               actor=actor or None,
-                              max_cost_usd=ceiling_usd or None,
                               max_runtime_s=ceiling_s or None)
     except Exception:
         pass
@@ -1187,46 +1181,15 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                    "chain_pos": int(item.get("chain_pos") or 0),
                    "attempts": int(item.get("attempts") or 0),
                    "pid": proc.pid, "actor": actor,
-                   "max_cost_usd": ceiling_usd, "max_runtime_s": ceiling_s,
+                   "max_runtime_s": ceiling_s,
                    "runner": runner.name, "cost_tracked": runner.cost_tracked,
                    "native_images": native_images,
                    "worktree": worktree})
     return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path),
             "base_commit": base_commit, "branch": branch, "worktree": worktree,
-            "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd,
+            "max_runtime_s": ceiling_s,
             "runner": runner.name, "cost_tracked": runner.cost_tracked,
             "native_images": native_images}
-
-
-def _observed_cost(entry: dict) -> float:
-    """The highest ``total_cost_usd`` the CLI has reported THIS run.
-
-    The session only prints cost at result boundaries, so this is a step
-    function, not a live meter - it trips at the first boundary past the
-    ceiling, which still bounds the damage. Incremental tail read (own cursor,
-    separate from the steer scanner's) so polling a 10MB log costs nothing."""
-    best = float(entry.get("cost_usd", 0.0))
-    try:
-        with open(entry["log"], "rb") as fh:
-            fh.seek(entry.get("cost_scan_pos", entry.get("run_start_pos", 0)))
-            chunk = entry.get("cost_scan_rem", b"") + fh.read()
-            entry["cost_scan_pos"] = fh.tell()
-    except OSError:
-        return best
-    lines = chunk.split(b"\n")
-    entry["cost_scan_rem"] = lines.pop()  # possibly-partial last line
-    for line in lines:
-        if b"total_cost_usd" not in line:
-            continue
-        try:
-            ev = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        val = ev.get("total_cost_usd") if isinstance(ev, dict) else None
-        if isinstance(val, (int, float)) and float(val) > best:
-            best = float(val)
-    entry["cost_usd"] = best
-    return best
 
 
 # Terminal ``result`` subtypes: the CLI saying this session is over and it did
@@ -1263,23 +1226,6 @@ def _terminal_error(root: str, item_id: int) -> str:
     return (f"the session ended in error ({subtype or 'error'})"
             + (f": {said[:400]}" if said else "")
             + " - it was not going to do anything else, so it was reaped")
-
-
-# Where the WRAP-UP steer goes out, as a fraction of the cost ceiling. A hard
-# kill at the ceiling is the last resort and it destroys the run's own account of
-# what it did; a message at 80% gives the agent a turn or two to save, report and
-# call queue_complete with a partial result, which is the difference between a
-# recoverable stop and an autopsy.
-WRAP_AT = 0.8
-
-WRAP_TEXT = (
-    "BUDGET STOP. You have spent ${spent:.2f} of a ${limit:.2f} ceiling on this "
-    "item. Start NOTHING new - no new generations, no new files, no further "
-    "exploration. Finish or abandon the edit in front of you, then call "
-    "queue_complete IMMEDIATELY with a partial result that says plainly: what is "
-    "done and verified, what is half-done and where, and what is untouched. A "
-    "partial result you report yourself is worth far more than the kill that is "
-    "coming at ${limit:.2f}, which reports nothing.")
 
 
 def _send(entry: dict, text: str) -> bool:
@@ -1407,7 +1353,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
 
         # The ceilings, enforced from spawn - not from completion.
         #
-        # NOTHING RUNS UNBOUNDED. The budget's max_runtime_s is settable to 0,
+        # NOTHING RUNS UNBOUNDED. The project's max_runtime_s is settable to 0,
         # which used to mean "no wall clock at all" - an agent that never
         # self-reports then runs until someone notices, which on a machine left
         # alone overnight is the single most expensive failure this system can
@@ -1415,7 +1361,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         limit_s = int(entry.get("max_runtime_s") or 0) or HARD_RUNTIME_S
         if time.monotonic() - entry["started_at"] >= limit_s:
             _trip(root, item_id, entry,
-                  f"killed: exceeded the {limit_s // 60}-minute runtime budget")
+                  f"killed: exceeded the {limit_s // 60}-minute runtime limit")
             return
 
         # HUNG, as distinct from slow. A wedged agent - one whose MCP child
@@ -1467,51 +1413,6 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                       "minutes - no log line, no file written, and no MCP "
                       "call in flight. This is a HANG (the process was alive "
                       "when it was killed), not a crash and not a clean exit")
-                return
-        # THE COST CEILING ONLY EXISTS WHERE COST IS REPORTED. A runner that
-        # emits tokens and no price makes _observed_cost read 0.00 forever, so
-        # this branch would sit there looking like a live guard while spending
-        # nothing it can see. Skipping it explicitly is the honest shape: the
-        # run is marked cost_tracked=False at spawn and shown that way, and the
-        # runtime and stall limits above - which do not depend on price - are
-        # what actually bound it.
-        limit_usd = float(entry.get("max_cost_usd") or 0)
-        if limit_usd and entry.get("cost_tracked", True):
-            spent = _observed_cost(entry)
-            # THE CEILING ASKS BEFORE IT KILLS. Seven of nine items in one
-            # overnight run breached their ceiling, the worst at 3.3x, and every
-            # breach ended as a kill that discarded the run's own account of
-            # itself. A kill is a terrible instrument for a limit: it lands
-            # mid-turn, after the money is spent, and it cannot bank anything.
-            # One message at 80% costs a turn and routinely saves the item.
-            if (not entry.get("wrap_sent")
-                    and spent >= limit_usd * WRAP_AT
-                    and spent <= limit_usd):
-                entry["wrap_sent"] = True
-                if _send(entry, WRAP_TEXT.format(spent=spent, limit=limit_usd)):
-                    entry["steers"].append(
-                        {"text": f"budget wrap-up at ${spent:.2f}",
-                         "sent_at": time.time(), "consumed_at": None})
-                    try:
-                        # NOT `_activity` - that name is this module's parsed
-                        # per-run log cache, and a dict has no .log(). The
-                        # try/except would have swallowed the AttributeError
-                        # forever and the wrap-up would have gone unrecorded.
-                        from bgate_core.board import activity as _act
-
-                        _act.log(root, "dispatch",
-                                 f"item {item_id}: wrap-up sent at "
-                                 f"${spent:.2f} of ${limit_usd:.2f}",
-                                 ref=str(item_id))
-                    except Exception:
-                        pass
-            if spent > limit_usd:
-                _trip(root, item_id, entry,
-                      f"stopped: spent ${spent:.2f} against a "
-                      f"${limit_usd:.2f} ceiling"
-                      + (" (the wrap-up message went out at "
-                         f"${limit_usd * WRAP_AT:.2f} and was not acted on)"
-                         if entry.get("wrap_sent") else ""))
                 return
         # Renew what this run holds. It lives here rather than in status()
         # because a lease must not depend on somebody having the dashboard open.
@@ -1604,9 +1505,9 @@ def read_run_record(root: str, item_id: int) -> dict:
 def _finalize(root: str, item_id: int, entry: dict) -> None:
     """Bank what the run cost and what it touched, exactly once.
 
-    Cost used to be parsed off the final result event and handed to an ephemeral
-    JSON response - nothing summed it, so no one could answer what a night of
-    fan-out cost. It now lands on the item and in the spend ledger.
+    What the runner said the run cost lands on the run's own row, and nowhere
+    else: nothing sums it across runs. What a night of fan-out actually cost is
+    a question for the provider account.
 
     The fingerprint is the other half of revert: hashes of every path this run
     changed, taken the moment it ended. Revert compares against it and refuses
@@ -1620,18 +1521,13 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
         turns = final.get("turns")
         if turns:
             _queue.set_run_fields(root, item_id, num_turns=int(turns))
-        tokens = final.get("tokens") or {}
-        if (isinstance(cost, (int, float)) and cost > 0) or any(tokens.values()):
-            # spend.record also increments work_item.total_cost_usd - one write,
-            # one truth; do not add it a second time here. Tokens ride along
-            # because on a subscription they, not the dollars, are what runs
-            # out - and a run under a plan reporting no price is still a run
-            # worth having in the ledger.
-            _spend.record(root, float(cost or 0), kind="agent",
-                          work_item_id=item_id, model=str(final.get("model") or ""),
-                          tokens=tokens,
-                          detail=f"agent session for item {item_id}")
         if isinstance(cost, (int, float)) and cost > 0:
+            # WHAT THE RUNNER SAID THIS RUN COST, on the run's own row and on
+            # the item, and nowhere else. Set, not accumulated: one run, one
+            # number. Nothing sums it across runs — this product keeps no
+            # ledger and holds no budget, and what the account was actually
+            # charged is the provider's to report.
+            _queue.set_run_fields(root, item_id, total_cost_usd=float(cost))
             entry["cost_usd"] = float(cost)
             _agentreg.set_cost(root, item_id,
                                getattr(entry.get("proc"), "pid", 0) or 0,
@@ -2421,8 +2317,8 @@ def _in_flight_tool(root: str, item_id: int) -> str:
 def status(root: str) -> list[dict]:
     """The agent table for the dashboard - a PURE READ.
 
-    This used to reap: a GET that closed pipes, flipped item statuses and wrote
-    the spend ledger. Two dashboards (or one dashboard and one long-poll) raced
+    This used to reap: a GET that closed pipes and flipped item statuses. Two
+    dashboards (or one dashboard and one long-poll) raced
     each other through the same transition, and the whole lifecycle depended on
     somebody keeping a browser tab open. The writing moved to _reap/sweep, which
     the per-run watchdog drives; the only state touched here is the in-memory
@@ -2558,9 +2454,34 @@ def _absorb(state: dict, raw: bytes) -> None:
     _agentlog.fold_line(state, raw, MAX_STEPS)
 
 
-def _is_running(item_id: int) -> bool:
+def _is_running(item_id: int, root: str = "") -> bool:
+    """Is this item's agent alive — INCLUDING one this process did not spawn.
+
+    `_live` holds Popen handles and is therefore per-dashboard-process. A
+    restart empties it while every dispatched agent keeps running in its own
+    process, so consulting only `_live` reported live agents as finished: the
+    board row read `dispatched` off the database and the inspector read
+    `finished` off this function, on the same screen, about the same item.
+
+    So the in-memory handle stays the fast path and the REGISTRY is the
+    fallback: an open agent_runs row whose pid still exists AND still matches
+    the recorded process start (agentreg._matches, which refuses to promote a
+    recycled pid). An unknowable probe answers None there, and an agent we
+    cannot disprove is treated as running — the opposite reading is what put
+    "finished" under a working agent.
+    """
     entry = _live.get(item_id)
-    return bool(entry) and entry["proc"].poll() is None
+    if entry is not None:
+        return entry["proc"].poll() is None
+    if not root:
+        return False
+    try:
+        run = _agentreg.last_run(str(root), int(item_id))
+        if not run or run.get("ended_at") or run.get("status") != "running":
+            return False
+        return _agentreg._matches(run) is not False
+    except Exception:
+        return False
 
 
 def read_activity(root: str, item_id: int, limit: int = 40,
@@ -2592,7 +2513,8 @@ def read_activity(root: str, item_id: int, limit: int = 40,
             size = log_path.stat().st_size
         except OSError:
             _activity.pop(key, None)
-            return {"steps": [], "running": _is_running(item_id), "final": None,
+            return {"steps": [], "running": _is_running(item_id, root),
+                    "final": None,
                     "step_count": 0, "dropped": 0, "truncated": False,
                     "session_id": ""}
 
@@ -2604,6 +2526,12 @@ def read_activity(root: str, item_id: int, limit: int = 40,
                      "step_count": 0, "bytes_read": 0, "session_id": ""}
             _activity[key] = state
         state["touched"] = time.time()
+        # A FIRST LOOK AT A RUN ALREADY IN PROGRESS absorbs the whole backlog
+        # in one pass, so everything in it is stamped with this instant. That
+        # is the read's clock, not the agent's, and the steps are marked so
+        # the panel can show them as approximate instead of reporting a
+        # twenty-minute run as twenty minutes of work in the last second.
+        backlog = state["pos"] == 0
         if size > state["pos"]:
             try:
                 with open(log_path, "rb") as fh:
@@ -2617,18 +2545,92 @@ def read_activity(root: str, item_id: int, limit: int = 40,
             state["rem"] = lines.pop()  # possibly-partial last line
             for raw in lines:
                 _absorb(state, raw)
+            if backlog:
+                for step in state["steps"]:
+                    step["ts_exact"] = False
         _prune_feeds()
 
         kept = state["steps"]
         end = max(0, len(kept) - max(0, int(offset)))
         start = max(0, end - int(limit)) if limit else 0
-        window = kept[start:end]
-        return {"steps": window, "running": _is_running(item_id),
+        window = [_clocked(s) for s in kept[start:end]]
+        return {"steps": window, "running": _is_running(item_id, root),
                 "final": state["final"], "step_count": state["step_count"],
                 "dropped": state["step_count"] - len(kept),
                 "truncated": len(window) < state["step_count"],
                 "session_id": state.get("session_id") or "",
                 "offset": max(0, int(offset)), "limit": int(limit)}
+
+
+def _pump_stamped(pipe, handle, item_id: int) -> threading.Thread:
+    """Copy the agent's output into its log, stamping each line with the time.
+
+    ONE LINE, ONE CLOCK, WRITTEN BY WHOEVER RECEIVED IT. The runner's
+    stream-json has no wall clock in it, so every reader downstream used to
+    date a step by when it happened to parse the line - which is right for the
+    live feed and a fabrication for anything re-reading the file. This is the
+    only place that knows the real answer, so it records it.
+
+    THE STAMP IS SPLICED, NOT RE-SERIALISED. `{"type":"assistant",…` becomes
+    `{"bgate_ts":1788…,"type":"assistant",…`: the original payload survives
+    byte for byte, which matters because these lines are large and are also
+    read by things that are not this module. Anything that is not a JSON
+    object - a stderr traceback, a partial line - is passed through untouched,
+    because a log that drops what it cannot classify is worse than one with an
+    unstamped line in it.
+
+    Daemon, and deliberately unkillable-from-outside: it holds no lock and it
+    stops when the pipe closes. Every write is guarded - _finalize can close
+    the handle while the child is still writing, and that race must end the
+    thread quietly rather than raise on a background stack nobody reads.
+    """
+    def _run() -> None:
+        try:
+            for raw in iter(pipe.readline, b""):
+                if raw[:1] == b"{":
+                    stamp = f'{{"bgate_ts": {time.time():.3f}, '.encode("utf-8")
+                    raw = stamp + raw[1:].lstrip()
+                try:
+                    handle.write(raw)
+                    handle.flush()
+                except (OSError, ValueError):
+                    return          # the run ended and the handle went with it
+        except (OSError, ValueError):
+            return
+        finally:
+            try:
+                pipe.close()
+            except (OSError, ValueError):
+                pass
+
+    thread = threading.Thread(target=_run, daemon=True,
+                              name=f"bgate-log-{int(item_id)}")
+    thread.start()
+    return thread
+
+
+def _clocked(step: dict) -> dict:
+    """One step with its epoch also rendered as a clock the panel can print.
+
+    THIS FEED IS THE ONE PLACE THE STAMP IS REAL. It absorbs the log
+    incrementally and holds the parsed steps between polls, so a step is
+    stamped within milliseconds of the agent writing it and keeps that stamp
+    for the life of the feed. agentlog.tail cannot do this and does not try -
+    it re-folds the whole file in one pass, so every step there would carry
+    the moment of the read.
+
+    THE ONE CASE THAT IS NOT EXACT is a dashboard that started after the run
+    did: the first poll absorbs the whole backlog at once and stamps all of it
+    now. `ts_exact` False says so, and the panel dims those rather than
+    claiming them - a run that has been going twenty minutes must never render
+    as twenty minutes of activity in the last second.
+    """
+    try:
+        moment = float(step.get("ts"))
+    except (TypeError, ValueError):
+        return step
+    return {**step, "at": time.strftime("%H:%M:%S", time.localtime(moment)),
+            "ts_exact": bool(step.get("ts_exact", True))}
 
 
 def _prune_feeds() -> None:

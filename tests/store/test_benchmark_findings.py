@@ -22,9 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from bgate_core.store import assets, db, provenance
+from bgate_core.store import assets, provenance
 from bgate_core.runtime import doctor, gateway, providers
-from bgate_core.board import seats, spend
+from bgate_core.board import seats
 from bgate_core.store import writelog
 
 
@@ -129,138 +129,12 @@ class TestProviderTruth:
         assert got["families"]["animate"]["provider"] is None
 
 
-def _item(root, seat: str = "art", title: str = "spend") -> int:
-    """A real work item. spend_event.work_item_id is a foreign key, so a made-up
-    id makes the whole INSERT roll back - and record() swallows that, which
-    would make this test file measure nothing while passing."""
+def _item(root, seat: str = "art", title: str = "work") -> int:
+    """A real work item — a made-up id makes a foreign key roll the INSERT back,
+    which would make a test measure nothing while passing."""
     from bgate_core.board import queue
 
     return int(queue.add(root, seat, title, "brief")["id"])
-
-
-# ---------------------------------------------------------------------------
-# Cost ceilings: max_cost_usd was exceeded in all three games
-# ---------------------------------------------------------------------------
-class TestSpendCeilingIsHard:
-    """$6.40, $9.49 and $5.16 against a $5 `max_cost_usd`. The RUNTIME ceiling
-    stopped work every time; the money ceiling never did, because it compared
-    ONE call's estimate against the cap instead of the run's running total."""
-
-    def test_a_run_cannot_walk_past_its_ceiling_in_small_steps(self, root):
-        # Eighteen forty-cent calls against a five dollar cap: every one of them
-        # is individually under the ceiling, which is how the old gate passed
-        # all of them.
-        item = _item(root)
-        allowed = 0
-        for _ in range(18):
-            got = spend.reserve(root, 0.40, work_item_id=item,
-                                what="image batch", run_ceiling_usd=5.0)
-            if not got["ok"]:
-                break
-            allowed += 1
-            # The real order: the tool body records what the provider charged,
-            # THEN the wrapper releases. Releasing first would make the hold
-            # settle at its estimate and the charge count twice.
-            spend.record(root, 0.40, kind="image", work_item_id=item)
-            spend.release(root, got["token"])
-        assert allowed == 12                     # 12 x 0.40 = 4.80; 13th = 5.20
-        assert spend.spent_on_item(root, item) <= 5.0
-
-    def test_a_provider_that_bills_in_credits_still_hits_the_ceiling(self, root):
-        """THE HOLE THE CONTROL RUN FOUND. kie charges credits and publishes no
-        dollar rate, so record_unpriced writes usd = 0.00 - correctly, since
-        inventing a rate would be worse. Measured on the art control: seven
-        calls, 52 credits, seven ledger rows totalling $0.00. A dollar ceiling
-        reading only recorded dollars would never move, which is the per-call
-        bug one layer down."""
-        item = _item(root)
-        allowed = 0
-        for _ in range(20):
-            got = spend.reserve(root, 0.40, work_item_id=item,
-                                what="kie image", run_ceiling_usd=5.0)
-            if not got["ok"]:
-                break
-            allowed += 1
-            spend.record_unpriced(root, 8, kind="image", work_item_id=item,
-                                  detail="kie image")
-            spend.release(root, got["token"])
-        assert allowed == 12
-        assert spend.spent_on_item(root, item) == 0.0    # no rate was invented
-        assert spend.held_usd(root, work_item_id=item) == pytest.approx(4.8)
-
-    def test_a_call_that_never_billed_does_not_eat_the_budget(self, root):
-        """Dollars alone cannot tell "charged credits, reported no price" from
-        "died before billing" - both leave the dollar total unmoved. Settling
-        the second would shrink a run's budget for work that never happened."""
-        item = _item(root)
-        for _ in range(20):
-            got = spend.reserve(root, 0.40, work_item_id=item,
-                                run_ceiling_usd=5.0)
-            assert got["ok"]
-            spend.release(root, got["token"])       # nothing was charged
-        assert spend.held_usd(root, work_item_id=item) == 0.0
-
-    def test_two_processes_racing_cannot_both_be_told_there_is_room(self, root):
-        """Checking the committed total independently before both calls is not
-        enough: neither has recorded anything yet, so both see room."""
-        item = _item(root)
-        first = spend.reserve(root, 3.0, work_item_id=item, what="a",
-                              run_ceiling_usd=5.0)
-        second = spend.reserve(root, 3.0, work_item_id=item, what="b",
-                               run_ceiling_usd=5.0)
-        assert first["ok"]
-        assert not second["ok"]
-        assert second["scope"] == "run"
-        assert second["held"] == pytest.approx(3.0)
-
-    def test_a_priced_charge_replaces_its_hold_rather_than_stacking(self, root):
-        item = _item(root)
-        first = spend.reserve(root, 4.0, work_item_id=item,
-                              run_ceiling_usd=5.0)
-        assert not spend.reserve(root, 4.0, work_item_id=item,
-                                 run_ceiling_usd=5.0)["ok"]
-        # The provider priced it at less than the estimate; the real number is
-        # the truth and the reservation stops counting.
-        spend.record(root, 0.19, kind="image", work_item_id=item)
-        spend.release(root, first["token"])
-        assert spend.held_usd(root, work_item_id=item) == 0.0
-        assert spend.spent_on_item(root, item) == pytest.approx(0.19)
-        assert spend.reserve(root, 4.0, work_item_id=item,
-                             run_ceiling_usd=5.0)["ok"]
-
-    def test_an_expired_hold_does_not_hold_the_budget_hostage(self, root):
-        """A process killed by the runtime ceiling must not refuse spending for
-        the rest of the session - the same rule path leases follow."""
-        item = _item(root)
-        spend.reserve(root, 4.9, work_item_id=item, run_ceiling_usd=5.0)
-        with db.tx(root) as conn:
-            conn.execute("UPDATE spend_hold SET expires_at = "
-                         "datetime('now', '-1 hour')")
-        assert spend.reserve(root, 4.9, work_item_id=item,
-                             run_ceiling_usd=5.0)["ok"]
-
-    def test_a_new_project_enforces_generous_ceilings(self, tmp_path):
-        """Budgets are on from the first dispatch, under ceilings meant to
-        catch a runaway rather than ration a working day: $10 an item, $50 a
-        day, $500 for the project."""
-        from bgate_core.store import project
-
-        project.init(tmp_path, "budget-default")
-        b = spend.budget(tmp_path)
-        assert b["enforced"]
-        assert (b["per_item_usd"], b["per_day_usd"], b["per_project_usd"]) == (
-            10.0, 50.0, 500.0)
-        item = _item(tmp_path)
-        assert spend.reserve(tmp_path, 9.0, work_item_id=item)["ok"]
-        assert not spend.reserve(tmp_path, 99.0, work_item_id=item)["ok"]
-
-    def test_a_human_who_turned_it_off_keeps_it_off(self, tmp_path):
-        from bgate_core.store import project, settings
-
-        project.init(tmp_path, "budget-default")
-        settings.set(tmp_path, "budget.enforced", False, actor="human")
-        project.init(tmp_path, "budget-default")
-        assert not spend.budget(tmp_path)["enforced"]
 
 
 # ---------------------------------------------------------------------------

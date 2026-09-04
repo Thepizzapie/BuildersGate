@@ -3,7 +3,7 @@
  *
  * WHY THIS FILE EXISTS
  * --------------------
- * bgate_core/wfnodes.py made forty-seven MCP tools runnable from the canvas and
+ * bgate_core/wfnodes.py made the connected generator APIs runnable from the canvas and
  * wf_steps_tools.js drew them into the palette. None of that is visible from
  * Studio's front door, because the front door is the LIBRARY — a grid of
  * template cards — and the palette only exists one click deeper, inside an
@@ -24,7 +24,7 @@
  *
  * 2. SEPARATION. The categories already existed as tiny uppercase labels
  *    floating over one undifferentiated field of cards, so 2D art, worlds, 3D
- *    and agents read as one continuous wall. Adding five more weak labels would
+ *    and engine tools read as one continuous wall. Adding five more weak labels would
  *    have made that worse. Each family is now a .spanel with a .sec-h header
  *    band — the pattern app.css already defines, not a seventh invented one —
  *    carrying an icon from icons.js, the family's own seat colour, and a count.
@@ -70,8 +70,6 @@
       note: "storyboard, shots, the cut" },
     { id: "engine", label: "Engine · Godot", icon: "tech", fam: "var(--c-tech)",
       note: "into the game, with proof" },
-    { id: "agent", label: "Agents", icon: "agents", fam: "var(--c-director)",
-      note: "seats doing the work" },
   ];
 
   /* A template's own mark. Falls back to its family's, so a template registered
@@ -272,7 +270,7 @@
             config: { name: "hub_theme", instrumental: true, duration: 60 } },
           { id: "cands", type: "tool.music.candidates", x: X(3), y: Y,
             config: { logical_name: "hub_theme", limit: 20 } },
-          { id: "pick", type: "control.select", x: X(4), y: Y },
+          { id: "pick", type: "control.pick", x: X(4), y: Y },
           { id: "keep", type: "tool.music.keep", x: X(5), y: Y,
             config: { artifact_id: "{artifact_id}", note: "picked in Studio" } },
           { id: "install", type: "tool.music.install", x: X(6), y: Y,
@@ -341,7 +339,7 @@
             config: { item_class: "prop", base_name: "surveyor_lantern", descriptor: desc,
                       materials: "brass,iron,glass", tiers: "common,rare",
                       quality: "medium", limit: 6 } },
-          { id: "pick", type: "control.select", x: X(4), y: Y },
+          { id: "pick", type: "control.pick", x: X(4), y: Y },
           { id: "frames", type: "tool.item.spriteframes", x: X(5), y: Y,
             config: { name: "surveyor_lantern", res_dir: "assets/gear" } },
           { id: "imp", type: "tool.godot.import", x: X(6), y: Y,

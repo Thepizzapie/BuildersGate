@@ -1778,14 +1778,10 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
     seq = sequence(root, name)
     shot = _shot_at(seq, idx)
 
-    # Resolved before the gate rather than after it, because the gate now needs
-    # to know which model is being bought from in order to price the shot.
+    # Resolved up front so the estimate on the result names the model the shot
+    # is actually bought from.
     chosen = _model_for(seq, model)
     estimate = _shot_estimate(seq, shot, model=chosen)
-    refusal = _budget_refusal(root, estimate)
-    if refusal:
-        return {"ok": False, "error": refusal, "stage": "spend_gate",
-                "estimate": estimate, "sequence": seq["name"], "idx": idx}
 
     # The encoder is checked HERE, before the spend, and not at keep() where it
     # is used. A project with no libtheora can generate every shot of a sequence,
@@ -3159,42 +3155,6 @@ def _model_for(seq: dict, model: str = "") -> str:
     from bgate_adapters import kie
 
     return str(model or "").strip() or seq.get("model") or kie.DEFAULT_VIDEO_MODEL
-
-
-def _budget_refusal(root: str, estimate: Optional[dict] = None) -> str:
-    """The project budget's answer, or "" to proceed. Never raises.
-
-    IT USED TO PROJECT ZERO, and that made this gate half a gate: it could catch
-    "this project is already over its ceiling" and never "this one shot is
-    expensive", which for a fifteen-second clip is the larger number. kie
-    publishes no price, so there was nothing else to hand it — until
-    kie.estimate_usd, which produces a conservative upper bound and says
-    explicitly when it cannot.
-
-    AN UNKNOWN PRICE IS STILL NOT ZERO, and the shape of this reflects that. A
-    known estimate is projected. An unknown one falls back to today's behaviour
-    — the ceiling is still asked about, nothing is invented — but any refusal
-    that comes back SAYS the per-shot figure was unavailable and why, so nobody
-    reads a passed gate as "this shot is free".
-    """
-    projected = 0.0
-    if estimate and estimate.get("known") and estimate.get("usd"):
-        projected = float(estimate["usd"])
-    try:
-        from ..board import spend
-
-        verdict = spend.check(root, projected_usd=projected)
-    except Exception:                                            # noqa: BLE001
-        return ""   # no ledger is not a licence to refuse work
-    if verdict.get("allowed", True):
-        return ""
-    said = (f" This shot was projected at about ${projected:.2f}."
-            if projected else
-            f" The cost of this shot could not be estimated, so the ceiling was "
-            f"checked against the project total alone: "
-            f"{(estimate or {}).get('basis') or 'no estimate was available'}")
-    return (f"the project budget refuses this shot: "
-            f"{verdict.get('reason') or 'ceiling reached'}." + said)
 
 
 # ---------------------------------------------------------------------------

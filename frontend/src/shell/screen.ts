@@ -21,6 +21,13 @@ export function setScreen(id: string): void {
   listeners.forEach((fn) => fn());
 }
 
+/** Open the single human-attention inbox from any React island or legacy view. */
+export function openAttention(): void {
+  setScreen("agents");
+  window.setWorkspace?.("agents");
+  window.dispatchEvent(new CustomEvent("bgate:orchestration-tab", { detail: { tab: "attention" } }));
+}
+
 function subscribe(fn: () => void) {
   listeners.add(fn);
   return () => { listeners.delete(fn); };

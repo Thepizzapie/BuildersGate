@@ -15,7 +15,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from bgate_core.board import gitwork, queue, spend
+from bgate_core.board import gitwork, queue, runlimits
 from bgate_ui import api
 from bgate_ui.agents import dispatch
 from bgate_ui.app import app
@@ -114,11 +114,9 @@ class TestItemRoutes:
     def test_patch_edits_and_validates(self, client, root):
         item = queue.add(root, "art", "typo'd breif")
         got = client.patch(f"/api/queue/{item['id']}",
-                           json={"title": "fixed brief", "priority": 3,
-                                 "max_cost_usd": 12.5}).json()
+                           json={"title": "fixed brief", "priority": 3}).json()
         assert got["data"]["title"] == "fixed brief"
         assert got["data"]["priority"] == 3
-        assert got["data"]["max_cost_usd"] == 12.5
 
         bad = client.patch(f"/api/queue/{item['id']}", json={"seat": "wizard"})
         assert bad.status_code == 400
@@ -163,25 +161,13 @@ class TestItemRoutes:
         assert got["data"]["status"] == "queued"
 
 
-class TestSpendCeiling:
-    def test_dispatch_refused_when_the_day_budget_is_spent(self, client, root,
-                                                           fake_claude):
-        spend.set_budget(root, per_day_usd=2, per_item_usd=5, enforced=1)
-        # kind="image", not "agent": the day ceiling measures REAL money, and
-        # an agent session on a subscription is not any. See TestBillingSplit.
-        spend.record(root, 1.5, kind="image", detail="earlier tonight")
-        item = queue.add(root, "art", "expensive")
+class TestRunAccounting:
+    """What a run cost lands on the run's own row and is summed nowhere else.
 
-        got = client.post(f"/api/queue/{item['id']}/dispatch").json()
-        assert got["ok"] is False
-        assert got["code"] == "budget_exceeded"
-        assert "daily budget" in got["error"]
-        assert queue.get(root, item["id"])["status"] == "queued"  # never spawned
-
-    def test_dispatch_allowed_under_the_ceiling(self, client, root, fake_claude):
-        spend.set_budget(root, per_day_usd=100, per_item_usd=5)
-        item = queue.add(root, "art", "cheap")
-        assert client.post(f"/api/queue/{item['id']}/dispatch").json()["ok"] is True
+    There is no ledger and no ceiling behind these numbers: this product does
+    not meter money, and the only balance that exists is the one on the user's
+    own provider account.
+    """
 
     def test_completion_persists_cost_and_turns(self, client, root):
         item = queue.add(root, "art", "paint")
@@ -198,79 +184,24 @@ class TestSpendCeiling:
         row = queue.get(root, item["id"])
         assert row["total_cost_usd"] == pytest.approx(1.25)
         assert row["num_turns"] == 9
-        # The notional price lands on the SUBSCRIPTION side. project_usd is
-        # real money and an agent session is not any of it.
-        assert spend.totals(root)["subscription"]["usd"] == pytest.approx(1.25)
-        assert spend.totals(root)["project_usd"] == pytest.approx(0)
 
-        # Idempotent: reaping twice must not bill twice.
-        entry = {"log": str(log), "finalized": True}
-        dispatch._finalize(str(root), item["id"], entry)
-        assert spend.totals(root)["subscription"]["usd"] == pytest.approx(1.25)
+    def test_dispatch_is_not_refused_for_money(self, client, root, fake_claude):
+        """The budget gate is gone. A dispatch is refused for a dirty tree, a
+        chain that has not landed, or the concurrency cap - never for spend."""
+        item = queue.add(root, "art", "expensive")
+        assert client.post(f"/api/queue/{item['id']}/dispatch").json()["ok"] is True
 
-    def test_spend_endpoints(self, client, root):
-        spend.record(root, 3.0, kind="image", logical_name="hero")
-        got = client.get("/api/spend").json()
-        assert got["data"]["project_usd"] == pytest.approx(3.0)
-        assert got["data"]["by_kind"]["image"] == pytest.approx(3.0)
-
-        patched = client.patch("/api/spend/budget",
-                               json={"per_day_usd": 9.0}).json()
-        assert patched["data"]["per_day_usd"] == 9.0
+    def test_there_is_no_spend_endpoint(self, client):
+        """/api/spend and /api/spend/budget served the ledger and the ceilings.
+        Both are gone; a 404 is the honest answer, not an empty total."""
+        assert client.get("/api/spend").status_code == 404
         assert client.patch("/api/spend/budget",
-                            json={"max_concurrent": 0}).status_code == 400
-
-
-class TestBillingSplit:
-    """Two bills, and the ledger used to add them together.
-
-    An image generation is invoiced by a vendor. An agent session on a
-    subscription reports what it WOULD have cost on the API and is charged to
-    nobody. Summing them gave a project total matching no statement, and made
-    an evening of uncharged agent work refuse a purchase that costs money.
-    """
-
-    def test_agent_spend_is_not_real_money(self, root):
-        spend.record(root, 12.0, kind="agent", detail="a long session")
-        totals = spend.totals(root)
-        assert totals["project_usd"] == pytest.approx(0)
-        assert totals["subscription"]["usd"] == pytest.approx(12.0)
-
-    def test_image_spend_is(self, root):
-        spend.record(root, 3.0, kind="image", logical_name="hero")
-        assert spend.totals(root)["project_usd"] == pytest.approx(3.0)
-
-    def test_agent_spend_cannot_lock_out_a_purchase(self, root):
-        """The regression that motivated the split: $400 of subscription agent
-        work against a $25 day ceiling refused every image generation after
-        it, while doing nothing at all to slow the agents down."""
-        spend.set_budget(root, per_day_usd=25, enforced=1)
-        spend.record(root, 400.0, kind="agent", detail="a busy night")
-        assert spend.check(root, projected_usd=1.0)["allowed"] is True
-        # Real money still bites.
-        spend.record(root, 24.5, kind="image", logical_name="hero")
-        assert spend.check(root, projected_usd=1.0)["allowed"] is False
-
-    def test_tokens_are_recorded_because_dollars_do_not_meter_a_subscription(
-            self, root):
-        spend.record(root, 0.0, kind="agent", model="claude-opus-5[1m]",
-                     tokens={"input": 164, "output": 72_911,
-                             "cache_read": 13_793_062, "cache_write": 200_780})
-        sub = spend.totals(root)["subscription"]
-        assert sub["cache_read_tokens"] == 13_793_062
-        assert sub["input_side_tokens"] == 164 + 13_793_062 + 200_780
-        # A priced-at-zero run is still a run. Dropping it because usd was 0
-        # would hide exactly the plans where tokens are the only signal.
-        assert sub["runs"] == 1
-
-    def test_a_run_with_neither_dollars_nor_tokens_is_not_a_row(self, root):
-        spend.record(root, 0.0, kind="agent")
-        assert spend.totals(root)["subscription"]["runs"] == 0
+                            json={"per_day_usd": 9.0}).status_code == 404
 
 
 class TestConcurrencyCap:
     def test_overflow_is_refused(self, client, root, fake_claude):
-        spend.set_budget(root, max_concurrent=1)
+        runlimits.set_limits(root, max_concurrent=1)
         first = queue.add(root, "art", "one")
         second = queue.add(root, "gameplay", "two")
         assert client.post(f"/api/queue/{first['id']}/dispatch").json()["ok"] is True
@@ -290,7 +221,7 @@ class TestWatchdog:
         entry.update(over)
         return entry
 
-    def test_runtime_budget_kills_a_wedged_agent(self, root, monkeypatch):
+    def test_the_runtime_limit_kills_a_wedged_agent(self, root, monkeypatch):
         item = queue.add(root, "art", "wedged")
         queue.set_status(root, item["id"], "dispatched")
         log = root / ".bgate" / "agents" / f"item-{item['id']}.log"
@@ -307,24 +238,7 @@ class TestWatchdog:
         assert killed == [777]
         row = queue.get(root, item["id"])
         assert row["status"] == "failed"
-        assert "runtime budget" in row["result"]
-        dispatch._live.clear()
-
-    def test_cost_budget_kills_mid_run(self, root, monkeypatch):
-        item = queue.add(root, "art", "spendy")
-        queue.set_status(root, item["id"], "dispatched")
-        log = root / ".bgate" / "agents" / f"item-{item['id']}.log"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text(json.dumps({"type": "result", "total_cost_usd": 9.5}) + "\n",
-                       encoding="utf-8")
-
-        killed = []
-        monkeypatch.setattr(dispatch, "_kill_tree", lambda pid: killed.append(pid))
-        dispatch._live[item["id"]] = self._entry(log, max_cost_usd=1.0)
-        dispatch._watch_completion(str(root), item["id"], poll_s=0.01)
-
-        assert killed == [777]
-        assert "$9.50" in queue.get(root, item["id"])["result"]
+        assert "runtime limit" in row["result"]
         dispatch._live.clear()
 
     def test_healthy_agent_is_left_alone(self, root, monkeypatch):
@@ -336,8 +250,7 @@ class TestWatchdog:
 
         killed = []
         monkeypatch.setattr(dispatch, "_kill_tree", lambda pid: killed.append(pid))
-        dispatch._live[item["id"]] = self._entry(log, max_runtime_s=3600,
-                                                 max_cost_usd=100.0)
+        dispatch._live[item["id"]] = self._entry(log, max_runtime_s=3600)
         # The watchdog loops until the entry disappears; let it poll a few times
         # against a healthy agent, then drop the entry to end the thread.
         import threading
@@ -519,3 +432,93 @@ class TestNoBaseCommit:
         item = queue.add(root, "art", "paint")
         got = client.post(f"/api/queue/{item['id']}/revert", json={})
         assert got.status_code == 400
+
+
+class TestTheLogCarriesItsOwnClock:
+    """A step's time has to be written by whoever received the line.
+
+    The runner's stream-json carries no wall clock, so every reader dated a
+    step by when it PARSED the line. That is within milliseconds for the
+    dashboard's incremental feed and a fabrication for anything re-reading a
+    finished log: agent_activity reported all four steps of a twenty-minute
+    run as having happened in the same second, which answers "is it stuck"
+    with a confident no, every time.
+    """
+
+    def _pumped(self, tmp_path, body: str):
+        import subprocess
+        import sys
+
+        script = tmp_path / "fake_agent.py"
+        script.write_text(body, encoding="utf-8")
+        log = tmp_path / "item-1.log"
+        handle = open(log, "ab")
+        proc = subprocess.Popen([sys.executable, str(script)],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+        thread = dispatch._pump_stamped(proc.stdout, handle, 1)
+        proc.wait()
+        thread.join(10)
+        handle.close()
+        return log.read_text(encoding="utf-8").splitlines()
+
+    def test_every_json_line_gets_the_writers_clock(self, tmp_path):
+        import json
+        import time
+
+        before = time.time()
+        lines = self._pumped(tmp_path, "import json\n"
+                                       "for i in range(3):\n"
+                                       "    print(json.dumps({'type': 'assistant', 'n': i}),"
+                                       " flush=True)\n")
+        after = time.time()
+        assert len(lines) == 3
+        for i, line in enumerate(lines):
+            event = json.loads(line)
+            assert before <= event["bgate_ts"] <= after
+            # The payload survives the splice byte for byte - these lines are
+            # large and are read by things that are not this module.
+            assert event["type"] == "assistant" and event["n"] == i
+
+    def test_a_line_that_is_not_json_is_passed_through_untouched(self, tmp_path):
+        # A log that drops what it cannot classify is worse than one holding an
+        # unstamped line: stderr is where the reason a run died shows up.
+        lines = self._pumped(tmp_path,
+                             "import sys\n"
+                             "print('not json at all', flush=True)\n"
+                             "sys.stderr.write('Traceback (most recent call"
+                             " last)' + chr(10))\n")
+        assert "not json at all" in lines
+        assert any("Traceback" in line for line in lines)
+
+    def test_a_stamped_log_gives_agent_activity_real_per_step_times(self, tmp_path):
+        import json
+        import time
+
+        from bgate_core.board import agentlog
+
+        old = time.time() - 900
+        state = {"steps": [], "final": None, "session_id": "", "step_count": 0}
+        agentlog.fold_line(state, json.dumps(
+            {"bgate_ts": old, "type": "assistant",
+             "message": {"content": [{"type": "text", "text": "started"}]}}))
+        step = agentlog._stamped(state["steps"][0])
+        assert step["ts_exact"] is True
+        assert step["age_s"] >= 890, (
+            "a fifteen-minute-old step must read as fifteen minutes old, or "
+            "the feed cannot answer the only question anyone asks of it")
+
+    def test_an_unstamped_log_gets_no_time_rather_than_a_wrong_one(self, tmp_path):
+        import json
+
+        from bgate_core.board import agentlog
+
+        state = {"steps": [], "final": None, "session_id": "", "step_count": 0}
+        agentlog.fold_line(state, json.dumps(
+            {"type": "assistant",
+             "message": {"content": [{"type": "text", "text": "legacy"}]}}))
+        step = agentlog._stamped(state["steps"][0])
+        assert step["ts_exact"] is False
+        assert "at" not in step and "age_s" not in step, (
+            "a log written before the stamp existed must not be dated from "
+            "the moment it was read")

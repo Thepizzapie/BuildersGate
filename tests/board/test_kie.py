@@ -406,87 +406,32 @@ class TestSpend:
                                "credits_consumed": 30},
                               root, kind="image")
         # No dollar figure is invented; the result states the gap and keeps the
-        # credit count, and a zero-dollar MARKER row lands so totals() can say
-        # how much real spend is missing a price.
+        # credit count. Nothing is summed anywhere — what the account was
+        # charged is kie's number to report, and kie_status reads it.
         assert result["accounted"] is False
         assert kie.USD_PER_CREDIT_ENV in result["cost_note"]
         assert result["credits_consumed"] == 30
-        assert result["unpriced_recorded"] is True
 
-    def test_unpriced_rows_are_surfaced_in_totals_not_dropped(self, root):
-        # THE REPORT IS THE PRODUCT (budgets are off by default), so a kie-heavy
-        # project must not read as cheap just because kie bills in credits.
-        from bgate_core.board import spend
-
-        kie._account({"ok": True, "usd": None, "credits_consumed": 30,
-                      "model": "seedance-2"},
-                     root, kind="video", logical_name="chase")
-        kie._account({"ok": True, "usd": None, "credits_consumed": 12},
-                     root, kind="image", logical_name="hero")
-        totals = spend.totals(root)
-        # No invented rate: the dollar totals stay honest at zero...
-        assert totals["project_usd"] == 0 and totals["today_usd"] == 0
-        # ...and the gap is named instead of silent.
-        un = totals["unaccounted"]
-        assert un["rows"] == 2 and un["today_rows"] == 2
-        assert un["credits"] == pytest.approx(42)
-        assert un["credits_unknown_rows"] == 0
-        assert "BGATE_KIE_USD_PER_CREDIT" in un["note"]
-
-    def test_unknown_credits_still_count_as_an_unaccounted_row(self, root):
-        # Suno's balance-delta path can fail to measure even the credits; the
-        # ROW still counts — a charge with no number at all is still a charge.
-        from bgate_core.board import spend
-
-        kie._account({"ok": True, "usd": None,
-                      "credits_consumed": None},
-                     root, kind="audio", logical_name="loop")
-        un = spend.totals(root)["unaccounted"]
-        assert un["rows"] == 1 and un["credits"] == 0
-        assert un["credits_unknown_rows"] == 1
-
-    def test_a_priced_success_writes_no_unaccounted_row(self, root, monkeypatch):
-        from bgate_core.board import spend
-
+    def test_a_priced_success_reports_the_dollars(self, root, monkeypatch):
         monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
-        kie._account({"ok": True, "usd": kie.cost_usd(200),
-                      "credits_consumed": 200},
-                     root, kind="video", logical_name="chase")
-        un = spend.totals(root)["unaccounted"]
-        assert un["rows"] == 0 and un["note"] == ""
+        result = kie._account({"ok": True, "usd": kie.cost_usd(200),
+                               "credits_consumed": 200, "model": "seedance-2"},
+                              root, kind="video", logical_name="chase")
+        assert result["accounted"] is True
+        assert result["usd"] == pytest.approx(1.0)
+        assert "cost_note" not in result
 
-    def test_an_unpriced_failure_writes_no_row(self, root):
+    def test_an_unpriced_failure_claims_nothing(self, root):
         # A failed call may not have been charged; claiming spend for it would
         # be inventing in the other direction.
-        from bgate_core.board import spend
-
-        kie._account({"ok": False, "usd": None,
-                      "credits_consumed": 30}, root, kind="image")
-        assert spend.totals(root)["unaccounted"]["rows"] == 0
-
-    def test_a_priced_success_lands_in_the_ledger_under_its_own_kind(
-            self, root, monkeypatch):
-        from bgate_core.board import spend
-
-        monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
-        kie._account({"ok": True, "usd": kie.cost_usd(200),
-                      "model": "seedance-2"},
-                     root, kind="video", logical_name="chase")
-        totals = spend.totals(root)
-        # "video" is its own bucket: kie prices a clip at 100-500 credits
-        # against an image's 10-50, so it must not sum into "other".
-        assert totals["by_kind"]["video"] == pytest.approx(1.0)
-        assert spend.for_logical(root, "chase") == pytest.approx(1.0)
+        result = kie._account({"ok": False, "usd": None,
+                               "credits_consumed": 30}, root, kind="image")
+        assert result["accounted"] is False
 
     def test_a_failure_is_never_accounted(self, root):
         result = kie._account({"ok": False, "usd": 5.0}, root,
                               kind="image")
         assert result["accounted"] is False
-
-    def test_video_is_a_known_spend_kind(self):
-        from bgate_core.board import spend
-        assert "video" in spend.KINDS
-
 
 class TestWiring:
     def test_the_provider_registry_carries_kie_and_what_it_powers(self):
@@ -745,13 +690,13 @@ def clean_models(monkeypatch):
 
 
 class TestTheForwardEstimate:
-    """The number a budget gate needs, which is the one kie does not publish.
+    """The number a human needs before buying, which kie does not publish.
 
     Everything else here measures cost after the fact — creditsConsumed arrives
-    on the finished record, which is the truth and is useless to a gate that
-    runs before the spend. So these are mostly about what happens when there is
-    NO number: it stays None, it says so, and it never reaches spend.check
-    wearing a zero.
+    on the finished record, which is the truth and arrives when the money is
+    already gone. So these are mostly about what happens when there is NO
+    number: it stays None, it says so, and it never reaches a reader wearing a
+    zero.
     """
 
     def test_an_unknown_model_is_priced_at_nothing_rather_than_at_zero(self):

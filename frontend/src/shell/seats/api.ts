@@ -44,7 +44,7 @@ export function useJSON<T extends Record<string, unknown>>(
   fallback: T,
   ms: number,
   enabled: boolean,
-): T & { __error?: string } {
+): T & { __error?: string; __refresh?: () => void } {
   const [data, setData] = useState<T & { __error?: string }>(fallback);
   /* THE STALE-RESPONSE GUARD. When `path` changes, the old path's in-flight
      response can land AFTER the new path's immediate fetch and overwrite it —

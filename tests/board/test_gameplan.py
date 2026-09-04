@@ -310,56 +310,13 @@ class TestDigest:
         assert gp.digest(root)["blocked"] == ""
 
 
-class TestSpendAttributionAndGates:
-    """Money: who spent it, and whether anything asked first."""
+class TestPaidPathsPreflightTheAccount:
+    """There is no budget to ask. What every paid path must still do is ask
+    whether ANY provider can serve it, because a drained or unkeyed account
+    refuses regardless of price and an agent that learns it from a 402 has
+    already paid for the lesson."""
 
-    def test_spend_rows_carry_the_seat_that_spent_them(self, root, monkeypatch):
-        from bgate_core.board import spend
-        monkeypatch.setenv("BGATE_SEAT", "art")
-        spend.record(root, 0.17, kind="image", detail="a sprite")
-        monkeypatch.setenv("BGATE_SEAT", "cinematic")
-        spend.record(root, 2.50, kind="video", detail="a shot")
-        by_seat = spend.totals(root)["by_seat"]
-        assert by_seat["art"]["usd"] == 0.17
-        assert by_seat["cinematic"]["usd"] == 2.5
-
-    def test_an_unattributed_row_is_grouped_not_dropped(self, root, monkeypatch):
-        from bgate_core.board import spend
-        monkeypatch.delenv("BGATE_SEAT", raising=False)
-        spend.record(root, 1.0, kind="image", detail="a human's own call")
-        totals = spend.totals(root)
-        # It must still sum: a by-seat view that silently loses rows is worse
-        # than no by-seat view.
-        assert totals["by_seat"]["(unattributed)"]["usd"] == 1.0
-        assert totals["project_usd"] == 1.0
-
-    def test_the_window_columns_exist_and_agree(self, root, monkeypatch):
-        from bgate_core.board import spend
-        monkeypatch.setenv("BGATE_SEAT", "art")
-        spend.record(root, 3.0, kind="image")
-        got = spend.totals(root)
-        assert got["today_usd"] == 3.0
-        assert got["week_usd"] == 3.0 and got["month_usd"] == 3.0
-        assert "agent_runs" in got
-
-    def test_agent_spend_is_visible_beside_the_ceilings(self, root, monkeypatch):
-        """Agent runs bill as subscription and never gate; they are reported
-        in the two windows the ceilings use so a panel can print them side by
-        side with per_day_usd / per_project_usd."""
-        from bgate_core.board import spend
-        monkeypatch.setenv("BGATE_SEAT", "code")
-        spend.record(root, 2.5, kind="agent")
-        spend.record(root, 1.0, kind="image")
-        got = spend.totals(root)
-        assert got["agent_usd_day"] == 2.5
-        assert got["agent_usd_project"] == 2.5
-        assert got["today_usd"] == 1.0
-        spend.set_budget(root, enforced=1, per_day_usd=100.0)
-        verdict = spend.check(root)
-        assert verdict["allowed"]
-        assert verdict["agent_usd_day"] == 2.5
-
-    def test_every_paid_image_tool_asks_the_budget(self):
+    def test_every_paid_image_tool_preflights_the_provider(self):
         # The gate guarded ONE tool of twelve. This is the regression that
         # notices if a paid path is added (or reverted) without one.
         import ast
@@ -367,12 +324,22 @@ class TestSpendAttributionAndGates:
         src = Path("src/bgate_mcp/server.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         paid = {"image_generate", "image_edit", "item_generate", "item_variants",
-                "image_talkhead", "vfx_animate", "image_sprites", "voice_speak",
+                "image_talkhead", "vfx_animate", "image_sprites",
                 "kie_video_generate"}
         ungated = []
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name in paid:
                 body = ast.get_source_segment(src, node) or ""
-                if "_spend_gate" not in body and "_gate_images" not in body:
+                if "_provider_gate" not in body:
                     ungated.append(node.name)
-        assert ungated == [], f"paid tools that never ask the budget: {ungated}"
+        assert ungated == [], f"paid tools with no provider preflight: {ungated}"
+
+    def test_there_is_no_spend_gate_left_to_call(self):
+        """The ledger and its reservation gate are gone (db migration 0045).
+        A helper that came back would be a budget coming back with it — and so
+        would the wrappers that existed only to consult one."""
+        from bgate_mcp import server
+
+        for gone in ("_spend_gate", "_run_ceiling", "_paid_gate",
+                     "_gate_images"):
+            assert not hasattr(server, gone), gone

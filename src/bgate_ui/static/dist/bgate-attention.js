@@ -1,0 +1,1 @@
+const n="bgate.dismissed-attention",s=t=>`item:${t.id}:${t.status}:${t.execution_state||""}:${t.updated_at||""}`,i=t=>`gate:${t.id}`,a=t=>`question:${t.id}`;function o(){if(typeof window>"u")return[];try{const t=JSON.parse(window.localStorage.getItem(n)||"[]");return Array.isArray(t)?t.filter(e=>typeof e=="string"):[]}catch{return[]}}export{n as D,i as g,s as i,a as q,o as r};

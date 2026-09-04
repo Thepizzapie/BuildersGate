@@ -402,8 +402,8 @@ def runner_python() -> str:
 #   usd_per_credit  the PUBLISHED conversion, or None. None propagates:
 #                price_for returns None and the caller must ask a human rather
 #                than spend. krea.TRAIN_USD settled this — an invented price is
-#                worse than a missing one, because the spend gate treats a
-#                number as permission.
+#                worse than a missing one, because a reader treats a number as
+#                a quote.
 #   vram_gb      local only. What the docs say inference needs.
 #   weights      local only. Where the weights come from and how big they are.
 #   windows      local only. Whether it installs on native Windows, which is the
@@ -1373,9 +1373,9 @@ def price_for(backend: str, *, texture: bool = True, quad: bool = False,
       0.0   a local backend. Your own electricity, and the honest number.
       float a hosted backend with a PUBLISHED credit rate.
       None  a hosted backend whose rate is not published. NOT 0.0 and not a
-            guess — the spend gate treats a number as permission, so an
-            invented one is worse than a missing one (krea.TRAIN_USD settled
-            this). A caller that gets None must ask the human.
+            guess — a reader treats a number as a quote, so an invented one is
+            worse than a missing one (krea.TRAIN_USD settled this). A caller
+            that gets None must ask the human.
     """
     spec = _spec(backend)
     if spec["kind"] == "local":
@@ -2197,7 +2197,6 @@ def generate(image_path: str | os.PathLike[str],
                   "through the conditioning steps in `notes`.",
         "fix": "run the conditioning sequence before blender_combine",
     })
-    _account(out, root, logical_name, work_item_id)
     return out
 
 
@@ -2307,7 +2306,6 @@ def generate_parts(image_path: str | os.PathLike[str],
         "fix": "condition, then blender_combine(parts=result['combine']), then "
                "blender_rig, then blender_flex",
     })
-    _account(out, root, logical_name, work_item_id)
     return out
 
 
@@ -2333,11 +2331,26 @@ def _run_krea(image_path, out_path, *, root, timeout: float,
         if ours in options and options[ours] is not None:
             kwargs[theirs] = options[ours]
     model = options.get("model") or krea.DEFAULT_MODEL_3D
-    # confirm_unpriced is NOT forwarded from the caller. A model Krea has never
-    # been invoiced for cannot be quoted, and accepting a blind charge is a
-    # decision for whoever is paying — not a default this layer hands through.
+    # THE UNPRICED GATE IS FORWARDED NOW, AND DEFAULTS TO OPEN. It used to be
+    # withheld here on the reasoning that a blind charge is the payer's call —
+    # true as far as it goes, and it produced this: krea lists five 3D models,
+    # exactly one has ever been invoiced on this account, and asking for any of
+    # the other four dead-ended the agent on a flag no layer beneath the payer
+    # could set. No retry, no options key and no fallback reached it, so a seat
+    # spent its run hunting for a switch that did not exist. USER DIRECTIVE,
+    # 2026-09-03: an unmeasured rate is not a reason to stop an agent. Builders
+    # Gate does not meter money — the only spending figure it shows is the
+    # provider's own — so a price this table has not measured yet is a gap in
+    # the table, not a spend control.
+    #
+    # A caller that must not risk an unknown charge still closes it by passing
+    # confirm_unpriced=False, and price_for() still returns None, so the quote
+    # stays honest about not knowing.
     got = krea.generate_3d(str(out_path), images=[str(image_path)],
-                           model=model, timeout=timeout, root=root, **kwargs)
+                           model=model, timeout=timeout, root=root,
+                           confirm_unpriced=bool(
+                               options.get("confirm_unpriced", True)),
+                           **kwargs)
     if not got.get("ok"):
         raise ImageTo3DError(got.get("error") or "krea returned no mesh")
     written = int(got.get("bytes") or 0)
@@ -2434,24 +2447,6 @@ def _run_sync(backend: str, image_path, out_path, *, root, timeout: float,
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(data)
     return len(data), ""
-
-
-def _account(result: dict, root: Any, logical_name: str,
-             work_item_id: Optional[int]) -> None:
-    """Write the estimated spend to the ledger. Best-effort by construction:
-    losing a ledger row must never lose the mesh that was paid for. A local
-    generation costs nothing and records nothing."""
-    if not root or not result.get("ok") or not result.get("usd"):
-        return
-    try:
-        from bgate_core.board import spend
-
-        spend.record(root, float(result["usd"]),
-                     kind="other", work_item_id=work_item_id,
-                     logical_name=logical_name or "",
-                     detail=f"image-to-3d via {result.get('backend')}")
-    except Exception:                                            # noqa: BLE001
-        pass
 
 
 # ---------------------------------------------------------------------------

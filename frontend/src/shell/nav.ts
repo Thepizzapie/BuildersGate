@@ -80,19 +80,19 @@ const RAW_AREAS: Area[] = [
     ],
   },
   {
-    id: "edit", label: "Edit", icon: "brush",
+    id: "assets", label: "Assets", icon: "stack-2",
     screens: [
-      { id: "spriteedit", label: "Sprite editor", icon: "brush",     deck: "spriteedit" },
-      { id: "audiolab",   label: "Audio lab",     icon: "wave-sine", deck: "audiolab" },
-      { id: "modeledit",  label: "3D viewer",     icon: "box",       deck: "modeledit" },
+      { id: "assets",     label: "Library",       icon: "stack-2",     deck: "assets", count: "assets" },
+      { id: "spriteedit", label: "Sprite editor", icon: "brush",       deck: "spriteedit" },
+      { id: "audiolab",   label: "Audio lab",     icon: "wave-sine",   deck: "audiolab" },
+      { id: "modeledit",  label: "3D viewer",     icon: "box",         deck: "modeledit" },
+      { id: "atlas",      label: "Project atlas", icon: "layout-grid", deck: "atlas" },
     ],
   },
   {
-    id: "library", label: "Library", icon: "stack-2",
+    id: "world", label: "World", icon: "book-2",
     screens: [
-      { id: "assets", label: "Assets",      icon: "stack-2",     deck: "assets", count: "assets" },
-      { id: "atlas",  label: "Atlas",       icon: "layout-grid", deck: "atlas" },
-      { id: "world",  label: "World bible", icon: "book-2",      deck: "world" },
+      { id: "world", label: "World authoring", icon: "book-2", deck: "world" },
     ],
   },
 ];
@@ -132,7 +132,7 @@ export const SCREEN_NOTE: Record<string, string> = {
   studio: "node editors",
   seats: "one workspace per craft",
   atlas: "scenes, scripts and the build",
-  world: "the bible and the canon",
+  world: "bible, lore, dialogue and quests",
   spriteedit: "pixels and rigs",
   audiolab: "sound and music",
   modeledit: "models and animation",

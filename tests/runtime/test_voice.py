@@ -1,6 +1,6 @@
 """Deepgram voice: the key never leaves, the request is the documented one.
 
-FOUR THINGS ARE WORTH ASSERTING HERE and the rest is Deepgram's problem.
+THREE THINGS ARE WORTH ASSERTING HERE and the rest is Deepgram's problem.
 
 1. NO KEY REACHES A RESPONSE. This is the whole design constraint — the browser
    never gets DEEPGRAM_API_KEY, in a body, a header, a URL or an error. Asserted
@@ -11,8 +11,7 @@ FOUR THINGS ARE WORTH ASSERTING HERE and the rest is Deepgram's problem.
    and the `Authorization: Token` header shape, checked against what was read
    off Deepgram's reference — because the failure mode of getting these wrong is
    a socket that opens fine and transcribes nothing, or chipmunks.
-3. SPEND IS ACCOUNTED, in the 'speech' bucket and not in 'audio'.
-4. NO KEY DEGRADES GRACEFULLY. Status is 200 with a reason, /speak is a 503 with
+3. NO KEY DEGRADES GRACEFULLY. Status is 200 with a reason, /speak is a 503 with
    a sentence, and the sentence names the variable to set.
 
 NOTHING HERE TOUCHES THE NETWORK. There is no fixture that would let it: the key
@@ -29,9 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bgate_adapters import deepgram
-from bgate_core.store import db
 from bgate_core.runtime import providers
-from bgate_core.board import spend
 
 # Distinctive enough that a substring search cannot false-negative, and shaped
 # nothing like a real Deepgram key so it can never be mistaken for one.
@@ -181,8 +178,8 @@ class TestTheAdapterBuildsTheDocumentedRequest:
     def test_the_billed_character_count_comes_from_deepgram_not_from_len(
             self, keyed, captured):
         """dg-char-count is what the invoice uses. Our own len() differs on
-        anything Deepgram normalises, and a ledger that disagrees with the bill
-        is the thing spend.py exists to stop."""
+        anything Deepgram normalises, and a figure that disagrees with the bill
+        is worse than no figure."""
         got = deepgram.speak("hello")
         assert got["chars"] == 42
         assert got["usd"] == pytest.approx(42 / 1000 * 0.030)
@@ -200,8 +197,8 @@ class TestTheAdapterBuildsTheDocumentedRequest:
         assert deepgram.stream_cost(one_minute)["usd"] == pytest.approx(0.0048)
 
     def test_an_unpriced_model_is_none_and_never_zero(self, monkeypatch):
-        """The krea.TRAIN_USD precedent: every budget check reads a number as
-        permission to spend it, so a made-up 0.0 is worse than no answer."""
+        """The krea.TRAIN_USD precedent: a reader takes a number for a quote,
+        so a made-up 0.0 is worse than no answer."""
         monkeypatch.setitem(deepgram.USD_PER_MINUTE, "base", None)
         assert deepgram.stream_cost(deepgram.BYTES_PER_SECOND * 60,
                                     model="base")["usd"] is None
@@ -221,35 +218,7 @@ class TestTheAdapterBuildsTheDocumentedRequest:
 
 
 # ---------------------------------------------------------------------------
-# 3. Spend
-# ---------------------------------------------------------------------------
-class TestSpendIsAccounted:
-    def test_speaking_writes_a_speech_row_not_an_audio_one(self, client, keyed,
-                                                           captured, root):
-        client.post("/api/voice/speak", json={"text": "hello there"})
-        rows = [dict(r) for r in db.connect(root).execute(
-            "SELECT kind, usd, model, detail FROM spend_event")]
-        assert len(rows) == 1
-        # 'audio' means a sound asset the game ships. This is conversation.
-        assert rows[0]["kind"] == "speech"
-        assert rows[0]["usd"] == pytest.approx(42 / 1000 * 0.030)
-        assert "42 chars" in rows[0]["detail"]
-
-    def test_speech_is_a_kind_the_ledger_will_accept(self, root):
-        """Migration 0024 widened the CHECK. Without it spend.record's own
-        blanket except would swallow every IntegrityError and the rows would
-        vanish silently — which is exactly what happened to 'mesh' before 0023."""
-        assert "speech" in spend.KINDS
-        spend.record(root, 0.0048, kind="speech", detail="deepgram stt 60.0s")
-        assert spend.totals(root)["by_kind"].get("speech") == pytest.approx(0.0048)
-
-    def test_a_zero_length_turn_writes_nothing(self, root):
-        spend.record(root, 0.0, kind="speech", detail="deepgram stt 0.0s")
-        assert spend.totals(root)["by_kind"].get("speech") is None
-
-
-# ---------------------------------------------------------------------------
-# 4. No key: the state this machine is in
+# 3. No key: the state this machine is in
 # ---------------------------------------------------------------------------
 class TestItDegradesWithoutAKey:
     def test_status_is_200_and_names_the_variable_to_set(self, client, keyless):

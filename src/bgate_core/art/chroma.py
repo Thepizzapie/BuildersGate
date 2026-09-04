@@ -811,16 +811,12 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
                 result = imagegen.edit(prompt, [str(p) for p in ref_paths],
                                        str(out_path), size=size, quality=quality,
                                        transparent=transparent, timeout=timeout,
-                                       root=root, logical_name=logical_name,
-                                       work_item_id=work_item_id,
                                        task_kind=task_kind, tileable=tileable)
             else:
                 result = imagegen.generate(prompt, str(out_path), size=size,
                                            quality=quality,
                                            transparent=transparent,
-                                           timeout=timeout, root=root,
-                                           logical_name=logical_name,
-                                           work_item_id=work_item_id,
+                                           timeout=timeout,
                                            task_kind=task_kind,
                                            tileable=tileable)
         elif provider in ("local", "comfy", "localgen"):
@@ -847,9 +843,7 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
                 result = localgen.generate(prompt, str(out_path), size=size,
                                            quality=quality, seed=seed,
                                            transparent=transparent,
-                                           timeout=timeout, root=root,
-                                           logical_name=logical_name,
-                                           work_item_id=work_item_id,
+                                           timeout=timeout,
                                            task_kind=task_kind,
                                            tileable=tileable)
         elif provider == "kie":

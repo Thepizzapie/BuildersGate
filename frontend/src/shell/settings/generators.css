@@ -6,6 +6,7 @@
    ground is translucent; text on it is unreadable). */
 
 .gen-wrap { margin-top: 22px }
+.gen-toolbar { display: flex; justify-content: flex-end; min-height: 22px; margin: -8px 0 8px }
 .gen-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px }
 .gen-head h3 { margin: 0; font-size: 15px; font-weight: var(--fw-semi); color: var(--text) }
 .gen-eyebrow {

@@ -44,7 +44,7 @@ ninety seconds between arms of is one nobody runs.
 So the rule is split by kind, not by graph shape:
 
   * generate nodes start as soon as THEIR OWN inputs are satisfied — siblings
-    run concurrently, bounded by the budget's ``max_concurrent``;
+    run concurrently, bounded by ``dispatch.max_concurrent``;
   * agent and consistency steps still take the line one at a time, and a gate
     or a pick still stops everything behind it.
 
@@ -64,7 +64,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait as _wait
 from typing import Any, Iterable, Optional
 
 from . import (activity, generate as _generate, queue as _queue,
-               spend as _spend, wfnodes as _wfnodes)
+               runlimits as _runlimits, wfnodes as _wfnodes)
 from ..store import artifacts as _artifacts, db
 from ..store.util import rows
 
@@ -116,7 +116,7 @@ _CONTEXT_TYPES = {"input.bible", "input.lore"}
 # not run; that is a different verb with a different guard.
 RUNNABLE_KINDS = ("generate", "agent", "consistency", "passive", "tool")
 
-# Concurrency ceiling for generate fan-out when the budget states none.
+# Concurrency ceiling for generate fan-out when the project states none.
 DEFAULT_MAX_CONCURRENT = 4
 
 # In-flight generate workers, keyed (run_id, node_id). Only used to make the
@@ -186,6 +186,7 @@ def _spec(node: dict) -> dict:
         "seat": str(node.get("seat") or "").strip(),
         "brief": str(node.get("brief") or ""),
         "config": node.get("config") if isinstance(node.get("config"), dict) else {},
+        "estimate_usd": max(0.0, float(node.get("estimate_usd") or 0.0)),
     }
     spec["kind"] = kind_for(dict(node, **spec))
     if spec["kind"] == "consistency" and not spec["seat"]:
@@ -379,12 +380,16 @@ def _set_run(root: str | os.PathLike[str], run_id: int, status: str) -> None:
 # ---------------------------------------------------------------------------
 
 def start(root: str | os.PathLike[str], graph: dict, *, name: str = "",
-          seat: str = "", actor: str = "", dispatch: bool = False) -> dict:
+          seat: str = "", actor: str = "", dispatch: bool = False,
+          enforce_preflight: bool = False) -> dict:
     """Persist a run of ``graph`` and take the first step.
 
     ``graph`` is the compiled plan: ``{workflow:{id,name,category}, nodes:[
     {id,type,label,seat,brief,config}], edges:[{from:[n,p],to:[n,p]}]}``.
     """
+    check = preflight(root, graph)
+    if enforce_preflight and not check["ok"]:
+        raise ValueError(check["errors"][0])
     nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
     if not nodes:
         raise ValueError("a workflow run needs at least one step")
@@ -408,7 +413,8 @@ def start(root: str | os.PathLike[str], graph: dict, *, name: str = "",
         "nodes": [specs[i] for i in order],
         "edges": [{"from": list(e["from"]), "to": list(e["to"])} for e in edges],
         "order": order,
-        "options": {"dispatch": bool(dispatch)},
+        "options": {"dispatch": bool(dispatch),
+                    "estimate_usd": check["estimate_usd"]},
     }
     with db.tx(root) as conn:
         cur = conn.execute(
@@ -425,6 +431,110 @@ def start(root: str | os.PathLike[str], graph: dict, *, name: str = "",
     activity.log(root, "workflow", f"run {run_id} started: {run_name} ({len(order)} steps)",
                  ref=str(run_id))
     return advance(root, run_id)
+
+
+# WHAT A CALLER IS TOLD WHEN A STEP FAILS FOR A REASON NOBODY ANTICIPATED.
+#
+# The same rule api.safe_error states for the HTTP layer, applied at the place
+# the text is MADE rather than where it is served: nothing derived from an
+# exception object goes into a preflight result, because that result is
+# returned to the browser verbatim. CodeQL's py/stack-trace-exposure query has
+# no sanitizer implementation, so scrubbing the message does not clear it and
+# logging it instead trades a medium for a high - the only thing that works is
+# the text not being there.
+#
+# Deliberate refusals are unaffected and that is the point: every message a
+# user is meant to act on ("every workflow node needs an id", a provider's own
+# readiness reason) is a literal or a value we already hold, and each one is
+# now carried as DATA rather than caught out of an exception. What is withheld
+# is the wording of failures nobody planned for, which is exactly the set that
+# can name a path, a key or somebody's home directory.
+UNEXPECTED_STEP_FAILURE = ("this step could not be planned - the message is "
+                           "withheld because an unanticipated exception can "
+                           "name paths or values that are not ours to repeat. "
+                           "The traceback is on the server.")
+
+
+def preflight(root: str | os.PathLike[str], graph: dict) -> dict:
+    """Validate executors, provider readiness, shape, and the run ceiling."""
+    strict = not bool(graph.get("manual"))
+    nodes = [node for node in (graph.get("nodes") or [])
+             if isinstance(node, dict)]
+    errors: list[str] = []
+    if not nodes:
+        errors.append("a workflow run needs at least one step")
+    specs: dict[str, dict] = {}
+    for node in nodes:
+        # CHECKED HERE RATHER THAN CAUGHT. _spec raises exactly one ValueError
+        # and its message is a literal in this file, so asking the question
+        # directly says the same sentence without an exception object having
+        # to carry it into a response body.
+        if not str(node.get("id") or "").strip():
+            errors.append("every workflow node needs an id")
+            continue
+        spec = _spec(node)
+        if spec["id"] in specs:
+            errors.append(f"duplicate node id {spec['id']!r}")
+        specs[spec["id"]] = spec
+    edges = [edge for edge in (graph.get("edges") or [])
+             if _edge_pair(edge, specs)]
+    cyclic = sorted(_cycle_nodes(list(specs), edges))
+    if cyclic:
+        errors.append("workflow contains a cycle: " + ", ".join(cyclic))
+
+    tools = _wfnodes.readiness(
+        root, [spec["type"] for spec in specs.values()
+               if spec["kind"] == "tool"])
+    if strict:
+        errors.extend(f"{row.get('label') or row['type']}: {row['reason']}"
+                      for row in tools if not row["ok"])
+
+    generators = []
+    for spec in specs.values():
+        if spec["kind"] != "generate":
+            continue
+        # AN UNAVAILABLE PROVIDER IS AN ANSWER, NOT A FAULT, so its reason
+        # travels as the value the registry already returned. Raising it and
+        # reading it back off `str(exc)` turned a sentence we own into
+        # exception-derived text, and cost the user a real diagnosis
+        # ("no OPENAI_API_KEY in this project") the moment that text was
+        # withheld for the failures that genuinely need withholding.
+        reason = ""
+        try:
+            plan = _generate.plan(spec.get("config") or {}, root=root)
+            provider = str(plan.get("provider") or "")
+            if provider and provider != "local":
+                from ..runtime import providers as _providers
+                provider_row = _providers.status_for(root, provider)
+                if not provider_row.get("available"):
+                    reason = str(provider_row.get("reason") or
+                                 f"{provider} is not available")
+        except Exception:
+            reason = UNEXPECTED_STEP_FAILURE
+        if reason:
+            generators.append({"type": spec["type"], "label": spec["label"],
+                               "ok": False, "reason": reason})
+            if strict:
+                errors.append(f"{spec['label']}: {reason}")
+        else:
+            generators.append({"type": spec["type"], "label": spec["label"],
+                               "ok": True, "provider": provider,
+                               "model": plan.get("model", ""),
+                               "estimate_usd": float(plan.get("projected_usd") or 0.0)})
+
+    planned = sum(float(row.get("estimate_usd") or 0.0)
+                  for row in generators if row.get("ok"))
+    declared = sum(float(spec.get("estimate_usd") or 0.0)
+                   for spec in specs.values())
+    try:
+        estimate = max(planned, declared,
+                       max(0.0, float(graph.get("estimate_usd") or 0.0)))
+    except (TypeError, ValueError):
+        estimate = 0.0
+        errors.append("estimate_usd must be a number")
+    return {"ok": not errors, "errors": errors, "tools": tools,
+            "generators": generators, "estimate_usd": round(estimate, 4),
+            "nodes": len(specs)}
 
 
 # ---------------------------------------------------------------------------
@@ -841,14 +951,10 @@ def _pool() -> ThreadPoolExecutor:
 
 
 def _concurrency(root: str | os.PathLike[str]) -> int:
-    """How many generations may be in the air at once. The budget already owns
-    'how much parallel spend is acceptable' for agent sessions — reuse it here
+    """How many generations may be in the air at once. `dispatch.max_concurrent`
+    already owns 'how much runs in parallel' for agent sessions — reuse it here
     rather than inventing a second, disagreeing knob."""
-    try:
-        cap = int(_spend.budget(root).get("max_concurrent") or 0)
-    except Exception:
-        cap = 0
-    return max(1, cap or DEFAULT_MAX_CONCURRENT)
+    return max(1, _runlimits.concurrency_cap(root) or DEFAULT_MAX_CONCURRENT)
 
 
 def _live_generate_count(node_rows: dict[str, dict], specs: dict[str, dict]) -> int:
@@ -875,6 +981,13 @@ def _generate_worker(root: str | os.PathLike[str], run_id: int, spec: dict,
         result = {"ok": False, "artifacts": [],
                   "error": f"the generation crashed: {type(exc).__name__}: {exc}"}
     try:
+        # Cancel wins the race. Provider SDKs are synchronous and cannot all be
+        # interrupted, but a late result must never repaint a cancelled node
+        # green or cascade into another paid step.
+        current = _node_rows(root, run_id).get(node_id) or {}
+        if (_run_row(root, run_id)["status"] != "running"
+                or current.get("status") != "running"):
+            return
         if result.get("ok"):
             _set_output(root, run_id, node_id,
                         {"artifacts": result.get("artifacts") or [],
@@ -1023,6 +1136,10 @@ def _tool_worker(root: str | os.PathLike[str], run_id: int, spec: dict,
         result = {"ok": False, "artifacts": [],
                   "error": f"the tool call crashed: {type(exc).__name__}: {exc}"}
     try:
+        current = _node_rows(root, run_id).get(node_id) or {}
+        if (_run_row(root, run_id)["status"] != "running"
+                or current.get("status") != "running"):
+            return
         if result.get("ok"):
             _set_output(root, run_id, node_id, result.get("output") or {})
             _set_node(root, run_id, node_id, "passed",
@@ -1937,6 +2054,10 @@ def cancel(root: str | os.PathLike[str], run_id: int, *, actor: str = "") -> dic
         if row["status"] in ("pending", "queued", "running"):
             _set_node(root, run_id, node_id, "skipped",
                       message=f"run cancelled by {actor or 'a human'}")
+        with _INFLIGHT_LOCK:
+            future = _INFLIGHT.get((int(run_id), node_id))
+        if future is not None:
+            future.cancel()  # queued workers stop; running provider calls settle inertly
     _set_run(root, run_id, "cancelled")
     activity.log(root, "workflow", f"run {run_id} cancelled: {run['name']}",
                  ref=str(run_id))
@@ -1986,6 +2107,7 @@ def get(root: str | os.PathLike[str], run_id: int, *,
         "actor": run["actor"],
         "created_at": run["created_at"],
         "updated_at": run["updated_at"],
+        "estimate_usd": float((snapshot.get("options") or {}).get("estimate_usd") or 0.0),
         "workflow_id": (snapshot.get("workflow") or {}).get("id", ""),
         "nodes": nodes,
         "counts": counts,

@@ -32,7 +32,7 @@ is not a security boundary, since any page can POST to localhost, so
 
 Approval is human-only throughout: a dispatched agent carries
 `BGATE_ACTOR=agent:item-<id>` and is refused the bible, the scope filing, the
-budget, the revert, workflow gates, and promoting a candidate to the build.
+provider keys, the revert, workflow gates, and promoting a candidate to the build.
 
 **What it explicitly is not designed to protect against:**
 

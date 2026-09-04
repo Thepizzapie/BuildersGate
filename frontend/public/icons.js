@@ -109,6 +109,7 @@
     theme_dark: `<path d="M19.82 15.32 A8.5 8.5 0 1 1 8.68 4.18 A8.5 8.5 0 0 0 19.82 15.32 Z"/><path class="e" d="M18.5 4 V7 M17 5.5 H20"/>`,
     theme_auto: `<circle cx="12" cy="12" r="8"/><path class="e" d="M12 4 V20"/><path d="M6.2 8.8 H9 M4.6 12 H9 M6.2 15.2 H9"/>`,
     theme_orbit:`<circle cx="12" cy="12" r="3.25"/><path d="M6.34 6.34 A8 8 0 1 0 17.66 6.34"/><path class="e" d="M6.34 6.34 A8 8 0 0 1 12 4"/>`,
+    theme_blueprint:`<rect x="3.5" y="3.5" width="17" height="17" rx="1"/><path d="M9 3.5 V20.5 M15 3.5 V20.5 M3.5 9 H20.5 M3.5 15 H20.5"/><path class="e" d="M6 18 L18 6 M14.5 6 H18 V9.5"/>`,
 
     /* ---- viewport / atlas toolbar ----
        The Atlas toolbar, the sprite editor and the audio lab were the three

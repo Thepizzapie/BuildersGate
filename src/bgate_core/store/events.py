@@ -81,13 +81,11 @@ KINDS = (
     "gate.mode",         # who signs off changed
     "settings.guard",    # a switch that widens a safety guard was changed
     "style.trained",     # a project trained a style from its pinned anchors
-    "budget.refused",    # a dispatch was refused for spend
     # A FLOOR refusal — one that stops the WHOLE board rather than one
     # item. Today that is the dirty-tree gate, which was pull-only
     # (board_digest.blocked) and so went unnoticed for an hour at a time
-    # while two seats idled. Same channel as budget.refused, for the same
-    # reason: a board that stopped has to be as loud as a board that
-    # failed.
+    # while two seats idled: a board that stopped has to be as loud as a
+    # board that failed.
     "dispatch.blocked",  # the board cannot dispatch at all, and why
     "director.question", # ask_human: the director wants a human answer
     "agent.spawned",

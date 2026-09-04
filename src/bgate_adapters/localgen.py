@@ -37,8 +37,8 @@ WHAT IS AND IS NOT DECIDED HERE:
     contract exists to prevent. This module returns a flat PNG.
 
   * THE PRICE IS ZERO AND SAYING SO IS THE HONEST ANSWER, not a missing value.
-    `usd: 0.0` is a fact about a local generation, and the spend gate
-    should read it as one.
+    `usd: 0.0` is a fact about a local generation, and a caller should read
+    it as one.
 
   * NOTHING HEAVY IS IMPORTED, EVER. No torch, no diffusers, no model library,
     at any point in this process. The server is probed with an HTTP GET. A user
@@ -443,8 +443,7 @@ def _result(out: Path, *, seconds: float, size: str, model: str,
         "path": str(out),
         "bytes": out.stat().st_size,
         "seconds": round(seconds, 2),
-        # ZERO IS A PRICE, NOT A MISSING VALUE. The spend gate should read it
-        # as the fact it is.
+        # ZERO IS A PRICE, NOT A MISSING VALUE.
         "usd": 0.0,
         "provider": "local",
         "model": model or "(undeclared)",

@@ -126,6 +126,19 @@ class TestHumanoidTemplate:
         for word in ("T-pose", "reference", "symmetrical"):
             assert word in clause, word
 
+    def test_the_skeleton_carries_no_default_primitive(self):
+        """The 2 m "Icosphere" seen beside every rigged import is the glTF
+        importer's bone shape, not a node in the file - but a re-export that
+        forgot to drop it WOULD write one, and a character built on such a
+        template measures 2.7 m. Read off the glTF node names, no Blender."""
+        from bgate_adapters import animcurves
+        gltf, _ = animcurves._read_glb(blender.HUMANOID_SKELETON)
+        names = [n.get("name", "") for n in gltf.get("nodes") or []]
+        strays = [n for n in names
+                  if n.split(".")[0] in ("Icosphere", "Cube", "Sphere",
+                                         "Cylinder", "Plane", "Suzanne")]
+        assert not strays, strays
+
     def test_it_is_not_inside_a_project_scaffold(self):
         """templates/3d IS the Godot scaffold `bgate init --kind 3d` copies.
 

@@ -50,6 +50,12 @@ def node_catalogue() -> dict:
                    "flow": _wfnodes.flow_catalogue()})
 
 
+@router.post("/preflight")
+def preflight_run(payload: dict) -> dict:
+    """Resolve the submitted graph without persisting or executing it."""
+    return api.ok(_workflows.preflight(root(), payload))
+
+
 def _run_or_404(r, run_id: int, *, include_graph: bool = False) -> dict:
     try:
         return _workflows.get(r, run_id, include_graph=include_graph)
@@ -68,11 +74,27 @@ def start_run(payload: dict, request: Request) -> dict:
     """
     r = root()
     actor = api.current_actor(request)
-    dispatch = bool(payload.get("dispatch", True)) and api.dispatch_enabled()
+    generator_mode = str(payload.get("mode") or "") == "generator"
+    if generator_mode:
+        agent_nodes = [str(node.get("label") or node.get("id") or "agent")
+                       for node in (payload.get("nodes") or [])
+                       if isinstance(node, dict)
+                       and (_workflows.kind_for(node) == "agent"
+                            or str(node.get("type") or "").startswith("agent."))]
+        if agent_nodes:
+            raise api.bad_request(
+                "Studio generator workflows cannot contain agent steps; move "
+                f"{', '.join(agent_nodes)} to Orchestration")
+    # Generator mode has already rejected every agent node. Dispatching it can
+    # therefore run only direct generator/tool nodes, and cannot create board
+    # work or an agent session. A whole-graph Run is an explicit user action.
+    dispatch = (True if generator_mode else
+                bool(payload.get("dispatch", True)) and api.dispatch_enabled())
     try:
         run = _workflows.start(
             r, payload, name=str(payload.get("name") or ""),
-            seat=str(payload.get("seat") or ""), actor=actor, dispatch=dispatch)
+            seat=str(payload.get("seat") or ""), actor=actor, dispatch=dispatch,
+            enforce_preflight=generator_mode)
     except ValueError as exc:
         raise api.bad_request(str(exc))
     return api.ok(run)
@@ -152,7 +174,8 @@ def run_one_node(run_id: int, node_id: str, request: Request,
     payload = payload or {}
     r = root()
     actor = api.current_actor(request)
-    dispatch = payload.get("dispatch")
+    generator_mode = str(payload.get("mode") or "") == "generator"
+    dispatch = False if generator_mode else payload.get("dispatch")
     if dispatch is not None:
         dispatch = bool(dispatch) and api.dispatch_enabled()
     try:

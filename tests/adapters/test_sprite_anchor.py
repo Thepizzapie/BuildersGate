@@ -153,18 +153,16 @@ async def test_a_supplied_anchor_still_gets_its_extra_angles(root, calls,
 
 @pytest.mark.anyio
 async def test_the_extra_views_are_priced_before_anything_is_bought(root, calls):
-    """The spend gate prices the plan. A model sheet that was not in the
-    estimate is an overrun discovered on the invoice."""
-    # A ceiling that admits the anchor and the poses but NOT the two extra
-    # views: medium poses at 0.042 x2, one high anchor at 0.167 = 0.251; the
-    # two extra high views add 0.334.
+    """The run quotes the whole plan. A model sheet that was not in the
+    estimate is an overrun discovered on the invoice.
+
+    Nothing refuses on the number — this product keeps no ledger and holds no
+    budget — but the quote has to COVER the run, extra views included."""
+    # Medium poses at 0.042 x2, one high anchor at 0.167 = 0.251; the two extra
+    # high views add 0.334.
     got = await call("image_sprites", character_prompt="a boxer", poses=POSES,
-                     name="boxer", limits={"max_cost_usd": 0.30},
-                     project_dir=str(root))
-    assert got.get("ok") is False
-    assert got["stage"] == "spend_gate"
-    assert got["usd"] == pytest.approx(0.585, abs=0.01)
-    assert calls == [], "the gate must refuse BEFORE the first call"
+                     name="boxer", project_dir=str(root))
+    assert got["spend"]["estimated_usd"] == pytest.approx(0.585, abs=0.01)
 
 
 class TestTheCharacterModelPin:
@@ -249,9 +247,8 @@ class TestTheCharacterModelPin:
 @pytest.mark.anyio
 async def test_krea_runs_are_priced_on_kreas_own_numbers(root, calls,
                                                          monkeypatch):
-    """The spend gate is a cap, not an invoice — and it used to read the
-    gpt-image price table whichever provider was named, which under-quoted
-    every Krea run."""
+    """The estimate used to read the gpt-image price table whichever provider
+    was named, which under-quoted every Krea run."""
     from bgate_adapters import krea
 
     unit = krea.price_for(krea.CHARACTER_MODEL, style_refs=1)
@@ -260,11 +257,8 @@ async def test_krea_runs_are_priced_on_kreas_own_numbers(root, calls,
     expected = round(unit * 5, 4)
 
     got = await call("image_sprites", character_prompt="a boxer", poses=POSES,
-                     name="boxer", provider="krea",
-                     limits={"max_cost_usd": expected - 0.01},
-                     project_dir=str(root))
-    assert got.get("ok") is False and got["stage"] == "spend_gate"
-    assert got["usd"] == pytest.approx(expected, abs=0.001)
+                     name="boxer", provider="krea", project_dir=str(root))
+    assert got["spend"]["estimated_usd"] == pytest.approx(expected, abs=0.001)
 
 
 @pytest.mark.anyio

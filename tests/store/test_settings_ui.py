@@ -170,7 +170,7 @@ class TestFindability:
         assert 'f.source !== "default"' in body, (
             "nothing marks a row the project has actually changed")
 
-    @pytest.mark.parametrize("flag", ["guard", "human_only"])
+    @pytest.mark.parametrize("flag", ["guard", "human_only", "advanced"])
     def test_the_flags_the_hierarchy_leans_on_are_in_the_payload(self, flag):
         """describe() has to keep sending these, or the page goes flat again."""
         src = Path(registry.__file__).read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Badge, Button, Group, Paper, ScrollArea, SegmentedControl, Stack, Tabs, Text,
+  Badge, Button, Group, Paper, ScrollArea, SegmentedControl, Stack, Tabs, Text, Textarea,
 } from "@mantine/core";
 import { Ti } from "../Ti";
 import { SEAT_COLOR, SEAT_ICON } from "../nav";
@@ -14,8 +14,13 @@ import { moduleOff } from "../../bridge";
 import { Streamer } from "./Streamer";
 import { ChatLive } from "./ChatLive";
 import {
-  EMPTY_CONSOLE, consoleState, type ConsoleState, type Item,
+  EMPTY_CONSOLE, consoleState, type ConsoleState, type Item, type Question,
 } from "./api";
+import {
+  DISMISSED_ATTENTION_STORAGE, gateAttentionKey, itemAttentionKey,
+  questionAttentionKey, readDismissedAttention,
+} from "./attention";
+import { claimUtility, onUtility } from "../utility";
 
 /* The director's screen: a session on the left, the board on the right.
  *
@@ -41,7 +46,6 @@ declare global {
       apply(state: unknown): void;
       activate?(): void;
       fit?(): void;
-      setFilter?(mode: string): string;
     };
   }
 }
@@ -50,11 +54,21 @@ export type Pane = "board" | "graph" | "floor";
 
 const CLOSED = new Set(["done", "failed", "cancelled", "approved", "rejected"]);
 
+function attentionTotal(state: ConsoleState, open: Item[], dismissed: ReadonlySet<string>): number {
+  return (state.questions || []).filter((q) => !dismissed.has(questionAttentionKey(q))).length
+    + (state.gates || []).filter((g) => g.blocking !== false && !dismissed.has(gateAttentionKey(g))).length
+    + (state.items || []).filter((i) => i.status === "failed" && !dismissed.has(itemAttentionKey(i))).length
+    + open.filter((i) => ["blocked", "held", "exhausted"].includes(i.execution_state || "")
+      && !dismissed.has(itemAttentionKey(i))).length;
+}
+
 export function Agents() {
   const host = useRef<HTMLDivElement>(null);
   const active = useViewActive(host);
   const [state, setState] = useState<ConsoleState>(EMPTY_CONSOLE);
   const [pane, setPane] = useState<Pane>("board");
+  const [mobileRail, setMobileRail] = useState(false);
+  const [localDismissed, setLocalDismissed] = useState<string[]>(readDismissedAttention);
 
   /* A FAILED POLL IS NOT AN EMPTY BOARD, and it used to be drawn as one.
      readJSON never throws: a fetch error or a 500 comes back as the fallback we
@@ -76,21 +90,55 @@ export function Agents() {
 
   const items = state.items || [];
   const open = items.filter((i) => !CLOSED.has(i.status));
+  const dismissed = new Set([...(state.dismissed_attention || []), ...localDismissed]);
+  const attention = attentionTotal(state, open, dismissed);
+
+  const dismissAttention = useCallback((key: string) => {
+    setLocalDismissed((current) => {
+      if (current.includes(key)) return current;
+      const next = [...current, key].slice(-500);
+      try {
+        window.localStorage.setItem(DISMISSED_ATTENTION_STORAGE, JSON.stringify(next));
+      } catch {
+        // Storage can be unavailable in locked-down browser contexts; the
+        // in-memory dismissal still takes effect for this session.
+      }
+      return next;
+    });
+    void fetch("/api/console/attention/dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const show = () => { claimUtility("orchestration"); setMobileRail(true); };
+    window.addEventListener("bgate:orchestration-tab", show);
+    return () => window.removeEventListener("bgate:orchestration-tab", show);
+  }, []);
+  useEffect(() => onUtility((name) => { if (name !== "orchestration") setMobileRail(false); }), []);
 
   return (
-    <div className="bg4-console live" ref={host}
+    <div className={`bg4-console live${mobileRail ? " rail-open" : ""}`} ref={host}
          style={{ ["--rail" as string]: `${readRail()}px` }}>
+      <button className="bg4-mobile-board" onClick={() => { claimUtility("orchestration"); setMobileRail(true); }}>
+        <Ti name="layout-sidebar-right" size={15} /> Work & attention
+        {attention > 0 && <span>{attention}</span>}
+      </button>
+      <button className="bg4-mobile-scrim" aria-label="Close work panel" onClick={() => setMobileRail(false)} />
       <DirectorChat active={active} onSent={refresh} />
       <RailGrip />
       <Rail state={state} open={open} pane={pane} setPane={setPane}
-            onRefresh={refresh} />
+            dismissed={dismissed} onDismiss={dismissAttention}
+            onRefresh={refresh} onClose={() => setMobileRail(false)} />
     </div>
   );
 }
 
 /* ── the board rail ─────────────────────────────────────────────────────── */
 
-function Rail({ state, open, pane, setPane, onRefresh }: {
+function Rail({ state, open, pane, setPane, dismissed, onDismiss, onRefresh, onClose }: {
   state: ConsoleState;
   open: Item[];
   /* THREE READINGS OF ONE QUEUE: a list, a dependency graph, and the floor,
@@ -98,13 +146,21 @@ function Rail({ state, open, pane, setPane, onRefresh }: {
      the parent's state so the rest of the screen can read it. */
   pane: Pane;
   setPane: (p: Pane) => void;
+  dismissed: ReadonlySet<string>;
+  onDismiss: (key: string) => void;
   onRefresh: () => void;
+  onClose: () => void;
 }) {
   /* THE TABS BELONG TO THE RAIL, NOT TO THE BOARD PANE. They used to live
      inside BoardPane, so switching to Graph took Asked you, Approve and
      Responses off the screen with it — the graph is a different VIEW OF THE
      QUEUE, not a different screen. */
   const [tab, setTab] = useState<string | null>("queue");
+  useEffect(() => {
+    const pick = (e: Event) => setTab((e as CustomEvent<{ tab?: string }>).detail?.tab || "attention");
+    window.addEventListener("bgate:orchestration-tab", pick);
+    return () => window.removeEventListener("bgate:orchestration-tab", pick);
+  }, []);
 
   return (
     <div className="bg4-console-side">
@@ -129,8 +185,9 @@ function Rail({ state, open, pane, setPane, onRefresh }: {
         <Badge size="sm" variant="default" leftSection={<Ti name="clock" size={11} />}>
           {open.length} queued
         </Badge>
+        <button className="bg4-mobile-close" onClick={onClose} aria-label="Close work panel"><Ti name="x" size={15} /></button>
       </Group>
-      <BoardPane state={state} open={open} onRefresh={onRefresh}
+      <BoardPane state={state} open={open} dismissed={dismissed} onDismiss={onDismiss} onRefresh={onRefresh}
                  tab={tab} setTab={setTab}
                  /* The graph and the floor draw the QUEUE tab and nothing else:
                     both are pictures of the board's items, so neither has
@@ -143,8 +200,9 @@ function Rail({ state, open, pane, setPane, onRefresh }: {
   );
 }
 
-function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
+function BoardPane({ state, open, dismissed, onDismiss, onRefresh, tab, setTab, queueView }: {
   state: ConsoleState; open: Item[]; onRefresh: () => void;
+  dismissed: ReadonlySet<string>; onDismiss: (key: string) => void;
   tab: string | null; setTab: (v: string | null) => void;
   /** Whatever is drawing the queue instead of the card list - the graph, or
    *  the floor - when the switch is on it and the queue tab is showing. It
@@ -156,6 +214,7 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
 }) {
   const autoDeploy = !!state.autopilot?.on;
   const [busy, setBusy] = useState(false);
+  const [broadcastPane, setBroadcastPane] = useState("chat");
   const queued = open.filter((i) => i.status === "queued");
 
   /* CHAT AND STREAM ARE STREAMER-MODE TABS, and they only appear when it is
@@ -177,7 +236,7 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
   /* Turning streamer mode off while sitting on one of its tabs would leave the
      strip with nothing selected and the body blank. Fall back to the queue. */
   useEffect(() => {
-    if (!streamer && (tab === "chat" || tab === "stream")) setTab("queue");
+    if (!streamer && tab === "broadcast") setTab("queue");
   }, [streamer, tab, setTab]);
   /* WHAT HAS REPORTED, newest first. The window /api/console/state returns is
      already the recent board — this used to be scoped by the console's cut
@@ -190,8 +249,15 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
      escalation paths see recent failures only (the event batch, the sweep's
      12-hour window), so anything that failed while the server was down aged
      out with no surface anywhere to act on it. */
-  const failed = (state.items || []).filter((i) => i.status === "failed")
+  const failed = (state.items || []).filter((i) => i.status === "failed"
+      && !dismissed.has(itemAttentionKey(i)))
     .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+  const needsWork = open.filter((i) => ["blocked", "held", "exhausted"].includes(i.execution_state || "")
+    && !dismissed.has(itemAttentionKey(i)));
+  const blockingGates = state.gates.filter((g) => g.blocking !== false
+    && !dismissed.has(gateAttentionKey(g)));
+  const questions = state.questions.filter((q) => !dismissed.has(questionAttentionKey(q)));
+  const attentionCount = questions.length + blockingGates.length + failed.length + needsWork.length;
 
   async function escalate(i: Item) {
     const r = await mutate("/api/console/escalate",
@@ -246,6 +312,11 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
 
   return (
     <>
+      <div className="bg4-rail-summary">
+        <div><b>{attentionCount}</b><span>Needs attention</span></div>
+        <div><b>{open.length}</b><span>Open work</span></div>
+        <div><b>{responses.length}</b><span>Reports</span></div>
+      </div>
       {/* nowrap + a scroller: five pills do not fit a 330px rail, and Mantine's
           Tabs.List wraps by default — which is the two ragged rows in the
           screenshot. Scrolling keeps them one row and keeps every tab
@@ -253,13 +324,10 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
       <Group gap="xs" px="xs" pb="xs" wrap="nowrap" className="bg4-side-tabs">
         <Tabs value={tab} onChange={setTab} variant="pills" style={{ flex: 1, minWidth: 0 }}>
           <Tabs.List>
-            <Tabs.Tab value="queue">Queue {queued.length || ""}</Tabs.Tab>
-            <Tabs.Tab value="asked">Asked you</Tabs.Tab>
-            <Tabs.Tab value="approve">Approve {state.gates.length || ""}</Tabs.Tab>
-            <Tabs.Tab value="responses">Responses</Tabs.Tab>
-            <Tabs.Tab value="failed">Failed {state.floor?.failed || ""}</Tabs.Tab>
-            {streamer && <Tabs.Tab value="chat">Chat</Tabs.Tab>}
-            {streamer && <Tabs.Tab value="stream">Stream</Tabs.Tab>}
+            <Tabs.Tab value="queue">Work {queued.length || ""}</Tabs.Tab>
+            <Tabs.Tab value="attention">Needs attention {attentionCount || ""}</Tabs.Tab>
+            <Tabs.Tab value="activity">Activity</Tabs.Tab>
+            {streamer && <Tabs.Tab value="broadcast">Broadcast</Tabs.Tab>}
           </Tabs.List>
         </Tabs>
         {tab === "queue" && queued.length > 0 && (
@@ -282,52 +350,55 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
             ? open.map((i) => <QueueCard key={i.id} item={i} items={state.items} />)
             : <Empty>nothing queued</Empty>)}
 
-          {tab === "asked" && (state.questions.length
-            ? state.questions.map((q) => (
-                <Paper key={q.id} p="xs" withBorder className="bg4-sidecard">
-                  <Text size="xs">{q.text}</Text>
-                  <Text size="xs" c="dimmed">{q.seat}</Text>
-                </Paper>
-              ))
-            : <Empty>nothing waiting — ask for something above</Empty>)}
+          {tab === "attention" && !attentionCount && <Empty>nothing needs your attention</Empty>}
+          {tab === "attention" && questions.length > 0 && <div className="bg4-attention-group">
+            <Text size="xs" fw={600}>Questions</Text>
+            {questions.map((q) => <QuestionCard key={q.id} question={q} onAnswered={onRefresh}
+              onDismiss={() => onDismiss(questionAttentionKey(q))} />)}
+          </div>}
 
-          {tab === "approve" && (state.gates.length
-            ? state.gates.map((g) => (
-                <Paper key={g.id} p="xs" withBorder className="bg4-sidecard">
-                  <Text size="xs">{g.title}</Text>
-                  <Text size="xs" c="dimmed">{g.seat}</Text>
-                </Paper>
-              ))
-            : <Empty>nothing to approve</Empty>)}
+          {tab === "attention" && blockingGates.length > 0 && <div className="bg4-attention-group">
+            <Text size="xs" fw={600}>Approvals</Text>
+            {blockingGates.map((g) => (
+              <Paper key={g.id} p="xs" withBorder className="bg4-sidecard">
+                <Group gap={6} wrap="nowrap">
+                  <div style={{ flex: 1, minWidth: 0 }}><Text size="xs">{g.title}</Text><Text size="xs" c="dimmed">{g.seat}</Text></div>
+                  <Button size="compact-xs" variant="subtle" color="gray"
+                          onClick={() => onDismiss(gateAttentionKey(g))}>dismiss</Button>
+                </Group>
+              </Paper>
+            ))}
+          </div>}
 
-          {tab === "chat" && <div className="bg4-chathost"><ChatLive /></div>}
-          {tab === "stream" && <Streamer />}
+          {tab === "broadcast" && <>
+            <SegmentedControl size="xs" fullWidth value={broadcastPane} onChange={setBroadcastPane}
+                              data={[{ value: "chat", label: "Live chat" }, { value: "stream", label: "Stream tools" }]} />
+            {broadcastPane === "chat" ? <div className="bg4-chathost"><ChatLive /></div> : <Streamer />}
+          </>}
 
-          {tab === "failed" && (failed.length
-            ? failed.map((i) => (
-                <Paper key={i.id} p="xs" withBorder className="bg4-sidecard"
-                       onClick={() => setSelection({ key: `i${i.id}`, kind: "item",
-                                                     itemId: i.id, title: i.title, seat: i.seat })}>
-                  <SeatStamp item={i} verb="failed" />
-                  <Text size="xs" fw={500} lineClamp={1}>{i.title}</Text>
-                  {!!i.result && (
-                    <Text size="xs" c="dimmed" lineClamp={2}>{i.result}</Text>
-                  )}
-                  <Group gap={6} mt={4} wrap="nowrap"
-                         onClick={(e) => e.stopPropagation()}>
-                    <div style={{ flex: 1 }} />
-                    {i.escalated
-                      ? <Badge size="xs" variant="light">escalated</Badge>
-                      : <Button size="compact-xs" variant="default"
-                                onClick={() => escalate(i)}>escalate</Button>}
-                    <Button size="compact-xs" variant="default"
-                            onClick={() => reopenFailed(i)}>reopen</Button>
-                  </Group>
-                </Paper>
-              ))
-            : <Empty>nothing has failed — or the window has moved on</Empty>)}
+          {tab === "attention" && failed.length > 0 && <div className="bg4-attention-group">
+            <Text size="xs" fw={600}>Failed work</Text>
+            {failed.map((i) => (
+              <Paper key={i.id} p="xs" withBorder className="bg4-sidecard"
+                     onClick={() => setSelection({ key: `i${i.id}`, kind: "item", itemId: i.id, title: i.title, seat: i.seat })}>
+                <SeatStamp item={i} verb="failed" /><Text size="xs" fw={500} lineClamp={1}>{i.title}</Text>
+                <Group gap={6} mt={4} wrap="nowrap" className="bg4-failure-actions" onClick={(e) => e.stopPropagation()}><div style={{ flex: 1 }} />
+                  {i.escalated ? <Badge size="xs" variant="light" className="bg4-escalated">escalated</Badge> : <Button size="compact-xs" variant="default" onClick={() => escalate(i)}>escalate</Button>}
+                  <Button size="compact-xs" variant="default" onClick={() => reopenFailed(i)}>reopen</Button>
+                  <Button size="compact-xs" variant="subtle" color="gray"
+                          onClick={() => onDismiss(itemAttentionKey(i))}>dismiss</Button>
+                </Group>
+              </Paper>
+            ))}
+          </div>}
 
-          {tab === "responses" && (responses.length
+          {tab === "attention" && needsWork.length > 0 && <div className="bg4-attention-group">
+            <Text size="xs" fw={600}>Blocked or held</Text>
+            {needsWork.map((i) => <QueueCard key={i.id} item={i} items={state.items}
+              onDismiss={() => onDismiss(itemAttentionKey(i))} />)}
+          </div>}
+
+          {tab === "activity" && (responses.length
             ? responses.slice(0, 30).map((i) => (
                 <Paper key={i.id} p="xs" withBorder className="bg4-sidecard"
                        onClick={() => setSelection({ key: `i${i.id}`, kind: "item",
@@ -359,7 +430,35 @@ function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
   );
 }
 
-function QueueCard({ item, items }: { item: Item; items: Item[] }) {
+function QuestionCard({ question, onAnswered, onDismiss }: {
+  question: Question; onAnswered(): void; onDismiss(): void;
+}) {
+  const [answer, setAnswer] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function send() {
+    const text = answer.trim();
+    if (!text) return;
+    setBusy(true);
+    const r = await mutate<{ delivery?: string }>("/api/console/answer",
+      { body: { seq: question.id, answer: text }, quiet: true });
+    setBusy(false);
+    if (!r.ok) { toast(r.error || "the answer was refused"); return; }
+    toast(String(r.data?.delivery || "answer recorded"), "ok");
+    setAnswer(""); onAnswered();
+  }
+  return <Paper p="xs" withBorder className="bg4-sidecard bg4-question-card">
+    <Group gap={6} wrap="nowrap"><Text size="xs" c="dimmed">{question.seat || "director"}</Text>
+      <Text size="xs" c="dimmed" style={{ flex: 1 }}>{ago(question.asked_at)}</Text>
+      <Button size="compact-xs" variant="subtle" color="gray" onClick={onDismiss}>dismiss</Button></Group>
+    <Text size="xs" mt={5}>{question.text}</Text>
+    <Textarea value={answer} onChange={(e) => setAnswer(e.currentTarget.value)} autosize minRows={2} maxRows={5}
+              mt="xs" size="xs" placeholder="Answer this question"
+              onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send(); }} />
+    <Group justify="flex-end" mt="xs"><Button size="compact-xs" loading={busy} disabled={!answer.trim()} onClick={() => void send()}>Send answer</Button></Group>
+  </Paper>;
+}
+
+function QueueCard({ item, items, onDismiss }: { item: Item; items: Item[]; onDismiss?: () => void }) {
   const c = SEAT_COLOR[item.seat] || "var(--text-3)";
   /* THE SERVER'S VERDICT WINS. _chain_state stamps ready/waiting_on across
      BOTH dependency stores; the local depends_on lookup survives only as the
@@ -411,12 +510,16 @@ function QueueCard({ item, items }: { item: Item; items: Item[] }) {
             {line}
           </Text>
         </div>
-        <Badge size="xs" variant="default"
-               color={exhausted ? "red" : stuck ? "red" : item.held ? "grape"
-                      : waiting ? "yellow" : undefined}>
-          {exhausted ? "exhausted" : stuck ? "stuck" : item.held ? "held"
-           : waiting ? "waiting" : item.status}
-        </Badge>
+        <Stack gap={2} align="flex-end">
+          <Badge size="xs" variant="default"
+                 color={exhausted ? "red" : stuck ? "red" : item.held ? "grape"
+                        : waiting ? "yellow" : undefined}>
+            {exhausted ? "exhausted" : stuck ? "stuck" : item.held ? "held"
+             : waiting ? "waiting" : item.status}
+          </Badge>
+          {onDismiss && <Button size="compact-xs" variant="subtle" color="gray"
+            onClick={(e) => { e.stopPropagation(); onDismiss(); }}>dismiss</Button>}
+        </Stack>
       </Group>
     </Paper>
   );
@@ -425,7 +528,7 @@ function QueueCard({ item, items }: { item: Item; items: Item[] }) {
 /* THE DELEGATION GRAPH — the real one, mounted.
  *
  * agents_graph.js is a NodeCanvas graph with drag-to-place, saved positions per
- * project, an active/all filter, spotlighting of what is live, and a detail
+ * project, an active-work scope, spotlighting of what is live, and a detail
  * rail with steer/stop on the selected agent. It was unloaded from index.html
  * on the argument that "lanes-by-seat is the Board screen now" — and the Board
  * screen was deleted afterwards, so the console has had no graph at all since.
@@ -442,14 +545,6 @@ function GraphPane({ state }: { state: ConsoleState }) {
   const host = useRef<HTMLDivElement>(null);
   const rail = useRef<HTMLDivElement>(null);
   const ready = useRef(false);
-  /* Seeded from the module's own stored preference so the switch agrees with
-     the canvas on the first paint rather than after the first click. */
-  const [mode, setMode] = useState<"active" | "all">(() => {
-    try {
-      return localStorage.getItem("bgate-graph-filter") === "all" ? "all" : "active";
-    } catch { return "active"; }
-  });
-
   /* The freshest state, readable from an effect that must not re-run on every
      poll. The mount effect needs it exactly once, at mount. */
   const latest = useRef(state);
@@ -488,23 +583,8 @@ function GraphPane({ state }: { state: ConsoleState }) {
   }
   return (
     <div className="bg4-graphwrap">
-      {/* THE FILTER HAD NO CONTROL. agents_graph.js has always had one — it
-          reads its mode from localStorage on mount and exposes setFilter — but
-          the React pane never drew a switch, so whatever the classic console
-          last wrote was permanent. A graph stuck on "all" is the whole board on
-          a canvas; stuck on "active" with no way out, you cannot see what
-          finished. */}
       <div className="bg4-graphbar">
-        {(["active", "all"] as const).map((m) => (
-          <button key={m} className={mode === m ? "on" : ""}
-                  title={m === "active"
-                    ? "running, queued, gated, and a failure you have not seen yet — plus their ancestors, so a chain keeps its trunk"
-                    : "every item the board window returned, capped at 60"}
-                  onClick={() => {
-                    window.AgentsGraph?.setFilter?.(m);
-                    setMode(m);
-                  }}>{m}</button>
-        ))}
+        <span className="on" title="running, queued, gated, and recent failures plus their dependency chain">active</span>
         <span className="sp" />
         <button onClick={() => window.AgentsGraph?.fit?.()} title="fit to view">fit</button>
       </div>
@@ -636,4 +716,3 @@ function SeatStamp({ item, verb = "" }: { item: Item; verb?: string }) {
     </Group>
   );
 }
-

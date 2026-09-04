@@ -245,5 +245,5 @@ def startup_notice(root: str | os.PathLike[str]) -> str:
     return (f"A PREVIOUS MCP SERVER DIED HOLDING {len(lost)} CALL(S):\n"
             + "\n".join(lines) +
             "\nAnything they produced is on disk with no provenance and "
-            "anything they cost was charged. Check the artifact list and the "
-            "spend log before re-running that work.")
+            "anything they cost was charged. Check the artifact list before "
+            "re-running that work.")

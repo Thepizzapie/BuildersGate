@@ -14,7 +14,7 @@ my studio", is more useful than a merged diff.
 - **The docs lie.** Anywhere the README or `docs/` describes behaviour the code
   does not have. Quote the line.
 - **A gate that does not gate.** Any place a refusal (seat lanes, asset locks,
-  the budget, the canon check, human-only approval) can be walked around. That
+  the canon check, human-only approval) can be walked around. That
   class of bug is the point of the project. Security-shaped findings go through
   [SECURITY.md](SECURITY.md), not a public issue.
 - **It does not fit how you actually work.** Concept-level disagreement is

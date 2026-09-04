@@ -15,9 +15,6 @@ DIMENSIONS = ("2d", "3d", "2d+3d")
 # The ceilings a new project is born under. Declared once, read by the seed
 # below and mirrored by the settings registry, so the panel's "default" and
 # the row a fresh project actually carries never disagree.
-BUDGET_PER_ITEM_USD = 10.0
-BUDGET_PER_DAY_USD = 50.0
-BUDGET_PER_PROJECT_USD = 500.0
 
 
 def user_dir() -> Path:
@@ -180,7 +177,6 @@ def init(root: str | os.PathLike[str], name: str, pitch: str = "",
         raise ValueError(f"dimension must be one of {DIMENSIONS}, got {dimension!r}")
 
     Path(root).mkdir(parents=True, exist_ok=True)
-    fresh = not _exists(root)
     with db.tx(root) as conn:
         conn.execute(
             """
@@ -198,41 +194,7 @@ def init(root: str | os.PathLike[str], name: str, pitch: str = "",
         )
     register(root, slugify(name))
     _seed_doctrine(root)
-    if fresh:
-        _seed_budget_default(root)
     return get(root)
-
-
-def _exists(root: str | os.PathLike[str]) -> bool:
-    try:
-        return db.connect(root).execute(
-            "SELECT 1 FROM project WHERE id = 1").fetchone() is not None
-    except Exception:
-        return False
-
-
-def _seed_budget_default(root: str | os.PathLike[str]) -> None:
-    """A NEW project starts with budgets ON, under ceilings generous enough
-    that a normal day never meets them.
-
-    The ceiling exists to catch a runaway, not to ration: $10 an item, $50 a
-    day, $500 for the project. Only a project being created for the first
-    time is touched - a project whose owner turned enforcement off, or set
-    their own numbers, keeps them; a migration would overwrite a choice.
-
-    Never raises. The per-RUN ceiling (an item's own max_cost_usd) is
-    unaffected either way - spend.item_ceiling honours that whether or not the
-    budget is enforced.
-    """
-    try:
-        with db.tx(root) as conn:
-            conn.execute(
-                "UPDATE spend_budget SET enforced = 1, per_item_usd = ?, "
-                "per_day_usd = ?, per_project_usd = ? WHERE id = 1",
-                (BUDGET_PER_ITEM_USD, BUDGET_PER_DAY_USD,
-                 BUDGET_PER_PROJECT_USD))
-    except Exception:
-        pass
 
 
 # THE ONE RULE THAT WORKED, SHIPPED AS A DEFAULT INSTEAD OF BEING REDISCOVERED.

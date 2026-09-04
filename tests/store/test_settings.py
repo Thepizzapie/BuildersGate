@@ -140,13 +140,20 @@ class TestStoresItDescribes:
         autodeploy.set_enabled(root, False)
         assert settings.get(root, "autopilot.on") is False
 
-    def test_budget_keys_read_and_write_the_spend_row(self, root):
-        from bgate_core.board import spend
-        budget_keys = [s.key for s in settings.SETTINGS
-                       if s.store and s.store[0] == "budget"]
-        assert budget_keys, "no setting points at the budget row"
+    def test_limit_keys_read_and_write_the_run_limits_row(self, root):
+        from bgate_core.board import runlimits
+        limit_keys = [s.key for s in settings.SETTINGS
+                      if s.store and s.store[0] == "limits"]
+        assert limit_keys, "no setting points at the run_limits row"
         settings.set(root, "dispatch.max_concurrent", 7)
-        assert int(spend.budget(root)["max_concurrent"]) == 7
+        assert runlimits.concurrency_cap(root) == 7
+
+    def test_no_setting_stores_money(self, root):
+        """The ledger and its ceilings are gone (db migration 0045). A setting
+        that stored a dollar figure would be a budget growing back."""
+        money = [s.key for s in settings.SETTINGS
+                 if s.key.endswith("_usd") or s.key.startswith("budget.")]
+        assert money == []
 
     def test_client_settings_are_all_declared(self, root):
         got = settings.client(root)

@@ -63,7 +63,7 @@ BOARD_DIRNAME = "design/cinematics/storyboards"
 SCRIPT_MODEL = "gpt-4o-mini"
 
 # Rough, per script call. A few thousand tokens out is still a fraction of a
-# cent; recorded so the ledger is honest rather than pretending text is free.
+# cent; reported rather than pretending text is free.
 SCRIPT_USD_PER_CALL = 0.002
 
 FRAME_STATUSES = ("empty", "generating", "drafted", "approved", "cut")
@@ -396,7 +396,6 @@ def write_script(root: str | os.PathLike[str], name: str, premise: str, *,
                 "seconds": round(time.monotonic() - started, 2),
                 "usd": SCRIPT_USD_PER_CALL}
 
-    _record_spend(root, SCRIPT_USD_PER_CALL, "script", name, work_item_id)
 
     out = plan(root, name, beats, premise=text,
                logline=str(parsed.get("logline") or "").strip(),
@@ -519,7 +518,6 @@ def frame_generate(root: str | os.PathLike[str], name: str, idx: int, *,
     frame = _frame_row(root, b["id"], idx)
 
     from ..art import chroma
-    from ..board import spend
 
     cast = _loads(b["cast_refs_json"], []) if use_cast else []
     looks = _loads(b["style_refs_json"], [])
@@ -537,16 +535,6 @@ def frame_generate(root: str | os.PathLike[str], name: str, idx: int, *,
                 f"frame {idx} has no action and no prompt - there is nothing "
                 "to draw. Write the beat first, or pass prompt=")
         text = _frame_prompt(b, frame)
-
-    try:
-        verdict = spend.check(root, projected_usd=_frame_price(quality))
-    except Exception:                                            # noqa: BLE001
-        verdict = {"allowed": True}   # no ledger is not a licence to refuse work
-    if not verdict.get("allowed", True):
-        return {"ok": False, "stage": "spend_gate",
-                "error": "the project budget refuses this frame: "
-                         + (verdict.get("reason") or "ceiling reached"),
-                "usd": 0.0}
 
     out_rel = _frame_rel(b, frame)
     out_path = Path(root) / out_rel
@@ -1313,25 +1301,4 @@ def _providers(root: str | os.PathLike[str]) -> list[str]:
     return out
 
 
-def _frame_price(quality: str) -> float:
-    try:
-        from bgate_adapters import imagegen
 
-        return float(imagegen.price_per_image(quality))
-    except Exception:
-        # Unknown is not free. A number that is wrong low reads as "this is
-        # cheap"; the medium-tier price is the honest guess to gate against.
-        return 0.042
-
-
-def _record_spend(root: str | os.PathLike[str], usd: float, kind: str,
-                  name: str, work_item_id: Optional[int]) -> None:
-    try:
-        from ..board import spend
-
-        spend.record(root, usd, kind="other", work_item_id=work_item_id,
-                     logical_name=f"storyboard/{slugify(name)}",
-                     detail=f"storyboard {kind}",
-                     model=os.environ.get("BGATE_SCRIPT_MODEL", SCRIPT_MODEL))
-    except Exception:
-        pass

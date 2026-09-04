@@ -32,15 +32,15 @@
       // Quiet: a bare chip that names the thing and how to turn it on. No
       // colour, because "not currently hiding anything" is not an alarm.
       el.className = 'schip streamer-chip';
-      el.innerHTML = '<span class="l warn"></span> streamer <b>off</b>';
+      el.innerHTML = '<span class="l warn"></span> privacy <b>off</b>';
       el.title = (s && s.note) ||
         'Paths, your username and keys are shown in full. ' +
-        'Settings > Privacy to hide them.';
+        'Turn on Privacy mode in Settings > Privacy to hide them.';
       return;
     }
 
     el.className = 'schip streamer-chip on';
-    el.innerHTML = '<span class="l"></span> streamer <b>on</b>';
+    el.innerHTML = '<span class="l"></span> privacy <b>on</b>';
     // The tooltip is where the LIMITS go. Someone trusting this deserves to
     // read what it does not cover before they trust it, not after.
     var covered = [];
@@ -73,7 +73,7 @@
         var el = host();
         if (el) {
           el.className = 'schip streamer-chip unknown';
-          el.innerHTML = '<span class="l bad"></span> streamer <b>?</b>';
+          el.innerHTML = '<span class="l bad"></span> privacy <b>?</b>';
           el.title = 'Could not reach the server to confirm whether the ' +
                      'redaction filter is on. Assume it is not.';
         }

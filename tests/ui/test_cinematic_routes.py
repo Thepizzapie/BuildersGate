@@ -48,9 +48,13 @@ class TestTheModuleIsWired:
         # _core.js still is, because nine unrelated views use its BGWS export.
         # What this protects is unchanged: the cinematic seat SHIPS, and the
         # shell mounts the screen that draws it.
-        dist = root / "src" / "bgate_ui" / "static" / "dist" / "bgate.js"
-        assert dist.is_file(), "no built bundle — run `cd frontend && npm run build`"
-        assert "cinematic" in dist.read_text(encoding="utf-8", errors="replace")
+        # Across every chunk: the shell is code-split, so the seat screen is
+        # its own lazy file rather than text in the entry bundle.
+        dist = root / "src" / "bgate_ui" / "static" / "dist"
+        assert (dist / "bgate.js").is_file(), (
+            "no built bundle — run `cd frontend && npm run build`")
+        assert any("cinematic" in chunk.read_text(encoding="utf-8", errors="replace")
+                   for chunk in dist.glob("*.js"))
         assert 'data-react="seats"' in index
 
 

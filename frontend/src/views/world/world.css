@@ -5,6 +5,9 @@
    genuinely this view's own. Colours are tokens only. */
 
 .wl-card{margin-bottom:var(--s-5)}
+.world-author{min-height:480px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--solid-1);overflow:hidden}
+.world-author-head{min-height:44px;display:flex;align-items:center;justify-content:flex-end;padding:0 var(--s-5);border-bottom:1px solid var(--line)}
+.world-author-head:empty{display:none}
 .wl-n{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);margin-left:auto}
 .wl-note{margin:0 0 var(--s-5);font-size:var(--fs-xs);color:var(--text-3);line-height:var(--lh-snug)}
 .wl-list{display:flex;flex-direction:column;gap:var(--s-3)}

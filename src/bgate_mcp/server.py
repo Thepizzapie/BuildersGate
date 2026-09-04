@@ -494,7 +494,7 @@ def _scratch_root() -> str:
     """The root for a tool whose output does not need a game to belong to.
 
     Generation is the case: an image, a sheet, a track - all of them need a
-    project for the artifact registry, the spend ledger and `.bgate_out`, and
+    project for the artifact registry and `.bgate_out`, and
     none of them need an engine. Falling back here rather than refusing is what
     makes "just use one tool for something" possible without inventing a game to
     hold the result.
@@ -629,11 +629,10 @@ def _normalize(result):
 _IMAGE_RETURN_EDGE = 512
 _IMAGE_RETURN_CAP = 6
 
-#: `image_sprites(limits=...)` - how much one run may spend, in money and in
-#: wall clock. Grouped because they are one question; named here so the tool
+#: `image_sprites(limits=...)` - how long one run may take and how hard it
+#: may retry. Grouped because they are one question; named here so the tool
 #: and its refusal message cannot disagree about the legal keys.
-_SPRITE_LIMITS = {"max_retries": 1, "max_cost_usd": 0.0, "timeout": 300,
-                  "max_seconds": 1800}
+_SPRITE_LIMITS = {"max_retries": 1, "timeout": 300, "max_seconds": 1800}
 
 #: `image_sprites(palette=...)` - `lock` is "auto" (default), "on" or "off";
 #: `colors` is the quantisation target when locking.
@@ -727,9 +726,6 @@ def _tool(fn: Optional[Callable] = None, *,
             # whether this call only looks or actually writes, and _root() has
             # no other way to know which of 200 tools is asking.
             name_token = _CALL_TOOL.set(fn.__name__)
-            # A fresh bucket per call: every spend reservation the body takes
-            # is given back in the finally below, whatever the body did.
-            holds_token = _CALL_HOLDS.set([])
             # ANNOUNCE THE CALL BEFORE IT BLOCKS. The heartbeat above stops a
             # slow tool from LOOKING dead; it does nothing about the restart
             # that happens anyway, and a killed server takes its worker
@@ -780,7 +776,6 @@ def _tool(fn: Optional[Callable] = None, *,
                 # now be deleted at leisure; this makes their absence safe.
                 return _fail(exc)
             finally:
-                _release_holds()
                 if flight and flight_root:
                     try:
                         from bgate_core.board import inflight as _inflight
@@ -788,7 +783,6 @@ def _tool(fn: Optional[Callable] = None, *,
                         _inflight.end(flight_root, flight)
                     except Exception:                             # noqa: BLE001
                         pass
-                _CALL_HOLDS.reset(holds_token)
                 _CALL_TOOL.reset(name_token)
                 _CALL_ROOT.reset(token)
 
@@ -1030,117 +1024,9 @@ def _archive_preview(src: str, label: str) -> Optional[str]:
 
 
 def _work_item_id() -> Optional[int]:
-    """The work item this session is executing, if any - the key the spend
-    ledger charges against."""
+    """The work item this session is executing, if any."""
     raw = os.environ.get("BGATE_WORK_ITEM", "").strip()
     return int(raw) if raw.isdigit() else None
-
-
-# HOLDS TAKEN BY THIS CALL, released when the call returns. A ContextVar and
-# not a module global for the same reason _CALL_ROOT is one: tool bodies run on
-# a shared anyio worker pool, so a list left on a pooled thread would be
-# released by whatever call landed on that thread next.
-_CALL_HOLDS: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
-    "bgate_call_holds", default=None)
-
-
-def _hold_token(root: str, token: str) -> None:
-    """Remember a spend reservation so the wrapper can give it back."""
-    if not token:
-        return
-    bucket = _CALL_HOLDS.get()
-    if bucket is None:
-        return
-    bucket.append((str(root), token))
-
-
-def _release_holds() -> None:
-    """Return every reservation this call took. Never raises.
-
-    Success and failure alike: a generation that failed still leaves whatever
-    the provider actually charged in the ledger, and a hold sitting on top of
-    that number would refuse the retry it just earned. A process that dies
-    before reaching here leaves holds that expire on their own (spend.HOLD_TTL_S).
-    """
-    bucket = _CALL_HOLDS.get()
-    if not bucket:
-        return
-    from bgate_core.board import spend as _spend
-    for root, token in bucket:
-        try:
-            _spend.release(root, token)
-        except Exception:
-            pass
-    bucket.clear()
-
-
-def _run_ceiling(root: str, override_usd: float = 0.0) -> float:
-    """The dollar ceiling for ONE tool call. 0.0 means uncapped.
-
-    Three sources, most specific first: an explicit argument on the call, the
-    max_cost_usd of the work item this session is executing, then the project
-    budget's per_item_usd. spend.item_ceiling already knows the last two - this
-    only has to find the work item, which the ledger keys spend against anyway.
-    """
-    if override_usd and float(override_usd) > 0:
-        return float(override_usd)
-    from bgate_core.board import spend as _spend
-
-    item: dict = {}
-    work_item = _work_item_id()
-    if work_item:
-        try:
-            from bgate_core.board import queue as _q
-            item = _q.get(root, work_item) or {}
-        except Exception:
-            item = {}
-    try:
-        return float(_spend.item_ceiling(root, item) or 0.0)
-    except Exception:
-        return 0.0
-
-
-def _spend_gate(root: str, projected_usd: float, what: str,
-                ceiling_usd: float = 0.0) -> Optional[dict]:
-    """Reserve the money BEFORE the provider is called, or refuse. None = go.
-
-    THE CEILING WAS PER CALL AND HAD TO BE PER RUN. This function used to ask
-    "is THIS estimate under the ceiling", which a $0.40 image batch answers yes
-    to against a $5 cap eighteen times in a row - measured across three
-    benchmark games, which finished at $6.40, $9.49 and $5.16 against a $5
-    max_cost_usd while the RUNTIME ceiling stopped every one of them on time. A
-    limit presented as a hard ceiling has to be hard.
-
-    So the question is now "does this fit in what is LEFT of the run", asked of
-    spend.reserve, which sums what the item has already been charged plus every
-    hold that is live anywhere on the machine plus this estimate - inside one
-    transaction, so two seat processes racing cannot both be told there is
-    room. The hold is released by the _tool wrapper when the call returns; the
-    ledger row the provider produced is the truth after that.
-
-    Both ceilings still act: the per-run one (see _run_ceiling) and the project
-    /day budget, which is the same gate the dispatcher asks before spawning -
-    an overnight fan-out must not be bounded in one leg and unbounded in the
-    other.
-    """
-    from bgate_core.board import spend as _spend
-
-    projected = round(max(0.0, float(projected_usd or 0.0)), 4)
-    try:
-        got = _spend.reserve(root, projected, work_item_id=_work_item_id(),
-                             what=what, run_ceiling_usd=float(ceiling_usd or 0))
-    except Exception:
-        return None  # no ledger is not a licence to refuse work
-    if not got.get("ok"):
-        scope = got.get("scope") or "budget"
-        return {"ok": False, "stage": "spend_gate", "usd": projected,
-                "ceiling_usd": round(float(got.get("ceiling") or 0), 4),
-                "spent_usd": got.get("spent"), "held_usd": got.get("held"),
-                "scope": scope, "budget": got,
-                "error": f"{what} (~${projected:.2f}) is refused by the "
-                         f"{scope} ceiling: {got.get('reason') or 'reached'}"}
-    _hold_token(root, got.get("token") or "")
-    return None
 
 
 def _provider_gate(root: str, capability: str, what: str) -> Optional[dict]:
@@ -1172,49 +1058,6 @@ def _provider_gate(root: str, capability: str, what: str) -> Optional[dict]:
                       "fresh=true) re-probes after a top-up; if nothing is "
                       "funded, file the top-up as the blocker - a human "
                       "decides which account gets money.")}
-
-
-def _paid_gate(root: str, capability: str, projected_usd: float, what: str,
-               max_cost_usd: float = 0.0) -> Optional[dict]:
-    """Every paid tool's front door: provider first, then budget.
-
-    Provider first because it is the cheaper answer and the more common
-    failure - a drained account refuses everything regardless of price,
-    while the budget verdict depends on the estimate. ``projected_usd`` of 0
-    is honest for tools with no price table: spend.check still refuses an
-    exhausted budget, and the ledger records the real cost afterwards.
-    """
-    return _provider_gate(root, capability, what) \
-        or _spend_gate(root, projected_usd, what,
-                       _run_ceiling(root, max_cost_usd))
-
-
-def _gate_images(root: str, count: int, quality: str, what: str,
-                 max_cost_usd: float = 0.0) -> Optional[dict]:
-    """The spend gate for a tool that buys N images. Refusal dict, or None.
-
-    THE GATE GUARDED ONE TOOL OUT OF TWELVE. _spend_gate was written for
-    image_sprites and called only there, so image_generate, image_edit,
-    item_generate, item_variants, image_talkhead, vfx_animate and
-    character_generate all billed first and recorded afterwards - which makes
-    the project budget an invoice for every path except the one it was
-    demonstrated on. An unattended loop on any of them could not be refused.
-
-    Priced off imagegen.IMAGE_PRICE_USD, the same table image_sprites quotes
-    from, so one tool's estimate cannot drift from another's. An unknown
-    quality prices as medium there rather than raising: an estimate must never
-    be the thing that blocks work.
-    """
-    refused = _provider_gate(root, "image", what)
-    if refused:
-        return refused
-    try:
-        from bgate_adapters import imagegen as _imagegen
-        unit = _imagegen.price_per_image(quality or "medium")
-    except Exception:
-        return None                  # no price table is not a licence to refuse
-    return _spend_gate(root, unit * max(1, int(count)), what,
-                       _run_ceiling(root, max_cost_usd))
 
 
 def _register_artifact(logical_name: str, path: str, *, producer: str,
@@ -1785,8 +1628,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
                      reuse: Annotated[bool, Field(description='Reuse an already-generated texture for the same prompt instead of re-buying it. Default True.')] = True, materials: Annotated[str, Field(description='Semicolon list of name=prompt extra floor materials, each painted as its own atlas source with 3 variants.')] = "",
                      godot_project: Annotated[str, Field(description='Directory holding project.godot. Needed only when install=True.')] = "", res_dir: Annotated[str, Field(description='res:// directory the tileset installs under. Default assets/tiles.')] = "assets/tiles",
                      install: Annotated[bool, Field(description='False (default) leaves output in .bgate_out/tiles/; True writes into the Godot project and loads it in-engine.')] = False,
-                     collide: Annotated[bool, Field(description='Give wall tiles collision polygons. Default True.')] = True,
-                     max_cost_usd: Annotated[float, Field(description="Spend cap for this call in USD; 0 defers to the project's own ceiling.")] = 0.0) -> dict:
+                     collide: Annotated[bool, Field(description='Give wall tiles collision polygons. Default True.')] = True) -> dict:
     """GENERATE A GODOT TILESET - the bridge the level pipeline was missing.
 
     kie paints `prompt` (the FLOOR material) and `void_prompt` (what shows
@@ -1822,18 +1664,10 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
         if bits not in (4, 8):
             return {"ok": False, "error": "bits is 4 (16 masks) or 8 (blob47)"}
         tile_px = int(tile_px)
-        # 0 means UNCAPPED, and it is the default: ceilings are the user's to
-        # set (max_cost_usd on the call, the item, or the enforced budget) -
-        # a tool that shipped its own dollar guess kept refusing runs nobody
-        # asked it to bound.
-        if max_cost_usd and 2 * 0.02 > max_cost_usd:
-            return {"ok": False, "error": (
-                f"two texture drawings is about $0.04, over the "
-                f"${max_cost_usd:.2f} ceiling you set")}
         # AFTER the free validations, deliberately: "your view is isometric"
         # and "bits is 4 or 8" are answers about the REQUEST, and the more
         # specific answer must win over "nothing is keyed".
-        refused = _paid_gate(_root(), "image", 0.0, "a tileset generation")
+        refused = _provider_gate(_root(), "image", "a tileset generation")
         if refused:
             return refused
 
@@ -2505,7 +2339,7 @@ def image_generate(prompt: Annotated[str, Field(description='What to paint. Fram
     Full notes: docs/tools.md#image_generate
     """
     root = _Path(_scratch_root())
-    refused = _gate_images(str(root), 1, quality,
+    refused = _provider_gate(str(root), "image",
                            f"generating {filename!r}")
     if refused:
         return refused
@@ -2603,7 +2437,7 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     Full notes: docs/tools.md#image_edit
     """
     root = _Path(_scratch_root())
-    refused = _gate_images(str(root), 1, quality, f"editing into {filename!r}")
+    refused = _provider_gate(str(root), "image", f"editing into {filename!r}")
     if refused:
         return refused
     out = _art_out(root, filename)
@@ -2793,7 +2627,7 @@ def item_generate(item_class: Annotated[str, Field(description='One of item_clas
     Full notes: docs/tools.md#item_generate
     """
     root = _Path(_root())
-    refused = _gate_images(str(root), 1, quality, f"generating item {name!r}")
+    refused = _provider_gate(str(root), "image", f"generating item {name!r}")
     if refused:
         return refused
     style_clause = _item_style_clause(root, character)
@@ -2858,10 +2692,8 @@ def item_variants(item_class: Annotated[str, Field(description='One of item_clas
                          "narrow the axes"}
     # AFTER the free planning refusals - "your grid is over the limit you
     # set" is an answer about the request, and the more specific answer must
-    # win over "nothing is keyed". `limit` bounds the COUNT and never bounded
-    # the money: a 12-item grid at high quality is ~$2 that an exhausted
-    # daily budget could not refuse.
-    refused = _gate_images(str(root), max(1, len(to_mint)), quality,
+    # win over "nothing is keyed".
+    refused = _provider_gate(str(root), "image",
                            f"generating {len(to_mint)} variants of {base_name!r}")
     if refused:
         return refused
@@ -3061,7 +2893,6 @@ _RD_PROMPTS = {"walk": "confident, steady steps",
 def animation_generate(character: str, action: str,
                        source_sheet: str = "", prompt: str = "",
                        frames: int = 0, max_retries: int = 1,
-                       max_cost_usd: float = 0.0,
                        direction: str = "") -> dict:
     """CONTRACT-DRIVEN character animation via Retro Diffusion.
 
@@ -3078,10 +2909,9 @@ def animation_generate(character: str, action: str,
 
     from bgate_adapters import retrodiffusion as _rd
     from bgate_core.art import spritecontract as _sc
-    from bgate_core.board import spend as _spend
 
     root = _Path(_root())
-    refused = _paid_gate(str(root), "animate", 0.0, "an animation cycle")
+    refused = _provider_gate(str(root), "animate", "an animation cycle")
     if refused:
         return refused
     contract = _sc.contract_for(str(root), character, action)
@@ -3123,11 +2953,6 @@ def animation_generate(character: str, action: str,
     probe = _rd.available(str(root))
     if not probe.get("available"):
         return {"ok": False, "error": probe.get("reason")}
-    est = len(drawn) * _rd.ACTION_COST.get(rd_action, _rd.DEFAULT_ACTION_COST)
-    if max_cost_usd and est > max_cost_usd:
-        return {"ok": False, "error":
-                f"{len(drawn)} direction(s) at {rd_action} ≈ ${est:.2f}, "
-                f"over max_cost_usd={max_cost_usd:.2f}"}
 
     starts = _anim_start_frames(root, character, act, contract, source_sheet)
     if not starts.get("ok"):
@@ -3187,22 +3012,12 @@ def animation_generate(character: str, action: str,
         best = None
         attempts = max(1, 1 + int(max_retries))
         for attempt in range(attempts):
-            if attempt and max_cost_usd and spent + est / max(1, len(drawn)) > max_cost_usd:
-                break
             got = _rd.animate(starts["frames"][direction], rd_action,
                               frames=rd_frames, size=(cw, ch), prompt=motion,
                               out_path=out_dir / (f"{character}_{act}_"
                                                   f"{direction}_rd_sheet.png"),
                               root=str(root))
             spent += float(got.get("usd") or 0.0)
-            # THE LEDGER ROW, the same way imagegen/krea write theirs. RD
-            # bills prepaid USD and reported what this call cost; before
-            # this the provider's every charge left no ledger row at all.
-            _spend.record(str(root), float(got.get("usd") or 0.0),
-                          kind="animation", work_item_id=_work_item_id(),
-                          logical_name=f"{character}_{act}",
-                          detail=f"retrodiffusion {rd_action} {direction}",
-                          model=str(got.get("model") or ""))
             with _Img.open(got["path"]) as _sheet_src:
                 sheet_img = _rd.key_background(_sheet_src.copy())
             cols = max(1, sheet_img.width // cw)
@@ -3888,10 +3703,10 @@ def vfx_animate(key_frame: Annotated[str, Field(description='Path to the ONE app
     try:
         root = _Path(_root())
         # Derived, not bought: vfx_animate transforms one existing key frame
-        # rather than generating N. Gated anyway at one unit, because the
-        # budget's job is to be asked on every paid path, and a path that is
-        # cheap today is a path nobody re-checks when it stops being cheap.
-        refused = _gate_images(str(root), 1, 'low', f"animating {key_frame!r}")
+        # rather than generating N. Preflighted anyway, because a drained
+        # account refuses this path exactly like any other.
+        refused = _provider_gate(str(root), "image",
+                                 f"animating {key_frame!r}")
         if refused:
             return refused
         rel = _assets.normalize_path(root, key_frame)
@@ -4166,7 +3981,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                   frame_height: Annotated[int, Field(description='Cell height in px. Default 240; at default it is read from the sprite contract when one exists.')] = 240, quality: Annotated[str, Field(description='Per-pose image quality: low | medium | high. Default medium.')] = "medium",
                   ref_quality: Annotated[str, Field(description='Quality of the ONE reference generation. Default high.')] = "high", fps: Annotated[float, Field(description='Playback speed written into the SpriteFrames. Default 8.')] = 8.0,
                   res_dir: Annotated[str, Field(description='res:// directory the sheet imports under. Default assets/sprites.')] = "assets/sprites",
-                  limits: Annotated[Optional[dict], Field(description='{max_retries, max_cost_usd, timeout, max_seconds}; max_cost_usd 0 means the project ceiling decides. Unknown keys are refused.')] = None, provider: Annotated[str, Field(description='"" uses the stored art.provider then identity routing; openai EDITS the reference, krea follows it as style.')] = "",
+                  limits: Annotated[Optional[dict], Field(description='{max_retries, timeout, max_seconds}. Unknown keys are refused.')] = None, provider: Annotated[str, Field(description='"" uses the stored art.provider then identity routing; openai EDITS the reference, krea follows it as style.')] = "",
                   model: Annotated[str, Field(description='Provider model id; on krea defaults to nano-banana-2 (holds identity through pose changes).')] = "", ref_strength: Annotated[float, Field(description='How hard the reference pulls, 0-1 (krea). Default 0.6.')] = 0.6,
                   archetypes: Annotated[Optional[list[str]], Field(description='Catalogue animations (e.g. ["idle", "walk", "attack"]) used INSTEAD of `poses`; call sprite_plan first.')] = None, view: Annotated[str, Field(description='Camera convention prepended to every pose ("side view, facing right"); default reads the sprite contract.')] = "",
                   palette: Annotated[Optional[dict], Field(description='{"lock": auto|on|off, "colors": [...]}; locking quantises every frame to the reference palette.')] = None,
@@ -4179,8 +3994,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
     contract. Pass `archetypes` INSTEAD of `poses` for catalogue key poses
     (sprite_plan). anchor_views=3 conditions every pose on three angles - the
     highest-leverage knob. THE MOST EXPENSIVE TOOL HERE: the plan is priced
-    first and REFUSED past limits["max_cost_usd"] or the project budget;
-    unknown limit keys are refused.
+    first and the estimate is reported; unknown limit keys are refused.
     Full notes: docs/tools.md#image_sprites
     """
     try:
@@ -4231,9 +4045,9 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             if "name" not in p:
                 raise ValueError(f"each pose needs a 'name': {p}")
         root = _Path(_scratch_root())
-        # The most expensive tool here carried its own spend math and never
-        # got the provider preflight the cheaper image tools gained - so a
-        # drained board learned it from a paid 402 on the reference call.
+        # The most expensive tool here never got the provider preflight the
+        # cheaper image tools gained - so a drained board learned it from a
+        # paid 402 on the reference call.
         refused = _provider_gate(str(root), "image",
                                  f"a painted sprite set ({name!r})")
         if refused:
@@ -4246,13 +4060,13 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
 
-        # SIX DIALS, TWO DOORS. `max_retries`/`max_cost_usd`/`timeout`/
-        # `max_seconds` are all one question - how much is this run allowed to
-        # spend, in money and in wall clock - and `palette_lock`/
-        # `palette_colors` are one other. As six top-level parameters they sat
-        # among the ones that decide what the sprite LOOKS like, which is how a
-        # 23-parameter tool reads as undifferentiated. Unknown keys refused by
-        # name: a silently-ignored `max_cost` is a ceiling that was never set.
+        # FIVE DIALS, TWO DOORS. `max_retries`/`timeout`/`max_seconds` are all
+        # one question - how long is this run allowed to take and how hard may
+        # it retry - and `palette_lock`/`palette_colors` are one other. As five
+        # top-level parameters they sat among the ones that decide what the
+        # sprite LOOKS like, which is how a 23-parameter tool reads as
+        # undifferentiated. Unknown keys refused by name: a silently-ignored
+        # `max_second` is a limit that was never set.
         limits = dict(limits or {})
         unknown = sorted(set(limits) - set(_SPRITE_LIMITS))
         if unknown:
@@ -4261,7 +4075,6 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 f"{sorted(_SPRITE_LIMITS)}"))
         lim = {**_SPRITE_LIMITS, **limits}
         max_retries = int(lim["max_retries"])
-        max_cost_usd = float(lim["max_cost_usd"])
         timeout = int(lim["timeout"])
         max_seconds = int(lim["max_seconds"])
 
@@ -4280,15 +4093,13 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
         # qualities. Retries are deliberately NOT in the estimate - they are
         # bounded per pose and caught by the running check below; pricing the
         # worst case up front would refuse healthy runs.
-        ceiling = _run_ceiling(str(root), max_cost_usd)
-
         def _unit(q: str) -> float:
             """What ONE call of this run costs, on the provider it will run on.
 
             This used to read the gpt-image price table whichever provider was
-            named, which quietly under-quoted every Krea run - and the spend gate
-            is described as a cap rather than an invoice, so a gate fed the wrong
-            provider's prices is the failure that description exists to rule out.
+            named, which quietly under-quoted every Krea run - and an estimate
+            fed the wrong provider's prices is worse than none, because it is
+            presented to a human as what this run will cost.
             Krea prices per model and payload rather than per quality, so `q` is
             simply not part of its answer.
             """
@@ -4311,11 +4122,6 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             (0.0 if ref_image else _unit(ref_quality))
             + _unit(ref_quality) * extra_views
             + per_pose * len(poses), 4)
-        refused = _spend_gate(
-            str(root), projected,
-            f"painting {len(poses)} poses for {name!r}", ceiling)
-        if refused:
-            return {**refused, "poses_attempted": 0, "name": name}
         deadline = _time.monotonic() + max(60, int(max_seconds))
         call_timeout = float(max(30, int(timeout)))
 
@@ -4335,9 +4141,9 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
         # 1. The reference - the single source of who this character is.
         result: dict = {"poses_attempted": len(poses),
                         "profile_used": bool(profile)}
-        # Rolled-up spend/latency for the WHOLE set (ref + every pose edit,
-        # retries included). imagegen already charged the ledger per call; this
-        # is what the sheet artifact carries so a reviewer sees what it cost.
+        # Rolled-up cost/latency for the WHOLE set (ref + every pose edit,
+        # retries included) — what the providers reported for this run, carried
+        # on the sheet artifact so a reviewer sees what it cost.
         tally = {"usd": 0.0, "seconds": 0.0, "calls": 0}
 
         def _tally(r: dict) -> dict:
@@ -4467,14 +4273,11 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
 
         def _stop_reason(next_cost: float) -> str:
             """Why this run must not start another paid call - or "" to go on.
-            Checked before EVERY pose: the estimate up front is a plan, and a
-            plan is not a cap once retries and a slow API get involved."""
+            Checked before EVERY pose, because retries and a slow API turn a
+            plan into a run that is still going long after it should be."""
             if _time.monotonic() >= deadline:
                 return (f"run deadline reached ({max_seconds}s) after "
                         f"{tally['calls']} image calls")
-            if ceiling and tally["usd"] + next_cost > ceiling:
-                return (f"run ceiling reached (~${tally['usd']:.2f} "
-                        f"spent of ${ceiling:.2f})")
             return ""
 
         # ── THE MODEL SHEET ──────────────────────────────────────────────────
@@ -4763,7 +4566,11 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             "usd": round(tally["usd"], 4),
             "image_calls": tally["calls"],
             "seconds": round(tally["seconds"], 2),
-            "ceiling_usd": round(ceiling, 4) if ceiling else None,
+            # WHAT IT WAS QUOTED AT, beside what it came to. Nothing refuses a
+            # run on either number - this product keeps no ledger and holds no
+            # budget - but a plan whose actual cost ran well past its estimate
+            # is the one fact a human needs before they run it again.
+            "estimated_usd": projected,
             "timed_out": _time.monotonic() >= deadline,
         }
         if "reference_preview" in result:
@@ -4948,8 +4755,8 @@ def image_talkhead(subject: Annotated[str, Field(description='Who the portrait i
     # setup unless the agent thought to override it.
     provider = _providers.provider_for("portrait", asked=provider,
                                        root=root)
-    refused = _gate_images(str(root), _th.FRAME_COUNT if hasattr(_th, 'FRAME_COUNT') else 4,
-                           quality, f"painting a talking head for {name!r}")
+    refused = _provider_gate(str(root), "image",
+                             f"painting a talking head for {name!r}")
     if refused:
         return refused
     limit = float(drift_limit or _th.DRIFT_LIMIT)
@@ -6612,7 +6419,7 @@ def voice_speak(text: str, out_path: str = "",
 
     The dashboard's twin of this streams the bytes straight to an <audio> tag;
     an MCP caller has no speaker, so this one lands a file and returns its path.
-    Same adapter, same ledger row, same 2000-character cap.
+    Same adapter, same 2000-character cap.
 
     out_path   project-relative .wav path. Default: a timestamped file under
                .bgate/voice/, which is inside the already-gitignored .bgate dir
@@ -6624,19 +6431,12 @@ def voice_speak(text: str, out_path: str = "",
     from pathlib import Path as _Path
 
     from bgate_adapters import deepgram as _deepgram
-    from bgate_core.board import spend as _spend
 
     root = _root()
     verdict = _deepgram.available(root)
     if not verdict["available"]:
         raise RuntimeError(verdict["reason"])
 
-    # BILLED PER CHARACTER AND NEVER CHECKED. This path recorded its
-    # spend and never asked the budget - the one paid tool an
-    # unattended loop could run up with no gate at all. Priced from
-    # the same table the adapter bills from; an unpriced model quotes
-    # None there rather than 0.0, and an unknown price must not read
-    # as free, so it is gated at the most expensive known rate.
     # Explicit ask, then the stored preference, then the adapter default.
     speak_model = str(model or "").strip()
     if not speak_model:
@@ -6648,16 +6448,6 @@ def voice_speak(text: str, out_path: str = "",
         except Exception:
             speak_model = ""
     speak_model = speak_model or str(_deepgram.DEFAULT_SPEAK_MODEL)
-    per_1k = _deepgram.USD_PER_1K_CHARS.get(speak_model)
-    if per_1k is None:
-        known = [v for v in _deepgram.USD_PER_1K_CHARS.values()
-                 if isinstance(v, (int, float))]
-        per_1k = max(known) if known else 0.0
-    refused = _spend_gate(
-        str(root), (len(str(text)) / 1000.0) * float(per_1k),
-        f"speaking {len(str(text))} characters", _run_ceiling(str(root)))
-    if refused:
-        return refused
     result = _deepgram.speak(str(text), model=speak_model)
     if not result.get("ok"):
         raise RuntimeError(str(result.get("error") or "speech failed"))
@@ -6676,9 +6466,6 @@ def voice_speak(text: str, out_path: str = "",
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(result["audio"])
 
-    _spend.record(root, float(result.get("usd") or 0.0), kind="speech",
-                  model=str(result.get("model") or ""),
-                  detail=f"deepgram tts {result.get('chars', 0)} chars")
     return {"ok": True, "path": rel, "bytes": len(result["audio"]),
             "chars": result.get("chars"), "usd": result.get("usd"),
             "model": result.get("model"),
@@ -6692,7 +6479,7 @@ def voice_speak(text: str, out_path: str = "",
 # music hooks" and every tool it had was a paid, keyed provider - music_*
 # for beds, voice_* for speech - so a project without a key produced no audio at
 # all, and even with one there was no path to a coin pickup or a laser. These
-# three tools need no key, no network and no budget: an SFX is four oscillator
+# three tools need no key, no network and no money: an SFX is four oscillator
 # parameters and an envelope, and synthesis genuinely beats generation there.
 @_tool
 def sfx_kinds() -> dict:
@@ -7606,12 +7393,12 @@ def queue_claim_next() -> dict:
                      f"current item (#{origin}) first, then work this one "
                      "under the same lanes and rules, and queue_complete "
                      "it too when it lands. Claim again before that "
-                     "completion if you still have budget for more.")}
+                     "completion if you still have room for more.")}
 
 
 @_tool
 def queue_complete(item_id: int, result: str, failed: bool = False,
-                   evidence: str = "",
+                   evidence: str = "", next_approach: str = "",
                    premise_refuted: Optional[dict] = None) -> dict:
     """Close out a work item with an honest one-paragraph result.
 
@@ -7623,6 +7410,14 @@ def queue_complete(item_id: int, result: str, failed: bool = False,
     do not "fix" that by re-reporting. `premise_refuted` = {"claim",
     "measured", "did_instead"} records that the brief carried a measured claim
     that is not true; all three fields required.
+
+    `next_approach` (FAILURES ONLY) is the ONE concrete thing you would try
+    next, and it buys the item an extra automatic round that starts FROM it.
+    Use it when you narrowed the problem and ran out of turns - NOT when you
+    are blocked: a missing key, a credit block, an absent asset or an
+    unwritable lane fails identically every round and should fail fast and
+    stay failed. It is not a substitute for trying the idea. If it is in your
+    lane and you can afford it, RUN IT before you close.
     Full notes: docs/tools.md#queue_complete
     """
     from bgate_core.board import queue as _q
@@ -7644,6 +7439,11 @@ def queue_complete(item_id: int, result: str, failed: bool = False,
         refused = _evidence_gate(root, int(item_id), evidence)
         if refused:
             return {**refused, "premise_refuted": refutation}
+    # ONLY ON A FAILURE. The retry router reads this marker off the result
+    # text, so a next move recorded against a "done" leaves a signal on the
+    # board that no branch can ever act on - and an item nobody will reopen.
+    if failed:
+        result = _q.with_next_approach(result, next_approach)
     closed = _q.complete(root, item_id, result=result, failed=failed)
     return {**closed, "premise_refuted": refutation} if refutation else closed
 
@@ -8179,7 +7979,7 @@ def music_generate(prompt: Annotated[str, Field(description='Simple mode: a desc
             suno[key] = value
     if duration is not None:
         suno["duration"] = int(duration)
-    refused = _paid_gate(_root(), "music", 0.0, "a music generation")
+    refused = _provider_gate(_root(), "music", "a music generation")
     if refused:
         return refused
     return _music.generate(_root(), prompt, name=name,
@@ -8323,15 +8123,18 @@ def kie_video_generate(prompt: Annotated[str, Field(description='What the clip s
     root = _Path(_root())
     from bgate_adapters import kie
 
-    # THE MOST EXPENSIVE UNIT THIS PRODUCT BUYS, and it was ungated.
-    #
+    # THE ACCOUNT, BEFORE THE MOST EXPENSIVE UNIT THIS PRODUCT BUYS. A drained
+    # kie balance refuses this regardless of what the shot would cost, and
+    # learning that from a paid 402 is the expensive way to find out.
+    refused = _provider_gate(str(root), "video",
+                             f"a {seconds}s video shot")
+    if refused:
+        return refused
+
     # kie reports an unknown price as None, never 0.0, and that distinction
-    # has to survive here or the gate reads "free" for exactly the models
-    # whose cost is least predictable. So: a KNOWN price is gated on the
-    # number. An UNKNOWN one still asks the budget (which catches a project
-    # already over its ceiling) and then says so in the result - a spend
-    # nobody could price is a fact the caller is owed, not something to
-    # bury under a passing check.
+    # survives into the result: an estimate nobody could produce is a fact the
+    # caller is owed before they buy, not something to bury under a figure that
+    # reads as free.
     priced = None
     try:
         quote = kie.estimate_usd(model=model, seconds=seconds)
@@ -8339,13 +8142,6 @@ def kie_video_generate(prompt: Annotated[str, Field(description='What the clip s
             priced = float(quote["usd"])
     except Exception:
         priced = None
-    refused = _spend_gate(
-        str(root), priced or 0.0,
-        f"buying {seconds}s of video on {model or 'the default model'}"
-        + ("" if priced is not None else " (price UNKNOWN for this model)"),
-        _run_ceiling(str(root)))
-    if refused:
-        return refused
     base = (root / ".bgate_out" / "video").resolve()
     out = (base / (filename or "clip.mp4")).resolve()
     try:
@@ -8363,7 +8159,10 @@ def kie_video_generate(prompt: Annotated[str, Field(description='What the clip s
     if result.get("ok"):
         _log("video", f"generated a {result.get('model')} clip {out.name}",
              ref=result["path"])
-    return result
+    # The forward estimate travels WITH the result. None means kie publishes no
+    # price for this model, which is a fact the caller is owed rather than a
+    # figure that reads as free.
+    return {**result, "estimated_usd": priced}
 
 
 # ---------------------------------------------------------------------------

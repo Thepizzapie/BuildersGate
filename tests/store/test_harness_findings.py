@@ -39,8 +39,8 @@ def as_human(monkeypatch):
 # #1 and #3 — an agent could switch off the gate that judges it
 # ---------------------------------------------------------------------------
 
-HUMAN_ONLY = ("gate.mode", "budget.enforced", "dispatch.max_concurrent",
-              "budget.per_item_usd", "qa.max_rounds", "qa.gated_seats")
+HUMAN_ONLY = ("gate.mode", "dispatch.max_concurrent", "limits.max_runtime_s",
+              "qa.max_rounds", "qa.gated_seats")
 
 
 @pytest.mark.parametrize("key", HUMAN_ONLY)
@@ -56,22 +56,12 @@ def test_an_agent_cannot_switch_off_its_own_reviewer(root, as_agent):
     assert settings.get(root, "gate.mode") == "agent"
 
 
-def test_an_agent_cannot_turn_the_budget_into_a_report(root, as_agent,
-                                                       monkeypatch):
-    """budget.enforced off makes every ceiling advisory — which is how the
-    worst overruns in the run got past $16 against a $5 ceiling.
-
-    Turned ON by a human first, because a new project now starts with it OFF
-    (the declared default finally reaching the spend_budget row it stores to).
-    Without that step this asserts nothing: the value the agent is refused
-    permission to write is the value already stored.
-    """
-    from bgate_core.board import spend
-
-    spend.set_budget(root, enforced=1)
+def test_an_agent_cannot_lift_its_own_runtime_ceiling(root, as_agent):
+    """The wall clock is the backstop that actually stopped runaway runs, and
+    an agent that can raise it is not bounded by it."""
     with pytest.raises(settings.SettingError):
-        settings.set(root, "budget.enforced", False)
-    assert settings.get(root, "budget.enforced") is True
+        settings.set(root, "limits.max_runtime_s", 86400)
+    assert settings.get(root, "limits.max_runtime_s") == 1800
 
 
 def test_an_agent_cannot_widen_its_own_concurrency(root, as_agent):
@@ -210,13 +200,16 @@ def test_reopen_hands_the_next_round_what_is_already_on_disk(root):
     assert "player.gd" in brief
 
 
-def test_the_wrap_up_fires_before_the_kill_not_after():
-    """The ceiling asks the agent to bank its work before it becomes a kill."""
+def test_there_is_no_cost_ceiling_to_wrap_up_against():
+    """A dollar ceiling used to kill a run mid-turn, and a wrap-up steer went
+    out at 80% of it so the run could bank its work first. Both are gone with
+    the ledger they were arithmetic over. The wall clock still stops a run —
+    and it is what stopped every overrun in the benchmarks anyway."""
     from bgate_ui.agents import dispatch
 
-    assert 0.0 < dispatch.WRAP_AT < 1.0
-    text = dispatch.WRAP_TEXT.format(spent=4.10, limit=5.0)
-    assert "queue_complete" in text and "$4.10" in text
+    assert not hasattr(dispatch, "WRAP_AT")
+    assert not hasattr(dispatch, "WRAP_TEXT")
+    assert dispatch.HARD_RUNTIME_S > 0
 
 
 # ---------------------------------------------------------------------------

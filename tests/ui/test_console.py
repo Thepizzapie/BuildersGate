@@ -82,6 +82,23 @@ def spawned(monkeypatch):
     return calls
 
 
+def test_attention_dismissals_persist_in_the_console_state(client):
+    key = "item:72:failed:failed:2026-09-03 10:00:00"
+    r = client.post("/api/console/attention/dismiss", json={"key": key})
+    assert r.status_code == 200, r.text
+    assert key in client.get("/api/console/state?steps=false").json()["dismissed_attention"]
+
+    r = client.post("/api/console/attention/dismiss",
+                    json={"key": key, "dismissed": False})
+    assert r.status_code == 200, r.text
+    assert key not in client.get("/api/console/state?steps=false").json()["dismissed_attention"]
+
+
+def test_attention_dismiss_refuses_unscoped_keys(client):
+    assert client.post("/api/console/attention/dismiss",
+                       json={"key": "anything"}).status_code == 400
+
+
 # ---------------------------------------------------------------------------
 # The fence — the human's own words survive the 80-character title
 # ---------------------------------------------------------------------------

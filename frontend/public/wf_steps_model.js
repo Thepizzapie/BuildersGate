@@ -141,18 +141,9 @@
     toast("prompt rewritten - the original is kept in the inspector");
   }
 
-  // ▶ runs THIS node. The canvas already routes [data-wact] to the step, so a
-  // per-node run needs no event path of its own.
-  function runRow(n, extra) {
-    // Read the canvas node's own status FIRST. runNode sets it optimistically
-    // the moment you click, while nodeStatus() reads the last polled run — so
-    // trusting only the poll left the button live during the gap, and a second
-    // click bounced off the engine with "queued, not pending".
-    const st = n.status || WF.nodeStatus(n.id);
-    const busy = st === "running" || st === "queued";
-    return `<div class="wf-act">
-      <button class="nc-w wf-run1" data-wact="run" data-wval="${esc(n.id)}"${busy ? " disabled" : ""}
-        title="run only this node">${busy ? esc(st) + "…" : "▶ run this node"}</button>${extra || ""}</div>`;
+  function compareRow(n) {
+    return `<div class="wf-act"><button class="nc-w wf-run1 ghost" data-wact="compare" data-wval="${esc(n.id)}"
+      title="add the other available models on the same inputs">＋ add comparison models</button></div>`;
   }
 
   /* What this card actually produced, from the run's own record of THIS node —
@@ -217,14 +208,13 @@
         // "&var(--bad-soft); improve" on every model card.
         + `<div class="wf-act"><button class="nc-w wf-improve" data-wact="improve"
              data-wval="${esc(n.id)}" title="rewrite this into a fuller image prompt"
-             ${str(n, "prompt", "").trim() ? "" : "disabled"}>✧ improve</button></div>`
+             ${str(n, "prompt", "").trim() ? "" : "disabled"}>Improve prompt</button></div>`
         + w.number(n, "count", { label: "Count", min: 1, max: 8, value: 1 })
         + w.seed(n, "seed", { label: "Seed", hint: "0 = random each run; set a number to reproduce one" })
         + w.text(n, "model", { label: "Model", placeholder: "override (blank = the tier's)" })
         + w.text(n, "provider", { label: "Provider", placeholder: "override" })
         + resolvedLine(n)
-        + runRow(n, `<button class="nc-w wf-run1 ghost" data-wact="compare" data-wval="${esc(n.id)}"
-            title="clone this card once per distinct model on the ladder, wired to the same inputs">⧉ compare</button>`);
+        + compareRow(n);
     },
     config(n) {
       const kind = str(n, "task_kind", "");
@@ -232,7 +222,7 @@
       const flat = WF.tierFlat(kind);
       let html = `<div class="wf-insp-p">A card whose identity is the <b>model</b>. Say what you are making and how good it has to be; the server resolves that to a provider and a model and tells this card what it costs - the name you get is on the title bar, so several of these side by side read as a comparison.</div>`
         + `<div class="wf-insp-p">The prompt wired into the inlet wins over the one typed on the card - that wire is the point of the pattern. Put <code>{input}</code> in the card's own prompt to compose instead of choose: the wired text lands there and everything around it (a style suffix, a negative, a framing note) survives.</div>`
-        + `<div class="wf-insp-p">▶ on the card runs <b>only this node</b>. Nothing else in the graph moves, and no work is dispatched to a seat behind your back - that is what makes fan-out → look → pick a thing you can actually do.</div>`;
+        + `<div class="wf-insp-p">Run workflow executes connected model cards together; no work is dispatched to a seat.</div>`;
       if (!WF.tiersReady()) {
         html += `<div class="wf-warn">The tier ladder could not be read (${esc(WF.tiersError() || "not loaded")}), so this panel cannot show which model each rung is. Your choice is still stored and still sent with the run, which resolves it server-side.</div>`;
         return html;
@@ -258,7 +248,6 @@
       return r.usd * Math.max(0, Math.floor(num(n, "count", 1)));
     },
     onAction(n, action, field) {
-      if (action === "run") { WF.runNode(n.id); return; }
       if (action === "compare") { fanOut(n); return; }
       if (action === "improve") { improve(n); return; }
     },

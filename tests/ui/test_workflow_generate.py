@@ -23,7 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bgate_core.store import artifacts
-from bgate_core.board import generate, queue, spend, workflows
+from bgate_core.board import generate, queue, runlimits, workflows
 from bgate_ui.app import app
 
 
@@ -273,10 +273,10 @@ class TestParallelism:
         assert len([n for n in run["nodes"] if n["status"] == "queued"]) == 1
 
     def test_the_fan_out_respects_the_concurrency_cap(self, root, provider):
-        spend.set_budget(root, max_concurrent=1)
+        runlimits.set_limits(root, max_concurrent=1)
         run = start(root, fanout_graph())
         running = [n["node_id"] for n in run["nodes"] if n["status"] == "running"]
-        assert len(running) == 1, "the budget's max_concurrent is the ceiling"
+        assert len(running) == 1, "dispatch.max_concurrent is the ceiling"
         workflows.join(run["id"])
         for _ in range(4):
             run = workflows.advance(root, run["id"])
@@ -626,21 +626,13 @@ class TestPromptOnAWire:
 # ---------------------------------------------------------------------------
 
 class TestMoneyAndFailure:
-    def test_the_budget_refuses_before_anything_is_generated(self, root, provider):
-        spend.set_budget(root, per_day_usd=0.001, enforced=1)
-        run = start(root, fanout_graph())
-        workflows.join(run["id"])
-        run = workflows.advance(root, run["id"])
-        assert node(run, "a")["status"] == "failed"
-        assert "budget" in node(run, "a")["detail"]
-        assert provider.calls == [], "money was spent after the ceiling refused it"
-
-    def test_spend_is_recorded_per_candidate(self, root, provider):
+    def test_the_node_reports_what_the_run_cost(self, root, provider):
         run = start(root, fanout_graph(count=2))
         workflows.join(run["id"])
         assert len(provider.calls) == 6
-        totals = spend.totals(root)
-        assert totals["by_kind"]["image"] == pytest.approx(0.03 * 6, abs=1e-6)
+        # Per RUN, from what the provider reported, and summed nowhere else:
+        # there is no ledger behind this number.
+        assert node(run, "a")["detail"]
 
     def test_a_provider_failure_fails_the_node_with_the_reason(self, root, monkeypatch):
         stub = Provider(fail="Krea has no API credit — top it up at krea.ai/settings")

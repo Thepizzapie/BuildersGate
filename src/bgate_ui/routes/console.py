@@ -45,6 +45,7 @@ router = APIRouter()
 # auto-deploy switch: per project, survives a restart, no schema change.
 SEAT = "director"
 SIGNOFF_KEY = "signoffs"
+ATTENTION_KEY = "dismissed_attention"
 # How far back a finished item still asks for a sign-off. This is a LIVE
 # instrument: work that landed while you were watching wants a decision, work
 # from last Tuesday is history and belongs to the timeline. Without the window,
@@ -792,6 +793,8 @@ def console_state(steps: bool = True) -> dict:
         "sessions_by_item": live_sessions,
         "collab": _collab(r, conn, active),
         "autopilot": _autodeploy.state(r),
+        "dismissed_attention": list(
+            (_ws.get(r, SEAT, ATTENTION_KEY, {}).get("keys") or {}).keys()),
         "gate": _gatemode.state(r),
         # WHETHER THE DIRECTOR IS MID-REPLY. Chat turns stopped being work
         # items, so floor.running no longer covers a streaming director
@@ -810,6 +813,33 @@ def console_state(steps: bool = True) -> dict:
             "failed": counts.get("failed", 0),
         },
     }
+
+
+@router.post("/api/console/attention/dismiss")
+def console_attention_dismiss(payload: dict) -> dict:
+    """Hide one attention snapshot without changing the underlying work item."""
+    key = str(payload.get("key") or "").strip()
+    if (not key.startswith(("item:", "gate:", "question:"))
+            or len(key) > 240 or any(ch in key for ch in "\r\n\0")):
+        raise _api.bad_request("a valid attention key is required")
+    dismissed = payload.get("dismissed") is not False
+    now = datetime.now(timezone.utc).isoformat()
+
+    def _change(doc: dict) -> dict:
+        keys = dict(doc.get("keys") or {})
+        if dismissed:
+            keys[key] = now
+        else:
+            keys.pop(key, None)
+        # This is a UI acknowledgement log, not history. Bound it so old
+        # projects do not carry every dismissed transient forever.
+        if len(keys) > 500:
+            keys = dict(sorted(keys.items(), key=lambda row: row[1])[-500:])
+        doc["keys"] = keys
+        return doc
+
+    _ws_update(root(), ATTENTION_KEY, _change)
+    return {"ok": True, "key": key, "dismissed": dismissed}
 
 
 @router.post("/api/console/escalate")

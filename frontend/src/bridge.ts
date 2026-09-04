@@ -73,7 +73,7 @@ declare global {
     /** Classic view modules, reached only through the wrappers below. */
     SpriteEdit?: { open(rel: string): void; pick(): void };
     ModelEdit?: { open(rel: string): void; pick(): void };
-    AudioLab?: { pick(): void };
+    AudioLab?: { open(rel: string): void; pick(): void };
     AssetLib?: { activate(force?: boolean): void; refresh(): void };
   }
 }

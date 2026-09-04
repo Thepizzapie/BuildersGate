@@ -161,11 +161,6 @@ def generate(root: str | os.PathLike[str], prompt: str, *, name: str = "",
     task id comes back on the result either way, so a cancelled or failed batch
     is still collectable with :func:`recover`.
 
-    THE BUDGET IS ASKED FIRST even though the price is unknown. kie publishes no
-    per-model price, so there is no projected figure to check against a ceiling
-    — but a project that has ALREADY blown its daily budget must not be able to
-    buy music, and ``spend.check`` answers that with a projection of zero.
-
     A PENDING TICKET IS OPENED BEFORE THE SUBMIT and closed only when the takes
     are on disk. Everything between those two points is paid-for work nobody has
     collected, which is exactly what :func:`stuck_tracks` sweeps for.
@@ -189,11 +184,6 @@ def generate(root: str | os.PathLike[str], prompt: str, *, name: str = "",
                 suno["model"] = preferred
         except Exception:
             pass
-
-    refusal = _budget_refusal(root)
-    if refusal:
-        return {"ok": False, "error": refusal, "stage": "spend_gate",
-                "logical_name": stem, "candidates": []}
 
     out_dir = Path(root) / CANDIDATE_DIR / stem
     # OPENED BEFORE THE CALL, exactly as cinematic sets a shot to 'generating'
@@ -630,8 +620,7 @@ def _absorb(root: str, stem: str, prompt: str, result: dict, *,
                                         work_item_id=work_item_id, suno=suno))
         except Exception as exc:                                 # noqa: BLE001
             # A registration that fails must not lose the file that was paid
-            # for — the same rule imagegen._account holds for the ledger. Say
-            # which track, and hand the path back anyway.
+            # for. Say which track, and hand the path back anyway.
             registered.append({"artifact_id": None, "path": track.get("path"),
                                "error": f"{type(exc).__name__}: {exc}"})
 
@@ -877,24 +866,6 @@ def _stem_for_task(root: str, task_id: str) -> str:
 def _stem_from(prompt: str) -> str:
     """A filename out of the first few words of the prompt."""
     return " ".join(str(prompt).split()[:6])[:60] or "track"
-
-
-def _budget_refusal(root: str) -> str:
-    """The project budget's answer, or "" to proceed. Never raises.
-
-    Projected at zero because kie publishes no price — this cannot catch "this
-    one track is too expensive", only "this project is already over".
-    """
-    try:
-        from ..board import spend
-
-        verdict = spend.check(root, projected_usd=0.0)
-    except Exception:                                            # noqa: BLE001
-        return ""   # no ledger is not a licence to refuse work
-    if verdict.get("allowed", True):
-        return ""
-    return (f"the project budget refuses this music generation: "
-            f"{verdict.get('reason') or 'ceiling reached'}")
 
 
 def _install_file(root: str, art: dict) -> dict:

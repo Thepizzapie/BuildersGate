@@ -2,31 +2,27 @@ import { useCallback, useRef, useState } from "react";
 import { readJSON, seatColor, watchAgent } from "../bridge";
 import { useEvents, useViewActive } from "../hooks";
 import { Icon } from "../components/Icon";
+import { consoleState, EMPTY_CONSOLE, type ConsoleState, type Item } from "../shell/agents/api";
+import {
+  gateAttentionKey, itemAttentionKey, questionAttentionKey, readDismissedAttention,
+} from "../shell/agents/attention";
+import { setSelection } from "../shell/selection";
+import { openAttention } from "../shell/screen";
+import "./overview.css";
 
-/* The Overview deck — the studio at a glance.
- *
- * Converted first because it is the smallest honest test of the island model:
- * it is read-only, it polls five endpoints, it reads the seat colour tokens,
- * and it hands a click back to the classic inspector. Anything the bridge is
- * missing shows up here rather than three views deep.
- *
- * Behaviour is deliberately identical to the `refreshOverview` it replaces,
- * INCLUDING the cadence and the "did any read fail" line: five parallel reads,
- * the last nine activity events newest-first, and an error only surfaced when
- * there is nothing else to say. The one change is that it stops polling when
- * the deck is not on screen instead of returning early from a fired timer. */
-
-type QueueItem = { id: number; title?: string; seat?: string; status?: string };
-type Agent = { item_id: number; state?: string };
 type Artifact = { status?: string };
 type Event = { seat?: string; summary?: string; kind?: string };
+
+function openOrchestration(item?: Item) {
+  if (item) setSelection({ key: `i${item.id}`, kind: "item", itemId: item.id,
+    title: item.title, seat: item.seat });
+  window.setWorkspace?.("agents");
+}
 
 export default function Overview() {
   const host = useRef<HTMLDivElement>(null);
   const active = useViewActive(host);
-
-  const [items, setItems] = useState<QueueItem[]>([]);
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [consoleData, setConsoleData] = useState<ConsoleState>(EMPTY_CONSOLE);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [sessions, setSessions] = useState<unknown[]>([]);
@@ -34,100 +30,66 @@ export default function Overview() {
   const [readError, setReadError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [st, q, ag, arts, act] = await Promise.all([
-      readJSON<{ sessions?: unknown[]; assets?: unknown[] }>("/api/state", {}),
-      readJSON<{ items?: QueueItem[] }>("/api/queue", { items: [] }),
-      readJSON<{ agents?: Agent[] }>("/api/agents", { agents: [] }),
+    const [st, board, arts, act] = await Promise.all([
+      readJSON<{ sessions?: unknown[]; assets?: unknown[] }>("/api/state", {}), consoleState(),
       readJSON<{ artifacts?: Artifact[] }>("/api/artifacts", { artifacts: [] }),
       readJSON<{ events?: Event[] }>("/api/activity?after_id=0", { events: [] }),
     ]);
-    setReadError([st, q, ag, arts, act].map((x) => x.__error).find(Boolean) || null);
-    setSessions(st.sessions || []);
-    setAssets(st.assets || []);
-    setItems(q.items || []);
-    setAgents(ag.agents || []);
-    setArtifacts(arts.artifacts || []);
-    setEvents(act.events || []);
+    setReadError([st, board, arts, act].map((x) => x.__error).find(Boolean) || null);
+    if (!board.__error) setConsoleData(board);
+    setSessions(st.sessions || []); setAssets(st.assets || []);
+    setArtifacts(arts.artifacts || []); setEvents(act.events || []);
   }, []);
-
   useEvents(refresh, { enabled: active });
 
-  const live = agents.filter((a) => a.state === "running");
+  const items = consoleData.items || [];
+  const dismissed = new Set([...(consoleData.dismissed_attention || []), ...readDismissedAttention()]);
+  const liveAgents = (consoleData.agents || []).filter((a) => a.state === "running");
   const byId = new Map(items.map((i) => [i.id, i]));
-  const tiles = [
-    { n: live.length, l: "live agents", hot: live.length > 0 },
-    { n: items.filter((i) => i.status === "queued").length, l: "queued" },
-    { n: artifacts.filter((a) => a.status === "candidate").length, l: "candidates" },
-    { n: sessions.length, l: "playtests" },
-    { n: assets.length, l: "tracked" },
-  ];
-  const recent = events.slice(-9).reverse();
+  const failed = items.filter((i) => i.status === "failed" && !dismissed.has(itemAttentionKey(i)));
+  const blocked = items.filter((i) => ["blocked", "held", "exhausted"].includes(i.execution_state || "")
+    && !dismissed.has(itemAttentionKey(i)));
+  const gates = (consoleData.gates || []).filter((g) => g.blocking !== false
+    && !dismissed.has(gateAttentionKey(g)));
+  const questions = consoleData.questions.filter((q) => !dismissed.has(questionAttentionKey(q)));
+  const attentionCount = questions.length + gates.length + failed.length + blocked.length;
+  const queued = items.filter((i) => i.status === "queued");
+  const recent = events.slice(-8).reverse();
 
   return (
-    <div ref={host}>
-      <div className="ov-stats">
-        {tiles.map((t) => (
-          <div key={t.l} className={t.hot ? "ov-tile hot" : "ov-tile"}>
-            <div className="n">{t.n}</div>
-            <div className="l">{t.l}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="col2" style={{ marginBottom: 16 }}>
-        <div className="spanel k-read">
-          <div className="sec-h">
-            <Icon name="run" size={15} />
-            <h3 className="sec-t">Running now</h3>
-            <span className="sec-n">{live.length || ""}</span>
-          </div>
-          <div>
-            {live.length ? (
-              live.map((a) => {
-                const it = byId.get(a.item_id);
-                return (
-                  <div
-                    key={a.item_id}
-                    className="ov-run-row"
-                    onClick={() => watchAgent(a.item_id)}
-                  >
-                    <span className="p" />
-                    <span className="rt">{it?.title || `item ${a.item_id}`}</span>
-                    <span className="rs" style={{ color: seatColor(it?.seat) }}>
-                      {it?.seat || ""}
-                    </span>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="empty">nothing dispatched</div>
-            )}
-          </div>
+    <main ref={host} className="ov-brief">
+      <section className={`ov-callout ${attentionCount ? "needs" : "clear"}`}>
+        <div className="ov-callout-copy"><span className="ov-kicker">Studio briefing</span>
+          <h2>{attentionCount ? `${attentionCount} decision${attentionCount === 1 ? "" : "s"} need you` : "The studio can keep moving"}</h2>
+          <p>{attentionCount ? "Questions, approvals, blocked work, and failures are grouped in one place."
+            : liveAgents.length ? `${liveAgents.length} agent${liveAgents.length === 1 ? " is" : "s are"} executing the current plan.`
+            : queued.length ? `${queued.length} queued item${queued.length === 1 ? " is" : "s are"} ready for dispatch.`
+            : "No work is blocked or waiting for a decision."}</p>
         </div>
+        <button className="ov-primary" onClick={() => attentionCount ? openAttention() : openOrchestration()}>
+          {attentionCount ? "Review decisions" : queued.length ? "Open queue" : "Direct the studio"}<Icon name="arrow-right" size={15} />
+        </button>
+      </section>
 
-        <div className="spanel k-read">
-          <div className="sec-h">
-            <Icon name="timeline" size={15} />
-            <h3 className="sec-t">Recent activity</h3>
-          </div>
-          <div className="ledger" style={{ maxHeight: 240 }}>
-            {recent.length ? (
-              recent.map((e, i) => (
-                <div key={i} className="line">
-                  <span className="who" style={{ color: seatColor(e.seat) }}>
-                    {e.seat || ""}
-                  </span>
-                  <span className="what">{e.summary || e.kind || ""}</span>
-                </div>
-              ))
-            ) : readError ? (
-              <div className="empty err">could not read the studio - {readError}</div>
-            ) : (
-              <div className="empty">quiet</div>
-            )}
-          </div>
-        </div>
+      <section className="ov-strip" aria-label="Studio totals">
+        <div><strong>{liveAgents.length}</strong><span>Running</span></div><div><strong>{queued.length}</strong><span>Queued</span></div>
+        <div><strong>{artifacts.filter((a) => a.status === "candidate").length}</strong><span>Awaiting review</span></div>
+        <div><strong>{sessions.length}</strong><span>Playtests</span></div><div><strong>{assets.length}</strong><span>Tracked assets</span></div>
+      </section>
+
+      <div className="ov-grid">
+        <section className="ov-panel ov-active"><div className="ov-panel-head"><h3>Active work</h3><button onClick={() => openOrchestration()}>View queue</button></div>
+          <div className="ov-work-list">{liveAgents.length ? liveAgents.map((a) => { const item = byId.get(a.item_id); return <button key={a.item_id} className="ov-work" onClick={() => watchAgent(a.item_id)}>
+            <span className="ov-live-dot" /><span className="ov-work-copy"><b>{item?.title || `Work item ${a.item_id}`}</b><small style={{ color: seatColor(item?.seat) }}>{item?.seat || "agent"}</small></span><Icon name="chevron-right" size={14} />
+          </button>; }) : queued.slice(0, 5).map((item) => <button key={item.id} className="ov-work" onClick={() => openOrchestration(item)}>
+            <span className="ov-queue-mark">{item.id}</span><span className="ov-work-copy"><b>{item.title}</b><small style={{ color: seatColor(item.seat) }}>{item.waiting_line || item.seat}</small></span><Icon name="chevron-right" size={14} />
+          </button>)}{!liveAgents.length && !queued.length && <div className="ov-empty">No active or queued work.</div>}</div>
+        </section>
+        <section className="ov-panel"><div className="ov-panel-head"><h3>Latest from the studio</h3></div>
+          <div className="ov-ledger">{recent.length ? recent.map((e, i) => <div key={i} className="ov-event"><span style={{ color: seatColor(e.seat) }}>{e.seat || "studio"}</span><p>{e.summary || e.kind || "Activity recorded"}</p></div>)
+            : <div className={`ov-empty ${readError ? "err" : ""}`}>{readError ? `Could not read the studio — ${readError}` : "No recent activity."}</div>}</div>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }

@@ -18,7 +18,7 @@ from pydantic import Field
 
 from bgate_mcp.server import (  # noqa: F401
     Optional, _Path, _archive_preview, _contained_path,
-    _fail, _json, _log, _paid_gate,
+    _fail, _json, _log, _provider_gate,
     _register_artifact, _root, _run_tag, _sprites,
     _tool,
 )
@@ -348,12 +348,40 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
     return result
 
 
+def _route_if_billing(result: dict, root=None) -> dict:
+    """Attach the provider board to a STAGE failure that is about the account.
+
+    server._fail already does this for a billing-shaped EXCEPTION, and that is
+    where the observed "no credit, therefore the pipeline is closed, therefore
+    I will hand-roll it" turn was being caught. A staged pipeline never gets
+    there: character() returns {"ok": False, "stage": "plate", ...} with the
+    provider's 429 as a STRING, so the redirect that exists for every other
+    paid tool was missing from the one tool whose whole purpose is to stop an
+    agent modelling a character by hand. MEASURED on catnip-fiend: the plate
+    hit a drained openai account with krea keyed and kie holding 3,446
+    credits, and the agent went looking for the answer rather than being
+    handed it.
+    """
+    try:
+        from bgate_core.runtime import gateway as _gateway
+
+        errors = [str(result.get("error") or "")]
+        errors += [str(s.get("error") or "") for s in result.get("steps") or []]
+        if any(_gateway.is_billing_error(e) for e in errors if e):
+            result.setdefault("route", _gateway.billing_note(root))
+    except Exception:
+        pass
+    return result
+
+
 @_tool
 def character_generate(prompt: Annotated[str, Field(description='What the character looks like; the pose clause and template conditioning are added.')], out_dir: Annotated[str, Field(description="Directory every stage's artifacts are written into.")], name: Annotated[str, Field(description='Stem for the plate, mesh and rigged files. Default character.')] = "character",
                        provider: Annotated[str, Field(description='Image provider for the plate; "" uses the project\'s routing.')] = "", backend: Annotated[str, Field(description='Image-to-3D backend; "" asks choose(), which refuses licence-conditioned backends - name one after reading its terms.')] = "",
                        height: Annotated[float, Field(description='Character height in metres the mesh is scaled to. Default 1.8.')] = 1.8, budget: Annotated[int, Field(description='Target face count after decimation. Default 45000.')] = 45000,
                        size: Annotated[str, Field(description='Plate image size WxH. Default 1024x1536.')] = "1024x1536", godot_project: Annotated[str, Field(description='Directory holding project.godot; set it to import, wire and load the result in-engine. Empty writes nothing into a game.')] = "",
-                       dry_run: Annotated[bool, Field(description='True (default) quotes the backend and stops; False spends real money at the plate and the mesh.')] = True, timeout: Annotated[int, Field(description='Seconds for the whole chain. Default 2400.')] = 2400) -> dict:
+                       dry_run: Annotated[bool, Field(description='True (default) quotes the backend and stops; False spends real money at the plate and the mesh.')] = True, timeout: Annotated[int, Field(description='Seconds for the whole chain. Default 2400.')] = 2400,
+                       ref_images: Annotated[list[str], Field(description='Local images of the SUBJECT - the pinned concept ref. Without one the pose template says which STANCE but not which character, so every run invents a different figure. Passed ahead of the template.')] = [],
+                       ref_strength: Annotated[float, Field(description='How hard the subject reference is held, 0..1. Default 0.6.')] = 0.6) -> dict:
     """"I want a model that looks like X." Plate, mesh, rig, into the engine.
 
     THE WHOLE CHARACTER PATH AS ONE CALL; each stage gates the next. DRY_RUN
@@ -372,17 +400,18 @@ def character_generate(prompt: Annotated[str, Field(description='What the charac
         _contained_path(out_dir, "out_dir")
         _contained_path(godot_project, "godot_project")
         root = _root()
-        refused = _paid_gate(root, "image", 0.0, "a character build")
+        refused = _provider_gate(root, "image", "a character build")
         if refused:
             return refused
     except Exception:
         root = None
     try:
-        return _blender.character(
+        return _route_if_billing(_blender.character(
             prompt, out_dir, name=name, provider=provider, backend=backend,
             height=height, budget=budget, size=size,
             godot_project=godot_project, root=root, dry_run=dry_run,
-            timeout=timeout)
+            timeout=timeout, ref_images=list(ref_images or []),
+            ref_strength=ref_strength), root)
     except Exception as exc:
         return _fail(exc)
 
@@ -1238,3 +1267,102 @@ def animation_contacts(model: Annotated[str, Field(description='The exported .gl
          ref=str(model))
     return {"ok": True, "model_height": height, "gait": gait,
             "feet_guessed": guessed, "clips": clips}
+
+
+@_tool
+def animation_library(pack: Annotated[str, Field(description='One pack to detail (its clips, bone map coverage); empty lists every pack.')] = "") -> dict:
+    """Which hand-keyed CC0 clip packs are fetched, and what is in them.
+
+    A pack's clips ride into blender_animate as {"clip": "Walk_Loop",
+    "name": "walk"} (pack defaults to quaternius-ual) and are RETARGETED onto
+    the rig - animator-keyed motion instead of procedural. This tool never
+    downloads: a missing pack is fetched by the OWNER with the printed
+    command (`bgate animlib fetch <pack>`, commit-pinned, SHA-256 checked),
+    the same rule that keeps key-writing out of an agent's hands.
+    Full notes: docs/tools.md#animation_library
+    """
+    from bgate_adapters import animlib as _animlib
+    if not pack:
+        return _animlib.status()
+    resolved = _animlib.resolve(pack)
+    if not resolved.get("ok"):
+        return resolved
+    return {"ok": True, "pack": pack, "license": resolved["license"],
+            "clips": sorted(resolved["clips"].values(), key=lambda c: c["name"]),
+            "mapped_bones": sorted(set(resolved["bone_map"].values())),
+            "unmapped_source_bones": resolved["unmapped"],
+            "how": ('blender_animate(model, out_path, clips=[{"clip": "Walk_Loop", '
+                    '"name": "walk"}, {"kind": "idle"}]) - library and procedural '
+                    'clips mix in one call')}
+
+
+def _proof_sheet_paths(result: dict) -> list[str]:
+    """The per-clip proof sheets this run wrote, for the image blocks."""
+    return [s["path"] for s in (result.get("sheets") or [])
+            if isinstance(s, dict) and s.get("path")]
+
+
+@_tool(images=_proof_sheet_paths)
+def blender_animate(model: Annotated[str, Field(description='The RIGGED humanoid .glb (what blender_rig wrote) to author clips on.')],
+                    out_path: Annotated[str, Field(description='Where the animated .glb is written; keep it inside the project.')],
+                    clips: Annotated[Optional[list[dict]], Field(description='[{"name", "kind", ...}]. kind: idle | walk | run | sneak | crouch_idle | pickup | look_around | wave | hit | jump | keyed, OR a LIBRARY clip {"clip": "Walk_Loop", "name": "walk", "pack": "quaternius-ual"} retargeted from a fetched CC0 pack (animation_library lists them) - prefer these where the pack has the motion. Omitted: procedural idle, walk, run, crouch_idle, pickup, look_around. A "keyed" clip carries {"keys": [{"t": s, "lean": deg, "hips_up": m, "reach_r": deg, ...}], "loop": bool} in CHARACTER terms - never bone rotations. Gaits take "overrides" ({"stride": 0.4, "lean": 10, ...}, fractions of leg length where they are distances).')] = None,
+                    fps: Annotated[int, Field(description='Keys per second. Default 30.')] = 30,
+                    out_dir: Annotated[str, Field(description='Where the proof frames and sheets go. Default: anim_proof/ beside out_path.')] = "",
+                    stem: Annotated[str, Field(description='File stem for the proof images. Default proof.')] = "proof",
+                    proof_frames: Annotated[int, Field(description='Frames rendered per clip per view for the proof sheet; 0 renders nothing. Default 6.')] = 6,
+                    facing: Annotated[str, Field(description="What to do when the skin's toes and the skeleton's foot bones disagree about forward: check (refuse, the default), repair (re-aim the foot bones to the skin), skeleton (trust the bones).")] = "check",
+                    textured: Annotated[bool, Field(description='Proof frames show the material; False renders a clay figure, which reads deformation better. Default True.')] = True,
+                    loop_suffix: Annotated[bool, Field(description="Name looping clips '<name>-loop' so Godot's importer marks them looping on import. Default False.")] = False,
+                    orient: Annotated[bool, Field(description="Turn a character whose measured forward is -Y to the pipeline's +Y (Godot's -Z) before authoring, so the game does not play it backwards. Default True.")] = True,
+                    timeout: Annotated[int, Field(description='Seconds for the Blender session. Default 900.')] = 900) -> dict:
+    """Put gameplay clips on a rigged humanoid, export the .glb, and SHOW them.
+
+    The animation layer the 3D path was missing: walk, run, idle, crouch,
+    pickup and the rest are AUTHORED ON THE RIG IT IS GIVEN - forward, left,
+    leg length and hip height are measured off the bones, feet are solved by
+    IK so they stay where they are put, the spine bends cumulatively and the
+    arms counter-swing. Do not write a bpy pose script by hand; it was done
+    once and every clip walked backwards with every gate green. THE PROOF
+    SHEETS COME BACK AS IMAGES - look at them; `support` is the foot-contact
+    gate per clip judged against what the clip was MEANT to be. `refused`
+    True is the facing gate: the skin and the skeleton disagree about which
+    way is forward, and `error` says how to fix it rather than override it.
+    Full notes: docs/tools.md#blender_animate
+    """
+    _contained_path(out_path, "out_path")
+    if out_dir:
+        _contained_path(out_dir, "out_dir")
+    result = _blender.animate(model, out_path, clips=clips, fps=fps,
+                              out_dir=out_dir, stem=stem,
+                              proof_frames=proof_frames, facing=facing,
+                              textured=textured, loop_suffix=loop_suffix,
+                              orient=orient, timeout=timeout)
+    registered = []
+    for sheet in (result.get("sheets") or []):
+        path = sheet.get("path")
+        if not path:
+            continue
+        label = f"{stem}-{sheet.get('clip', 'clip')}"
+        archived = _archive_preview(path, label)
+        if archived:
+            sheet["preview"] = archived
+        artifact = _register_artifact(
+            label, path, producer="blender_animate",
+            metadata={"model": str(model), "clip": sheet.get("clip"),
+                      "out_path": str(out_path), "preview": archived or ""})
+        if artifact:
+            sheet["artifact_id"] = artifact["id"]
+            registered.append(artifact["id"])
+    if registered:
+        result["artifact_ids"] = registered
+    if result.get("ok"):
+        made = [c["action"] for c in (result.get("clips") or []) if c.get("ok")]
+        failed = (result.get("support") or {}).get("failed") or []
+        _log("blender",
+             f"animated {model} -> {len(made)} clips ({', '.join(made)})"
+             + (f"; support FAILED on {', '.join(failed)}" if failed else ""),
+             ref=str(out_path))
+    elif result.get("refused"):
+        _log("blender", f"blender_animate REFUSED {model}: skin and skeleton "
+                        "disagree about forward", ref=str(model))
+    return result

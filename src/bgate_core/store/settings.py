@@ -1,7 +1,7 @@
 """Every switch in one table — described, not moved.
 
 Four features each added a switch in a different mechanism: a column on
-``spend_budget``, a workspace doc, an env var read inline where it was needed,
+``run_limits``, a workspace doc, an env var read inline where it was needed,
 and a module constant. Nothing listed them, nothing said which one the
 environment was overriding, and adding the fifth meant editing a route, a
 payload shape and a template. That pile is what this module deletes.
@@ -9,7 +9,7 @@ payload shape and a template. That pile is what this module deletes.
 WHAT THIS IS NOT: a new store. Every :class:`Setting` carries a ``store``
 locator pointing at where its value ALREADY lives, so upgrading changes no data
 and no other module's reads. ``gate.mode`` is still the ``director/gate``
-workspace doc; ``dispatch.max_concurrent`` is still the ``spend_budget`` row.
+workspace doc; ``dispatch.max_concurrent`` is still the ``run_limits`` row.
 Move the storage and every existing reader silently starts reading a stale
 value — the one failure mode a settings refactor cannot recover from.
 
@@ -18,9 +18,9 @@ The three stores, and why there are three rather than one:
     workspace   an existing per-seat JSON doc with its own established shape
                 (``director/gate``, ``director/autopilot``). Versioned writes,
                 so two tabs cannot erase each other.
-    budget      a column on the single ``spend_budget`` row, because
-                ``spend.check`` reads it on every dispatch and must keep
-                reading exactly that.
+    limits      a column on the single ``run_limits`` row, because the
+                dispatcher reads it on every spawn and must keep reading
+                exactly that.
     registry    the shared ``director/settings`` doc, for switches whose only
                 previous home was a module constant. The registry default IS
                 that constant's old value, so a project with no doc behaves
@@ -43,7 +43,7 @@ cannot be *read as* the value. Coercion wins over supply when both are set,
 because a kill switch that loses to a preference is not a kill switch.
 
 VALIDATION LIVES IN ONE PLACE (:func:`coerce`). Every writer — the settings
-endpoint, the budget alias, the console's inline controls — goes through it, so
+endpoint, the limits alias, the console's inline controls — goes through it, so
 a range only has to be right once.
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ REGISTRY_KEY = "settings"
 # "Community" arrived with the streamer chat settings and was never added here,
 # so every one of those entries declared a group the registry did not admit.
 GROUPS = ("Dispatch", "Gates", "Art", "Generators", "Modules", "Follow-up",
-          "Notifications", "Budget", "Console", "Privacy", "Community")
+          "Notifications", "Limits", "Console", "Privacy", "Community")
 
 # The event vocabulary a notification can be asked for. Kept here rather than
 # imported from events.py so that a settings panel still renders when the event
@@ -93,7 +93,7 @@ EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.stopped",
                "artifact.candidate", "artifact.reviewed",
                "chain.filed", "chain.advanced",
                "chain.stalled", "gate.mode", "settings.guard", "style.trained",
-               "budget.refused", "dispatch.blocked",
+               "dispatch.blocked",
                "director.question", "agent.spawned", "agent.exited",
                # A mid-run correction, and a brief whose measured premise an
                # agent DISPROVED. Both are notifiable: the first is the most
@@ -169,23 +169,17 @@ LABELS: dict[str, str] = {
     "notify.stall_hours": "Warn when work has not moved for this long",
     "notify.question_stale_h": "Warn about unanswered questions after",
     "notify.quiet_hours": "Hours to stay silent",
-    # Budget
-    "budget.enforced": "Enforce spending limits",
-    "budget.per_item_usd": "Limit per task",
-    "budget.per_day_usd": "Limit per day",
-    "budget.per_project_usd": "Limit for the whole project",
-    "budget.max_runtime_s": "Stop an agent after this long",
+    # Limits
+    "limits.max_runtime_s": "Stop an agent after this long",
     # Console
     "console.poll_live_ms": "Refresh rate while work is running",
     "console.poll_idle_ms": "Refresh rate when nothing is running",
     "console.model": "Model the director console session runs on",
-    "console.max_usd": "Spending limit for one console session",
     "graph.phase_cap": "Most steps to show per agent on the graph",
     "brainstorm.runner": "Which assistant the brainstorm room uses",
     "brainstorm.model": "Model the brainstorm room uses",
-    "brainstorm.max_usd": "Spending limit for one brainstorm",
     # Privacy
-    "privacy.streamer": "Streamer mode - hide anything private on screen",
+    "privacy.streamer": "Privacy mode",
     # Community
     "chat.capture": "What viewer chat to keep during a stream",
     "chat.playtest_notes": "Let viewers leave notes on a playtest",
@@ -247,7 +241,7 @@ class Setting:
     kind: str
     default: Any
     help: str
-    # ("workspace", seat, doc_key, field) | ("budget", column) | ("registry", field)
+    # ("workspace", seat, doc_key, field) | ("limits", column) | ("registry", field)
     store: tuple
     choices: tuple = ()
     scope: str = PROJECT
@@ -274,8 +268,8 @@ class Setting:
     # the thing being constrained can switch it off.
     #
     # MEASURED over one overnight run: gate.mode was found reverted from "agent"
-    # to "none" on four separate occasions with no human action, budget.enforced
-    # was found off, and dispatch.max_concurrent went from the 4 a human set to
+    # to "none" on four separate occasions with no human action, and
+    # dispatch.max_concurrent went from the 4 a human set to
     # 9 and then 11. Three items reached done with no reviewer ever spawned,
     # including a rigged character whose bind weights nobody checked — the exact
     # failure class the gate exists to catch. `seat_configure` already refuses a
@@ -287,6 +281,9 @@ class Setting:
     # DECLARED HERE, not enforced per route, because the hole was precisely that
     # one write path did not know it was a policy boundary.
     human_only: bool = False
+    # Secondary tuning that most projects can leave at its default. The UI uses
+    # registry metadata instead of maintaining a second list of keys.
+    advanced: bool = False
 
     def env_vars(self) -> list[str]:
         """Every var that can take this setting away from the stored value."""
@@ -346,7 +343,7 @@ SETTINGS: tuple[Setting, ...] = (
              "without that surprise."),
     Setting(
         key="dispatch.max_concurrent", group="Dispatch", kind=INT, default=4,
-        minimum=1, maximum=32, store=("budget", "max_concurrent"),
+        minimum=1, maximum=32, store=("limits", "max_concurrent"),
         human_only=True,
         help="How many agents may run at once. The dispatcher refuses past "
              "this, which is what stops a fan-out from eating the machine. "
@@ -363,14 +360,14 @@ SETTINGS: tuple[Setting, ...] = (
              "hours. A seat that edits GDScript does not need the biggest "
              "model; naming one here is what stops the default deciding."),
     Setting(
-        key="dispatch.model_art", group="Dispatch", kind=STRING, default="opus",
+        key="dispatch.model_art", group="Dispatch", kind=STRING, default="opus", advanced=True,
         store=("registry", "dispatch.model_art"), scope=MACHINE,
         env="BGATE_MODEL_ART", human_only=True,
         help="The art seat's model, because art is the one seat whose output "
              "is judged on taste rather than on whether it parses. Blank "
              "falls back to dispatch.model."),
     Setting(
-        key="dispatch.max_turns", group="Dispatch", kind=INT, default=200,
+        key="dispatch.max_turns", group="Dispatch", kind=INT, default=200, advanced=True,
         minimum=0, maximum=1000, store=("registry", "dispatch.max_turns"),
         scope=MACHINE, env="BGATE_MAX_TURNS", human_only=True,
         help="Hard ceiling on assistant turns per run; 0 disables it. There "
@@ -415,14 +412,14 @@ SETTINGS: tuple[Setting, ...] = (
              "refusal names the screenshot call, so it redirects rather than "
              "blocks; failed reports never need evidence."),
     Setting(
-        key="qa.max_rounds", group="Gates", kind=INT, default=3,
+        key="qa.max_rounds", group="Gates", kind=INT, default=3, advanced=True,
         minimum=1, maximum=10, store=("registry", "qa.max_rounds"),
         human_only=True,
         help="Rounds of automatic QA an item may go through before a human is "
              "asked to arbitrate. Past that the disagreement is about taste, "
              "and another agent will not settle it — it is a money pump."),
     Setting(
-        key="qa.gated_seats", group="Gates", kind=LIST,
+        key="qa.gated_seats", group="Gates", kind=LIST, advanced=True,
         default=("art", "gameplay", "audio", "narrative", "tech", "cinematic"),
         choices=("art", "gameplay", "audio", "narrative", "tech", "cinematic"),
         store=("registry", "qa.gated_seats"), human_only=True,
@@ -435,7 +432,7 @@ SETTINGS: tuple[Setting, ...] = (
              "made quality structurally uneven by seat. director and qa are "
              "never gated: that is recursion, not review."),
     Setting(
-        key="signoff.hours", group="Gates", kind=INT, default=8,
+        key="signoff.hours", group="Gates", kind=INT, default=8, advanced=True,
         minimum=1, maximum=168, store=("registry", "signoff.hours"),
         help="How long a finished item keeps asking for sign-off in the "
              "console before it stops being surfaced there."),
@@ -462,7 +459,7 @@ SETTINGS: tuple[Setting, ...] = (
              "in-game pieces nobody re-pinned. Everything still passes the "
              "1024px floor and your confirmation either way."),
     Setting(
-        key="art.lora_strength", group="Art", kind=FLOAT, default=0.85,
+        key="art.lora_strength", group="Art", kind=FLOAT, default=0.85, advanced=True,
         minimum=0.0, maximum=1.0, store=("registry", "art.lora_strength"),
         help="How hard the trained style pulls, 0-1. Krea recommends 0.8-0.9; "
              "1.0 is where a style stops being a style and becomes a stamp. A "
@@ -535,7 +532,7 @@ SETTINGS: tuple[Setting, ...] = (
              "the provider's unknown-model error rather than being silently "
              "dropped."),
     Setting(
-        key="cinematic.model", group="Generators", kind=STRING, default="",
+        key="cinematic.model", group="Generators", kind=STRING, default="", advanced=True,
         store=("registry", "cinematic.model"), scope=MACHINE,
         human_only=True,
         help="The video model a cinematic sequence plans onto when the plan "
@@ -543,17 +540,17 @@ SETTINGS: tuple[Setting, ...] = (
              "Validated against the registered video models at plan time, "
              "same as an explicit choice."),
     Setting(
-        key="music.model", group="Generators", kind=STRING, default="",
+        key="music.model", group="Generators", kind=STRING, default="", advanced=True,
         store=("registry", "music.model"), scope=MACHINE, human_only=True,
         help="The music model when a request names none. Blank is the "
              "adapter default (V5)."),
     Setting(
-        key="voice.model", group="Generators", kind=STRING, default="",
+        key="voice.model", group="Generators", kind=STRING, default="", advanced=True,
         store=("registry", "voice.model"), scope=MACHINE, human_only=True,
         help="The speech voice/model when a line names none. Blank is the "
              "adapter default (aura-2-thalia-en)."),
     Setting(
-        key="text.model", group="Generators", kind=STRING, default="",
+        key="text.model", group="Generators", kind=STRING, default="", advanced=True,
         store=("registry", "text.model"), scope=MACHINE, human_only=True,
         help="The model promptwriter uses for prompt-polish calls. Blank is "
              "the historical default (gpt-4o-mini)."),
@@ -583,12 +580,12 @@ SETTINGS: tuple[Setting, ...] = (
              "Off, and it stays off on upgrade: this spends money on every "
              "completed item."),
     Setting(
-        key="followup.max_per_hour", group="Follow-up", kind=INT, default=4,
+        key="followup.max_per_hour", group="Follow-up", kind=INT, default=4, advanced=True,
         minimum=1, maximum=60, store=("registry", "followup.max_per_hour"),
         help="Ceiling on debriefs per hour. A busy board finishing twenty "
              "items must not buy twenty director agents."),
     Setting(
-        key="followup.max_age_min", group="Follow-up", kind=INT, default=30,
+        key="followup.max_age_min", group="Follow-up", kind=INT, default=30, advanced=True,
         minimum=1, maximum=1440, store=("registry", "followup.max_age_min"),
         help="Skip the debrief when the completion is older than this. A "
              "subscriber that was down for eight hours must not wake up and "
@@ -602,11 +599,13 @@ SETTINGS: tuple[Setting, ...] = (
              "fired, so ONE failure stopped a whole chain until a human "
              "noticed — the exact dead-end this feature was built to remove. "
              "The runaway-spend risk lives in the CAP, which is 1 with a hard "
-             "ceiling of 2, not in this switch. Whether this is on or off, "
+             "ceiling of 2 — plus at most ONE further round for a failure whose "
+             "agent named a concrete next_approach — not in this switch. "
+             "Whether this is on or off, "
              "the failure still reaches the director — see "
              "followup.escalate_failures."),
     Setting(
-        key="followup.max_auto_retries", group="Follow-up", kind=INT, default=1,
+        key="followup.max_auto_retries", group="Follow-up", kind=INT, default=1, advanced=True,
         minimum=0, maximum=2, store=("registry", "followup.max_auto_retries"),
         help="How many times the harness may re-dispatch ONE failed item on "
              "its own before handing it to the director instead. One, and the "
@@ -614,8 +613,14 @@ SETTINGS: tuple[Setting, ...] = (
              "structural reason — a missing key, a credit block, an asset that "
              "does not exist, a lane the seat cannot write to — fails "
              "identically every round, so every retry past the first is money "
-             "spent rediscovering the same blocker. 0 disables automatic "
-             "retries entirely and escalates on the first failure. The count "
+             "spent rediscovering the same blocker. THE ONE EXCEPTION IS "
+             "DECLARED BY THE AGENT: a failure closed with a concrete "
+             "next_approach is the other kind — iterative work that NARROWED "
+             "the problem and ran out of turns — and buys exactly one round "
+             "beyond this cap, starting from what it named. 0 disables "
+             "automatic retries entirely, escalates on the first failure, and "
+             "is an instruction that the exception does not override. "
+             "The count "
              "is stored on the item, so a dashboard restart does not hand it a "
              "fresh budget."),
     Setting(
@@ -629,7 +634,7 @@ SETTINGS: tuple[Setting, ...] = (
              "alternative is what this replaced: a red marker on the board "
              "that nothing acts on until somebody happens to look."),
     Setting(
-        key="followup.escalation_to_session", group="Follow-up", kind=BOOL,
+        key="followup.escalation_to_session", group="Follow-up", kind=BOOL, advanced=True,
         default=True, store=("registry", "followup.escalation_to_session"),
         human_only=True,
         help="Hand a filed failure escalation straight to the console's "
@@ -639,8 +644,8 @@ SETTINGS: tuple[Setting, ...] = (
              "escalation a decision that gets MADE rather than a card that "
              "waits: shipped as held-only, every failure dead-ended until a "
              "human opened the dashboard. Off returns to that — the "
-             "escalation is filed and held for you. Spend is bounded by "
-             "console.max_usd; no worker agent is bought either way."),
+             "escalation is filed and held for you. No worker agent is "
+             "bought either way."),
 
     # -- Notifications ------------------------------------------------------
     Setting(
@@ -650,27 +655,27 @@ SETTINGS: tuple[Setting, ...] = (
              "it costs nothing and leaves nothing — but it only tells you "
              "things while the dashboard is open."),
     Setting(
-        key="notify.kinds", group="Notifications", kind=LIST,
+        key="notify.kinds", group="Notifications", kind=LIST, advanced=True,
         default=("item.done", "item.failed", "item.review", "chain.stalled",
-                 "director.question", "budget.refused",
-                 # A FLOOR refusal stops the whole board. On by default for the
-                 # same reason budget.refused is: a board that stopped looks
-                 # exactly like a board with nothing to do, and two seats idled
-                 # for an hour inside that ambiguity.
+                 "director.question",
+                 # A FLOOR refusal stops the whole board. On by default
+                 # because a board that stopped looks exactly like a board
+                 # with nothing to do, and two seats idled for an hour inside
+                 # that ambiguity.
                  "dispatch.blocked"),
         choices=EVENT_KINDS, store=("registry", "notify.kinds"),
         help="Which events are worth telling you about. The rest are still "
              "recorded and still readable in the drawer, they just do not "
              "ring — a bell that rings for everything gets muted."),
     Setting(
-        key="notify.webhook", group="Notifications", kind=STRING, default="",
+        key="notify.webhook", group="Notifications", kind=STRING, default="", advanced=True,
         store=("registry", "notify.webhook"), scope=MACHINE,
         help="POST notifications to this https URL. Empty, and deliberately: "
              "this is the only path that sends anything off the machine, which "
              "breaks the promise the rest of the tool makes. https only, no "
              "private or link-local addresses, one attempt."),
     Setting(
-        key="notify.stall_hours", group="Notifications", kind=FLOAT, default=0.5,
+        key="notify.stall_hours", group="Notifications", kind=FLOAT, default=0.5, advanced=True,
         minimum=0.25, maximum=168.0, store=("registry", "notify.stall_hours"),
         help="How long a chain's head may sit in review or blocked before it "
              "is called stalled. The bus is transition-driven, so without this "
@@ -678,62 +683,50 @@ SETTINGS: tuple[Setting, ...] = (
              "hour by default: at the old two hours, a chain parked behind a "
              "dead predecessor was invisible for a whole working session."),
     Setting(
-        key="notify.question_stale_h", group="Notifications", kind=FLOAT,
+        key="notify.question_stale_h", group="Notifications", kind=FLOAT, advanced=True,
         default=12.0, minimum=0.25, maximum=168.0,
         store=("registry", "notify.question_stale_h"),
         help="How long an unanswered director question waits before one "
              "reminder. One, not a repeat of the question: a ping that "
              "re-asks is the thing people mute."),
     Setting(
-        key="notify.quiet_hours", group="Notifications", kind=STRING, default="",
+        key="notify.quiet_hours", group="Notifications", kind=STRING, default="", advanced=True,
         store=("registry", "notify.quiet_hours"), scope=MACHINE,
         help="A window like 23:00-07:00 in which nothing is delivered; events "
              "still accumulate and collapse into one notice afterwards. Empty "
              "means always deliver."),
 
-    # -- Budget (the spend_budget row; described here, not copied) ----------
+    # -- Limits (the run_limits row; described here, not copied) -----------
+    #
+    # THERE IS NO BUDGET GROUP ANY MORE, and there is not going to be one. This
+    # product used to carry per-item / per-day / per-project dollar ceilings
+    # backed by a ledger it kept itself, and every figure in it was a guessed
+    # unit price multiplied by a count — a number that matched no statement and
+    # refused real work on behalf of imaginary spend. The only budget that
+    # exists is the balance on the user's own provider account, which the
+    # provider reports (`provider_status`, `kie_status`).
+    #
+    # What is left is the wall clock, which is not money and stops the failure
+    # a dollar cap never did: a run that never ends.
     Setting(
-        key="budget.enforced", group="Budget", kind=BOOL, default=True,
-        store=("budget", "enforced"), human_only=True,
-        help="Refuse a dispatch that would breach a ceiling. ON by default "
-             "under generous ceilings ($10/item, $50/day, $500/project): the "
-             "ceiling is there to catch a runaway, not to ration. Off, every "
-             "number below is a report; the ledger still records everything."),
-    Setting(
-        key="budget.per_item_usd", group="Budget", kind=FLOAT, default=10.0,
-        minimum=0.0, maximum=10000.0, store=("budget", "per_item_usd"),
-        human_only=True,
-        help="Ceiling for one agent run, in USD. Also the figure the "
-             "dispatcher projects against the daily budget before spawning."),
-    Setting(
-        key="budget.per_day_usd", group="Budget", kind=FLOAT, default=50.0,
-        minimum=0.0, maximum=100000.0, store=("budget", "per_day_usd"),
-        human_only=True,
-        help="Ceiling for today, in USD. 0 means no daily ceiling."),
-    Setting(
-        key="budget.per_project_usd", group="Budget", kind=FLOAT, default=500.0,
-        minimum=0.0, maximum=1000000.0, store=("budget", "per_project_usd"),
-        human_only=True,
-        help="Lifetime ceiling for this project, in USD. 0 means none."),
-    Setting(
-        key="budget.max_runtime_s", group="Budget", kind=INT, default=1800,
-        minimum=30, maximum=86400, store=("budget", "max_runtime_s"),
+        key="limits.max_runtime_s", group="Limits", kind=INT, default=1800, advanced=True,
+        minimum=30, maximum=86400, store=("limits", "max_runtime_s"),
         human_only=True,
         help="Wall clock an agent gets before it is killed. The backstop for a "
-             "run that is spending without progressing."),
+             "run that is grinding without progressing."),
 
     # -- Console (client-side; delivered in the page bootstrap) -------------
     Setting(
-        key="console.poll_live_ms", group="Console", kind=INT, default=3000,
+        key="console.poll_live_ms", group="Console", kind=INT, default=3000, advanced=True,
         minimum=500, maximum=60000, store=("registry", "console.poll_live_ms"),
         help="How often the console refreshes while an agent is running. "
              "Lower feels live and costs the dashboard more requests."),
     Setting(
-        key="console.poll_idle_ms", group="Console", kind=INT, default=12000,
+        key="console.poll_idle_ms", group="Console", kind=INT, default=12000, advanced=True,
         minimum=1000, maximum=300000, store=("registry", "console.poll_idle_ms"),
         help="How often the console refreshes when nothing is running."),
     Setting(
-        key="graph.phase_cap", group="Console", kind=INT, default=6,
+        key="graph.phase_cap", group="Console", kind=INT, default=6, advanced=True,
         minimum=1, maximum=50, store=("registry", "graph.phase_cap"),
         help="How many phase rows the graph draws per item before it stops. A "
              "long-running agent otherwise paints a node taller than the "
@@ -747,14 +740,6 @@ SETTINGS: tuple[Setting, ...] = (
              "delegates — so it defaults to a stronger model than the seats it "
              "dispatches. Named rather than inherited, for the same reason "
              "dispatch.model is."),
-    Setting(
-        key="console.max_usd", group="Console", kind=FLOAT, default=15.0,
-        minimum=0.0, maximum=10000.0, store=("registry", "console.max_usd"),
-        human_only=True,
-        help="Ceiling for one console session's conversation, in USD. The "
-             "session outlives any single process (it resumes across dashboard "
-             "restarts), so this bounds the CONVERSATION; clearing the console "
-             "starts a fresh one. 0 means no ceiling."),
     Setting(
         key="brainstorm.runner", group="Console", kind=STRING, default="claude",
         store=("registry", "brainstorm.runner"), scope=MACHINE,
@@ -781,18 +766,6 @@ SETTINGS: tuple[Setting, ...] = (
              "whatever the CLI defaults to that day, which is how a night of "
              "work went out on the largest model nobody chose. Blank inherits "
              "the CLI default and accepts that."),
-    Setting(
-        key="brainstorm.max_usd", group="Console", kind=FLOAT, default=2.0,
-        minimum=0.0, maximum=100.0, store=("registry", "brainstorm.max_usd"),
-        scope=MACHINE, human_only=True,
-        help="What one brainstorm conversation may spend before it stops "
-             "answering. This is the CHEAP room — that is the whole reason it "
-             "exists next to the board — and the partner is now a real CLI "
-             "session rather than a fraction-of-a-cent API call: one trivial "
-             "measured turn was $0.06. Passed to the CLI's own --max-budget-usd "
-             "and also tracked across the conversation, so respawning cannot "
-             "launder a per-process ceiling into no ceiling. 0 removes it."),
-
     # -- Privacy ------------------------------------------------------------
     # MACHINE scope, not PROJECT. Whose home directory is on screen is a fact
     # about the person streaming, not about the game — and someone who turns
@@ -954,7 +927,7 @@ def _valid_window(text: str) -> bool:
 def coerce(key: str, value: Any) -> Any:
     """Validate and normalise one value against its declared kind and range.
 
-    Every writer goes through here — the settings endpoint, the budget alias,
+    Every writer goes through here — the settings endpoint, the limits alias,
     the console's inline gate control. Without one place, a range is enforced
     by whichever route happened to remember it and a value that is impossible
     through the UI arrives through the API.
@@ -1003,9 +976,9 @@ def _stored(root, s: Setting) -> tuple[bool, Any]:
             if field_name not in doc:
                 return False, None
             return True, doc[field_name]
-        if kind == "budget":
+        if kind == "limits":
             row = db.connect(root).execute(
-                "SELECT * FROM spend_budget WHERE id = 1").fetchone()
+                "SELECT * FROM run_limits WHERE id = 1").fetchone()
             column = s.store[1]
             if row is None or column not in row.keys():
                 return False, None
@@ -1164,14 +1137,14 @@ def _write(root, s: Setting, value: Any) -> None:
         doc["by"] = _actor()
         _ws.set(root, REGISTRY_SEAT, REGISTRY_KEY, doc)
         return
-    if kind == "budget":
+    if kind == "limits":
         column = s.store[1]
         stored = int(value) if s.kind == BOOL else value
         with db.tx(root) as conn:
             # Column names come from this module's own table, never from the
             # caller, so the interpolation is not a user-supplied identifier.
             conn.execute(
-                f"UPDATE spend_budget SET {column} = ?, "
+                f"UPDATE run_limits SET {column} = ?, "
                 "updated_at = datetime('now') WHERE id = 1", (stored,))
         return
     raise SettingError(f"{s.key} has no writable store ({s.store!r})")
@@ -1323,6 +1296,7 @@ def _field(root, s: Setting) -> dict:
         "choices": _choices_for(root, s),
         "value": value,
         "human_only": s.human_only,
+        "advanced": s.advanced,
         "default": list(s.default) if s.kind == LIST else s.default,
         "stored": stored_raw if stored_present else None,
         "source": src,

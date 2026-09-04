@@ -19,9 +19,8 @@ So this module gives one answer to two questions, from any process:
                           moment the agent is deciding to hand-roll.
 
 WHAT IT DELIBERATELY IS NOT. Not a key store (keys stay in .env; there is no
-set_api_key tool, same reasoning as bgate_core.store.settings) and not a spend
-gate (spend.check owns budgets). It reads; the one thing it writes is a
-short-lived in-process cache, because balance probes cost a network round
+set_api_key tool, same reasoning as bgate_core.store.settings). It reads; the
+one thing it writes is a short-lived in-process cache, because balance probes cost a network round
 trip and a billing failure can trigger several in one tick.
 
 BALANCE SEMANTICS: None is UNKNOWN, never zero. Only kie and Retro Diffusion

@@ -270,6 +270,31 @@ class TestOrphanedRecording:
 
 
 # ---------------------------------------------------------------------------
+# Playtest start response and event
+# ---------------------------------------------------------------------------
+class TestPlaytestStart:
+    def test_success_returns_the_session_and_emits_its_identity(
+            self, client, monkeypatch):
+        started = {
+            "session_id": 42,
+            "name": "controller pass",
+            "recording": True,
+        }
+        emitted = []
+        monkeypatch.setattr(playtest, "start", lambda *a, **k: started)
+        monkeypatch.setattr(ui_app._events, "emit",
+                            lambda *a, **k: emitted.append((a, k)))
+
+        got = client.post("/api/playtest/start", json={
+            "name": "controller pass",
+        }).json()
+
+        assert got == started
+        assert emitted[0][1]["ref"] == "42"
+        assert emitted[0][1]["payload"] == {"name": "controller pass"}
+
+
+# ---------------------------------------------------------------------------
 # 8. artifact_react reports what actually happened
 # ---------------------------------------------------------------------------
 class TestArtifactReact:

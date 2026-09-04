@@ -1,12 +1,12 @@
 """The cutscene pipeline's money, which is the only part of it that is expensive.
 
-Everything here is about a number arriving somewhere it decides a spend, and the
-four ways that used to go wrong. None of these tests reaches the provider — the
-whole point of each is that it is decided BEFORE anything is bought:
+There is no budget gate any more — Builders Gate keeps no ledger and holds no
+ceiling, and the only balance that exists is the one on the user's own provider
+account. What survives here is everything that has to be true BEFORE anything
+is bought, and the three ways it used to go wrong:
 
-  * an unknown price must stay unknown all the way to spend.check. A zero there
-    is not "unpriced", it is "free", and it is the only value a budget gate
-    reads as permission;
+  * an unknown price must stay unknown all the way to the human reading it. A
+    zero is not "unpriced", it is "free";
   * a shot left mid-generation may be a finished clip the account has already
     been billed for, sitting at the provider with nobody collecting it;
   * a generated clip must never land on a path that already holds one, because
@@ -21,7 +21,6 @@ import pytest
 from bgate_adapters import kie
 from bgate_core.cine import cinematic
 from bgate_core.store import db
-from bgate_core.board import spend
 
 pytestmark = pytest.mark.usefixtures("root")
 
@@ -70,79 +69,6 @@ def _stub_video(monkeypatch, **over):
 
     monkeypatch.setattr(kie, "generate_video", fake)
     return calls
-
-
-def _spy_on_the_gate(monkeypatch):
-    """Capture what reaches spend.check, which is where the number decides."""
-    seen = {}
-
-    def check(root, *, projected_usd=0.0):
-        seen["projected_usd"] = projected_usd
-        return {"allowed": True, "reason": "", "enforced": True}
-
-    monkeypatch.setattr(spend, "check", check)
-    return seen
-
-
-class TestWhatReachesTheSpendGate:
-    """_budget_refusal passed projected_usd=0.0 unconditionally, so the gate
-    could only ever catch "this project is already over" — never "this one shot
-    is expensive", which for a fifteen-second clip is the larger number."""
-
-    def test_a_known_estimate_is_actually_projected(self, root, monkeypatch):
-        monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
-        seen = _spy_on_the_gate(monkeypatch)
-        _stub_video(monkeypatch)
-        cinematic.plan(root, "seq", _shots(1))
-
-        cinematic.generate_shot(root, "seq", 1)
-        assert seen["projected_usd"] > 0
-
-    def test_an_unknown_price_does_not_become_a_dollar_figure(
-            self, root, monkeypatch):
-        """The failure this whole thing guards: an invented number in front of a
-        ceiling is worse than no number, because it is spent against."""
-        monkeypatch.delenv(kie.USD_PER_CREDIT_ENV, raising=False)
-        seen = _spy_on_the_gate(monkeypatch)
-        _stub_video(monkeypatch)
-        cinematic.plan(root, "seq", _shots(1))
-
-        cinematic.generate_shot(root, "seq", 1)
-        assert seen["projected_usd"] == 0.0
-
-    def test_a_refusal_says_the_estimate_was_unavailable_and_why(
-            self, root, monkeypatch):
-        """A gate that passes on an unknown price must not read as "free"."""
-        monkeypatch.delenv(kie.USD_PER_CREDIT_ENV, raising=False)
-        monkeypatch.setattr(spend, "check", lambda *a, **k: {
-            "allowed": False, "reason": "daily budget reached"})
-        cinematic.plan(root, "seq", _shots(1))
-
-        out = cinematic.generate_shot(root, "seq", 1)
-        assert out["ok"] is False and out["stage"] == "spend_gate"
-        assert "could not be estimated" in out["error"]
-        assert out["estimate"]["usd"] is None
-
-    def test_a_refusal_names_the_figure_when_there_is_one(self, root,
-                                                          monkeypatch):
-        monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
-        monkeypatch.setattr(spend, "check", lambda *a, **k: {
-            "allowed": False, "reason": "daily budget reached"})
-        cinematic.plan(root, "seq", _shots(1))
-
-        out = cinematic.generate_shot(root, "seq", 1)
-        assert "projected at about $" in out["error"]
-
-    def test_a_real_ceiling_refuses_one_expensive_shot(self, root, monkeypatch):
-        """End to end through the real ledger: the thing that was impossible
-        before, because a shot was always projected at nothing."""
-        monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.05")
-        spend.set_budget(root, per_project_usd=1.0, enforced=1)
-        cinematic.plan(root, "seq", _shots(1, duration=15))
-
-        out = cinematic.generate_shot(root, "seq", 1)
-        assert out["ok"] is False and out["stage"] == "spend_gate"
-        assert "project budget" in out["error"]
 
 
 class TestTheSequenceEstimate:

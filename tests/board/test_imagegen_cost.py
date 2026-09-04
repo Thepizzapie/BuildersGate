@@ -1,14 +1,15 @@
 """Cost and latency are FACTS the art UI shows — so they must be produced.
 
 The price table in imagegen has always existed and nothing ever put a number in
-front of a human: no elapsed time, no dollars, no ledger row. These tests pin
-the three things that make the art lab's "$0.42 spent · 18.4s" honest:
+front of a human: no elapsed time, no dollars. These tests pin the two things
+that make "~$0.04 · 18.4s" on a candidate honest:
 
   1. every generate/edit result carries ``seconds`` and ``usd``;
-  2. ``usd`` comes from IMAGE_PRICE_USD — never a number invented
-     somewhere else, and never drifting between quality tiers;
-  3. passing ``root`` appends a spend_event so ``spend.for_logical`` — the exact
-     call the lab header makes — can answer what an asset cost.
+  2. ``usd`` comes from IMAGE_PRICE_USD — never a number invented somewhere
+     else, and never drifting between quality tiers.
+
+Nothing sums those figures anywhere: this product keeps no ledger and holds no
+budget, and what an account was actually charged is the provider's to report.
 
 The OpenAI client is faked the same way tests/store/test_imagegen.py fakes it.
 """
@@ -20,7 +21,6 @@ import types
 import pytest
 
 from bgate_adapters import imagegen
-from bgate_core.board import spend
 
 
 @pytest.fixture()
@@ -101,115 +101,3 @@ class TestResultCarriesCostAndLatency:
         # A caller that hands over nothing gets nulls, not an exception —
         # register-time metadata must never be the thing that fails a render.
         assert imagegen.cost_meta({}) == {"seconds": None, "usd": None}
-
-
-class TestTheLedgerIsWritten:
-    def test_generate_records_spend_for_the_logical_asset(self, stub, root):
-        got = imagegen.generate("x", str(stub["tmp"] / "t.png"), quality="high",
-                                root=root, logical_name="tommy")
-        assert got["ok"] is True
-        assert spend.for_logical(root, "tommy") == pytest.approx(
-            imagegen.IMAGE_PRICE_USD["high"])
-        totals = spend.totals(root)
-        assert totals["by_kind"]["image"] == pytest.approx(
-            imagegen.IMAGE_PRICE_USD["high"])
-
-    def test_edit_records_spend_too(self, stub, root):
-        imagegen.edit("x", [str(stub["ref"])], str(stub["tmp"] / "e.png"),
-                      quality="medium", root=root, logical_name="tommy")
-        assert spend.for_logical(root, "tommy") == pytest.approx(
-            imagegen.IMAGE_PRICE_USD["medium"])
-
-    def test_a_sprite_set_accumulates_on_one_logical_name(self, stub, root):
-        """Twelve poses are twelve charges against ONE asset — that sum is the
-        number the iteration-lab header shows."""
-        for i in range(3):
-            imagegen.edit("pose", [str(stub["ref"])],
-                          str(stub["tmp"] / f"p{i}.png"), quality="low",
-                          root=root, logical_name="tommy")
-        assert spend.for_logical(root, "tommy") == pytest.approx(
-            3 * imagegen.IMAGE_PRICE_USD["low"])
-
-    def test_spend_is_charged_to_the_work_item(self, stub, root):
-        from bgate_core.board import queue
-
-        item = queue.add(root, "art", "paint tommy")
-        imagegen.generate("x", str(stub["tmp"] / "w.png"), quality="medium",
-                          root=root, logical_name="tommy",
-                          work_item_id=item["id"])
-        from bgate_core.store import db
-
-        row = db.connect(root).execute(
-            "SELECT total_cost_usd FROM work_item WHERE id = ?",
-            (item["id"],)).fetchone()
-        assert row["total_cost_usd"] == pytest.approx(
-            imagegen.IMAGE_PRICE_USD["medium"])
-
-    def test_no_root_means_no_ledger_write_and_no_crash(self, stub, root):
-        got = imagegen.generate("x", str(stub["tmp"] / "n.png"))
-        assert got["ok"] is True
-        assert spend.totals(root)["events"] == 0
-
-    def test_a_failed_generation_is_never_charged(self, tmp_path, monkeypatch,
-                                                  root):
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-
-        class _Images:
-            def generate(self, **kw):
-                raise RuntimeError("content policy")
-
-        class _Client:
-            def __init__(self, timeout=None):
-                self.images = _Images()
-
-        monkeypatch.setattr("openai.OpenAI", _Client)
-        imagegen.generate("x", str(tmp_path / "no.png"), root=root,
-                          logical_name="tommy")
-        assert spend.for_logical(root, "tommy") == 0.0
-
-    def test_a_broken_ledger_never_loses_the_image(self, stub, monkeypatch):
-        """The image is the product; the ledger is bookkeeping. If recording
-        raises, the render still comes back ok."""
-        def _boom(*a, **kw):
-            raise RuntimeError("db is gone")
-
-        monkeypatch.setattr(spend, "record", _boom)
-        got = imagegen.generate("x", str(stub["tmp"] / "s.png"),
-                                root=stub["tmp"], logical_name="tommy")
-        assert got["ok"] is True
-        assert (stub["tmp"] / "s.png").exists()
-
-
-class TestTheCostEndpoint:
-    """/api/art/cost is what art.js reads for the header total and the live
-    '~$X.XX' batch estimate — it must serve the adapter's real price table."""
-
-    def _client(self, root, monkeypatch):
-        from fastapi.testclient import TestClient
-
-        monkeypatch.setenv("BGATE_ROOT", str(root))
-        from bgate_ui import app as app_mod
-
-        return TestClient(app_mod.app)
-
-    def test_reports_prices_and_per_asset_totals(self, root, monkeypatch):
-        spend.record(root, 0.042, kind="image", logical_name="tommy")
-        spend.record(root, 0.011, kind="image", logical_name="tommy")
-        spend.record(root, 0.167, kind="image", logical_name="colosseum")
-        client = self._client(root, monkeypatch)
-
-        body = client.get("/api/art/cost").json()
-        assert body["ok"] is True
-        data = body["data"]
-        assert data["prices"] == imagegen.IMAGE_PRICE_USD
-        assert data["by_logical"]["tommy"] == pytest.approx(0.053)
-        assert data["by_logical"]["colosseum"] == pytest.approx(0.167)
-
-        one = client.get("/api/art/cost", params={"logical_name": "tommy"}).json()
-        assert one["data"]["usd"] == pytest.approx(0.053)
-
-    def test_empty_project_answers_zeroes_not_an_error(self, root, monkeypatch):
-        client = self._client(root, monkeypatch)
-        body = client.get("/api/art/cost").json()
-        assert body["ok"] is True
-        assert body["data"]["by_logical"] == {}

@@ -127,11 +127,105 @@ def _describe(project_root: Path, target: Path) -> dict:
     }
 
 
+def _new_sheet_target(rel: str) -> tuple[Path, Path]:
+    """Resolve a new PNG without allowing replacement or a project escape."""
+    rel = str(rel or "").strip().replace("\\", "/")
+    if not rel:
+        raise api.bad_request("choose a project path for the sprite sheet")
+    if not Path(rel).suffix:
+        rel += ".png"
+    project_root = root()
+    target = safe_under(project_root, rel, must_be_image=True)
+    if target.suffix.lower() != ".png":
+        raise api.bad_request("new sprite sheets must be saved as .png", rel=rel)
+    if target.exists():
+        raise api.conflict("a file already exists at that path", rel=rel)
+    return project_root, target
+
+
+def _write_new_sheet(project_root: Path, target: Path, image: Image.Image,
+                     grid: Optional[dict] = None) -> dict:
+    """Atomically write a new editable sheet and its initial rig sidecar."""
+    if image.width * image.height > MAX_PIXELS:
+        raise api.ApiError(413, "image is too large to accept",
+                           detail={"pixels": image.width * image.height,
+                                   "max": MAX_PIXELS})
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".png.tmp")
+    image.convert("RGBA").save(tmp, format="PNG")
+    os.replace(tmp, target)
+    try:
+        rigmap.save(target, rigmap.empty(grid), sheet_size=image.size)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    try:
+        from bgate_core.store import assets
+        assets.track(project_root, target)
+    except Exception:
+        pass
+    return _describe(project_root, target)
+
+
 @router.get("/api/sprite/open")
 def sprite_open(rel: str) -> dict:
     """Everything the editor needs on load. The pixels come from /api/preview."""
     project_root, target = _sheet(rel)
     return _describe(project_root, target)
+
+
+@router.post("/api/sprite/create")
+def sprite_create(payload: dict) -> dict:
+    """Create a transparent, gridded PNG and open it as a first-class sheet."""
+    project_root, target = _new_sheet_target(str(payload.get("rel") or ""))
+    values = {}
+    for key in ("cell_w", "cell_h", "cols", "rows"):
+        try:
+            values[key] = int(payload.get(key))
+        except (TypeError, ValueError):
+            raise api.bad_request(f"{key} must be an integer")
+    if not 1 <= values["cell_w"] <= 2048 or not 1 <= values["cell_h"] <= 2048:
+        raise api.bad_request("frame width and height must be between 1 and 2048")
+    if not 1 <= values["cols"] <= 64 or not 1 <= values["rows"] <= 64:
+        raise api.bad_request("columns and rows must be between 1 and 64")
+    width = values["cell_w"] * values["cols"]
+    height = values["cell_h"] * values["rows"]
+    if width * height > MAX_PIXELS:
+        raise api.ApiError(413, "sheet dimensions exceed the canvas limit",
+                           detail={"width": width, "height": height,
+                                   "pixels": width * height, "max": MAX_PIXELS})
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    return api.ok(_write_new_sheet(project_root, target, image, values))
+
+
+@router.post("/api/sprite/import")
+def sprite_import(payload: dict) -> dict:
+    """Copy an external browser-picked image into the project as editable PNG."""
+    project_root, target = _new_sheet_target(str(payload.get("rel") or ""))
+    raw = str(payload.get("image") or "")
+    if raw.startswith("data:"):
+        raw = raw.split(",", 1)[-1]
+    if not raw:
+        raise api.bad_request("choose an image to import")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise api.ApiError(413, "image payload too large",
+                           detail={"bytes": len(raw), "max": MAX_UPLOAD_BYTES})
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise api.bad_request(f"image data is not valid base64: {exc}")
+    try:
+        incoming = Image.open(io.BytesIO(blob))
+        if incoming.width * incoming.height > MAX_PIXELS:
+            raise api.ApiError(413, "image is too large to accept",
+                               detail={"pixels": incoming.width * incoming.height,
+                                       "max": MAX_PIXELS})
+        incoming.load()
+    except api.ApiError:
+        raise
+    except Exception as exc:
+        raise api.bad_request(f"file is not a readable image: {exc}")
+    return api.ok(_write_new_sheet(project_root, target, incoming))
 
 
 
@@ -433,8 +527,7 @@ def sprite_regen(payload: dict) -> dict:
     # animation frames" is refused for containing the word "frames".
     result = imagegen.edit(
         framed, [str(cell_ref), str(sheet_ref)], str(out_png),
-        size="1024x1024", quality=quality, transparent=True, allow_multi=True,
-        root=project_root, logical_name=f"{target.stem}#f{frame}")
+        size="1024x1024", quality=quality, transparent=True, allow_multi=True)
     if not result.get("ok"):
         raise api.unavailable(result.get("error") or "the image edit failed",
                               rel=rel, frame=frame)

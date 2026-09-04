@@ -27,7 +27,7 @@ import type { SeatBodyProps } from "./types";
  * the seat agent, not by this page — that is the execution model, and it is why
  * the node graph also compiles to queue items rather than calling generators
  * itself. A form that reached around the board would be a second execution path
- * with no lane check, no QA gate and no spend row. See recipes.ts.
+ * with no lane check and no QA gate. See recipes.ts.
  */
 
 declare global {

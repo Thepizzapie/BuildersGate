@@ -105,7 +105,12 @@ def add_step(state: dict, step: dict, max_steps: int = 0) -> None:
     which is what lets a phase attribute artifacts to the part of the run
     that produced them. Rounded to the second by the consumer that stores it.
     """
-    step.setdefault("ts", time.time())
+    # The event's own stamp when the writer recorded one (see fold_event),
+    # else the parse clock this has always used. `ts_exact` is the difference,
+    # and it is the field a reader checks before printing a time as fact.
+    written = state.get("_ts")
+    step.setdefault("ts", written if written else time.time())
+    step.setdefault("ts_exact", bool(state.get("_ts_exact")))
     state["steps"].append(step)
     state["step_count"] = int(state.get("step_count") or 0) + 1
     if max_steps and len(state["steps"]) > max_steps:
@@ -145,6 +150,19 @@ def fold_event(state: dict, ev: dict, max_steps: int = 0) -> None:
     ``state`` needs: steps (list), final, session_id, step_count. Extra keys
     (a byte cursor, a cache stamp) are the caller's business and untouched.
     """
+    # THE LINE'S OWN CLOCK, IF THE WRITER PUT ONE THERE. dispatch stamps every
+    # line with `bgate_ts` as it comes off the agent's pipe, which is the only
+    # honest timestamp available: add_step's fallback is when the line was
+    # PARSED, and a reader that re-folds a finished log in one pass would
+    # otherwise date every step in a twenty-minute run to the moment of the
+    # read. `ts_exact` travels with it so a consumer can tell a real clock
+    # from a fallback instead of guessing.
+    try:
+        state["_ts"] = float(ev["bgate_ts"])
+        state["_ts_exact"] = True
+    except (KeyError, TypeError, ValueError):
+        state["_ts"] = None
+        state["_ts_exact"] = False
     # THE CLAUDE SESSION THIS RUN IS, which is what makes it resumable: the
     # id is the handle for `claude --resume`. Taken from the first line that
     # has one and then left alone (measured: one id per run across a log).
@@ -384,8 +402,65 @@ def tail(root, item_id: int, limit: int = 30,
     steps = state["steps"]
     window = steps[-limit:] if limit else steps
     return {**out,
-            "steps": window,
+            "steps": [_stamped(s) for s in window],
             "final": state["final"],
             "step_count": state["step_count"],
             "truncated": clipped or len(window) < len(steps),
-            "session_id": state["session_id"]}
+            "session_id": state["session_id"],
+            **_pace(path, out.get("started_at"))}
+
+
+def _stamped(step: dict) -> dict:
+    """A step with its clock rendered, and only when the clock is real.
+
+    `at` and `age_s` appear ONLY for a step whose line carried the writer's
+    own `bgate_ts` (dispatch._pump_stamped). For an older log - written before
+    the stamp existed, or by a runner that bypasses the pump - `ts` is the
+    parse clock, so a reader re-folding the file would be told a
+    twenty-minute-old step happened just now. Those steps come back with no
+    time at all rather than a confident wrong one, and `ts_exact` False says
+    which kind you are holding.
+    """
+    if not step.get("ts_exact"):
+        return step
+    try:
+        moment = float(step["ts"])
+    except (KeyError, TypeError, ValueError):
+        return step
+    return {**step, "at": time.strftime("%H:%M:%S", time.localtime(moment)),
+            "age_s": round(max(0.0, time.time() - moment), 1)}
+
+
+def _pace(path: Path, started_at) -> dict:
+    """How long this has been going, and how long since it last said anything.
+
+    THE QUESTION THIS ANSWERS IS "IS IT STUCK", the first one asked of every
+    long run, and neither a step count nor `running` answers it - `running`
+    stays True for a process wedged on a dead socket. Silence does: a run
+    whose steps normally land every few seconds and whose log has not been
+    written to in twenty minutes is the whole diagnosis.
+
+    IT COMES OFF THE LOG FILE'S MTIME, NOT OFF THE STEPS. add_step stamps
+    `ts` when a line is PARSED, which for the dashboard's incremental feed is
+    within milliseconds of the event and for this function - which re-folds
+    the entire file in one pass - is the moment you called it. Deriving a
+    per-step clock from that reported every step of a twenty-minute run as
+    having happened just now, which is worse than showing nothing: it answers
+    "is it stuck" with a confident no, every time. The mtime is a real clock
+    about a real event (the last byte the agent wrote), so that is what this
+    reports, and it reports it about the FILE rather than pretending to know
+    when any individual step happened.
+    """
+    now = time.time()
+    out: dict = {}
+    try:
+        wrote = path.stat().st_mtime
+        out["last_write_at"] = time.strftime("%H:%M:%S", time.localtime(wrote))
+        out["last_write_age_s"] = round(max(0.0, now - wrote), 1)
+    except OSError:
+        pass
+    try:
+        out["running_for_s"] = round(max(0.0, now - float(started_at)), 1)
+    except (TypeError, ValueError):
+        pass
+    return out

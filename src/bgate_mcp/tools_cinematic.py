@@ -13,8 +13,8 @@ from typing import Annotated
 from pydantic import Field
 
 from bgate_mcp.server import (  # noqa: F401
-    Optional, _Path, _gate_images, _log,
-    _provider_gate, _root, _tool, _work_item_id,
+    Optional, _Path, _log, _provider_gate,
+    _root, _tool, _work_item_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -108,15 +108,15 @@ def cinematic_generate_shot(name: str, idx: int, model: str = "",
     then move to the next index. generate_audio is FALSE by default - model
     audio is baked into the clip and cannot be ducked, separated or
     localised; the audio seat scores the cut. Local conditioning frames are
-    uploaded automatically. Budget and encoder are checked BEFORE anything
-    is charged.
+    uploaded automatically. The encoder is checked BEFORE anything is
+    charged.
     Full notes: docs/tools.md#cinematic_generate_shot
     """
     from bgate_core.cine import cinematic as _cine
 
-    # Provider preflight only - the shot pipeline runs its own budget
-    # arithmetic (the docstring's promise), but a drained kie account
-    # refuses regardless of price and is cheaper to learn here.
+    # Provider preflight: a drained kie account refuses regardless of what
+    # the shot would cost, and it is cheaper to learn that here than off a
+    # paid 402.
     refused = _provider_gate(_root(), "video", "a video shot")
     if refused:
         return refused
@@ -488,7 +488,7 @@ def storyboard_auto(name: Annotated[str, Field(description='Board name; also the
     """
     from bgate_core.cine import storyboard as _sb
 
-    refused = _gate_images(_root(), max(1, int(frames)), quality,
+    refused = _provider_gate(_root(), "image",
                            "a storyboard build")
     if refused:
         return refused
@@ -596,7 +596,7 @@ def storyboard_frame_generate(name: Annotated[str, Field(description='Board name
     """
     from bgate_core.cine import storyboard as _sb
 
-    refused = _gate_images(_root(), 1, quality, "a storyboard frame")
+    refused = _provider_gate(_root(), "image", "a storyboard frame")
     if refused:
         return refused
     return _sb.frame_generate(

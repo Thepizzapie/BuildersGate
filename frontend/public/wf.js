@@ -1,31 +1,29 @@
 /* WF — the workflow builder core.
  *
- * A workflow is a reusable, composable process the agents follow for a task-type:
- * a graph of typed STEPS (inputs, asset-generation, agents, control/QA) on the
+ * A workflow is a reusable direct-generation pipeline:
+ * a graph of typed STEPS (inputs, generators, transforms, and control) on the
  * NodeCanvas engine. Step types + starter templates are contributed by plugin
  * files (wf_steps_*.js) via WF.registerStep / WF.registerTemplate. This core owns
  * the library, the builder UI, persistence, and Run — which compiles the graph
  * (the step registry lives here, in the browser) and hands it to the server as a
- * PERSISTED run: one queue item per agent step, gates that block on a human, and
+ * PERSISTED run: direct provider/tool calls, gates that block on a human, and
  * node statuses polled back onto the canvas. Reload the page and the run is still
  * there, because it never lived in this file.
  *
  * STEP CONTRACT (register from a plugin file):
  *   WF.registerStep({
  *     type:"art.animation",           // unique id
- *     category:"asset",               // input | asset | 3d | world | agent | control
+ *     category:"asset",               // input | asset | 3d | world | control
  *     label:"Animation frames", glyph:"◈", accent:"var(--c-art)",
  *     ports(node){ return {in:[{id,label}], out:[{id,label}]}; },  // or omit for defaults
  *     defaults:{ frames:6, variants:2, ... },   // initial node.config
  *     body(node){ return "<html>"; },           // node-card body (small)
  *     config(node, ctx){ return "<html>"; },    // inspector config UI (ctx.commit(node) to persist)
- *     agentSeat:"art",                          // seat that runs this step (for Run); optional
- *     toBrief(node, wf){ return "brief text"; },// this step's agent brief for Run; optional
- *     kind:"agent"|"gate"|"consistency"|"passive", // what the RUN does with it; optional
+ *     kind:"tool"|"generate"|"gate"|"pick"|"passive", // runtime behavior
  *   });
  *
- * `kind` is how a step behaves once the workflow is actually running: an agent
- * step becomes a queue item, a gate BLOCKS the run until a human approves it, a
+ * `kind` is how a step behaves once the workflow is actually running: a tool or
+ * generator calls its connected backend, a gate BLOCKS until a human approves, a
  * consistency step has its threshold enforced against recorded scores, a passive
  * step just carries data. Omit it and the server derives it (gate/consistency by
  * type, agent from agentSeat) — it re-derives either way, so a step type cannot
@@ -77,7 +75,6 @@
     { id: "asset", label: "2D asset gen", icon: "art" },
     { id: "world", label: "World / background", icon: "background" },
     { id: "3d", label: "3D · Blender", icon: "model" },
-    { id: "agent", label: "Agents", icon: "agents" },
     { id: "control", label: "Control / QA", icon: "gate" },
     { id: "saved", label: "Saved workflows", icon: "note" },
   ];
@@ -115,7 +112,7 @@
   const WF = {
     steps: {}, templates: [], _nc: null, _wf: null, _saved: [], _api: null, _saveT: null,
     _run: null, _runNodes: null, _pollT: null, _savedError: "", _saveErr: "",
-    _facts: null,
+    _facts: null, _paletteQuery: "",
 
     registerStep(def) { if (def && def.type) this.steps[def.type] = def; },
     registerTemplate(t) { if (t && t.id) this.templates.push(t); },
@@ -466,7 +463,7 @@
        Prices are never written in this file. They come from the imagegen
        adapter's own table (GET /api/node/media -> prices), so an estimate on a
        node and the charge it turns into cannot drift apart. */
-    _media: { assets: {}, prices: {}, defaultQuality: "medium", spend: {}, names: [],
+    _media: { assets: {}, prices: {}, defaultQuality: "medium", names: [],
       at: 0, loading: null, sig: "" },
 
     // the logical asset names the current canvas actually refers to
@@ -529,12 +526,11 @@
         this._media.loading = null;
         this._media.at = Date.now();
         if (!d) return this._media;
-        const sig = JSON.stringify([d.assets, d.prices, d.spend && d.spend.project_usd]);
+        const sig = JSON.stringify([d.assets, d.prices]);
         this._media.prices = d.prices || {};
         this._media.defaultQuality = d.default_quality || "medium";
         this._media.assets = d.assets || {};
         this._media.names = d.names || [];
-        this._media.spend = d.spend || {};
         // Repaint only when something actually changed: a body whose HTML
         // churns every tick fights whoever is using the node.
         if (sig !== this._media.sig) {
@@ -626,20 +622,16 @@
       if (unit == null) return null;
       return { usd: images * unit, images, quality: q, unit };
     },
-    /* The chip in the node's title bar. Real spend REPLACES the estimate once
-       money has actually moved, and says which it is. */
+    /* The chip in the node's title bar: what this step is ABOUT to cost.
+       Nothing here reports what was spent — that is the provider account's
+       number, not one this dashboard keeps. */
     costLabel(node) {
       // Only a step that actually buys images carries a money chip. A gate or a
-      // stitching step inheriting the asset's bill would read as if the gate had
-      // spent it — the ledger is per asset, the chip must not lie about who.
+      // stitching step showing an estimate would read as if the gate cost that.
       const def = this._stepDef(node && node.type);
       if (!def || (typeof def.imageCost !== "function" && typeof def.costUsd !== "function")) return "";
-      const m = this.nodeMedia(node);
       const est = this.estimate(node);
-      const spent = m && Number(m.usd) > 0 ? Number(m.usd) : 0;
-      if (spent) return `${this.fmtUsd(spent)} spent`;
-      if (est) return `~${this.fmtUsd(est.usd)} est`;
-      return "";
+      return est ? `~${this.fmtUsd(est.usd)} est` : "";
     },
     _refreshCosts() {
       if (this._nc) {
@@ -666,36 +658,54 @@
       if (own) return own;
       return runStatus ? (STATUS_LABEL[runStatus] || runStatus) : (node && node.badge) || "";
     },
-    /* What the whole workflow is about to cost, and what it has cost. Real
-       spend is summed over DISTINCT logical assets — two nodes working the same
-       character have one bill between them, not two. */
+    /* What the whole workflow is about to cost, before it runs. */
     totals() {
       let est = 0, hasEst = false;
-      const seen = {}; let spent = 0;
       const nodes = [];
       if (this._nc) { try { this._nc.nodes.forEach(n => nodes.push(n)); } catch (e) {} }
       if (!nodes.length) ((this._wf && this._wf.nodes) || []).forEach(n => nodes.push(n));
       nodes.forEach(n => {
         const e = this.estimate(n);
         if (e) { est += e.usd; hasEst = true; }
-        const name = this.logicalFor(n);
-        const m = this.mediaFor(name);
-        if (name && m && !seen[name]) { seen[name] = 1; spent += Number(m.usd) || 0; }
       });
-      return { estimate: est, hasEstimate: hasEst, spent,
-        project: Number((this._media.spend || {}).project_usd) || 0 };
+      return { estimate: est, hasEstimate: hasEst };
     },
     _renderTotals() {
       const el = document.getElementById("wf-total"); if (!el) return;
       const t = this.totals();
-      const bits = [];
-      if (t.hasEstimate) bits.push(`~${this.fmtUsd(t.estimate)} est`);
-      if (t.spent > 0) bits.push(`${this.fmtUsd(t.spent)} spent`);
-      if (!bits.length) { el.hidden = true; el.textContent = ""; return; }
+      if (!t.hasEstimate) { el.hidden = true; el.textContent = ""; return; }
       el.hidden = false;
-      el.textContent = bits.join(" · ");
-      el.title = `Estimated from the image adapter's own price table; spent is the recorded ledger for these assets.`
-        + (t.project ? ` Project to date: ${this.fmtUsd(t.project)}.` : "");
+      el.textContent = `~${this.fmtUsd(t.estimate)} est`;
+      el.title = "Estimated from the image adapter's own price table, before "
+        + "anything runs. What the account was actually charged is the "
+        + "provider's number to report.";
+    },
+    _renderPreflight(result) {
+      const el = document.getElementById("wf-preflight"); if (!el) return;
+      if (!result) { el.hidden = true; el.innerHTML = ""; return; }
+      const errors = result.errors || [];
+      el.hidden = false;
+      el.className = "wf-preflight " + (result.ok ? "ok" : "bad");
+      el.innerHTML = result.ok
+        ? `<b>Ready</b><span>${esc(result.nodes)} steps · ${esc((result.tools || []).length)} tools resolved${result.estimate_usd ? ` · ~$${Number(result.estimate_usd).toFixed(2)} est` : ""}</span>`
+        : `<b>Cannot run</b><span>${errors.map(esc).join(" · ")}</span>`;
+    },
+    async _preflight(plan, announce) {
+      const res = await post("/api/workflows/preflight", plan);
+      const result = data(res);
+      if (!result) {
+        this._renderPreflight({ ok: false, errors: [readErr(res, "workflow preflight")] });
+        return null;
+      }
+      this._renderPreflight(result);
+      if (announce) toast(result.ok ? "graph is ready" : result.errors[0], !result.ok);
+      return result;
+    },
+    async checkGraph() {
+      const wf = this._serialize();
+      const issue = this._generatorIssue(wf);
+      if (issue) { this._renderPreflight({ ok: false, errors: [issue] }); return; }
+      await this._preflight(this._compile(wf), true);
     },
 
     /* ---- library landing ------------------------------------------------ */
@@ -892,6 +902,7 @@
           <span class="wf-cat">${esc(wf.category || "custom")}</span>
           <span class="wf-total" id="wf-total" hidden></span>
           <div style="flex:1"></div>
+          <button class="qbtn small ghost" onclick="WF.checkGraph()">check graph</button>
           <button class="qbtn small ghost" onclick="WF.saveAsNode()">save as reusable node</button>
           ${wf.fromTemplate && !wf.adopted
             ? `<span class="wf-scratch" title="Edits are kept so a run can find them, but this stays the shipped template until you save your own copy.">shipped template</span>
@@ -899,6 +910,7 @@
             : `<button class="qbtn small ghost" onclick="WF.save()">save</button>`}
           <button class="qbtn small" onclick="WF.run()">▶ Run workflow</button>
         </div>
+        <div class="wf-preflight" id="wf-preflight" hidden></div>
         <div class="wf-runbar" id="wf-runbar" hidden></div>
         <!-- The two rails get header bands for the same reason every other
              pane in the app now has one: without them the builder is three
@@ -908,6 +920,7 @@
         <div class="wf-main">
           <div class="wf-rail wf-palette-rail">
             <div class="sec-h">${wfIcon("studio", 14)}<h4 class="sec-t">Steps</h4></div>
+            <label class="wf-pal-search"><span>${wfIcon("qa", 13)}</span><input value="${esc(this._paletteQuery)}" placeholder="Find a node" aria-label="Find a node" oninput="WF._paletteQuery=this.value;WF._renderPalette()"></label>
             <div class="wf-palette" id="wf-palette"></div>
           </div>
           <div class="wf-canvas" id="wf-canvas"></div>
@@ -953,6 +966,7 @@
     },
     _renderPalette() {
       const pal = document.getElementById("wf-palette"); if (!pal) return;
+      const query = String(this._paletteQuery || "").trim().toLowerCase();
       const byCat = {};
       Object.values(this.steps).forEach(s => (byCat[s.category] = byCat[s.category] || []).push(s));
       // saved workflows are droppable as sub-workflow nodes
@@ -960,11 +974,12 @@
       CATS.forEach(c => {
         let list = byCat[c.id] || [];
         if (c.id === "saved") list = this._saved.map(s => ({ type: "sub:" + s.id, label: s.name, glyph: "◆", accent: "var(--ember)" }));
+        if (query) list = list.filter(s => `${s.label || ""} ${s.type || ""}`.toLowerCase().includes(query));
         if (!list.length) return;
         html += `<div class="wf-pal-cat">${wfIcon(c.icon, 12)}${esc(c.label)}</div>` + list.map(s =>
           `<button class="wf-pi" style="--a:${s.accent || "var(--ember)"}" onclick="WF.addStep('${esc(s.type)}')"><span class="g">${esc(s.glyph || "◇")}</span> ${esc(s.label)}</button>`).join("");
       });
-      pal.innerHTML = html || `<div class="empty">no steps</div>`;
+      pal.innerHTML = html || `<div class="empty">${query ? "no matching nodes" : "no steps"}</div>`;
     },
     _mountCanvas() {
       const NodeCanvas = (this._api && this._api.NodeCanvas) || window.NodeCanvas;
@@ -1008,7 +1023,7 @@
       nc.mount(); nc.fit(); this._nc = nc;
       this.refsLoad();      // thumbnails resolve through the pin registry
       this.tiersLoad();     // the model ladder, from the server that owns it
-      this.mediaLoad(true); // one batch read: produced artifacts, spend, prices
+      this.mediaLoad(true); // one batch read: produced artifacts and prices
       if (this._api && this._api.setCanvas) this._api.setCanvas(nc);
     },
     /* The +/- steppers and the seed dice. They mutate one field and repaint
@@ -1202,13 +1217,19 @@
     async _ensureRun() {
       if (this._run && this._run.status === "running") return this._run;
       await this.save(true);
-      const plan = this._compile(this._serialize());
-      if (!plan.nodes.some(n => n.seat || n.kind === "consistency" || n.kind === "generate")) {
+      const source = this._serialize();
+      const issue = this._generatorIssue(source);
+      if (issue) { toast(issue, true); return null; }
+      const plan = this._compile(source);
+      if (plan.nodes.some(n => n.seat || n.kind === "agent")) {
+        toast("agent nodes belong in Orchestration, not Studio", true); return null;
+      }
+      if (!plan.nodes.some(n => n.kind === "tool" || n.kind === "generate" || n.kind === "passive")) {
         toast("no runnable step in this workflow", true); return null;
       }
       // manual: this run exists to host single-node executions. dispatch is off
       // so opening it never starts work the user did not ask for.
-      const res = await post("/api/workflows/runs", Object.assign({ dispatch: false, manual: true }, plan));
+      const res = await post("/api/workflows/runs", Object.assign({ mode: "generator", dispatch: false, manual: true }, plan));
       const run = data(res);
       if (!run) { toast(errMsg(res), true); return null; }
       this._paint(run);
@@ -1222,7 +1243,7 @@
       if (!run) return null;
       if (cn) { cn.status = "running"; cn.badge = this._badgeFor(cn, "running"); nc._renderNode(cn); }
       const res = await post(
-        `/api/workflows/runs/${run.id}/nodes/${encodeURIComponent(nodeId)}/run`, {});
+        `/api/workflows/runs/${run.id}/nodes/${encodeURIComponent(nodeId)}/run`, { mode: "generator", dispatch: false });
       const out = data(res);
       if (!out) {
         if (cn) { cn.status = ""; nc._renderNode(cn); }
@@ -1358,28 +1379,46 @@
     },
 
     /* ---- run ------------------------------------------------------------ */
-    /* The workflow is COMPILED here (the step registry lives in the browser)
-       and EXECUTED on the server: one persisted run, one queue item per agent
-       step, gates that actually block. The canvas then paints itself from the
-       run's node statuses. */
+    /* The workflow is compiled here and executed by direct generator/tool
+       calls on the server. Studio never creates queue items or agent sessions. */
+    _generatorIssue(wf) {
+      const old = (wf.nodes || []).find(n => {
+        const def = this.steps[n.type];
+        return !def || def.agentSeat || def.kind === "agent";
+      });
+      if (!old) return "";
+      return this.steps[old.type]
+        ? `${old.title || this.steps[old.type].label || old.type} belongs in Orchestration, not Studio`
+        : `${old.title || old.type} is a legacy or unavailable node; replace it with a connected generator node`;
+    },
     _compile(wf) {
       const order = this._topoOrder(wf);
       const nodes = order.map(id => wf.nodes.find(n => n.id === id)).filter(Boolean).map(n => {
         const def = this._stepDef(n.type);
         let brief = ""; try { brief = def.toBrief ? def.toBrief(n, wf) : ""; } catch (e) {}
+        const estimate = this.estimate(n);
         return { id: n.id, type: n.type, label: n.title || def.label || n.type,
-          seat: def.agentSeat || "", kind: def.kind || "", brief, config: n.config || {} };
+          seat: def.agentSeat || "", kind: def.kind || "", brief, config: n.config || {},
+          estimate_usd: estimate ? estimate.usd : 0 };
       });
       return { workflow: { id: wf.id, name: wf.name, category: wf.category },
-        name: wf.name, nodes, edges: (wf.edges || []).slice() };
+        name: wf.name, nodes, edges: (wf.edges || []).slice(),
+        estimate_usd: this.totals().estimate };
     },
     async run() {
       await this.save(true);                     // the run snapshots what is saved
       const wf = this._serialize();
+      const issue = this._generatorIssue(wf);
+      if (issue) { toast(issue, true); return; }
       const plan = this._compile(wf);
-      if (!plan.nodes.some(n => n.seat || n.kind === "consistency" || n.kind === "generate")) { toast("no agent/generation steps to run", true); return; }
+      if (plan.nodes.some(n => n.seat || n.kind === "agent")) { toast("agent nodes belong in Orchestration, not Studio", true); return; }
+      if (!plan.nodes.some(n => n.kind === "tool" || n.kind === "generate")) { toast("add a generator or tool node before running", true); return; }
       if (this._run && this._run.status === "running") { toast("this workflow is already running", true); return; }
-      const res = await post("/api/workflows/runs", Object.assign({ dispatch: true }, plan));
+      const ready = await this._preflight(plan, false);
+      if (!ready || !ready.ok) { toast(ready && ready.errors ? ready.errors[0] : "graph preflight failed", true); return; }
+      // The graph contains no agent nodes (enforced above and again by the
+      // route), so dispatch here means execute its connected generators now.
+      const res = await post("/api/workflows/runs", Object.assign({ mode: "generator", dispatch: true }, plan));
       const run = data(res);
       if (!run) { toast(errMsg(res), true); return; }
       toast(`run #${run.id} started`);
@@ -1454,6 +1493,7 @@
         <span class="wf-run-dot wf-st-${esc(run.status === "running" ? "running" : run.status === "passed" ? "passed" : run.status)}"></span>
         <b>Run #${run.id}</b> <span class="wf-run-s">${esc(run.status)}</span>
         <span class="wf-run-s">${done}/${total} steps</span>
+        ${run.estimate_usd ? `<span class="wf-run-s">~$${Number(run.estimate_usd).toFixed(2)} est</span>` : ""}
         ${live && live.kind !== "gate" ? `<span class="wf-run-s">now: ${esc(live.label)}${live.work_item_id ? ` · item #${live.work_item_id}` : ""}</span>` : ""}
         <div style="flex:1"></div>
         ${run.status === "running" ? `<button class="qbtn small ghost" onclick="WF.cancelRun()">cancel run</button>` : ""}
@@ -1597,15 +1637,19 @@
          scrolls under the band rather than with it. app.css owns .sec-h, so
          only the seam and the scroll live here. */
       .wf-rail{display:flex;flex-direction:column;min-height:0;background:var(--iron)}
-      .wf-palette-rail{width:186px;flex:none;border-right:1px solid var(--seam)}
-      .wf-insp-rail{width:270px;flex:none;border-left:1px solid var(--seam)}
+      .wf-palette-rail{width:clamp(196px,17vw,228px);flex:none;border-right:1px solid var(--seam)}
+      .wf-insp-rail{width:clamp(280px,23vw,340px);flex:none;border-left:1px solid var(--seam)}
       .wf-rail > .sec-h{flex:none;padding:var(--s-4) var(--s-5);margin:0;background:var(--surface-4)}
+      .wf-pal-search{display:flex;align-items:center;gap:7px;margin:10px 10px 2px;padding:0 9px;background:var(--void);border:1px solid var(--seam);border-radius:7px;color:var(--ash2)}
+      .wf-pal-search:focus-within{border-color:var(--ember);color:var(--ember)}
+      .wf-pal-search input{width:100%;min-width:0;padding:7px 0;background:transparent;border:0;outline:0;color:var(--bone);font:11px var(--mono)}
       .wf-palette{flex:1;min-height:0;padding:var(--s-5) var(--s-4);overflow-y:auto}
       .wf-pal-cat{display:flex;align-items:center;gap:var(--s-3);font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--ash2);margin:12px 0 6px}
       .wf-pal-cat:first-child{margin-top:0}
       .wf-pal-cat .bgi{color:var(--ash2)}
       .wf-pi{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 9px;margin-bottom:5px;background:var(--plate);border:1px solid var(--seam);border-left:2px solid var(--a);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;cursor:pointer}
       .wf-pi:hover{background:var(--plate2);border-color:var(--a)}
+      .wf-pi:focus-visible{outline:2px solid var(--a);outline-offset:1px}
       .wf-pi .g{color:var(--a)}
       .wf-canvas{flex:1;position:relative;min-width:0}
       .wf-insp{flex:1;min-height:0;padding:var(--s-6);overflow-y:auto}
@@ -1656,6 +1700,10 @@
       /* the workflow's money, on the builder chrome */
       .wf-total{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--ash);
         border:1px solid var(--seam);border-radius:20px;padding:2px 9px;white-space:nowrap}
+      .wf-preflight{display:flex;align-items:flex-start;gap:10px;padding:8px 12px;border-bottom:1px solid var(--seam);font:11px/1.45 var(--sans)}
+      .wf-preflight b{white-space:nowrap}.wf-preflight span{color:var(--ash)}
+      .wf-preflight.ok{background:color-mix(in srgb,var(--good) 7%,var(--iron));color:var(--good)}
+      .wf-preflight.bad{background:color-mix(in srgb,var(--bad) 8%,var(--iron));color:var(--bad)}
     `;
     document.head.appendChild(s);
   }

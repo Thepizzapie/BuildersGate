@@ -9,6 +9,7 @@ Blender is discovered from BGATE_BLENDER, then PATH, then the usual install dirs
 """
 from __future__ import annotations
 
+import inspect as _inspect
 import json
 import os
 import re
@@ -19,7 +20,7 @@ import tempfile
 import time
 from glob import glob
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from . import _blender_kit as _kit
 
@@ -683,8 +684,40 @@ bpy.context.scene.render.resolution_y = 32
     }
 
 
+#: Extensions Blender IMPORTS rather than OPENS. `blender --background <file>`
+#: takes a .blend and nothing else; handed a mesh interchange file it fails to
+#: load, runs no script and exits with no result - which surfaced to the agent
+#: as the shrug "Blender exited without producing a result" and got retried
+#: three times against the same .glb, because nothing in that sentence says the
+#: file was the problem.
+_IMPORTABLE = {".glb": "import_scene.gltf", ".gltf": "import_scene.gltf",
+               ".fbx": "import_scene.fbx", ".obj": "wm.obj_import",
+               ".dae": "wm.collada_import", ".stl": "wm.stl_import"}
+
+
 def scene_stats(blend_file: str, timeout: int = 120) -> dict:
-    """Report a .blend without changing it — the read-only path."""
+    """Report a .blend — or an importable mesh file — without changing it.
+
+    THE READ-ONLY PATH, and the one most likely to be pointed at a .glb: every
+    generated asset in this pipeline IS a .glb, so "what is in this thing" is
+    asked of one constantly. It used to hand the path to `blender --background`
+    regardless, which only opens .blend, so the answer for the commonest input
+    was a failure message about Blender rather than about the file.
+    """
+    suffix = Path(blend_file).suffix.lower()
+    if suffix in _IMPORTABLE:
+        if not Path(blend_file).exists():
+            return {"ok": False, "error": f"file not found: {blend_file}"}
+        # Imported into an empty scene, so the stats describe the FILE and not
+        # a default cube keeping it company.
+        return run_script(
+            f"bpy.ops.{_IMPORTABLE[suffix]}(filepath=r'{blend_file}')",
+            timeout=timeout, factory_startup=True, kit=False, record=False)
+    if suffix and suffix != ".blend":
+        return {"ok": False,
+                "error": f"{suffix} is not something Blender can open or "
+                         f"import here. It takes .blend, or one of "
+                         f"{', '.join(sorted(_IMPORTABLE))}."}
     return run_script("pass", blend_file=blend_file, timeout=timeout,
                       factory_startup=True)
 
@@ -4824,8 +4857,42 @@ def _plate_provider(name: str, root=None):
     if chosen == "krea":
         from bgate_adapters import krea
         return krea
-    from bgate_adapters import imagegen
-    return imagegen
+    if chosen in ("", "openai"):
+        from bgate_adapters import imagegen
+        return imagegen
+    # ANY OTHER CONFIGURED PROVIDER GOES THROUGH THE ART GATEWAY, because it is
+    # the only thing that knows how to ANCHOR that provider. This used to fall
+    # through to gpt-image, so provider="kie" — this project's own character
+    # provider, and on catnip-fiend the only funded one — silently painted the
+    # plate at openai and died on a 429 naming an account nobody had chosen.
+    # The seat then read "no credit" as "the pipeline is closed", which is the
+    # exact turn that ends in a hand-modelled character.
+    #
+    # chroma.generate is not a re-implementation of any of this: kie's
+    # reference fields are URLs, and it already uploads a local ref, picks a
+    # model that declares reference capacity, and REFUSES rather than buying an
+    # unanchored frame. keyed=False because this path keys its own plate with
+    # despill off (see _key_plate) and must not be handed the sprite contract —
+    # that was tried on this path and failed twice, which is why the plate
+    # prompt above carries its own backdrop clause.
+    return _GatewayPlate(chosen)
+
+
+class _GatewayPlate:
+    """A plate provider that is really the art gateway, pinned to one name."""
+
+    def __init__(self, provider: str) -> None:
+        self._provider = provider
+
+    def generate(self, prompt: str, out_path: str, *, size: str = "1024x1024",
+                 task_kind: str = "", ref_paths: Sequence[str] = (),
+                 ref_strength: float = 0.5, root: Any = None) -> dict:
+        from bgate_core.art import chroma
+
+        return chroma.generate(prompt, out_path, provider=self._provider,
+                               keyed=False, size=size, task_kind=task_kind,
+                               ref_paths=list(ref_paths),
+                               ref_strength=ref_strength, root=root)
 
 
 def _key_plate(src: str, dst: str) -> tuple[float, str]:
@@ -4862,11 +4929,17 @@ def _key_plate(src: str, dst: str) -> tuple[float, str]:
     return best, ""
 
 
+# Under this, a generated humanoid does not survive the collapse. Stated
+# rather than derived so a future author has to argue with a number.
+HUMANOID_TRI_FLOOR = 20000
+
+
 def character(prompt: str, out_dir: str | os.PathLike[str], *,
               name: str = "character", provider: str = "", backend: str = "",
               height: float = 1.8, budget: int = 45000, size: str = "1024x1536",
               godot_project: str = "", root: Any = None, dry_run: bool = False,
-              timeout: int = 2400) -> dict:
+              timeout: int = 2400,
+              ref_images: Sequence[str] = (), ref_strength: float = 0.6) -> dict:
     """"A model that looks like X" — plate, mesh, rig, and into the engine.
 
     THE ONE CALL THIS PIPELINE DID NOT HAVE. Every stage existed and every stage
@@ -4910,6 +4983,29 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
         return result
     result["template"] = {"pose": tpl["pose_front"], "bones": len(tpl["bones"])}
 
+    # THE DECIMATION CLIFF, IN THE QUOTE RATHER THAN IN THE RENDER. A budget
+    # this path CAN meet and should not: rig()'s own note records 45-60k clean
+    # and 8k shattering a character, and the docstring above records a collapse
+    # that met its budget with 20,799 of 39,803 faces inside out. MEASURED
+    # again on catnip-fiend's owner at budget=8000: 13,842 triangles (the
+    # collapse could not even reach the number), 42% non-manifold, a face and
+    # feet that came back as folded planes - off a plate that was a good
+    # likeness. The number came from a procedural-mesh acceptance criterion
+    # copied onto a generated one, which is exactly the mistake nothing here
+    # was catching.
+    #
+    # A WARNING, NOT A REFUSAL, and it rides on the dry_run quote so it arrives
+    # BEFORE the spend: a caller who has read this and still wants a low budget
+    # is allowed to have one, and props legitimately live down there.
+    if budget and budget < HUMANOID_TRI_FLOOR:
+        result["warnings"] = [
+            f"budget={budget} is below the measured floor of "
+            f"{HUMANOID_TRI_FLOOR} for a GENERATED humanoid. 45-60k decimates "
+            "clean; below ~20k the collapse folds the face and the feet into "
+            "planes and leaves the mesh non-manifold, and it reports the "
+            "budget as met. Decimate in a second pass off the raw mesh if the "
+            "engine needs fewer, and look at the turnaround before shipping."]
+
     picked = backend or (imageto3d.choose(root) or {}).get("backend", "")
     mesh_quote = imageto3d.price_for(picked) if picked else None
     # An unnamed backend is not an error here — choose() REFUSES a conditional
@@ -4947,16 +5043,48 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
                     "no watermark.")
     # EXACTLY THE CALL THAT PRODUCED THE WORKING CHARACTER: the pose reference
     # as a conditioning image at 0.45, task_kind="character", 1024x1536, and
-    # the project root so the key and the spend ledger come from the project.
+    # the project root so the key comes from the project.
     # The reference carries the STANCE — arms out, feet flat, symmetrical,
     # framed head to feet — which is what made the skeleton fit at limbs=1.0
     # with no compensation. Drop it and the generator invents a stance and the
     # skeleton has to be bent to whatever it chose.
-    shot = _plate_provider(provider, root=root).generate(
-        plate_prompt, str(raw_plate), size=size, task_kind="character",
-        ref_paths=[tpl["pose_front"]], ref_strength=0.45, root=root)
+    #
+    # THE SUBJECT REFERENCE GOES IN FRONT OF THE POSE TEMPLATE. The template
+    # alone says "a human, standing like this" and nothing about WHICH human,
+    # so every re-run invented a different figure and no two plates of one
+    # character matched. `ref_images` — the pinned concept — is what makes a
+    # re-generation the SAME owner in a new pose rather than a new owner.
+    # Ordered subject-first because the edit models read the first image as
+    # the thing to edit and the rest as context, and carried at a higher
+    # strength than the stance for the same reason.
+    plate_refs = [str(p) for p in (ref_images or []) if str(p).strip()]
+    plate_refs.append(tpl["pose_front"])
+    # THE TWO PLATE PROVIDERS DO NOT SHARE A SIGNATURE, and this call used to
+    # pass the union of both. krea.generate takes ref_strength and root;
+    # imagegen.generate (the gpt-image path) takes neither - gpt-image has no
+    # separate reference input at all, so it holds an anchor by delegating to
+    # edit(), which has no strength knob to turn. The union raised TypeError on
+    # the FIRST stage of the whole chain, so character_generate could only ever
+    # run with provider="krea" and failed identically on the local and the
+    # hosted mesh backend, which reads like a backend problem and is not one.
+    # An unsupported knob is dropped and NAMED in the step rather than silently
+    # promised: "the reference was held at 0.6" has to be false out loud.
+    plate_call = _plate_provider(provider, root=root).generate
+    plate_kwargs = {"size": size, "task_kind": "character",
+                    "ref_paths": plate_refs,
+                    "ref_strength": (ref_strength if plate_refs[:-1] else 0.45),
+                    "root": root}
+    params = _inspect.signature(plate_call).parameters
+    takes_anything = any(q.kind is _inspect.Parameter.VAR_KEYWORD
+                         for q in params.values())
+    dropped = ([] if takes_anything
+               else [k for k in plate_kwargs if k not in params])
+    for key in dropped:
+        plate_kwargs.pop(key)
+    shot = plate_call(plate_prompt, str(raw_plate), **plate_kwargs)
     step = {"step": "plate", "ok": bool(shot.get("ok")),
-            "usd": shot.get("usd"), "error": shot.get("error") or ""}
+            "usd": shot.get("usd"), "error": shot.get("error") or "",
+            "refs": len(plate_refs), "unsupported": dropped}
     if shot.get("ok"):
         # Keyed HERE with despill off. Despill removes the key colour's spill
         # from the subject, which is right for green and wrong for grey: on a
@@ -5047,3 +5175,796 @@ def _sum_usd(steps: list[dict]) -> Optional[float]:
     if not seen or any(v is None for v in seen):
         return None
     return round(sum(float(v) for v in seen), 4)
+
+
+# ---------------------------------------------------------------------------
+# Clip authoring — the animation layer
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. rig() produces a bound humanoid with Godot's profile bone
+# names, flex() proves it can bend, retarget_check proves an engine can drive
+# it — and nothing could put a CLIP on it. Every agent asked for animations
+# wrote its own bpy script from scratch, and the one that shipped assumed the
+# rig faced +Y with its left on -X, aimed bones at absolute directions, and
+# interpolated nine keys. MEASURED: every clip strode backwards, the torso
+# never bent past 28 degrees, and all six gates passed it.
+#
+# The authoring lives in humanpose.py, PURE Python, spliced into this script
+# by source the way bodymeasure.py is (see _measured): the same bytes the unit
+# tests run are the bytes Blender runs. This script's own job is the part that
+# needs bpy — dump the rig, check the SKIN agrees with the SKELETON about which
+# way is forward, key what humanpose baked, and render the proof.
+HUMANPOSE = Path(__file__).with_name("humanpose.py")
+_ANIMATE_MARK = "BGATE_ANIMATE:"
+
+# The gameplay-legible set a character ships with when the caller names none.
+# The pack a library clip comes from when none is named.
+DEFAULT_PACK = "quaternius-ual"
+
+DEFAULT_CLIPS = ({"name": "idle", "kind": "idle"},
+                 {"name": "walk", "kind": "walk"},
+                 {"name": "run", "kind": "run"},
+                 {"name": "crouch_idle", "kind": "crouch_idle"},
+                 {"name": "pickup", "kind": "pickup"},
+                 {"name": "look_around", "kind": "look_around"})
+
+# What each shipped clip kind was MEANT to be, for the support gate: the same
+# flight fraction is right for a run and impossible for a walk, and
+# bonepaths.support_verdict refuses to guess from a name.
+CLIP_GAITS = {"walk": "walk", "sneak": "walk", "run": "run", "idle": "stand",
+              "crouch_idle": "stand", "look_around": "stand", "wave": "stand"}
+
+
+def clip_gait(kind: str, clip: str = "") -> str:
+    """What a clip was meant to be, for the support gate. Procedural kinds are
+    a table; a library clip is read off its NAME the way an animator named it
+    (Walk_Loop, Jog_Fwd_Loop, Sprint_Loop, Idle_Talking_Loop). Anything else
+    is `any`: the gate then measures and refuses to judge."""
+    if kind in CLIP_GAITS:
+        return CLIP_GAITS[kind]
+    label = (clip or kind or "").lower()
+    if any(w in label for w in ("sprint", "run", "jog")):
+        return "run"
+    if any(w in label for w in ("walk", "crouch_fwd", "sneak")):
+        return "walk"
+    if any(w in label for w in ("idle", "sitting", "aim_", "talking")):
+        return "stand"
+    return "any"
+
+_ANIMATE_SCRIPT = '''
+import bpy, json, math, os
+from mathutils import Vector, Matrix
+
+P = json.loads(r"""__PAYLOAD__""")
+FPS = int(P["fps"])
+
+
+def set_engine(scene, name):
+    for candidate in (name, "BLENDER_WORKBENCH"):
+        try:
+            scene.render.engine = candidate
+            return candidate
+        except TypeError:
+            continue
+    return scene.render.engine
+
+
+def rig_dump(arm):
+    """Every bone's rest frame in ARMATURE space — what humanpose composes on."""
+    out = {}
+    for b in arm.data.bones:
+        m = b.matrix_local
+        out[b.name] = {"parent": b.parent.name if b.parent else None,
+                       "head": tuple(b.head_local), "tail": tuple(b.tail_local),
+                       "matrix": tuple(tuple(m[i][j] for j in range(3))
+                                       for i in range(3))}
+    return out
+
+
+def facing_of(mesh, forward, up=Vector((0.0, 0.0, 1.0))):
+    """Does the SKIN's front agree with the skeleton's? Reads the toe reach
+    of the lowest slab along the rig's own forward — bg_facing's rule, run
+    against the direction the bones claim rather than an axis."""
+    pts = [mesh.matrix_world @ v.co for v in mesh.data.vertices]
+    if not pts:
+        return {"readable": False, "agrees": None, "why": "no geometry"}
+    zs = [p.dot(up) for p in pts]
+    floor, top = min(zs), max(zs)
+    cut = floor + (top - floor) * 0.06
+    along = [p.dot(forward) for p in pts]
+    slab = [a for a, z in zip(along, zs) if z <= cut] or along
+    body = sum(along) / len(along)
+    ahead, behind = max(slab) - body, body - min(slab)
+    ratio = max(ahead, behind) / max(min(ahead, behind), 1e-9)
+    readable = ratio >= 1.25
+    return {"readable": readable, "agrees": (ahead >= behind) if readable else None,
+            "ratio": round(ratio, 3),
+            "why": ("the toes reach %.2fx further than the heel along the "
+                    "skeleton's forward" % ratio) if readable else
+                   ("no readable front — the two sides reach %.2fx, which is "
+                    "not a foot" % ratio)}
+
+
+def repair_feet(arm, forward):
+    """Re-aim the Foot and Toes bones toward the skin's toes. The ONLY bones a
+    facing mismatch is read from, so the only ones that need to move; the
+    weights are by name and stay put."""
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    moved = []
+    for eb in arm.data.edit_bones:
+        if not (eb.name.endswith("Foot") or eb.name.endswith("Toes")):
+            continue
+        d = eb.tail - eb.head
+        f = d.dot(forward)
+        eb.tail = eb.head + d - forward * (2.0 * f)
+        moved.append(eb.name)
+    # Toes hang off the foot's tail; re-seat their heads after the flip.
+    for eb in arm.data.edit_bones:
+        if eb.name.endswith("Toes") and eb.parent is not None:
+            length = (eb.tail - eb.head).length
+            d = (eb.tail - eb.head).normalized()
+            eb.head = eb.parent.tail
+            eb.tail = eb.head + d * length
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return moved
+
+
+def report_and_exit(out):
+    with open(P["dump"], "w", encoding="utf-8") as handle:
+        json.dump(out, handle, default=str)
+    print("__MARK__" + json.dumps({"ok": bool(out.get("ok")), "dumped": True,
+                                   "refused": bool(out.get("refused"))}))
+
+
+def as_rows(m):
+    """A mathutils 3x3 as the tuple-of-rows humanpose's algebra takes."""
+    return tuple(tuple(float(m[i][j]) for j in range(3)) for i in range(3))
+
+
+def nearest_mapped_parent(bone, smap):
+    p = bone.parent
+    while p is not None:
+        if p.name in smap:
+            return smap[p.name]
+        p = p.parent
+    return None
+
+
+def retarget_clip(S, tgt_rig, smap, action, spec):
+    """One library action onto the target rig, as a bake() record.
+
+    WORLD-SPACE ROTATION DELTAS ONTO AN ALIGNED REST. For every mapped bone
+    the source's posed world rotation is expressed as a delta from its own
+    rest, turned by the yaw between the two rigs' measured forwards, and
+    applied to the target bone's rest AFTER that rest has been aimed along
+    the source's rest direction. The alignment is what lets a T-posed pack
+    drive an A-posed rig without the arms sitting 24 degrees low; the delta
+    is what makes bone roll irrelevant. Hips translation is scaled by the
+    ratio of hip heights and turned by the same yaw.
+    """
+    inv = {}
+    for src, prof in smap.items():
+        inv.setdefault(prof, src)
+    # The source rest, in PROFILE names, in world space, parents collapsed to
+    # the nearest mapped ancestor - so RigFrame can read its forward and left
+    # the same way it reads the target's.
+    sdump = {}
+    for src, prof in smap.items():
+        b = S.data.bones.get(src)
+        if b is None or prof in sdump:
+            continue
+        mw = S.matrix_world
+        sdump[prof] = {"parent": nearest_mapped_parent(b, smap),
+                       "head": tuple(mw @ b.head_local),
+                       "tail": tuple(mw @ b.tail_local),
+                       "matrix": as_rows((mw @ b.matrix_local).to_3x3())}
+    src_rig = RigFrame(sdump)
+    yaw = m_from_to(src_rig.forward, tgt_rig.forward)
+    yaw_t = m_transpose(yaw)
+    rest_world = {prof: as_rows((S.matrix_world @ S.data.bones[inv[prof]].matrix_local).to_3x3())
+                  for prof in sdump}
+    rest_head = {prof: sdump[prof]["head"] for prof in sdump}
+    # TWO KINDS OF REST DIFFERENCE, AND ONLY ONE OF THEM IS CORRECTED BY
+    # POSING. The arms differ because the rigs stand in different POSES
+    # (a T-posed pack, an A-posed rig): the target arm is aimed along the
+    # pack's rest direction first, and the delta rides on top - or every
+    # hanging-arm clip lands 24 degrees inside the body. Feet, toes, legs,
+    # trunk and head differ only by bone CONVENTION (where a foot bone points
+    # between ankle and toe): posing those to the pack's direction rotated
+    # every shoe 40 degrees in every frame, flattened them into the floor and
+    # tore the trouser cuffs. Those bones keep the SKIN's own rest and the
+    # delta is CONJUGATED into it - identity delta, skin exactly where it was.
+    aligned, conj = {}, {}
+    for prof in tgt_rig.order:
+        if prof not in sdump:
+            continue
+        want = m_vec(yaw, src_rig.rest_dir(prof))
+        have = tgt_rig.rest_dir(prof)
+        turn = m_from_to(have, want)
+        if any(prof.endswith(s) for s in ("Shoulder", "UpperArm", "LowerArm", "Hand")):
+            aligned[prof] = m_mul(turn, tgt_rig.bones[prof]["matrix"])
+            conj[prof] = None
+        else:
+            aligned[prof] = tgt_rig.bones[prof]["matrix"]
+            conj[prof] = turn
+    ratio = 1.0
+    if src_rig.has("LeftUpperLeg", "LeftFoot") and tgt_rig.has("LeftUpperLeg", "LeftFoot"):
+        s_span = src_rig.hip_height() - src_rig.ankle_height()
+        if s_span > 1e-6:
+            ratio = (tgt_rig.hip_height() - tgt_rig.ankle_height()) / s_span
+
+    S.animation_data.action = action
+    if hasattr(S.animation_data, "action_slot"):
+        for slot in action.slots:
+            S.animation_data.action_slot = slot
+            break
+    lo, hi = (int(round(x)) for x in action.frame_range)
+    poses = []
+    for f in range(lo, hi + 1):
+        bpy.context.scene.frame_set(f)
+        pose = Pose(tgt_rig)
+        for prof in tgt_rig.order:
+            if prof not in aligned:
+                continue
+            pb = S.pose.bones.get(inv[prof])
+            if pb is None:
+                continue
+            world = S.matrix_world @ pb.matrix
+            r_pose = as_rows(world.to_3x3())
+            delta = m_mul(m_mul(yaw, m_mul(r_pose, m_transpose(rest_world[prof]))), yaw_t)
+            turn = conj.get(prof)
+            if turn is not None:
+                delta = m_mul(m_mul(m_transpose(turn), delta), turn)
+            pose.set_world_rotation(prof, m_mul(delta, aligned[prof]))
+            if prof == "Hips":
+                moved = v_sub(tuple(world.translation), rest_head["Hips"])
+                pose.set_hips(m_vec(yaw, v_scale(moved, ratio)))
+        poses.append(pose)
+    S.animation_data.action = None
+    loop = bool(spec.get("loop", action.name.endswith("_Loop")
+                         or action.name.endswith("-loop")))
+    # A cycle whose last frame already equals its first would hitch for one
+    # frame when the loop key is appended; drop the duplicate.
+    if loop and len(poses) > 2:
+        a, b = poses[0].quaternions(), poses[-1].quaternions()
+        same = all(abs(sum(x * y for x, y in zip(a.get(n, (1, 0, 0, 0)),
+                                                b.get(n, (1, 0, 0, 0))))) > 0.9999
+                   for n in tgt_rig.order)
+        if same:
+            poses.pop()
+    # ARMS OUT, WHEN THE BODY NEEDS IT. A pack is keyed on a slim figure; on
+    # a character with wider hips or a coat the hanging hands pass through
+    # the thigh. overrides.arm_out abducts both upper arms by that many
+    # degrees on every frame - the one correction a retarget cannot infer.
+    arm_out = float((spec.get("overrides") or {}).get("arm_out") or 0.0)
+    if arm_out:
+        for pose in poses:
+            pose.anatomical("LeftUpperArm", roll=arm_out)
+            pose.anatomical("RightUpperArm", roll=-arm_out)
+    rec = bake(tgt_rig, poses)
+    rec.update(name=spec.get("name") or action.name, ok=True, loop=loop,
+               notes={"kind": "library", "pack": spec.get("pack"),
+                      "clip": action.name, "source_frames": hi - lo + 1,
+                      "mapped": len(aligned), "yaw_deg": round(
+                          math.degrees(math.atan2(yaw[1][0], yaw[0][0])), 1),
+                      "hips_ratio": round(ratio, 4),
+                      "unmapped_target": [n for n in tgt_rig.order
+                                          if n not in aligned and n != "Root"]})
+    return rec
+
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+# FPS BEFORE ANY IMPORT: the glTF importer lands keys on the scene's frame
+# rate, so a library imported at Blender's default 24 would be resampled
+# twice by the time it is keyed at 30.
+bpy.context.scene.render.fps = FPS
+bpy.ops.import_scene.gltf(filepath=P["model"])
+arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+out = {"ok": True, "model": P["model"], "clips": [], "renders": []}
+# OBJECT TRANSFORMS ARE BAKED INTO THE DATA FIRST. The rig dump reads bone
+# rests in ARMATURE space and the facing gate reads the mesh in WORLD space;
+# a rig delivered with its correction on the armature OBJECT (owner_v7c
+# carried a 180-degree turn and a 0.197 scale there) would have the two
+# disagree about everything. Applying makes both spaces the same space.
+for o in arms + meshes:
+    if o.matrix_world != Matrix.Identity(4):
+        out.setdefault("applied_transforms", []).append(o.name)
+if out.get("applied_transforms"):
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in arms + meshes:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = arms[0] if arms else meshes[0]
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+if not arms:
+    out.update(ok=False, error="no armature in %s — blender_animate needs a "
+               "RIGGED model, which is what blender_rig produces" % P["model"])
+    report_and_exit(out)
+else:
+    arm = arms[0]
+
+    def bound_to(o):
+        if o.parent is arm:
+            return True
+        return any(m.type == "ARMATURE" and m.object is arm for m in o.modifiers)
+
+    skin = [o for o in meshes if bound_to(o)]
+    strays = [o for o in meshes if not bound_to(o)]
+    # A MESH NOTHING DRIVES SHIPS AS A STATUE INSIDE THE CHARACTER. The shipped
+    # template carried a 2 m debug sphere for weeks and it rode through every
+    # export; the character measured 2.75 m tall and Godot drew a ball
+    # through him. Dropped by default, always reported.
+    out["strays"] = [{"name": o.name, "verts": len(o.data.vertices)}
+                     for o in strays]
+    if P["drop_strays"]:
+        for o in strays:
+            bpy.data.objects.remove(o, do_unlink=True)
+    if not skin:
+        out.update(ok=False, error="no mesh is bound to the armature %r"
+                   % arm.name)
+        report_and_exit(out)
+    else:
+        mesh = max(skin, key=lambda o: len(o.data.polygons))
+        # A ROOT THAT OWNS SKIN IS A RIG DEFECT NO GATE NAMED. Root is the
+        # engine's transform handle and runs up the midline between the legs;
+        # a heat bind that could see it hands it the inner-calf vertices, which
+        # then stand still while the leg swings and draw a wedge to the floor
+        # at every toe-off. Measured: 30-65% Root weight on the vertices that
+        # stretched 10x. Reported here so the wedge in the proof has a name.
+        root_group = mesh.vertex_groups.get("Root")
+        if root_group is not None:
+            owned = sum(1 for v in mesh.data.vertices
+                        if any(g.group == root_group.index and g.weight > 0.05
+                               for g in v.groups))
+            if owned:
+                out.setdefault("skin_warnings", []).append(
+                    "Root owns %d vertices (>5%% weight) - a non-deforming "
+                    "bone with skin stands still while the limbs move; strip "
+                    "it (rig() does, a hand bind does not)" % owned)
+        dump = {"bones": rig_dump(arm), "up": (0.0, 0.0, 1.0)}
+        rigf = RigFrame(dump["bones"])
+        forward = Vector(rigf.forward)
+        facing = facing_of(mesh, forward)
+        out["facing"] = facing
+        out["rig"] = rigf.summary()
+        if facing["readable"] and facing["agrees"] is False:
+            if P["facing"] == "repair":
+                out["facing"]["repaired"] = repair_feet(arm, forward)
+                dump = {"bones": rig_dump(arm), "up": (0.0, 0.0, 1.0)}
+                rigf = RigFrame(dump["bones"])
+                out["rig"] = rigf.summary()
+                out["facing"]["after"] = facing_of(mesh, Vector(rigf.forward))
+            elif P["facing"] == "skeleton":
+                out["facing"]["note"] = ("mismatch overridden by facing="
+                                         "'skeleton' — the bones' front wins")
+            else:
+                out.update(ok=False, refused=True, error=(
+                    "THE SKIN AND THE SKELETON DISAGREE ABOUT WHICH WAY IS "
+                    "FORWARD: the foot bones point one way and the mesh's toes "
+                    "reach the other (%s). Every clip authored on this rig would "
+                    "walk backwards with its feet planted and every contact "
+                    "gate green. Fix it, do not override it: facing='repair' "
+                    "re-aims the Foot/Toes bones toward the skin's toes (weights "
+                    "untouched), or re-rig through blender_rig(orient=True) so "
+                    "the skin is turned to the skeleton's front. facing="
+                    "'skeleton' forces the bones' word." % facing["why"]))
+                report_and_exit(out)
+        if out["ok"] and P.get("orient", True):
+            # THE CHARACTER FACES +Y, OR THE GAME PLAYS IT BACKWARDS. The
+            # pipeline's convention (bg_orient, BG_FORWARD) is +Y in Blender
+            # so the export lands on -Z, which is what Godot moves along. A
+            # rig whose skin and skeleton agree with EACH OTHER can still
+            # both face -Y - the owner did, having never been through rig() -
+            # and every clip then walks away from the direction the body
+            # travels. Turn mesh and armature together and apply, so nothing
+            # downstream carries a transform.
+            fwd_now = Vector(rigf.forward)
+            if fwd_now.dot(Vector((0.0, 1.0, 0.0))) < -0.5:
+                # INTO THE DATA, NOT ONTO THE OBJECTS. Rotating the armature
+                # object and applying looked like it worked (FINISHED, every
+                # rotation read 0) and changed nothing: the skin is the
+                # armature's child, so the apply compensated it back. Bones
+                # are turned through EditBone.matrix (head, direction and
+                # roll together), the skin through Mesh.transform, and the
+                # importer's custom normals - now pointing the old way - are
+                # dropped so Blender recomputes them.
+                turn = Matrix.Rotation(math.pi, 4, "Z")
+                bpy.context.view_layer.objects.active = arm
+                bpy.ops.object.mode_set(mode="EDIT")
+                for eb in arm.data.edit_bones:
+                    length = eb.length
+                    eb.matrix = turn @ eb.matrix
+                    eb.length = length
+                bpy.ops.object.mode_set(mode="OBJECT")
+                for o in skin:
+                    o.data.transform(turn)
+                    attr = o.data.attributes.get("custom_normal")
+                    if attr is not None:
+                        o.data.attributes.remove(attr)
+                    o.data.update()
+                bpy.context.view_layer.update()
+                dump = {"bones": rig_dump(arm), "up": (0.0, 0.0, 1.0)}
+                rigf = RigFrame(dump["bones"])
+                out["rig"] = rigf.summary()
+                out["oriented"] = {"turned_deg": 180,
+                                   "now_forward": tuple(round(c, 3) for c in rigf.forward),
+                                   "skin": facing_of(mesh, Vector(rigf.forward))}
+            elif abs(fwd_now.dot(Vector((0.0, 1.0, 0.0)))) < 0.5:
+                out["oriented"] = {"turned_deg": 0, "note": "forward is not along Y; "
+                                   "left as is - check the export faces -Z in the engine"}
+        if out["ok"]:
+            procedural = [c for c in P["clips"] if c.get("kind") != "library"]
+            library = [c for c in P["clips"] if c.get("kind") == "library"]
+            baked = bake_clips(dump, procedural, fps=FPS)
+            out["rig"] = baked["rig"]
+            if library:
+                tgt_rig = RigFrame(dump["bones"])
+                sources = {}
+                for pack, info in (P.get("library") or {}).items():
+                    before = set(bpy.context.scene.objects)
+                    before_actions = set(bpy.data.actions)
+                    bpy.ops.import_scene.gltf(filepath=info["path"])
+                    new = [o for o in bpy.context.scene.objects if o not in before]
+                    S = next((o for o in new if o.type == "ARMATURE"), None)
+                    for o in new:
+                        if o.type != "ARMATURE":
+                            bpy.data.objects.remove(o, do_unlink=True)
+                    if S is None:
+                        out.setdefault("library_errors", []).append(
+                            "%s: no armature in %s" % (pack, info["path"]))
+                        continue
+                    if S.animation_data is None:
+                        S.animation_data_create()
+                    sources[pack] = {"arm": S, "map": info["bone_map"],
+                                     "actions": {a.name: a for a in bpy.data.actions
+                                                 if a not in before_actions}}
+                for spec in library:
+                    pack = spec.get("pack")
+                    src = sources.get(pack)
+                    label = spec.get("name") or spec.get("clip")
+                    if src is None:
+                        baked["clips"].append({"name": label, "ok": False,
+                                               "error": "pack %r did not load" % pack})
+                        continue
+                    action = src["actions"].get(spec.get("clip"))
+                    if action is None:
+                        hits = [a for n, a in src["actions"].items()
+                                if n.startswith(str(spec.get("clip")))]
+                        action = hits[0] if len(hits) == 1 else None
+                    if action is None:
+                        baked["clips"].append({"name": label, "ok": False,
+                                               "error": "no clip %r in %s; it has %s"
+                                               % (spec.get("clip"), pack,
+                                                  sorted(src["actions"])[:12])})
+                        continue
+                    try:
+                        baked["clips"].append(retarget_clip(src["arm"], tgt_rig,
+                                                            src["map"], action, spec))
+                    except Exception as exc:
+                        baked["clips"].append({"name": label, "ok": False,
+                                               "error": "%s: %s" % (type(exc).__name__, exc)})
+                for src in sources.values():
+                    for a in src["actions"].values():
+                        bpy.data.actions.remove(a)
+                    bpy.data.objects.remove(src["arm"], do_unlink=True)
+
+            if arm.animation_data is None:
+                arm.animation_data_create()
+            for pb in arm.pose.bones:
+                pb.rotation_mode = "QUATERNION"
+            longest = 1
+            for clip in baked["clips"]:
+                rec = {"name": clip["name"], "ok": clip["ok"]}
+                if not clip["ok"]:
+                    rec["error"] = clip.get("error")
+                    out["clips"].append(rec)
+                    continue
+                name = clip["name"]
+                if P["loop_suffix"] and clip.get("loop") and not name.endswith("-loop"):
+                    name = name + "-loop"
+                action = bpy.data.actions.new(name)
+                action.use_fake_user = True
+                arm.animation_data.action = action
+                if hasattr(arm.animation_data, "action_slot"):
+                    for slot in action.slots:
+                        arm.animation_data.action_slot = slot
+                        break
+                n = clip["frames"]
+                root = clip["root"]
+                for i in range(n):
+                    frame = i + 1
+                    for bone in clip["bones"]:
+                        pb = arm.pose.bones.get(bone)
+                        if pb is None:
+                            continue
+                        pb.rotation_quaternion = clip["rotations"][bone][i]
+                        pb.keyframe_insert("rotation_quaternion", frame=frame)
+                        if bone == root:
+                            pb.location = clip["root_location"][i]
+                            pb.keyframe_insert("location", frame=frame)
+                # A LOOPING CYCLE CLOSES ON ITS FIRST FRAME. The last key is
+                # the frame BEFORE the cycle restarts, so one more key equal to
+                # frame 1 makes the export's final sample equal its first and
+                # the engine's loop seamless.
+                if clip.get("loop"):
+                    frame = n + 1
+                    for bone in clip["bones"]:
+                        pb = arm.pose.bones.get(bone)
+                        if pb is None:
+                            continue
+                        pb.rotation_quaternion = clip["rotations"][bone][0]
+                        pb.keyframe_insert("rotation_quaternion", frame=frame)
+                        if bone == root:
+                            pb.location = clip["root_location"][0]
+                            pb.keyframe_insert("location", frame=frame)
+                    n += 1
+                for fc in action.fcurves:
+                    for kp in fc.keyframe_points:
+                        kp.interpolation = "LINEAR"
+                rec.update(action=name, frames=n, seconds=round(n / FPS, 3),
+                           loop=bool(clip.get("loop")), notes=clip.get("notes"))
+                out["clips"].append(rec)
+                longest = max(longest, n)
+            scene = bpy.context.scene
+            scene.render.fps = FPS
+            scene.frame_start, scene.frame_end = 1, longest
+
+            # --- the proof: a strip of frames per clip, side and three-quarter.
+            if P["proof_frames"] > 0:
+                corners = [mesh.matrix_world @ Vector(c) for c in mesh.bound_box]
+                centre = sum(corners, Vector()) / 8.0
+                reach = max((c - centre).length for c in corners) or 1.0
+                cam_data = bpy.data.cameras.new("ProofCam")
+                cam_data.sensor_fit = "VERTICAL"
+                cam_data.angle = math.radians(40.0)
+                cam = bpy.data.objects.new("ProofCam", cam_data)
+                scene.collection.objects.link(cam)
+                scene.camera = cam
+                set_engine(scene, P["engine"])
+                scene.render.resolution_x, scene.render.resolution_y = P["size"]
+                scene.render.image_settings.file_format = "PNG"
+                scene.render.film_transparent = False
+                try:
+                    shading = scene.display.shading
+                    shading.light = "STUDIO"
+                    shading.color_type = "TEXTURE" if P["textured"] else "SINGLE"
+                    shading.show_shadows = True
+                    shading.show_cavity = True
+                except Exception:
+                    pass
+                left = Vector(rigf.left)
+                fwd = Vector(rigf.forward)
+                # FOUR VIEWS. Side and three-quarter read the gait; front and
+                # back are where a hand passing through a hip or a thigh
+                # shows, and they were not on the sheet when exactly that
+                # shipped.
+                views = {"side": left, "front": fwd, "back": -fwd,
+                         "front34": (fwd + left * 0.8).normalized()}
+                for clip in out["clips"]:
+                    if not clip["ok"]:
+                        continue
+                    action = bpy.data.actions[clip["action"]]
+                    arm.animation_data.action = action
+                    if hasattr(arm.animation_data, "action_slot"):
+                        for slot in action.slots:
+                            arm.animation_data.action_slot = slot
+                            break
+                    n = clip["frames"]
+                    picks = sorted({int(round(1 + (n - 1) * k / max(P["proof_frames"] - 1, 1)))
+                                    for k in range(P["proof_frames"])})
+                    for label, direction in views.items():
+                        cam.location = centre + direction * reach * 2.7
+                        cam.rotation_euler = (centre - cam.location).to_track_quat(
+                            "-Z", "Y").to_euler()
+                        for f in picks:
+                            scene.frame_set(f)
+                            path = os.path.join(P["out_dir"], "%s_%s_%s_%03d.png"
+                                                % (P["stem"], clip["name"], label, f))
+                            scene.render.filepath = path
+                            bpy.ops.render.render(write_still=True)
+                            out["renders"].append({"clip": clip["name"],
+                                                   "view": label, "frame": f,
+                                                   "path": path})
+                bpy.data.objects.remove(cam, do_unlink=True)
+            # Leave no action assigned: the exporter walks every action with a
+            # fake user, and an assigned one would also bake into the rest.
+            arm.animation_data.action = None
+            scene.frame_set(1)
+            report_and_exit(out)
+'''.replace("__MARK__", _ANIMATE_MARK)
+
+
+def _with_humanpose(script: str) -> str:
+    """A Blender script with humanpose.py spliced in ahead of it — by source,
+    for the same reason _measured splices bodymeasure.py."""
+    try:
+        return HUMANPOSE.read_text(encoding="utf-8") + "\n\n" + script
+    except OSError as exc:
+        raise BlenderNotFound(
+            "the pose module %s is not on disk, so no clip can be authored — "
+            "a build that shipped bgate_adapters without its source (%s)"
+            % (HUMANPOSE.name, exc)) from exc
+
+
+def animate(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
+            clips: Optional[list] = None, fps: int = 30,
+            out_dir: str | os.PathLike[str] = "", stem: str = "proof",
+            proof_frames: int = 6, size: tuple[int, int] = (360, 540),
+            engine: str = DEFAULT_ENGINE, textured: bool = True,
+            facing: str = "check", drop_strays: bool = True,
+            loop_suffix: bool = False, orient: bool = True,
+            timeout: int = 900) -> dict:
+    """Author clips on a rigged humanoid, export them, and render the proof.
+
+    clips     [{"name", "kind", ...}] — see humanpose.CLIP_KINDS. None ships
+              DEFAULT_CLIPS. A "keyed" clip carries its own keys in character
+              terms (lean, hips_up, reach_r, ...), never bone rotations.
+    facing    "check" refuses when the skin's toes and the skeleton's foot
+              bones disagree about forward (the failure that walked a whole
+              character backwards); "repair" re-aims the foot bones toward the
+              skin's toes; "skeleton" trusts the bones.
+    Returns {ok, clips:[{name, action, frames, loop, notes, support}],
+             renders, sheets, rig, facing, strays, out_path}. `ok` False with
+             `refused` True is the facing gate — read `error`.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    out = Path(out_dir or (Path(out_path).parent / "anim_proof"))
+    out.mkdir(parents=True, exist_ok=True)
+    chosen = [dict(c) for c in (clips or DEFAULT_CLIPS)]
+    library: dict = {}
+    for c in chosen:
+        if c.get("clip") and not c.get("kind"):
+            c["kind"] = "library"
+        c.setdefault("name", c.get("clip") or c.get("kind"))
+        c.setdefault("kind", c.get("name"))
+        if c["kind"] == "library":
+            pack = c.setdefault("pack", DEFAULT_PACK)
+            if pack not in library:
+                from bgate_adapters import animlib as _animlib
+                resolved = _animlib.resolve(pack)
+                if not resolved.get("ok"):
+                    return {"ok": False, "error": resolved.get("error"),
+                            "pack": pack}
+                library[pack] = resolved
+            if c.get("clip") not in library[pack]["clips"]:
+                return {"ok": False,
+                        "error": "no clip %r in pack %r; it has: %s"
+                        % (c.get("clip"), pack,
+                           ", ".join(sorted(library[pack]["clips"]))),
+                        "pack": pack}
+    if facing not in ("check", "repair", "skeleton"):
+        return {"ok": False, "error": "facing must be check, repair or skeleton"}
+    with tempfile.TemporaryDirectory(prefix="bgate_anim_") as tmp:
+        dump = Path(tmp) / "animate.json"
+        payload = {"model": str(src).replace("\\", "/"), "clips": chosen,
+                   "fps": int(fps), "out_dir": str(out).replace("\\", "/"),
+                   "stem": stem, "proof_frames": int(proof_frames),
+                   "size": [int(size[0]), int(size[1])], "engine": engine,
+                   "textured": bool(textured), "facing": facing,
+                   "drop_strays": bool(drop_strays),
+                   "loop_suffix": bool(loop_suffix), "orient": bool(orient),
+                   "library": {k: {"path": v["path"], "bone_map": v["bone_map"]}
+                               for k, v in library.items()},
+                   "dump": str(dump).replace("\\", "/")}
+        script = _with_humanpose(
+            _ANIMATE_SCRIPT.replace("__PAYLOAD__", json.dumps(payload)))
+        result = run_script(script, export_glb=str(out_path), timeout=timeout,
+                            kit=False, record=False, engine=engine,
+                            out_dir=str(out))
+        marked = _marked(result, _ANIMATE_MARK)
+        if not marked:
+            return {"ok": False,
+                    "error": result.get("error") or "no report from Blender",
+                    "traceback": (result.get("traceback") or "")[-800:]}
+        if not dump.is_file():
+            return {"ok": False, "error": "Blender acknowledged a report it "
+                                          "did not write to " + str(dump)}
+        report = json.loads(dump.read_text(encoding="utf-8"))
+    report["out_path"] = str(out_path)
+    report["seconds"] = result.get("seconds")
+    report["glb"] = result.get("glb")
+    if not report.get("ok"):
+        # THE RUNNER EXPORTS WHATEVER THE SCRIPT LEFT, refusal or not. A .glb
+        # on disk after a refused run reads as delivered work - the exact
+        # thing the facing gate exists to stop - so it does not survive.
+        if report.get("refused"):
+            try:
+                Path(out_path).unlink()
+            except OSError:
+                pass
+        return report
+    report["sheets"] = _proof_sheets(report, out, stem)
+    report["support"] = _support_gate(out_path, report, chosen)
+    return report
+
+
+def _proof_sheets(report: dict, out: Path, stem: str) -> list:
+    """One PNG per clip: the side row over the three-quarter row. THE PICTURE
+    IS THE ACCEPTANCE — a number cannot say whether a walk reads as a walk."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return []
+    sheets = []
+    by_clip: dict = {}
+    for r in report.get("renders") or []:
+        by_clip.setdefault(r["clip"], {}).setdefault(r["view"], []).append(r)
+    for clip, views in by_clip.items():
+        rows = [sorted(views.get(v) or [], key=lambda r: r["frame"])
+                for v in ("side", "front", "back", "front34")]
+        rows = [row for row in rows if row]
+        if not rows:
+            continue
+        tiles = []
+        for row in rows:
+            imgs = []
+            for r in row:
+                try:
+                    imgs.append(Image.open(r["path"]).convert("RGB"))
+                except OSError:
+                    continue
+            if imgs:
+                tiles.append(imgs)
+        if not tiles:
+            continue
+        w = max(sum(i.width for i in row) for row in tiles)
+        h = sum(max(i.height for i in row) for row in tiles)
+        sheet = Image.new("RGB", (w, h), (40, 40, 44))
+        y = 0
+        for row in tiles:
+            x = 0
+            for img in row:
+                sheet.paste(img, (x, y))
+                x += img.width
+            y += max(i.height for i in row)
+        path = out / f"{stem}_{clip}_sheet.png"
+        sheet.save(path)
+        sheets.append({"clip": clip, "path": str(path),
+                       "frames": len(tiles[0]), "views": len(tiles)})
+    return sheets
+
+
+def _support_gate(glb: str | os.PathLike[str], report: dict, chosen: list) -> dict:
+    """Forward kinematics off the EXPORTED file, judged against what each clip
+    was meant to be. Read from the .glb and not from the poses the script
+    keyed, so what is measured is what the engine will play."""
+    try:
+        from bgate_adapters import bonepaths as _bp
+    except ImportError:
+        return {"measured": False, "reason": "bonepaths unavailable"}
+    paths = _bp.joint_paths(glb)
+    if not paths.get("ok"):
+        return {"measured": False, "reason": paths.get("reason")}
+    kinds = {c.get("name"): (c.get("kind"), c.get("clip") or "") for c in chosen}
+    verdicts = {}
+    for entry in paths.get("clips") or []:
+        if not entry.get("measured"):
+            verdicts[entry["name"]] = {"measured": False,
+                                      "reason": entry.get("reason")}
+            continue
+        base = entry["name"][:-5] if entry["name"].endswith("-loop") else entry["name"]
+        kind, clip_name = kinds.get(base) or (base, "")
+        gait = clip_gait(kind or base, clip_name or base)
+        feet = [n for n in ("LeftFoot", "RightFoot") if n in entry["positions"]]
+        if not feet:
+            verdicts[entry["name"]] = {"measured": False,
+                                      "reason": "no foot joints in the export"}
+            continue
+        support = _bp.support_phases(
+            {n: entry["positions"][n] for n in feet}, entry["times"],
+            model_height=paths.get("model_height"))
+        verdict = _bp.support_verdict(support, gait)
+        support.pop("counts", None)
+        verdicts[entry["name"]] = {"gait": gait, **verdict,
+                                  "flight_fraction": support.get("flight_fraction")}
+    for rec in report.get("clips") or []:
+        if rec.get("ok"):
+            rec["support"] = verdicts.get(rec.get("action") or rec["name"])
+    failed = [n for n, v in verdicts.items()
+              if v.get("measured", True) and v.get("passed") is False]
+    return {"measured": True, "clips": verdicts, "failed": failed,
+            "passed": not failed}

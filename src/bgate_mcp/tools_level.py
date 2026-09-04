@@ -32,7 +32,7 @@ from bgate_core.level import tilemap as _tilemap
 from bgate_mcp.server import (  # noqa: F401
     _Path, _archive_preview, _artdirection, _ase_master_for, _contained_path,
     _fail, _godot, _json, _log,
-    _note_tool_write, _paid_gate, _re, _res_pair,
+    _note_tool_write, _provider_gate, _re, _res_pair,
     _root, _run_tag, _scenewire, _tool,
 )
 
@@ -126,8 +126,7 @@ _PROP_LOOK = (
 @_tool
 def prop_generate(name: str, style: str = "", types: str = "",
                   tile_px: int = 32, godot_project: str = "",
-                  res_dir: str = "assets/tiles", install: bool = False,
-                  max_cost_usd: float = 0.0) -> dict:
+                  res_dir: str = "assets/tiles", install: bool = False) -> dict:
     """GENERATE THE PROPS FOR A LEVEL - art, cleanup, atlas and manifest.
 
     ONE CALL: pass a name and the `types` you want (comma list, "" for the
@@ -148,7 +147,7 @@ def prop_generate(name: str, style: str = "", types: str = "",
 
         _contained_path(godot_project, "godot_project")
         root = _Path(_root())
-        refused = _paid_gate(str(root), "image", 0.0, "a prop-sheet generation")
+        refused = _provider_gate(str(root), "image", "a prop-sheet generation")
         if refused:
             return refused
         view = _gameview.load(root)
@@ -170,14 +169,6 @@ def prop_generate(name: str, style: str = "", types: str = "",
         specs = [_props.art_spec(n, tile_px=tile_px, view=view) for n in want]
         drawings = sum(max(1, len(s["facings"])) for s in specs)
         estimate = drawings * 0.02
-        # 0 means UNCAPPED (the default): ceilings are user-set - a tool that
-        # shipped its own dollar guess kept refusing runs nobody asked it to
-        # bound.
-        if max_cost_usd and estimate > max_cost_usd:
-            return {"ok": False, "error": (
-                f"{drawings} drawings is about ${estimate:.2f}, over the "
-                f"${max_cost_usd:.2f} ceiling you set - raise max_cost_usd or "
-                "ask for fewer types")}
 
         out_dir = root / ".bgate_out" / "props" / name
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -276,7 +267,8 @@ def prop_generate(name: str, style: str = "", types: str = "",
                 **({"aseprite": ase} if ase is not None else {}),
                 "manifest": str(man_path),
                 "prop_manifest": installed or str(man_path),
-                "installed": installed, "spent_usd": round(spent, 3),
+                "installed": installed, "usd": round(spent, 3),
+                "estimated_usd": round(estimate, 3),
                 "reports": reports,
                 "findings": {**({"unconformed": dirty} if dirty else {}),
                              **({"touches_border": bordered} if bordered
