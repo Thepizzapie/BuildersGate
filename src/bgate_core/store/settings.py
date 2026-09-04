@@ -193,6 +193,9 @@ GROUP_ICONS: dict[str, str] = {
     "Follow-up": "rotate-clockwise",
     "Notifications": "bell",
     "Budget": "coin",
+    # What survived the spend ledger: concurrency and the wall clock, which
+    # are the two limits that were never about money.
+    "Limits": "gauge",
     "Console": "terminal-2",
     "Modules": "puzzle",
     "Privacy": "eye-off",

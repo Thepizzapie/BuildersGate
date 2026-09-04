@@ -71,7 +71,11 @@ if _FLOOR_PKG.is_dir():
 datas += [
     (str(SRC / "bgate_adapters" / name), "bgate_adapters")
     for name in ("_blender_runner.py", "_blender_sprites.py",
-                 "_whisper_runner.py", "bodymeasure.py")
+                 "_whisper_runner.py", "bodymeasure.py",
+                 # blender.animate splices this one in the same way _measured
+                 # splices bodymeasure: by source, so a test and Blender run
+                 # the same bytes. Frozen without it, every clip fails.
+                 "humanpose.py")
 ]
 # Pillow ships binary plugins it loads dynamically.
 datas += collect_data_files("PIL", include_py_files=False)
