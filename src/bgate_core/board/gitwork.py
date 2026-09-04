@@ -19,6 +19,7 @@ dispatcher — every entry point answers ``{"available": False, "reason": ...}``
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -118,6 +119,39 @@ def probe(root: str | os.PathLike[str]) -> dict:
                 "reason": "repository has no commits yet — nothing to diff against"}
     return {"available": True, "reason": "", "toplevel": out.strip(),
             "head": head.strip()}
+
+
+def initialize(root: str | os.PathLike[str], *,
+               message: str = "Initial Builders Gate project") -> dict:
+    """Create the standalone repository a newly scaffolded project needs.
+
+    A project nested below some unrelated repository must not inherit that
+    repository: every diff, worktree and revert operation is scoped to the
+    project root itself. The explicit identity is command-local, so this works
+    on a new machine without changing the operator's global Git configuration.
+    """
+    root = Path(root)
+    if _has_git_dir(root):
+        state = probe(root)
+        return {**state, "created": False}
+
+    ok, _out, err = _run(root, ["init", "-q"])
+    if not ok:
+        return {"available": False, "created": False,
+                "reason": f"git init failed: {err}"}
+    ok, _out, err = _run(root, ["add", "-A"])
+    if not ok:
+        return {"available": False, "created": True,
+                "reason": f"git add failed: {err}"}
+    ok, _out, err = _run(root, [
+        "-c", "user.name=Builders Gate",
+        "-c", "user.email=builders-gate@localhost",
+        "commit", "-qm", message, "--no-gpg-sign",
+    ])
+    if not ok:
+        return {"available": False, "created": True,
+                "reason": f"git commit failed: {err}"}
+    return {**probe(root), "created": True}
 
 
 def head(root: str | os.PathLike[str]) -> str:
@@ -529,6 +563,93 @@ def worktree_paths(root: str | os.PathLike[str], item_id: int) -> tuple[Path, st
     return Path(root) / ".bgate" / "work" / f"item-{item_id}", f"bgate/item-{item_id}"
 
 
+def _integration_path(root: str | os.PathLike[str], item_id: int) -> Path:
+    return Path(root) / ".bgate" / "integrations" / f"item-{int(item_id)}.json"
+
+
+#: How many times one Chaos branch may fail to merge, or be handed to the
+#: Director without landing, before the item is failed instead of re-asked.
+#: Without a ceiling a conflicting branch was re-prompted every five minutes
+#: for as long as the server stayed up.
+MAX_INTEGRATION_ATTEMPTS = 3
+
+
+def _save_integration(root: str | os.PathLike[str], item_id: int,
+                      result: dict) -> dict:
+    prior = integration(root, item_id)
+    row = {"attempts": int(prior.get("attempts") or 0),
+           "prompts": int(prior.get("prompts") or 0),
+           **result, "item_id": int(item_id)}
+    try:
+        path = _integration_path(root, item_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(row), encoding="utf-8")
+    except OSError:
+        pass
+    return row
+
+
+def integration(root: str | os.PathLike[str], item_id: int) -> dict:
+    try:
+        row = json.loads(_integration_path(root, item_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return row if isinstance(row, dict) else {}
+
+
+def note_integration_prompt(root: str | os.PathLike[str], item_id: int) -> dict:
+    """Count one hand-off to the Director. Past the ceiling the row stops being
+    pending, so the scheduler stops asking."""
+    row = integration(root, item_id)
+    if not row.get("pending"):
+        return row
+    prompts = int(row.get("prompts") or 0) + 1
+    if prompts > MAX_INTEGRATION_ATTEMPTS:
+        return abandon_integration(
+            root, item_id,
+            f"handed to the Director {prompts - 1} times without landing")
+    return _save_integration(root, item_id, {**row, "prompts": prompts})
+
+
+def abandon_integration(root: str | os.PathLike[str], item_id: int,
+                        reason: str) -> dict:
+    row = integration(root, item_id)
+    return _save_integration(root, item_id, {
+        **row, "pending": False, "integrated": False, "failed": True,
+        "reason": reason})
+
+
+def _merge_failed(root, item_id: int, result: dict) -> dict:
+    """A failure the BRANCH caused (conflict, missing branch, bad resolution
+    commit). Counted; the ceiling fails the item. A dirty working branch is the
+    human's state, not the branch's, and is not counted."""
+    prior = integration(root, item_id)
+    attempts = int(prior.get("attempts") or 0) + 1
+    row = {**result, "attempts": attempts}
+    if attempts >= MAX_INTEGRATION_ATTEMPTS:
+        row.update(pending=False, failed=True,
+                   reason=f"{result.get('reason') or 'merge failed'} "
+                          f"({attempts} attempts; integration abandoned)")
+    return _save_integration(root, item_id, row)
+
+
+def integrations(root: str | os.PathLike[str], *, pending: bool = False) -> list[dict]:
+    folder = Path(root) / ".bgate" / "integrations"
+    rows = []
+    try:
+        paths = list(folder.glob("item-*.json"))
+    except OSError:
+        return []
+    for path in paths:
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(row, dict) and (not pending or row.get("pending")):
+            rows.append(row)
+    return sorted(rows, key=lambda row: int(row.get("item_id") or 0))
+
+
 def make_worktree(root: str | os.PathLike[str], item_id: int, *,
                   base: str = "HEAD") -> dict:
     """A private checkout at .bgate/work/item-<id> on branch bgate/item-<id>.
@@ -550,6 +671,103 @@ def make_worktree(root: str | os.PathLike[str], item_id: int, *,
         return {"available": False, "reason": err or "git worktree add failed"}
     return {"available": True, "worktree": str(path), "branch": branch,
             "reused": False}
+
+
+def prepare_worktree(root: str | os.PathLike[str], item_id: int,
+                     worktree: str | os.PathLike[str], base: str,
+                     *, seat: str = "") -> dict:
+    """Commit one isolated run so its branch is ready for Director review."""
+    expected, branch = worktree_paths(root, int(item_id))
+    try:
+        if Path(worktree).resolve() != expected.resolve():
+            return _save_integration(root, item_id, {
+                "available": False, "pending": False,
+                "reason": "worktree path does not belong to this item"})
+    except OSError:
+        return _save_integration(root, item_id, {
+            "available": False, "pending": False,
+            "reason": "worktree path could not be resolved"})
+    scope = touched(expected, base)
+    if not scope.get("available"):
+        return _save_integration(root, item_id, {
+            "available": False, "pending": False,
+            "reason": scope.get("reason") or "worktree diff unavailable"})
+    paths = list(scope.get("paths") or [])
+    if not paths:
+        return _save_integration(root, item_id, {
+                "available": True, "pending": False, "integrated": True,
+                "reason": "no file changes", "branch": branch,
+                "worktree": str(expected), "paths": []})
+    made = commit_paths(
+        expected, paths,
+        f"bgate: chaos item #{int(item_id)}"
+        + (f" [{seat}]" if seat else "") + " - ready for Director integration")
+    if not made.get("ok"):
+        return _save_integration(root, item_id, {
+                "available": False, "pending": False,
+                "reason": made.get("reason") or "worktree commit failed",
+                "branch": branch, "worktree": str(expected), "paths": paths})
+    return _save_integration(root, item_id, {
+            "available": True, "pending": True, "integrated": False,
+            "reason": "", "branch": branch, "worktree": str(expected),
+            "paths": paths, "commit": made.get("commit") or ""})
+
+
+def merge_worktree(root: str | os.PathLike[str], item_id: int) -> dict:
+    """Merge one prepared item branch into the project's current branch.
+
+    A failed merge is aborted before returning, so conflict handling starts
+    from a clean working branch rather than a half-merged repository.
+    """
+    root = Path(root)
+    worktree, branch = worktree_paths(root, int(item_id))
+    state = dirty(root)
+    if not state.get("available"):
+        return _save_integration(root, item_id, {
+                "available": False, "integrated": False, "pending": True,
+                "reason": state.get("reason") or "git unavailable"})
+    if state.get("dirty"):
+        return _save_integration(root, item_id, {
+                "available": True, "integrated": False, "pending": True,
+                "reason": "working branch is dirty",
+                "paths": state.get("paths") or []})
+    work_state = dirty(worktree)
+    if not work_state.get("available"):
+        return _save_integration(root, item_id, {
+                "available": False, "integrated": False, "pending": True,
+                "reason": work_state.get("reason") or "worktree unavailable",
+                "branch": branch, "worktree": str(worktree)})
+    if work_state.get("dirty"):
+        fixed = commit_paths(
+            worktree, work_state.get("paths") or [],
+            f"bgate: director resolution for chaos item #{int(item_id)}")
+        if not fixed.get("ok"):
+            return _merge_failed(root, item_id, {
+                    "available": True, "integrated": False, "pending": True,
+                    "reason": fixed.get("reason") or
+                              "Director resolution commit failed",
+                    "branch": branch, "worktree": str(worktree),
+                    "paths": work_state.get("paths") or []})
+    ok, commit, err = _run(root, ["rev-parse", "--verify", branch])
+    if not ok:
+        return _merge_failed(root, item_id, {
+                "available": True, "integrated": False, "pending": True,
+                "reason": err or f"branch {branch} does not exist"})
+    ok, _out, err = _run(root, ["merge", "--no-ff", "--no-edit", branch], timeout=120)
+    if not ok:
+        _ok, conflicts, _why = _run(
+            root, ["diff", "--name-only", "--diff-filter=U"], timeout=30)
+        _run(root, ["merge", "--abort"], timeout=30)
+        return _merge_failed(root, item_id, {
+                "available": True, "integrated": False, "pending": True,
+                "reason": err or "merge conflicted",
+                "conflicts": [line for line in conflicts.splitlines() if line]})
+    merged = head(root)
+    return _save_integration(root, item_id, {
+            "available": True, "integrated": True, "pending": False,
+            "reason": "", "item_id": int(item_id), "branch": branch,
+            "worktree": str(worktree), "source_commit": commit.strip(),
+            "merge_commit": merged})
 
 
 def remove_worktree(root: str | os.PathLike[str], item_id: int) -> dict:

@@ -14,6 +14,7 @@ import os
 import shutil
 from pathlib import Path
 
+from . import project
 from .util import slugify
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
@@ -107,6 +108,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
         raise FileNotFoundError(f"template not found: {template}")
 
     target = Path(dest)
+    project.refuse_harness(target, "scaffold a game")
     if target.exists() and any(target.iterdir()) and not (force or replace):
         raise FileExistsError(
             f"{target} is not empty — pass force=True to scaffold into it anyway"

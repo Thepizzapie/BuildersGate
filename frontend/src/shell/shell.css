@@ -721,6 +721,15 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-msg.dir.live { border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
 .bg4-msg.dir.bad { border-color: color-mix(in srgb, var(--bad) 45%, transparent) }
 .bg4-msg.dir.live .txt, .bg4-msg.dir .txt.thinking { color: var(--text-2) }
+.bg4-codex-approval {
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--solid-2));
+  border-radius: 6px; margin: 8px 0; padding: 10px 12px;
+  display: grid; gap: 7px; max-width: 900px;
+}
+.bg4-codex-approval .who { color: var(--accent); font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: .12em }
+.bg4-codex-approval code { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere }
+.bg4-codex-approval .cwd { color: var(--text-3); font: 10px var(--mono); overflow-wrap: anywhere }
 
 /* RENDERED AGENT PROSE. The director and the seats write GFM; this styles the
    React elements Markdown.tsx builds from it, wherever agent text is read

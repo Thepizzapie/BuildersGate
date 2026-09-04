@@ -87,3 +87,30 @@ def director_usage_disconnect(request: Request) -> dict:
 def director_stop() -> dict:
     """End the session process. The conversation resumes on the next message."""
     return _director.stop(str(root()))
+
+
+@router.post("/api/director/approvals/{approval_id}")
+def director_approval(approval_id: str, payload: dict, request: Request) -> dict:
+    """Let the signed-in human answer a live Codex app-server prompt."""
+    _api.require_human(_api.current_actor(request), "answer a Codex approval")
+    try:
+        return _director.decide_approval(
+            str(root()), approval_id, str(payload.get("decision") or ""))
+    except ValueError as exc:
+        raise _api.bad_request(str(exc))
+
+
+@router.put("/api/director/dispatch-mode")
+def director_dispatch_mode(payload: dict, request: Request) -> dict:
+    """Switch the Director scheduler; both modes keep the queue moving."""
+    actor = _api.current_actor(request)
+    _api.require_human(actor, "change the Director dispatch mode")
+    mode = str(payload.get("mode") or "").strip().lower()
+    from bgate_core.store import settings as _settings
+    from bgate_ui.agents import autodeploy as _autodeploy
+    try:
+        _settings.set(root(), "dispatch.mode", mode, actor=actor)
+    except ValueError as exc:
+        raise _api.bad_request(str(exc))
+    return {"ok": True, "dispatch_mode": mode,
+            "autopilot": _autodeploy.state(root())}

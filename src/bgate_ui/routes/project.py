@@ -13,9 +13,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from bgate_core.board import activity as _activity
+from bgate_core.board import gitwork as _gitwork
 from bgate_core.store import modules as _modules
 from bgate_core.store import project as _project
 from bgate_core.store import scaffold as _scaffold
@@ -57,16 +58,26 @@ def _unsuitable(d: Path) -> bool:
                 pass
     if {"windows", "system32", "syswow64"} & parts:
         return True
+    if _project.harness_checkout(d) is not None:
+        return True
     return not os.access(d, os.W_OK)
 
 
 def default_parent() -> Path:
     """The directory a new project is created under.
 
-    The cwd when that is a real working directory, and ~/BuildersGate when it is
-    not. The fallback is created lazily by the scaffolder, not here — reading
-    the first-run form must not have side effects on disk.
+    Beside the active project when there is one, the cwd when that is a real
+    working directory, and ~/BuildersGate when it is not. A dashboard launched
+    from a project must never scaffold the next game inside the current game.
+    The fallback is created lazily by the scaffolder, not here — reading the
+    first-run form must not have side effects on disk.
     """
+    try:
+        active = _root().resolve()
+        if (active / ".bgate" / "game.db").is_file() and not _unsuitable(active.parent):
+            return active.parent
+    except (HTTPException, LookupError, OSError, RuntimeError):
+        pass
     cwd = Path.cwd()
     if not _unsuitable(cwd):
         return cwd
@@ -152,6 +163,11 @@ def project_create(request: Request, payload: dict) -> dict:
 
     project = _project.init(root, name, pitch=(payload.get("pitch") or "").strip(),
                             engine="godot", dimension=kind)
+    repository = _gitwork.initialize(root)
+    if not repository["available"]:
+        _activity.log(root, "project",
+                      f"could not initialise Git ({repository['reason']})",
+                      seat="director")
 
     # THE PROJECT'S MODULE CHOICE IS SEEDED, NOT ASKED. The first-run card
     # asked (a checklist between the template cards and Create) and the owner
@@ -187,6 +203,7 @@ def project_create(request: Request, payload: dict) -> dict:
         "project": project,
         "kind": kind,
         "files": len(made["files"]),
+        "repository": repository,
         # The dashboard token is minted per project, and this page was served
         # before the project existed — the client has to reload to get one.
         "reload": True,

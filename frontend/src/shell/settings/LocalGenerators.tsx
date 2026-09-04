@@ -413,13 +413,9 @@ function SummaryLine({ d }: { d: RuntimesData }) {
 function StorageNote() {
   return (
     <p className="gen-note">
-      These are addresses and file paths, so unlike an API key they are shown
-      back to you in full — a path you cannot read is a path you cannot check
-      for the typo. They are written to <code>.env</code> at the game project
-      root, the same file the keys live in, and take effect immediately with no
-      restart. <b>Nothing here starts or stops anything.</b> Builders Gate talks
-      to software you run; it does not run it, so it can never leave a model
-      loaded in your GPU after you close this page.
+      Addresses and paths are stored in the project's <code>.env</code> and apply
+      immediately. Builders Gate connects to these services but does not start
+      or stop them.
     </p>
   );
 }
@@ -478,9 +474,8 @@ export function LocalStudio({ active }: { active: boolean }) {
         <h3>On this machine</h3>
       </div>
       <p className="gen-note">
-        The other half of the answer above. A capability is available if EITHER
-        a provider has a key or something local is running — these are the local
-        ones. Set them up in <b>Settings → Generators</b>.
+        Local services can provide generation without a hosted provider key.
+        Configure them in <b>Settings → Local generators</b>.
       </p>
       {secs.length ? secs : <div className="gen-none">nothing local is registered.</div>}
     </div>

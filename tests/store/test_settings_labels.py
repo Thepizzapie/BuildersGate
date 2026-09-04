@@ -28,6 +28,11 @@ class TestEverySettingIsNamed:
         stray = [k for k in settings.LABELS if k not in known]
         assert not stray, f"labels for keys no longer in the registry: {stray}"
 
+    def test_every_setting_has_one_ui_description(self):
+        known = {s.key for s in settings.SETTINGS}
+        assert set(settings.DESCRIPTIONS) == known
+        assert all(len(text) <= 150 for text in settings.DESCRIPTIONS.values())
+
     def test_labels_are_not_just_the_key_again(self):
         """A label that restates the identifier is not a name."""
         lazy = [k for k, v in settings.LABELS.items()

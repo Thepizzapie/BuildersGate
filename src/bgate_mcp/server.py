@@ -7128,6 +7128,65 @@ def queue_get(item_id: int) -> dict:
     return _q.get(_root(), int(item_id))
 
 
+@_tool
+def worktree_integrations() -> dict:
+    """Chaos-mode branches waiting for Director review and integration."""
+    from bgate_core.board import gitwork as _gitwork
+    from bgate_core.board import queue as _q
+
+    root = _root()
+    rows = []
+    for integration in _gitwork.integrations(root, pending=True):
+        try:
+            item = _q.get(root, int(integration["item_id"]))
+        except (LookupError, ValueError, TypeError):
+            item = {}
+        rows.append({**integration,
+                     "seat": item.get("seat") or "",
+                     "title": item.get("title") or "",
+                     "result": item.get("result") or ""})
+    return {"pending": rows, "count": len(rows)}
+
+
+@_tool
+def worktree_merge(item_id: int) -> dict:
+    """Merge one prepared Chaos worktree into the current working branch.
+
+    Read the item's diff and result first. A conflict is aborted before this
+    returns, leaving the working branch clean for diagnosis and a deliberate
+    retry after the branch is corrected.
+    """
+    from bgate_core.board import gitwork as _gitwork
+    from bgate_core.board import queue as _q
+
+    root = _root()
+    item = _q.get(root, int(item_id))
+    if _seat() not in ("", "director"):
+        return {"ok": False, "error": "only the Director may merge Chaos worktrees"}
+    if item.get("status") not in ("integrating", "done", "review"):
+        return {"ok": False, "error": f"item {int(item_id)} is "
+                f"{item.get('status')}, not finished"}
+    pending = _gitwork.integration(root, int(item_id))
+    if not pending.get("pending"):
+        return {"ok": False, "error": f"item {int(item_id)} has no pending "
+                "Chaos integration", "integration": pending}
+    result = _gitwork.merge_worktree(root, int(item_id))
+    if not result.get("integrated"):
+        if result.get("failed") and item.get("status") == "integrating":
+            _q.complete(root, int(item_id), failed=True,
+                        result="Chaos integration abandoned: "
+                               + str(result.get("reason") or "merge failed"))
+            result["item_status"] = "failed"
+        return {"ok": False, "error": result.get("reason") or "merge failed",
+                **result}
+    if item.get("status") == "integrating":
+        completed = _q.complete(root, int(item_id), result=item.get("result") or "")
+        result["item_status"] = completed.get("status")
+    _log("director", f"merged Chaos worktree for item {int(item_id)}",
+         ref=str(item_id))
+    return {"ok": True, **result}
+
+
 
 def _near_duplicate(_q, title: str, seat: str) -> Optional[dict]:
     """The open item whose title shares most of its words with `title`, if any.
@@ -7777,6 +7836,7 @@ def queue_claim_next() -> dict:
     Full notes: docs/tools.md#queue_claim_next
     """
     from bgate_core.board import queue as _q
+    from bgate_core.store import settings as _settings
     seat = _seat()
     origin = _work_item_id()
     if not seat or not origin:
@@ -7785,6 +7845,11 @@ def queue_claim_next() -> dict:
             "this session was not dispatched against a work item. File "
             "work with queue_add (it dispatches when `bgate serve` is up) "
             "instead of claiming it.")
+    if (os.environ.get("BGATE_DISPATCH_MODE") or
+            str(_settings.get(_root(), "dispatch.mode") or "structured")) == "chaos":
+        return {"empty": True, "seat": seat,
+                "note": "Chaos mode gives every task its own worktree; finish "
+                        "this item and let the scheduler start the next one."}
     item = _q.claim_next(_root(), seat, actor=f"agent:item-{int(origin)}")
     if item is None:
         return {"empty": True, "seat": seat,
@@ -7848,7 +7913,20 @@ def queue_complete(item_id: int, result: str, failed: bool = False,
     # board that no branch can ever act on - and an item nobody will reopen.
     if failed:
         result = _q.with_next_approach(result, next_approach)
-    closed = _q.complete(root, item_id, result=result, failed=failed)
+    if not failed:
+        try:
+            from bgate_core.store import settings as _settings
+            item = _q.get(root, int(item_id))
+            mode = (os.environ.get("BGATE_DISPATCH_MODE") or
+                    str(_settings.get(root, "dispatch.mode") or "structured"))
+            chaos = (mode == "chaos" and bool(item.get("worktree")))
+        except Exception:
+            chaos = False
+        closed = (_q.set_status(root, item_id, "integrating", result=result)
+                  if chaos else _q.complete(root, item_id, result=result,
+                                             failed=False))
+    else:
+        closed = _q.complete(root, item_id, result=result, failed=True)
     return {**closed, "premise_refuted": refutation} if refutation else closed
 
 

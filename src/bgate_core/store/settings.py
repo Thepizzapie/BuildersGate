@@ -124,28 +124,29 @@ EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.stopped",
 LABELS: dict[str, str] = {
     # Dispatch
     "autopilot.on": "Start queued work automatically",
-    "dispatch.allow_dirty": "Let agents work on top of your unsaved changes",
-    "dispatch.auto_commit": "Commit each finished task's own files",
-    "dispatch.isolation": "Give each agent its own private copy of the repo",
-    "dispatch.max_concurrent": "How many agents may work at once",
-    "dispatch.model": "Model every seat uses",
-    "dispatch.model_art": "Model the art seat uses",
-    "dispatch.max_turns": "Stop an agent after this many turns",
+    "dispatch.mode": "Director dispatch mode",
+    "dispatch.allow_dirty": "Allow dispatch with uncommitted changes",
+    "dispatch.auto_commit": "Commit completed agent work",
+    "dispatch.isolation": "Use a separate worktree per agent",
+    "dispatch.max_concurrent": "Concurrent agent limit",
+    "dispatch.model": "Default worker model",
+    "dispatch.model_art": "Art worker model",
+    "dispatch.max_turns": "Turn limit per agent",
     # Gates
-    "enforcement.profile": "How hard the board enforces (relaxed, standard, strict)",
-    "gate.mode": "Who signs off finished work",
-    "qa.require_evidence": "Scene work must show a render before it counts as done",
-    "qa.max_rounds": "How many times work may bounce back for fixes",
-    "qa.gated_seats": "Seats whose work gets checked automatically",
-    "signoff.hours": "How long finished work waits for your sign-off",
+    "enforcement.profile": "Enforcement level",
+    "gate.mode": "Completion approval",
+    "qa.require_evidence": "Require render evidence for scenes",
+    "qa.max_rounds": "Automatic QA round limit",
+    "qa.gated_seats": "Seats reviewed by QA",
+    "signoff.hours": "Sign-off reminder duration",
     # Art
-    "art.style_source": "Where the art style comes from",
-    "art.style_dataset": "Reference images the style is trained on",
-    "art.lora_strength": "How strongly the trained style is applied",
-    "art.runner": "Which tool generates images",
-    "art.image_backend": "Image provider",
-    "art.mesh_route": "How art agents build 3D models",
-    "art.auto_approve": "Accept generated art without review",
+    "art.style_source": "Project style input",
+    "art.style_dataset": "Style training images",
+    "art.lora_strength": "Trained style strength",
+    "art.runner": "Art worker CLI",
+    "art.image_backend": "Image generation path",
+    "art.mesh_route": "Mesh creation workflow",
+    "art.auto_approve": "Auto-approve generated art",
     # Generators
     "art.provider": "Preferred image provider",
     "art.model": "Preferred image model",
@@ -154,37 +155,97 @@ LABELS: dict[str, str] = {
     "voice.model": "Preferred speech voice",
     "text.model": "Model for prompt-writing calls",
     # Modules
-    "modules.disabled": "Features switched off for this project",
+    "modules.disabled": "Disabled project features",
     # Follow-up
-    "followup.director_debrief": "Ask the director to review finished work",
-    "followup.max_per_hour": "Most reviews to raise in an hour",
-    "followup.max_age_min": "Skip reviewing work older than this",
-    "followup.auto_reopen_failures": "Reopen failed tasks automatically",
-    "followup.max_auto_retries": "Most automatic retries per task",
-    "followup.escalate_failures": "Raise a director item when work fails",
-    "followup.escalation_to_session": "Hand failure escalations to the director session",
+    "followup.director_debrief": "Create a Director debrief after completion",
+    "followup.max_per_hour": "Debrief limit per hour",
+    "followup.max_age_min": "Maximum completion age for debriefs",
+    "followup.auto_reopen_failures": "Automatically retry failed work",
+    "followup.max_auto_retries": "Automatic retry limit",
+    "followup.escalate_failures": "Create a Director task for final failures",
+    "followup.escalation_to_session": "Send final failures to the Director console",
     # Notifications
     "notify.in_app": "Show notifications in the app",
-    "notify.kinds": "What to be notified about",
-    "notify.webhook": "Send notifications to a webhook",
-    "notify.stall_hours": "Warn when work has not moved for this long",
-    "notify.question_stale_h": "Warn about unanswered questions after",
-    "notify.quiet_hours": "Hours to stay silent",
+    "notify.kinds": "Notification events",
+    "notify.webhook": "Notification webhook",
+    "notify.stall_hours": "Stalled-chain warning delay",
+    "notify.question_stale_h": "Unanswered-question reminder delay",
+    "notify.quiet_hours": "Notification silence window",
     # Limits
-    "limits.max_runtime_s": "Stop an agent after this long",
+    "limits.max_runtime_s": "Runtime limit per agent",
     # Console
-    "console.poll_live_ms": "Refresh rate while work is running",
-    "console.poll_idle_ms": "Refresh rate when nothing is running",
-    "console.runner": "Coding tool used by the director console",
-    "console.model": "Model the director console session runs on",
-    "graph.phase_cap": "Most steps to show per agent on the graph",
-    "brainstorm.runner": "Which assistant the brainstorm room uses",
-    "brainstorm.model": "Model the brainstorm room uses",
+    "console.poll_live_ms": "Active refresh interval",
+    "console.poll_idle_ms": "Idle refresh interval",
+    "console.runner": "Director console CLI",
+    "console.model": "Director console model",
+    "dispatch.codex_auto_approve": "Automatically review Codex approvals",
+    "graph.phase_cap": "Visible phases per graph item",
+    "brainstorm.runner": "Brainstorm CLI",
+    "brainstorm.model": "Brainstorm model",
     # Privacy
     "privacy.streamer": "Privacy mode",
     # Community
     "chat.capture": "What viewer chat to keep during a stream",
     "chat.playtest_notes": "Let viewers leave notes on a playtest",
+}
+
+# Short operational copy shown in Settings. Historical rationale stays in the
+# registry entries for maintainers; the UI only needs what the control changes.
+DESCRIPTIONS: dict[str, str] = {
+    "autopilot.on": "Start ready queue items automatically when a slot is available.",
+    "dispatch.mode": "Structured follows dependencies. Chaos isolates every task and lets the Director merge it.",
+    "dispatch.allow_dirty": "Allow dispatch while the main worktree has uncommitted changes. Reverts may be less reliable.",
+    "dispatch.auto_commit": "Commit only the files changed by each completed agent run.",
+    "dispatch.isolation": "Run each agent in a separate git worktree. Chaos mode always does this.",
+    "dispatch.max_concurrent": "Maximum number of agent processes that may run at once.",
+    "dispatch.model": "Model used by worker seats unless a seat-specific model is set.",
+    "dispatch.model_art": "Model used by the art seat. Blank uses the default worker model.",
+    "dispatch.max_turns": "Maximum assistant turns in one run. Set to 0 for no limit.",
+    "enforcement.profile": "Sets the default strictness for lanes, project boundaries, and approvals.",
+    "gate.mode": "Choose whether completion needs no review, QA review, or your approval.",
+    "qa.require_evidence": "Require a screenshot or render before scene changes can finish.",
+    "qa.max_rounds": "Maximum automatic review and revision rounds before asking you.",
+    "qa.gated_seats": "Worker seats whose completed items are sent to QA.",
+    "signoff.hours": "How long completed items remain highlighted for your sign-off.",
+    "art.style_source": "Use pinned references directly or a trained LoRA for project style.",
+    "art.style_dataset": "Choose which approved images are used to train project style.",
+    "art.lora_strength": "How strongly the trained style affects generated images.",
+    "art.runner": "Coding CLI used for art-seat tasks. Other seats are unchanged.",
+    "art.image_backend": "Use the Builders Gate image pipeline or the selected CLI's native image tool.",
+    "art.mesh_route": "Choose automatic routing, generation APIs, or Blender for new 3D meshes.",
+    "art.auto_approve": "Promote generated art without waiting for human review.",
+    "art.provider": "Preferred image provider. Auto selects from configured providers.",
+    "art.model": "Default image model. Blank uses the selected provider's default.",
+    "cinematic.model": "Default video model. Blank uses the provider default.",
+    "music.model": "Default music model. Blank uses the provider default.",
+    "voice.model": "Default speech voice or model. Blank uses the provider default.",
+    "text.model": "Default model for prompt-writing calls. Blank uses the provider default.",
+    "modules.disabled": "Hide unused studio features and remove their tools from new agent sessions.",
+    "followup.director_debrief": "Create a Director review task after an item completes.",
+    "followup.max_per_hour": "Maximum Director debriefs created in one hour.",
+    "followup.max_age_min": "Do not create debriefs for completions older than this.",
+    "followup.auto_reopen_failures": "Retry failed items automatically when retries remain.",
+    "followup.max_auto_retries": "Maximum automatic retries for one failed item.",
+    "followup.escalate_failures": "Create one Director task when automatic retries are exhausted.",
+    "followup.escalation_to_session": "Send final failures directly to the Director console for action.",
+    "notify.in_app": "Show notifications in the dashboard.",
+    "notify.kinds": "Events that create a notification.",
+    "notify.webhook": "HTTPS endpoint that receives notifications. Blank disables delivery.",
+    "notify.stall_hours": "Delay before a blocked chain is reported as stalled.",
+    "notify.question_stale_h": "Delay before reminding you about an unanswered Director question.",
+    "notify.quiet_hours": "Daily silence window in 24-hour format, such as 23:00-07:00.",
+    "limits.max_runtime_s": "Maximum wall-clock runtime for one agent process.",
+    "console.poll_live_ms": "Dashboard refresh interval while an agent is running.",
+    "console.poll_idle_ms": "Dashboard refresh interval while no agent is running.",
+    "graph.phase_cap": "Maximum phase rows shown for each item in the agent graph.",
+    "console.runner": "Coding CLI used by the Director console.",
+    "console.model": "Model used by the Director console.",
+    "dispatch.codex_auto_approve": "Auto-review approvals for dispatched Codex workers and trust Builders Gate tools in the Director.",
+    "brainstorm.runner": "CLI used by the read-only Brainstorm room.",
+    "brainstorm.model": "Model used by the Brainstorm room.",
+    "privacy.streamer": "Hide local paths and personal identifiers in visible output.",
+    "chat.capture": "Keep all eligible viewer messages or only messages starting with !fb.",
+    "chat.playtest_notes": "Allow viewer messages to become reviewable playtest notes.",
 }
 
 #: One glyph per group, for the category list. Tabler names — see shell/Ti.tsx.
@@ -311,14 +372,21 @@ SETTINGS: tuple[Setting, ...] = (
         key="autopilot.on", group="Dispatch", kind=BOOL, default=True,
         store=("workspace", "director", "autopilot", "on"),
         env_coerce=("BGATE_AUTODEPLOY", lambda raw: False if _falsey(raw) else None),
-        env_note="BGATE_AUTODEPLOY=0 stops the loop from starting at all, so the "
-                 "stored switch cannot take effect until the server restarts",
+        env_note="BGATE_AUTODEPLOY=0 disables automatic dispatch until restart",
         help="Dispatch queued work automatically as slots free up, instead of "
              "waiting for somebody to press deploy on each item. ON by "
              "default since 2026-08-19: shipped off, a filed chain looked "
              "exactly like a running one and sat still until somebody found "
              "the toggle - 'my chains never auto-deploy' was this default. "
              "Turn it off for a board you want to hand-dispatch."),
+    Setting(
+        key="dispatch.mode", group="Dispatch", kind=ENUM, default="structured",
+        choices=("structured", "chaos"), store=("registry", "dispatch.mode"),
+        human_only=True,
+        help="Structured batches every dependency-ready item and keeps dependent "
+             "work chained. Chaos uses the same dependency graph and agent cap, "
+             "but forces every run into its own git worktree and hands completed "
+             "branches to the Director for review and integration."),
     Setting(
         key="dispatch.allow_dirty", group="Dispatch", kind=BOOL, default=False,
         store=("registry", "dispatch.allow_dirty"), scope=MACHINE,
@@ -341,8 +409,7 @@ SETTINGS: tuple[Setting, ...] = (
         key="dispatch.isolation", group="Dispatch", kind=BOOL, default=False,
         store=("registry", "dispatch.isolation"), scope=MACHINE,
         env="BGATE_GIT_ISOLATION",
-        env_note="the var is BGATE_GIT_ISOLATION, which is what gitwork.py has "
-                 "always read",
+        env_note="BGATE_GIT_ISOLATION overrides this setting",
         help="Run each agent in a private git worktree. Off: a worktree moves "
              "the agent's cwd, and base_commit + diff + revert already work "
              "without that surprise."),
@@ -400,8 +467,7 @@ SETTINGS: tuple[Setting, ...] = (
         # NOT env="BGATE_QA_GATE": that var is a boolean kill switch and cannot
         # supply one of three modes.
         env_coerce=("BGATE_QA_GATE", lambda raw: "none" if _falsey(raw) else None),
-        env_note="BGATE_QA_GATE=0 forces no gate — the legacy kill switch, which "
-                 "keeps meaning exactly what it always meant",
+        env_note="BGATE_QA_GATE=0 disables completion review",
         human_only=True,
         help="Who signs off before an agent's work counts as done: nobody, the "
              "QA seat, or you. An agent cannot change this: switching off your "
@@ -766,6 +832,12 @@ SETTINGS: tuple[Setting, ...] = (
              "dispatches. Named rather than inherited, for the same reason "
              "dispatch.model is."),
     Setting(
+        key="dispatch.codex_auto_approve", group="Dispatch", kind=BOOL,
+        default=False, store=("registry", "dispatch.codex_auto_approve"),
+        scope=MACHINE, human_only=True, guard=True,
+        help="Use Codex automatic approval review for dispatched workers. The "
+             "Director trusts Builders Gate MCP calls only."),
+    Setting(
         key="brainstorm.runner", group="Console", kind=STRING, default="claude",
         store=("registry", "brainstorm.runner"), scope=MACHINE,
         env="BGATE_BRAINSTORM_RUNNER", human_only=True,
@@ -800,9 +872,7 @@ SETTINGS: tuple[Setting, ...] = (
         key="privacy.streamer", group="Privacy", kind=BOOL, default=False,
         store=("registry", "privacy.streamer"), scope=MACHINE,
         env="BGATE_STREAMER",
-        env_note="BGATE_STREAMER in the environment wins over this switch, so a "
-                 "shell that exports it keeps the filter on no matter what the "
-                 "panel says — which is the safe direction for this one",
+        env_note="BGATE_STREAMER overrides this setting",
         help="Hide absolute paths, your username, hostname, email and any API "
              "key from the dashboard, the logs and the CLI. For streaming, "
              "screen-sharing and screenshots. It is a DISPLAY filter: the .env, "
@@ -1330,7 +1400,7 @@ def _field(root, s: Setting) -> dict:
         # with an identifier. `key` is still here and still shown, because it is
         # what you search for and what an env override is named after.
         "label": label_for(s.key),
-        "help": s.help,
+        "help": DESCRIPTIONS[s.key],
         "min": s.minimum,
         "max": s.maximum,
         "env_vars": s.env_vars(),

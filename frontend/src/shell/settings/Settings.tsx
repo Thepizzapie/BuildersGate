@@ -89,22 +89,22 @@ const SECTIONS = [
 ];
 
 const GROUP_NOTES: Record<string, string> = {
-  Dispatch: "How work starts, which runner takes it, and how many can run together.",
-  Gates: "The evidence and sign-off rules work must pass before it counts as done.",
-  "Follow-up": "What happens after work finishes or fails.",
-  Limits: "Runtime and concurrency ceilings for dispatched work. There is no money ceiling: the only budget is your provider account's balance.",
-  Art: "Style training, art routing, and approval behavior.",
-  Generators: "Choose the default provider and model for each kind of generation.",
-  "Provider access": "Connect hosted generation services and inspect their available capabilities.",
-  "Local generators": "Set up and control generation runtimes that stay on this machine.",
-  "Agent CLIs": "Connect coding-agent command lines to this Builders Gate installation.",
-  Modules: "Choose which parts of the studio this project uses.",
-  Console: "Refresh cadence and model limits for interactive sessions.",
-  Notifications: "Which events reach you, where they go, and when they stay quiet.",
-  Community: "How viewer chat becomes feedback during sessions and playtests.",
-  Privacy: "Machine-wide controls for what can appear on stream.",
+  Dispatch: "Agent scheduling, isolation, concurrency, and models.",
+  Gates: "Review and approval rules for completed work.",
+  "Follow-up": "Retries, debriefs, and failure handling.",
+  Limits: "Runtime limits for agent processes.",
+  Art: "Art workers, style, 3D routing, and approval.",
+  Generators: "Default providers and models for generated media.",
+  "Provider access": "Hosted generation services and API keys.",
+  "Local generators": "Generation services running on this machine.",
+  "Agent CLIs": "Coding-agent command-line connections.",
+  Modules: "Optional features enabled for this project.",
+  Console: "Director, Brainstorm, refresh, and graph settings.",
+  Notifications: "Events, delivery, reminders, and quiet hours.",
+  Community: "Viewer chat and playtest feedback.",
+  Privacy: "Information hidden from visible output.",
   Appearance: "Choose the studio’s visual ground. Changes apply immediately across every workspace.",
-  "Running agents": "Processes running on this machine, including other projects.",
+  "Running agents": "Agent processes on this machine.",
 };
 
 const show = (v: unknown): string =>

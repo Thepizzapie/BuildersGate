@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bgate_cli import main as cli
+from bgate_core.board import gitwork
 from bgate_core.store import db, project
 from bgate_core.board import seats
 from bgate_ui.app import app
@@ -70,6 +71,19 @@ class TestWhereANewProjectLands:
         monkeypatch.chdir(empty)
         assert project_routes.default_parent() == empty
 
+    def test_an_active_projects_parent_is_used_for_the_next_game(
+            self, monkeypatch, tmp_path):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        monkeypatch.setenv("BGATE_HOME", str(machine_home))
+        current = tmp_path / "builders-gate"
+        project.init(current, "Builders Gate")
+        monkeypatch.setenv("BGATE_ROOT", str(current))
+        monkeypatch.chdir(current)
+
+        assert project_routes.default_parent() == tmp_path
+        assert project_routes._target("Hot Cargo", "") == tmp_path / "hot-cargo"
+
     @pytest.mark.parametrize("var,leaf", [
         ("SystemRoot", "System32"),
         ("ProgramFiles", "SomeApp"),
@@ -110,6 +124,8 @@ class TestCreateOverHttp:
         assert made["files"] > 0
         assert (root / ".bgate" / "game.db").exists()
         assert (root / "project.godot").exists()
+        assert made["repository"]["available"] is True
+        assert gitwork.probe(root)["available"] is True
 
         # The same poll that reported nothing now reports the real project.
         state = client.get("/api/state").json()

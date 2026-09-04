@@ -206,7 +206,8 @@ class Runner:
 
 
 def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
-                 cwd: str, native_images: bool, max_turns: int = 0) -> list[str]:
+                 cwd: str, native_images: bool, max_turns: int = 0,
+                 auto_approve: bool = False) -> list[str]:
     """The capability surface of a dispatched Claude run.
 
     IT REGISTERS THE MCP SERVER, which it did not do for as long as there were
@@ -244,7 +245,8 @@ def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
 
 
 def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
-                cwd: str, native_images: bool, max_turns: int = 0) -> list[str]:
+                cwd: str, native_images: bool, max_turns: int = 0,
+                auto_approve: bool = False) -> list[str]:
     """`codex exec`, JSONL, sandboxed to the project directory.
 
     --sandbox workspace-write --cd <project> writes to the REAL tree. Verified
@@ -271,6 +273,8 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
     args = [exe, "exec", "--json", "--sandbox", "workspace-write", "--cd", cwd]
     args += mcp_overrides()
     args += ["--enable" if native_images else "--disable", "image_generation"]
+    if auto_approve:
+        args += ["--approve-for-me"]
     if model:
         args += ["--model", model]
     return args
@@ -288,13 +292,21 @@ def _codex_director_args(exe: str, *, model: Optional[str], cwd: str,
     if not resume:
         return _codex_args(
             exe, permission_mode="acceptEdits", model=model, cwd=cwd,
-            native_images=True) + ["-"]
+            native_images=True, auto_approve=False) + ["-"]
     args = [exe, "exec", "resume", "--json"]
     args += mcp_overrides()
     args += ["--enable", "image_generation"]
     if model:
         args += ["--model", model]
     return args + [resume, "-"]
+
+
+def _codex_app_server_args(exe: str) -> list[str]:
+    """Codex director transport with interactive approvals over stdio."""
+    args = [exe, "app-server", "--stdio"]
+    args += mcp_overrides()
+    args += ["--enable", "image_generation"]
+    return args
 
 
 # THE FLAGS THAT MAKE A BRAINSTORM SESSION UNABLE TO WRITE.

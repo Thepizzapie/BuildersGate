@@ -218,12 +218,9 @@ export function AgentClis({ active }: { active: boolean }) {
         <span>{on} of {rows.length} installed, {wired} wired to this interpreter</span>
       </div>
       <p className="gen-note">
-        Registering an MCP server writes to that CLI's own config in your home
-        directory, not to this project — every future session of it, in any
-        directory, gets the Builders Gate tools. It is pinned to the interpreter
-        this dashboard runs on
-        {data.interpreter && <> (<code>{data.interpreter}</code>)</>}, which is
-        the part that is usually wrong.
+        Connections are stored in each CLI's user config and apply to every
+        project. Builders Gate uses
+        {data.interpreter && <> <code>{data.interpreter}</code></>}.
       </p>
       <div className="gen-grid wide">
         {rows.length

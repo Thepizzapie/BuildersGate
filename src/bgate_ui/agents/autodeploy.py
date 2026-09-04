@@ -104,7 +104,8 @@ def _mem(root: str) -> dict:
     with _lock:
         return _MEM.setdefault(str(root), {"cool": {}, "floor_until": 0.0,
                                            "last": None, "dispatched": 0,
-                                           "quick_fails": 0})
+                                           "quick_fails": 0,
+                                           "integration_cool": {}})
 
 
 def note_run_ended(root, item_id: int, outcome: str, seconds: float) -> None:
@@ -161,6 +162,7 @@ def state(root: str | os.PathLike[str]) -> dict:
     forced = _pump.disabled()
     return {
         "on": on,
+        "mode": str(_settings.get(root, "dispatch.mode") or "structured"),
         "stored_on": bool(doc.get("on")),
         "source": source,
         "setting": SETTING,
@@ -171,6 +173,7 @@ def state(root: str | os.PathLike[str]) -> dict:
         "dispatched": int(mem.get("dispatched") or 0),
         "last_refusal": mem.get("last"),
         "held_sources": list(HELD_SOURCES),
+        "pending_integrations": _pending_integrations(root),
         "running": _pump.running(root),
     }
 
@@ -197,6 +200,7 @@ def set_enabled(root: str | os.PathLike[str], on: bool) -> dict:
     mem = _mem(str(root))
     with _lock:
         mem["cool"] = {}
+        mem["integration_cool"] = {}
         mem["floor_until"] = 0.0
         if on:
             mem["last"] = None
@@ -240,6 +244,8 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
         return {"on": False, "dispatched": [], "refused": []}
     mem = _mem(root)
     now = time.monotonic()
+    if str(_settings.get(root, "dispatch.mode") or "structured") == "chaos":
+        _chaos_integrations(root, mem, now)
     if mem["floor_until"] > now:
         return {"on": True, "dispatched": [], "refused": [],
                 "held": "floor cooldown"}
@@ -309,6 +315,52 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
                 mem["floor_until"] = now + FLOOR_COOLDOWN_S
             break
     return {"on": True, "dispatched": sent, "refused": refused}
+
+
+#: Between hand-offs of the same Chaos branch to the Director.
+INTEGRATION_COOLDOWN_S = 300.0
+
+
+def _chaos_integrations(root: str, mem: dict, now: float) -> None:
+    """Hand prepared Chaos branches to the Director — unless the working branch
+    is dirty, in which case every merge would refuse and every prompt would be
+    a wasted Director turn. One floor refusal instead, like dirty_tree at
+    dispatch. Each branch is offered at most MAX_INTEGRATION_ATTEMPTS times."""
+    from bgate_core.board import gitwork as _gitwork
+    from bgate_ui.agents import directorsession as _director
+
+    pending = _gitwork.integrations(root, pending=True)
+    if not pending:
+        return
+    state = _gitwork.dirty(root)
+    if state.get("available") and state.get("dirty"):
+        if not mem.get("integration_dirty_noted"):
+            entry = {"item_id": None, "code": "dirty_tree",
+                     "message": (f"{len(pending)} Chaos branch(es) are ready but "
+                                 "the working branch has uncommitted changes; "
+                                 "commit or stash them and integration resumes "
+                                 "on its own"),
+                     "at": time.strftime("%H:%M:%S")}
+            with _lock:
+                mem["last"] = entry
+                mem["integration_dirty_noted"] = True
+        return
+    with _lock:
+        mem["integration_dirty_noted"] = False
+    for row in pending:
+        item_id = int(row.get("item_id") or 0)
+        if not item_id or mem["integration_cool"].get(item_id, 0) > now:
+            continue
+        _director.request_integration(root, item_id)
+        mem["integration_cool"][item_id] = now + INTEGRATION_COOLDOWN_S
+
+
+def _pending_integrations(root: str | os.PathLike[str]) -> int:
+    try:
+        from bgate_core.board import gitwork as _gitwork
+        return len(_gitwork.integrations(root, pending=True))
+    except Exception:
+        return 0
 
 
 def start(root: str | os.PathLike[str]) -> bool:

@@ -103,7 +103,7 @@ export type ConsoleState = {
        asking "is the board empty" from these counts alone read a board with
        handed-out work on it as idle. */
     running?: number; queued?: number; dispatched?: number; review?: number;
-    done?: number; failed?: number;
+    integrating?: number; done?: number; failed?: number;
   };
   /** Whether the director session is mid-reply. Chat turns stopped being
    *  work items, so floor.running no longer covers a streaming answer — and
@@ -142,6 +142,12 @@ export type ChatMsg = {
   text: string; tool?: string;
 };
 
+export type DirectorApproval = {
+  id: string; kind: "command" | "file_change" | "permissions" | "mcp";
+  reason?: string; command?: string; cwd?: string; server?: string;
+  permissions?: unknown; available_decisions: string[];
+};
+
 export type ChatState = {
   __error?: string;
   messages: ChatMsg[];
@@ -152,6 +158,8 @@ export type ChatState = {
   waiting?: string;
   live?: boolean;
   session_id?: string;
+  approvals?: DirectorApproval[];
+  dispatch_mode?: "structured" | "chaos";
   runner?: "claude" | "codex";
   model?: string;
   runners?: { value: string; label: string; installed: boolean }[];
@@ -184,6 +192,11 @@ export const directorConfigure = (runner: string, model: string) =>
     method: "PUT", body: { runner, model }, quiet: true,
   });
 
+export const directorDispatchMode = (mode: "structured" | "chaos") =>
+  mutate<ChatState>("/api/director/dispatch-mode", {
+    method: "PUT", body: { mode }, quiet: true,
+  });
+
 export const directorUsageConnect = () =>
   mutate<NonNullable<ChatState["usage_bridge"]>>("/api/director/usage-bridge", {
     method: "POST", quiet: true,
@@ -192,4 +205,9 @@ export const directorUsageConnect = () =>
 export const directorUsageDisconnect = () =>
   mutate<NonNullable<ChatState["usage_bridge"]>>("/api/director/usage-bridge", {
     method: "DELETE", quiet: true,
+  });
+
+export const directorApprove = (id: string, decision: string) =>
+  mutate(`/api/director/approvals/${encodeURIComponent(id)}`, {
+    method: "POST", body: { decision }, quiet: true,
   });

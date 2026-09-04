@@ -160,15 +160,61 @@ def test_console_settings_defaults(root):
     assert settings.get(root, "console.model") == "opus"
 
 
-def test_codex_director_uses_native_exec_resume():
-    fresh = runners._codex_director_args(
-        "codex", model="gpt-5.6-sol", cwd="C:/game")
-    assert fresh[:3] == ["codex", "exec", "--json"]
-    assert "workspace-write" in fresh and "mcp_servers.builders-gate" in " ".join(fresh)
-    resumed = runners._codex_director_args(
-        "codex", model="gpt-5.6-terra", cwd="C:/game", resume="thread-4")
-    assert resumed[:4] == ["codex", "exec", "resume", "--json"]
-    assert resumed[-2:] == ["thread-4", "-"]
+def test_codex_director_uses_app_server_for_interactive_approvals():
+    args = runners._codex_app_server_args("codex")
+    assert args[:3] == ["codex", "app-server", "--stdio"]
+    assert "mcp_servers.builders-gate" in " ".join(args)
+    assert args[-2:] == ["--enable", "image_generation"]
+
+
+def test_codex_director_is_read_only_and_escalates_commands():
+    prompt = directorsession.system_prompt("C:/game")
+    assert "Do not inspect dashboard internals" in prompt
+    assert directorsession.CODEX_APPROVAL_POLICY == "untrusted"
+    assert directorsession.CODEX_SANDBOX == "read-only"
+
+
+def test_board_monitor_reports_runner_and_terminal_state(root):
+    item = queue.add(root, "art", title="Build props", brief="Make the props")
+    item_id = int(item["id"])
+    assert queue.reserve(root, item_id)
+
+    directorsession.monitor_item(root, item_id, runner="codex")
+    queue.set_status(root, item_id, "done", "Three props delivered")
+    directorsession.report_monitored_item(root, item_id)
+
+    messages = directorsession.history(root)["messages"]
+    text = "\n".join(row.get("text", "") for row in messages)
+    assert "Watching item #" in text and "via codex" in text
+    assert "is done: Three props delivered" in text
+    assert all(row.get("tool") == "Board monitor" for row in messages)
+
+
+def test_codex_approval_response_is_bounded_to_the_pending_request(root, monkeypatch):
+    sent = []
+    entry = {"approvals": {"7": {
+        "id": "7", "kind": "command", "_rpc_id": 91,
+        "available_decisions": ["accept", "decline"],
+    }}, "waiting": "waiting for your approval"}
+    with directorsession._lock:
+        directorsession._live[directorsession._pkey(root)] = entry
+    monkeypatch.setattr(directorsession, "_codex_write",
+                        lambda live, message: sent.append(message))
+    assert directorsession.decide_approval(root, "7", "accept")["ok"]
+    assert sent == [{"id": 91, "result": {"decision": "accept"}}]
+    assert directorsession.pending_approvals(root) == []
+    with pytest.raises(ValueError):
+        directorsession.decide_approval(root, "7", "accept")
+
+
+def test_codex_auto_approval_is_limited_to_builders_gate_mcp(root):
+    settings.set(root, "dispatch.codex_auto_approve", True)
+    assert directorsession._auto_approve_mcp(root, {
+        "kind": "mcp", "server": runners.MCP_SERVER_NAME})
+    assert not directorsession._auto_approve_mcp(root, {
+        "kind": "mcp", "server": "external"})
+    assert not directorsession._auto_approve_mcp(root, {
+        "kind": "command", "server": runners.MCP_SERVER_NAME})
 
 
 def test_runner_and_model_switch_keep_native_sessions(root, monkeypatch):
