@@ -141,8 +141,14 @@
     toast("prompt rewritten - the original is kept in the inspector");
   }
 
-  function compareRow(n) {
-    return `<div class="wf-act"><button class="nc-w wf-run1 ghost" data-wact="compare" data-wval="${esc(n.id)}"
+  /* Run THIS card and nothing else. It travels the canvas's own [data-wact]
+     channel (nodecanvas routes those to onAction) rather than binding its own
+     listener - a card that invents an event path stops working the moment the
+     canvas re-renders it. */
+  function runRow(n) {
+    return `<div class="wf-act"><button class="nc-w wf-run1" data-wact="run" data-wval="${esc(n.id)}"
+      title="generate from this card alone, without running the rest of the graph">▶ run this card</button>`
+      + `<button class="nc-w wf-run1 ghost" data-wact="compare" data-wval="${esc(n.id)}"
       title="add the other available models on the same inputs">＋ add comparison models</button></div>`;
   }
 
@@ -214,7 +220,7 @@
         + w.text(n, "model", { label: "Model", placeholder: "override (blank = the tier's)" })
         + w.text(n, "provider", { label: "Provider", placeholder: "override" })
         + resolvedLine(n)
-        + compareRow(n);
+        + runRow(n);
     },
     config(n) {
       const kind = str(n, "task_kind", "");
@@ -248,6 +254,7 @@
       return r.usd * Math.max(0, Math.floor(num(n, "count", 1)));
     },
     onAction(n, action, field) {
+      if (action === "run") { WF.runNode(n.id); return; }
       if (action === "compare") { fanOut(n); return; }
       if (action === "improve") { improve(n); return; }
     },

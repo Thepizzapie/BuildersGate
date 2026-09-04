@@ -194,7 +194,12 @@ CRAFTS: dict[str, tuple[str, ...]] = {
               "local_status",
               # Scale and room composition are the art seat's own checks
               # before it hands anything over — see `verdicts`.
-              "scale_check", "room_review", "room_override"),
+              "scale_check", "room_review", "room_override",
+              # The screen concepts ARE image work: ui_concept paints a frame
+              # per screen off the project's pins and derives the palette and
+              # Theme from what it painted. The gameplay seat consumes the
+              # .tres; the art seat is who makes it.
+              "ui_concept"),
     "three_d": ("blender_", "character_generate", "godot_retarget_check",
                 # "THE STEP THE 3D PATH WAS MISSING" by its own docstring —
                 # it takes a finished .glb into the engine. `godot_` is not a
@@ -224,6 +229,10 @@ CRAFTS: dict[str, tuple[str, ...]] = {
     # manifest is captured from a running game. gameplay and qa hold
     # `playtest`, which is exactly who reads them.
     "playtest": ("playtest_", "causal_", "godot_evidence",
+                 # The release gate's evidence tool: it asserts against the
+                 # EXPORTED pck rather than an editor run, which is the same
+                 # question godot_evidence answers one build later.
+                 "godot_export_probe",
                  "evidence_check_ui"),
     "dialogue": ("dialogue_",),
     "quest": ("quest_",),
@@ -237,6 +246,10 @@ CRAFTS: dict[str, tuple[str, ...]] = {
     # no sidecar - so a gameplay or tech seat handed an imported .tres could
     # see the refusal and not the tool that answers it.
     "level": ("level_", "game_view_", "sidescroll_generate",
+              # A circuit is a level: track_generate emits the drivable scene
+              # from a spec and measures it, exactly as level_generate does
+              # for rooms.
+              "track_generate",
               "tileset_describe"),
     "verdicts": ("art_qa_verdict", "art_tournament_verdict",
                  # The free look before anything else is spent on a sheet.

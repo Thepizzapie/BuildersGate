@@ -613,8 +613,10 @@ def dispatch_rules(root: str | os.PathLike[str], seat: str) -> str:
     # the rule itself defers to - that is one place to look, and it is the place
     # that worked in the benchmark.
     mesh_route = art_mesh_route_rule(root) if seat == "art" else ""
+    # The seat's OWN rules stay last, so an override file's text is the final
+    # word on the prompt; the project's geometry route is a setting above it.
     return "\n\n".join(part for part in
-                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, own, mesh_route)
+                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, mesh_route, own)
                         if part)
 
 
