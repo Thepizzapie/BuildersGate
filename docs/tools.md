@@ -4351,3 +4351,49 @@ Turn ONE approved key frame into an effect ANIMATION, arithmetically.
 
     COSTS NOTHING AND CALLS NO MODEL.
 ```
+
+## track_generate
+
+```text
+Generate a closed, drivable circuit scene from a JSON spec (driving games).
+
+Walks sectors (straight | arc, with grade), SOLVES the closure back to the
+start line as an arc-line-arc at closure.radius, bakes the road at 1.5 m and
+emits a node-shaped scene: Road (+RoadBody on layers 1 and 6 - 6 is ROAD
+ONLY, for wheel rays), RacingLine with target_speeds, Checkpoints, pitched
+Barrier runs, Tunnel roof/walls/lamps + rock mass, a terrain heightfield
+CLAMPED under the road corridor, a Sea plane, GridSlot markers, Sun and
+WorldEnvironment, MultiMesh props. Then it MEASURES: per-sector minimum
+radius, closure length/radius bars, lap-length bars, and a road-support
+sweep. report.ok is false when a bar fails and the fix is named. The
+generator lands in scripts/tools/bgate_track_gen.gd (editable).
+```
+
+## ui_concept
+
+```text
+Paint concept frames for the game's screens (title, main_menu, hud,
+results, pause, options) conditioned on the project's pins, then derive a
+palette and a Godot Theme from them: <out_dir>/ui_brief.md and
+<out_dir>/theme_concept.tres. The gameplay seat lays Controls out AGAINST
+these. Costs one image per screen. Never ship the scaffold theme when this
+exists.
+```
+
+## sfx_prompt
+
+```text
+A REAL sound effect through kie (Suno sounds endpoint): engines, skids,
+impacts, ambience, UI. Lands every take in audio/sfx/<name>_<n>.<ext> with
+<name>.prompt.json beside it. Costs credits per call. sfx_generate stays for
+retro/8-bit projects only.
+```
+
+## godot_export_probe
+
+```text
+Run a SceneTree script against an EXPORTED pck (res:// IS the pck), so scene
+overrides, imports and resources are the shipped ones. Use it for the
+release gate and after any delivery whose evidence came from an editor run.
+headless=False opens a window so the script can save a viewport image.
+```

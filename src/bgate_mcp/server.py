@@ -4990,6 +4990,287 @@ def godot_export_probe(pck: Annotated[str, Field(description='The exported .pck 
         _sh.rmtree(tmp, ignore_errors=True)
 
 
+
+# A LEVEL-DESIGN TOOL FOR DRIVING GAMES. MEASURED (Corniche, 2026-09-04): with no
+# tool, the tech seat hand-wrote a 1,900-line generator over 12 hours and the
+# director rescued it five times (a folded closure, terrain through the road,
+# rails "shattered" on grades, facets that read as speed bumps, a tunnel open to
+# the sky). Every one of those lessons is now IN the shipped template, and the
+# spec is a page of JSON a designer can read.
+@_tool
+def track_generate(spec: Annotated[dict, Field(description='The circuit, as JSON: {out_scene, road_width, sectors:[{name, kind:"straight"|"arc", length|radius+turn_deg, speed (m/s target), elevation (m gained), tunnel, barrier_left, barrier_right, checkpoint}], closure:{radius, min_radius, max_length, name}, terrain:{enabled, cols, margin, sea_level, sea_side:"left"|"right"|"none", hill_height, hill_distance, road_sink}, environment:{sun_elevation_deg, sun_azimuth_deg, environment (res path), sky_top, sky_horizon}, materials:{road, shoulder, ground, sea, barrier, tunnel} (res paths), props:[{scene, sectors, spacing, offset, side, scale:[min,max], visibility_range}], grid_slots, lap_min, lap_max, checkpoint_script, bake_interval}')],
+                   godot_project: Optional[str] = None,
+                   refresh_template: bool = False,
+                   timeout: int = 300) -> dict:
+    """Generate a closed, drivable circuit scene from a JSON spec.
+
+    Walks the sectors (straights and arcs with grade), SOLVES the closure back
+    to the start line as an arc-line-arc, bakes the road at 1.5 m, and emits a
+    node-shaped scene: Road (+RoadBody on layers 1 and 6), RacingLine with
+    target_speeds, Checkpoints, pitched Barrier runs, Tunnel roof/walls with
+    lamps and a rock mass, a terrain heightfield clamped under the road, a Sea
+    plane, GridSlot markers, Sun + WorldEnvironment, and MultiMesh props. Then
+    it MEASURES: per-sector minimum radius, closure length/radius bars, lap
+    length bars, and a road-support sweep (terrain never above the tarmac).
+    `report.ok` is false when a bar fails, with the fix named. The generator
+    lands in <project>/scripts/tools/bgate_track_gen.gd (editable; pass
+    refresh_template=True to overwrite it from the shipped copy).
+    """
+    import json as _json
+    import shutil as _sh
+    from pathlib import Path as _P
+    _contained_path(godot_project, "godot_project")
+    proj = _P(godot_project or _root())
+    if not (proj / "project.godot").is_file():
+        return {"ok": False, "error": f"{proj} holds no project.godot"}
+    tpl = _P(__file__).resolve().parent.parent / "templates" / "shared" / "tools"
+    tools_dir = proj / "scripts" / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for name in ("bgate_track_gen.gd", "bgate_track_closure.gd"):
+        dst = tools_dir / name
+        if refresh_template or not dst.is_file():
+            _sh.copy2(tpl / name, dst)
+            copied.append(str(dst))
+    spec_path = proj / ".bgate_track_spec.json"
+    spec_path.write_text(_json.dumps(spec, indent=2), encoding="utf-8")
+    src = (tools_dir / "bgate_track_gen.gd").read_text(encoding="utf-8")
+    got = _godot.run_script(src, project_dir=str(proj), timeout=timeout)
+    report_path = proj / ".bgate_out" / "track_report.json"
+    report: dict = {}
+    if report_path.is_file():
+        try:
+            report = _json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception:
+            report = {}
+    out = {"ok": bool(report.get("ok")) and bool(got.get("ok")),
+           "report": report, "spec_path": str(spec_path),
+           "generator": str(tools_dir / "bgate_track_gen.gd"),
+           "template_copied": copied,
+           "engine_errors": got.get("errors") or [],
+           "stdout_tail": (got.get("stdout") or "")[-3000:]}
+    if not out["ok"] and not report:
+        out["error"] = "the generator did not write a report - read stdout_tail/engine_errors"
+    return out
+
+
+# UI THAT IS DESIGNED, NOT DEFAULTED. MEASURED (the user, 2026-09-04): every
+# bgate project's title, menu, HUD and results look the same because Controls
+# are laid out first and a theme is patched on after. This puts CONCEPT FRAMES
+# first - painted screens conditioned on the project's own style pins - and
+# derives a palette and a Theme from them, so the gameplay seat lays out
+# against a look that already exists.
+@_tool
+def ui_concept(game_summary: Annotated[str, Field(description='One or two sentences: what the game is and its mood, e.g. "a golden-hour coastal arcade racer, warm and fast".')],
+               screens: Annotated[Optional[list[str]], Field(description='Screens to concept. Default: title, main_menu, hud, results.')] = None,
+               use_pinned: Annotated[str, Field(description='Which pins condition the frames: "style" (default), "all", "concept", or "" for none.')] = "style",
+               style_note: Annotated[str, Field(description='Extra art-direction words applied to every screen (typeface feel, motifs, era).')] = "",
+               out_dir: Annotated[str, Field(description='Where the Theme and brief land, relative to the project. Default assets/ui.')] = "assets/ui",
+               quality: str = "medium", provider: str = "", model: str = "") -> dict:
+    """Paint concept frames for the game's screens, then derive a palette and
+    a Godot Theme from them. Costs one image per screen.
+
+    Writes .bgate_out/art/ui/<screen>.png per screen (conditioned on the
+    project's pins), <out_dir>/ui_brief.md (palette hexes, per-screen layout
+    notes, what to build) and <out_dir>/theme_concept.tres (Button/Label/Panel
+    colours and StyleBoxFlats from the measured palette). The gameplay seat
+    builds Controls AGAINST these; art refines them. Never ship the scaffold
+    theme when this exists.
+    """
+    from pathlib import Path as _P
+    root = _P(_scratch_root())
+    refused = _provider_gate(str(root), "image", "painting UI concept frames")
+    if refused:
+        return refused
+    from bgate_adapters import imagegen  # noqa: F401  (provider registry side effects)
+    wanted = [str(s).strip() for s in (screens or ["title", "main_menu", "hud", "results"]) if str(s).strip()]
+    layouts = {
+        "title": "the TITLE SCREEN: the game logo large and centred-top in a bespoke display typeface, a full-bleed painted key visual behind it, a small 'press start' line at the bottom, no other UI",
+        "main_menu": "the MAIN MENU: the logo smaller at top, a vertical stack of three menu entries (RACE / OPTIONS / QUIT) as designed buttons with a visible focus state on the first, a blurred/darkened key visual behind, hints for controls in a footer",
+        "hud": "the in-game HUD over a gameplay frame: lap counter top-left, position top-left under it, lap timer top-right, a big speed readout bottom-right, a minimal centre - all chrome designed to the game's look, legible, not stock",
+        "results": "the RESULTS SCREEN: a headline banner for the finishing position, a two-column panel with lap times on the left and the finishing order with driver names and colour swatches on the right, two buttons (RESTART / MENU) at the bottom, over a dimmed gameplay frame",
+        "pause": "the PAUSE overlay: a compact centred panel with the logo, PAUSED, three entries (RESUME / RESTART / MENU), over a dimmed gameplay frame",
+        "options": "the OPTIONS screen: four labelled sliders (master, music, sfx, engine), two toggles, a BACK button, in the same panel language as the menu",
+    }
+    pinned_names, pinned_paths = _pinned_refs(root, use_pinned) if use_pinned else ([], [])
+    frames: dict = {}
+    costs = 0.0
+    for screen in wanted:
+        body = layouts.get(screen, f"the {screen.replace('_', ' ')} screen of the game, fully designed")
+        prompt = (f"UI concept frame, 16:9, for {game_summary}. Design {body}. "
+                  f"Bespoke, opinionated game UI - a real art-directed screen, not a generic template: "
+                  f"custom typography, a palette taken from the game's world, motifs from its setting. "
+                  f"{style_note}").strip()
+        out = _art_out(root, f"ui/{screen}.png")
+        result = _chroma.generate(prompt, str(out),
+                                  provider=_providers.provider_for("concept", asked=provider, root=root),
+                                  model=model, task_kind="concept", keyed=None,
+                                  size="1536x864", quality=quality, transparent=False,
+                                  ref_paths=list(pinned_paths), ref_strength=0.45,
+                                  anchors=[], tileable=False, root=root,
+                                  logical_name=f"ui_{screen}", work_item_id=_work_item_id())
+        frames[screen] = {"ok": bool(result.get("ok")), "path": result.get("path"),
+                          "error": result.get("error")}
+        try:
+            costs += float(result.get("usd") or 0.0)
+        except Exception:
+            pass
+        if result.get("ok"):
+            _archive_preview(result["path"], f"ui-{screen}")
+    good = [f["path"] for f in frames.values() if f.get("ok") and f.get("path")]
+    palette = _ui_palette(good)
+    brief_dir = root / out_dir
+    brief_dir.mkdir(parents=True, exist_ok=True)
+    theme_path = brief_dir / "theme_concept.tres"
+    theme_path.write_text(_ui_theme_tres(palette), encoding="utf-8")
+    lines = [f"# UI brief - {game_summary}", "",
+             "Concept frames (LOOK at them; they are the spec the Controls are built against):"]
+    for k, f in frames.items():
+        lines.append(f"- {k}: {f.get('path') or 'FAILED: ' + str(f.get('error'))}")
+    lines += ["", "Measured palette (dominant colours across the frames):"]
+    for name, hexv in palette.items():
+        lines.append(f"- {name}: {hexv}")
+    lines += ["", f"Theme: {theme_path} - Button/Label/Panel colours and StyleBoxFlats from the palette above. "
+                  "Fonts: pick a display face for headings and a clean sans for body; do not ship the engine default.",
+              "Rule: every screen instances ONE theme; the HUD speed readout is sized on the node, not in the theme."]
+    (brief_dir / "ui_brief.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"ok": bool(good), "frames": frames, "palette": palette,
+            "theme": str(theme_path), "brief": str(brief_dir / "ui_brief.md"),
+            "usd": costs, "refs_used": pinned_names}
+
+
+def _ui_palette(paths: list) -> dict:
+    """Dominant colours across the frames -> named roles. PIL median-cut."""
+    from PIL import Image as _Img
+    counts: dict = {}
+    for p in paths:
+        try:
+            im = _Img.open(p).convert("RGB").resize((96, 54))
+            q = im.quantize(colors=8, method=_Img.Quantize.MEDIANCUT)
+            pal = q.getpalette()[:24]
+            for n, idx in q.getcolors():
+                rgb = tuple(pal[idx * 3: idx * 3 + 3])
+                counts[rgb] = counts.get(rgb, 0) + n
+        except Exception:
+            continue
+    if not counts:
+        return {"background": "#1a1b2c", "panel": "#363a69", "text": "#fbfbd3",
+                "accent": "#f8cb8b", "accent_2": "#cf7d52"}
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+
+    def lum(c):
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+    def sat(c):
+        mx, mn = max(c), min(c)
+        return 0.0 if mx == 0 else (mx - mn) / mx
+
+    cols = [c for c, _ in ranked]
+    darkest = min(cols, key=lum)
+    lightest = max(cols, key=lum)
+    vivid = sorted(cols, key=lambda c: -sat(c))
+    accent = vivid[0] if vivid else lightest
+    accent2 = vivid[1] if len(vivid) > 1 else accent
+    mid_target = (lum(darkest) + lum(lightest)) / 2.0
+    mid = sorted(cols, key=lambda c: abs(lum(c) - mid_target))[0]
+
+    def hx(c):
+        return "#%02x%02x%02x" % c
+
+    return {"background": hx(darkest), "panel": hx(mid), "text": hx(lightest),
+            "accent": hx(accent), "accent_2": hx(accent2)}
+
+
+def _ui_theme_tres(p: dict) -> str:
+    def col(h: str, a: float = 1.0) -> str:
+        h = h.lstrip("#")
+        r, g, b = (int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+        return "Color(%.4f, %.4f, %.4f, %.2f)" % (r, g, b, a)
+
+    def box(name: str, bg: str, border: str, bw: str, radius: int = 4, margins: bool = True) -> str:
+        out = ['[sub_resource type="StyleBoxFlat" id="%s"]' % name, "bg_color = " + bg]
+        out += bw.split("\n") if bw else []
+        out.append("border_color = " + border)
+        for side in ("top_left", "top_right", "bottom_right", "bottom_left"):
+            out.append("corner_radius_%s = %d" % (side, radius))
+        if margins:
+            out += ["content_margin_left = 24.0", "content_margin_top = 10.0",
+                    "content_margin_right = 24.0", "content_margin_bottom = 10.0"]
+        return "\n".join(out) + "\n"
+
+    all4 = "border_width_left = 2\nborder_width_top = 2\nborder_width_right = 2\nborder_width_bottom = 2"
+    parts = [
+        '[gd_resource type="Theme" load_steps=6 format=3]',
+        "; GENERATED by ui_concept from the project's own concept frames. Edit freely;",
+        "; re-running ui_concept overwrites it.",
+        "",
+        box("panel", col(p["panel"], 0.92), col(p["accent"], 0.8), all4, 6),
+        box("btn_normal", col(p["background"], 0.85), col(p["accent"], 0.6), "border_width_bottom = 2"),
+        box("btn_hover", col(p["panel"], 1.0), col(p["accent"]), "border_width_bottom = 3"),
+        box("btn_pressed", col(p["accent_2"]), col(p["accent_2"]), ""),
+        box("btn_focus", "Color(0, 0, 0, 0)", col(p["accent"]), all4, 4, False),
+        "[resource]",
+        "default_font_size = 22",
+        "Button/colors/font_color = " + col(p["text"]),
+        "Button/colors/font_hover_color = " + col(p["accent"]),
+        "Button/colors/font_pressed_color = " + col(p["background"]),
+        "Button/colors/font_focus_color = " + col(p["accent"]),
+        "Button/font_sizes/font_size = 26",
+        'Button/styles/normal = SubResource("btn_normal")',
+        'Button/styles/hover = SubResource("btn_hover")',
+        'Button/styles/pressed = SubResource("btn_pressed")',
+        'Button/styles/focus = SubResource("btn_focus")',
+        "Label/colors/font_color = " + col(p["text"]),
+        "Label/font_sizes/font_size = 22",
+        'Panel/styles/panel = SubResource("panel")',
+        'PanelContainer/styles/panel = SubResource("panel")',
+    ]
+    return "\n".join(parts) + "\n"
+
+
+
+# A SOUND THAT SOUNDS LIKE THE THING. sfx_generate is a chiptune synth and says
+# so; this asks the generation gateway (kie/Suno sounds) for a real effect and
+# lands it in the audio seat's lane with its recipe next to it.
+@_tool
+def sfx_prompt(prompt: Annotated[str, Field(description='What it should sound like, up to 500 characters: "a mid-engine race car idling, steady loop, no music".')],
+               name: Annotated[str, Field(description='Logical name; takes land as audio/sfx/<name>_<n>.<ext> plus <name>.prompt.json.')],
+               loop: Annotated[bool, Field(description='Ask for a seamless loop (engine, skid, wind).')] = False,
+               tempo: Annotated[int, Field(description='BPM hint for rhythmic sounds, 0 = none.')] = 0,
+               model: Annotated[str, Field(description='V5 (default) or V5_5.')] = "V5",
+               out_dir: Annotated[str, Field(description='Relative to the project; default audio/sfx.')] = "audio/sfx",
+               timeout: int = 600) -> dict:
+    """Generate a REAL sound effect through kie (Suno sounds) - engines,
+    skids, impacts, ambience, UI - and deliver it to audio/sfx/. Costs
+    credits per call; several takes may come back, all are kept. Use
+    sfx_generate only for retro/8-bit projects. LISTEN before wiring.
+    """
+    import json as _json
+    from pathlib import Path as _P
+    root = _P(_scratch_root())
+    refused = _provider_gate(str(root), "music", f"generating sound {name!r}")
+    if refused:
+        return refused
+    from bgate_adapters import kie as _kie
+    target = root / out_dir
+    target.mkdir(parents=True, exist_ok=True)
+    stem = "".join(ch if (ch.isalnum() or ch in "_-") else "_" for ch in name.strip()) or "sound"
+    result = _kie.generate_sound(prompt, str(target), name=stem, root=str(root),
+                                 timeout=float(timeout), model=model, loop=loop, tempo=tempo)
+    recipe = {"prompt": prompt, "loop": loop, "tempo": tempo, "model": model,
+              "task_id": result.get("task_id"), "provider": "kie",
+              "takes": [t.get("path") for t in result.get("tracks", [])]}
+    (target / f"{stem}.prompt.json").write_text(_json.dumps(recipe, indent=2), encoding="utf-8")
+    if result.get("ok"):
+        for t in result.get("tracks", []):
+            try:
+                _register_artifact(stem, t["path"], producer="sfx_prompt",
+                                   work_item_id=_work_item_id())
+            except Exception:                                    # noqa: BLE001
+                pass
+    return {**result, "recipe": str(target / f"{stem}.prompt.json"), "dir": str(target)}
+
+
 # THE QA SEAT HAD NO WAY TO RUN A TEST. Its mission is "Own tests, repro,
 # regression" and the brief it is dispatched with demands "tests at the known
 # baseline, no new failures" - a question that could only be answered by

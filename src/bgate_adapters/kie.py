@@ -2941,3 +2941,80 @@ def doctor_row() -> dict:
                    if got.get("available") else (got.get("reason") or "")),
         "optional": True,
     }
+
+
+# SOUND EFFECTS, NOT MUSIC. The same Suno surface has a sounds endpoint
+# (docs.kie.ai/suno-api/generate-sounds: POST /api/v1/generate/sounds with
+# {prompt, model, soundLoop, soundTempo, soundKey}), polled through the same
+# record-info as music. MEASURED (the user, 2026-09-04): every sound the synth
+# path makes reads as "crunchy computer"; a racing game needs an engine, a skid
+# and an impact that sound like the thing. This is the real-sound path.
+SUNO_SOUNDS_CREATE = "/api/v1/generate/sounds"
+SOUND_MODELS = ("V5", "V5_5")
+
+
+def submit_sound(prompt: str, *, root: Any = None, timeout: float = 60.0,
+                 model: str = "V5", loop: bool = False, tempo: int = 0,
+                 key: str = "") -> dict:
+    """Start a sound-effect generation. Returns {task_id, model}."""
+    text = str(prompt or "").strip()
+    if not text:
+        raise KieError("a sound needs a prompt")
+    if len(text) > 500:
+        raise KieError(f"sound prompt is {len(text)} characters; the limit is 500")
+    if model not in SOUND_MODELS:
+        raise KieError(f"unknown sound model {model!r}; known: {SOUND_MODELS}")
+    payload: dict = {"prompt": text, "model": model, "soundLoop": bool(loop)}
+    if tempo:
+        payload["soundTempo"] = int(max(1, min(300, tempo)))
+    if key:
+        payload["soundKey"] = key
+    api = api_key(root)
+    if not api:
+        raise KieError(available(root)["reason"])
+    got = _request(SUNO_SOUNDS_CREATE, api, payload=payload, method="POST",
+                   timeout=timeout)
+    task_id = str(got.get("taskId") or "")
+    if not task_id:
+        raise KieError(f"kie accepted the sound request but returned no taskId: {str(got)[:200]}")
+    return {"task_id": task_id, "model": model}
+
+
+def generate_sound(prompt: str, out_dir: str | os.PathLike[str], *,
+                   name: str = "", root: Any = None, timeout: float = 600.0,
+                   on_submit: Any = None, **options: Any) -> dict:
+    """Submit, wait, download every take of a sound effect. {ok, tracks:[...]}."""
+    base = {"ok": False, "provider": "kie", "kind": "sfx",
+            "model": str(options.get("model") or "V5"),
+            "credits_consumed": None, "credits_source": "unavailable",
+            "accounted": False, "usd": None}
+    task_id = ""
+    before = credit_balance(root)
+    on_progress = options.pop("on_progress", None)
+    try:
+        job = submit_sound(prompt, root=root, **options)
+        task_id = job["task_id"]
+        base["model"] = job["model"]
+        if on_submit:
+            try:
+                on_submit(task_id)
+            except Exception:                                    # noqa: BLE001
+                pass
+        rec = poll_music(task_id, root=root, timeout=timeout, on_progress=on_progress)
+        tracks = music_tracks(rec)
+        if not tracks:
+            raise KieError("kie/Suno reported SUCCESS with no audio URL for the sound - "
+                           f"record was {str(rec)[:300]}")
+        stem = (name or "sound").strip() or "sound"
+        written = download_tracks(tracks, out_dir, stem=stem, on_progress=on_progress)
+    except (KieError, MusicCancelled) as exc:
+        return {**base, "task_id": task_id, "error": str(exc)}
+    after = credit_balance(root)
+    spent = None
+    if before is not None and after is not None:
+        spent = max(0.0, float(before) - float(after))
+    return {**base, "ok": True, "task_id": task_id, "tracks": written,
+            "credits_consumed": spent,
+            "credits_source": "balance_delta" if spent is not None else "unavailable",
+            "accounted": spent is not None}
+
