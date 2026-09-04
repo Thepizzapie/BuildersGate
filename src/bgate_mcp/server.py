@@ -5102,13 +5102,19 @@ def ui_concept(game_summary: Annotated[str, Field(description='One or two senten
                   f"custom typography, a palette taken from the game's world, motifs from its setting. "
                   f"{style_note}").strip()
         out = _art_out(root, f"ui/{screen}.png")
-        result = _chroma.generate(prompt, str(out),
-                                  provider=_providers.provider_for("concept", asked=provider, root=root),
-                                  model=model, task_kind="concept", keyed=None,
-                                  size="1536x864", quality=quality, transparent=False,
-                                  ref_paths=list(pinned_paths), ref_strength=0.45,
-                                  anchors=[], tileable=False, root=root,
-                                  logical_name=f"ui_{screen}", work_item_id=_work_item_id())
+        result: dict = {}
+        # One retry on a provider-side timeout (measured: kie 524 "generate
+        # task timeout" on the second frame of the first live run).
+        for attempt in range(2):
+            result = _chroma.generate(prompt, str(out),
+                                      provider=_providers.provider_for("concept", asked=provider, root=root),
+                                      model=model, task_kind="concept", keyed=None,
+                                      size="1536x864", quality=quality, transparent=False,
+                                      ref_paths=list(pinned_paths), ref_strength=0.45,
+                                      anchors=[], tileable=False, root=root,
+                                      logical_name=f"ui_{screen}", work_item_id=_work_item_id())
+            if result.get("ok") or "timeout" not in str(result.get("error", "")).lower():
+                break
         frames[screen] = {"ok": bool(result.get("ok")), "path": result.get("path"),
                           "error": result.get("error")}
         try:
