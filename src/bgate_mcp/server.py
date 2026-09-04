@@ -5054,6 +5054,94 @@ def track_generate(spec: Annotated[dict, Field(description='The circuit, as JSON
     return out
 
 
+# A LEVEL-DESIGN TOOL FOR 3D ROOMS. MEASURED (catnip-fiend 2026-08-24, Corniche
+# 2026-09-04): with no tool, every 3D layout was a hand-written generator - the
+# house needed a rewrite ("a tiny layout, sizing between layout, cat, human
+# and props all wrong"), the owner's navmesh had no room to path in after the
+# furniture landed, and three "cannot reach the target" bugs were each
+# something standing where the gate never measured. The generator emits the
+# graybox AND the numbers: walkable floor per room after props, door and
+# corridor widths against the agent, a real navmesh path from the spawn to
+# every room. A failing bar names the fix.
+@_tool
+def blockout_generate(spec: Annotated[Optional[dict], Field(description='The layout, as JSON: {out_scene, player:{height, radius}, wall_height, wall_thickness, ceiling, door_width, door_height, auto_doors, rooms:[{name, kind:"room"|"corridor", x, z, w, d, height, floor_y, ceiling, props:[{name, x, z, w, h, d, climbable}]}], doors:[{from, to | side:"n"|"s"|"e"|"w", width, height, at}], spawn:{room, x, z}, goals:[{name, room, x, z, radius}], navmesh:{agent_radius, agent_height, agent_max_climb, cell_size}, materials:{floor, corridor, wall, ceiling, prop, climbable} (res paths), environment:{sun_elevation_deg, sun_azimuth_deg}}. Metres; x/z is a room\'s minimum corner, w along +X, d along +Z; prop x/z are relative to the room. Omit when passing from_plan.')] = None,
+                      from_plan: Annotated[Optional[dict], Field(description='A level_plan result to convert instead of writing rooms by hand: rooms keep their cells scaled by cell_m, corridor paths become clipped corridor rectangles, every shared edge gets a door.')] = None,
+                      cell_m: Annotated[float, Field(description='Metres per plan cell when converting from_plan. Default 1.0.')] = 1.0,
+                      corridor_width: Annotated[int, Field(description='Corridor width in cells when converting from_plan. Default 2.')] = 2,
+                      out_scene: Annotated[str, Field(description='Where the scene lands when converting from_plan. Default res://scenes/blockout/blockout.tscn.')] = "res://scenes/blockout/blockout.tscn",
+                      godot_project: Optional[str] = None,
+                      refresh_template: bool = False,
+                      timeout: int = 300) -> dict:
+    """Generate a measured 3D graybox - rooms, corridors, doors, box props, a
+    baked navmesh - from a JSON spec or a level_plan result.
+
+    Emits a node-shaped scene: Rooms/<Room>/Floor (+Ceiling, +Props/<P>
+    resting ON the floor), Walls/Wall_NN (one wall per shared edge, doors cut
+    through it with a lintel), Doors/<A>__<B> markers, Nav (NavigationRegion3D
+    with the baked mesh), Markers/Spawn, Goals/<name> (Area3D volumes
+    traversal_prove drives to), Sun and WorldEnvironment. Then it MEASURES:
+    walkable m2 and coverage per room after props, door and corridor widths
+    against 2r + 2 cells (+0.2), room and door heights against the player, and
+    a NavigationServer path from the spawn to every room. `report.ok` is false
+    when a bar fails, with the fix named. Overlapping rooms are refused; make
+    one a corridor that ENDS at the other's wall. A navmesh cell_size other
+    than the project default is written to project.godot and reported. The
+    generator lands in <project>/scripts/tools/bgate_blockout_gen.gd
+    (editable; refresh_template=True overwrites it from the shipped copy).
+    """
+    import json as _json
+    import shutil as _sh
+    from pathlib import Path as _P
+
+    from bgate_core.level import blockout as _blockout
+    _contained_path(godot_project, "godot_project")
+    proj = _P(godot_project or _root())
+    if not (proj / "project.godot").is_file():
+        return {"ok": False, "error": f"{proj} holds no project.godot"}
+    if from_plan is not None:
+        if spec is not None:
+            return {"ok": False, "error": "pass spec OR from_plan, not both"}
+        try:
+            spec = _blockout.spec_from_plan(from_plan, cell_m=float(cell_m),
+                                            corridor_width=int(corridor_width),
+                                            out_scene=out_scene)
+        except (_blockout.BlockoutError, KeyError, TypeError) as exc:
+            return {"ok": False, "error": f"from_plan could not be converted: {exc}"}
+    if not isinstance(spec, dict):
+        return {"ok": False, "error": "spec must be a JSON object (or pass from_plan)"}
+    problems = _blockout.validate(spec)
+    if problems:
+        return {"ok": False, "error": "spec refused before the engine ran",
+                "problems": problems, "spec": spec}
+    tpl = _P(__file__).resolve().parent.parent / "templates" / "shared" / "tools"
+    tools_dir = proj / "scripts" / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    dst = tools_dir / "bgate_blockout_gen.gd"
+    copied = []
+    if refresh_template or not dst.is_file():
+        _sh.copy2(tpl / "bgate_blockout_gen.gd", dst)
+        copied.append(str(dst))
+    spec_path = proj / ".bgate_blockout_spec.json"
+    spec_path.write_text(_json.dumps(spec, indent=2), encoding="utf-8")
+    src = dst.read_text(encoding="utf-8")
+    got = _godot.run_script(src, project_dir=str(proj), timeout=timeout)
+    report_path = proj / ".bgate_out" / "blockout_report.json"
+    report: dict = {}
+    if report_path.is_file():
+        try:
+            report = _json.loads(report_path.read_text(encoding="utf-8"))
+        except ValueError:
+            report = {}
+    out = {"ok": bool(report.get("ok")) and bool(got.get("ok")),
+           "report": report, "spec": spec, "spec_path": str(spec_path),
+           "generator": str(dst), "template_copied": copied,
+           "engine_errors": got.get("errors") or [],
+           "stdout_tail": (got.get("stdout") or "")[-3000:]}
+    if not out["ok"] and not report:
+        out["error"] = "the generator did not write a report - read stdout_tail/engine_errors"
+    return out
+
+
 # UI THAT IS DESIGNED, NOT DEFAULTED. MEASURED (the user, 2026-09-04): every
 # bgate project's title, menu, HUD and results look the same because Controls
 # are laid out first and a theme is patched on after. This puts CONCEPT FRAMES

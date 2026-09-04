@@ -4352,6 +4352,22 @@ Turn ONE approved key frame into an effect ANIMATION, arithmetically.
     COSTS NOTHING AND CALLS NO MODEL.
 ```
 
+## blockout_generate
+
+```text
+Generate a MEASURED 3D graybox from a JSON spec, or from a level_plan result
+(from_plan + cell_m): rooms and corridors in metres, doors (cut through ONE
+shared wall, with a lintel), box props resting on their floor, a spawn, goal
+volumes, a baked NavigationRegion3D, Sun and WorldEnvironment - every piece a
+named node. Then it measures: walkable m2 and coverage per room AFTER props,
+door and corridor widths against the agent (2r + 2 cells + 0.2), room and
+door heights against the player, and a real NavigationServer path from the
+spawn to every room. report.ok is false when a bar fails and the fix is
+named. Overlapping rooms are refused - make one a corridor that ENDS at the
+other's wall. The generator lands in scripts/tools/bgate_blockout_gen.gd
+(editable). Block out and measure BEFORE generating a single prop.
+```
+
 ## track_generate
 
 ```text
