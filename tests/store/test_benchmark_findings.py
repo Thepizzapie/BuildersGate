@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from bgate_core.store import assets, db, provenance
+from bgate_core.store import assets, provenance
 from bgate_core.runtime import doctor, gateway, providers
 from bgate_core.board import seats
 from bgate_core.store import writelog

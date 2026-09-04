@@ -2953,7 +2953,6 @@ def animation_generate(character: str, action: str,
     probe = _rd.available(str(root))
     if not probe.get("available"):
         return {"ok": False, "error": probe.get("reason")}
-    est = len(drawn) * _rd.ACTION_COST.get(rd_action, _rd.DEFAULT_ACTION_COST)
 
     starts = _anim_start_frames(root, character, act, contract, source_sheet)
     if not starts.get("ok"):

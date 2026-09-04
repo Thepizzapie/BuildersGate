@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from bgate_core.store import events, settings
+from bgate_core.store import events
 from bgate_core.board import gates, queue
 from bgate_ui.app import app
 

@@ -15,7 +15,7 @@ import base64
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Optional, Sequence
 
 from . import _result
 

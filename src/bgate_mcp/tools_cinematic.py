@@ -14,7 +14,7 @@ from pydantic import Field
 
 from bgate_mcp.server import (  # noqa: F401
     Optional, _Path, _log, _provider_gate,
-    _provider_gate, _root, _tool, _work_item_id,
+    _root, _tool, _work_item_id,
 )
 
 # ---------------------------------------------------------------------------

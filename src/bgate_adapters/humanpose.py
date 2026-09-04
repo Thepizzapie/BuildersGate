@@ -44,7 +44,7 @@ Angles at the API are DEGREES; internally radians.
 from __future__ import annotations
 
 import math
-from typing import Callable, Optional
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Tiny linear algebra — enough to compose bones, no numpy in Blender's Python
