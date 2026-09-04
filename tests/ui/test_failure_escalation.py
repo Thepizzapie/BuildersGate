@@ -440,3 +440,96 @@ class TestTheFailedSweep:
                          (int(item["id"]),))
         assert followup.sweep_failed(
             root, _settings(auto_reopen_failures=False)) == []
+
+
+class TestTheProgressBonus:
+    """A failure that NAMED ITS NEXT MOVE buys one more round, and only one.
+
+    The flat cap of one is right about a STRUCTURAL failure and wrong about
+    iterative craft work, which fails by narrowing: the run that motivated this
+    went knee weight-bleed -> ankle non-manifold damage -> that patch cleaned,
+    seam remains, and was escalated to a human mid-narrowing holding an untried
+    approach it had just written down. The class is declared by the agent, in
+    queue_complete(next_approach=...), so what is pinned here is that declaring
+    it is worth exactly ONE extra round and cannot be turned into a loop.
+    """
+
+    def test_a_named_next_approach_buys_a_second_automatic_round(self):
+        got = _decide(_item(auto_retries=1, attempts=1,
+                            result="seam still shatters\n\n"
+                                   + queue.NEXT_APPROACH_MARKER
+                                   + " stitch the boundary loop by hand"))
+        assert "reopen" in _kinds(got)
+        assert "fail_escalate" not in _kinds(got)
+
+    def test_without_one_the_same_item_escalates(self):
+        """The control for the test above — same counters, no declaration."""
+        got = _decide(_item(auto_retries=1, attempts=1, result="seam still shatters"))
+        assert "fail_escalate" in _kinds(got)
+
+    def test_the_bonus_is_worth_exactly_one_round(self):
+        """It is a bonus, not a bypass: an item that keeps naming a next move
+        would otherwise retry forever, which is the bonfire the cap exists to
+        stop."""
+        got = _decide(_item(auto_retries=2, attempts=2,
+                            result=queue.NEXT_APPROACH_MARKER + " one more idea"))
+        assert "fail_escalate" in _kinds(got)
+        assert "reopen" not in _kinds(got)
+
+    def test_a_zero_cap_still_escalates_on_the_first_failure(self):
+        """0 is an operator instruction ('escalate immediately'), not a budget
+        for the bonus to stack on."""
+        got = _decide(_item(auto_retries=0,
+                            result=queue.NEXT_APPROACH_MARKER + " an idea"),
+                      max_auto_retries=0)
+        assert _kinds(got) == ["fail_escalate"]
+
+    def test_the_round_cap_still_ends_it(self):
+        """qa.max_rounds is the absolute ceiling and the bonus does not lift
+        it — otherwise the two caps disagree and the looser one wins."""
+        got = _decide(_item(auto_retries=1, attempts=3,
+                            result=queue.NEXT_APPROACH_MARKER + " an idea"),
+                      max_rounds=3)
+        assert "fail_escalate" in _kinds(got)
+
+    def test_the_next_move_leads_the_reopen_brief(self):
+        """Buried under 1200 characters of post-mortem it would be re-derived,
+        which is the cost this whole path exists to avoid."""
+        got = _decide(_item(auto_retries=1, attempts=1,
+                            result=queue.NEXT_APPROACH_MARKER
+                                   + " stitch the boundary loop by hand"))
+        reopen = [a for a in got if a["kind"] == "reopen"][0]
+        assert reopen["reason"].startswith("START HERE")
+        assert "stitch the boundary loop by hand" in reopen["reason"].split(
+            "AUTO-REOPENED")[0]
+
+    def test_a_human_stop_is_still_never_bought_back(self):
+        """The stop guard runs before the budget, so a next_approach in the
+        note of a run somebody killed must not resurrect it."""
+        got = _decide(_item(auto_retries=0, stopped_by="adrian",
+                            result=queue.NEXT_APPROACH_MARKER + " an idea"))
+        assert _kinds(got) == ["skip"]
+
+
+class TestTheMarker:
+    """The declaration round-trips through the result note, not a column — so a
+    project whose database predates this gets the behaviour, and the human
+    reading the board sees the sentence the router acted on."""
+
+    def test_round_trip(self):
+        note = queue.with_next_approach("it failed", "  try   the other solver ")
+        assert queue.NEXT_APPROACH_MARKER in note
+        assert note.startswith("it failed")
+        assert queue.next_approach_of({"result": note}) == "try the other solver"
+
+    def test_an_empty_next_approach_changes_nothing(self):
+        assert queue.with_next_approach("it failed", "   ") == "it failed"
+        assert queue.next_approach_of({"result": "it failed"}) == ""
+
+    def test_the_last_marker_wins(self):
+        """A reopen appends the previous note to the brief and agents echo it,
+        so a result can carry an older attempt's marker above its own."""
+        note = queue.with_next_approach(
+            "quoting round 1: " + queue.NEXT_APPROACH_MARKER + " the old idea",
+            "the new idea")
+        assert queue.next_approach_of({"result": note}) == "the new idea"

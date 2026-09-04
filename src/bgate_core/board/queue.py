@@ -131,7 +131,8 @@ def clip_reason(text: str) -> str:
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
         chain_id: str = "", chain_pos: int = 0,
-        depends_on: Optional[int] = None, chain_self: bool = False) -> dict:
+        depends_on: Optional[int] = None, chain_self: bool = False,
+        max_runtime_s: Optional[int] = None) -> dict:
     # A `scope_tier_id` used to be filed here and run through scope.enforce
     # first — the cut line's one gate. It never refused an item in the product's
     # life: untiered work was deliberately allowed through, and nothing was ever
@@ -143,14 +144,17 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         raise ValueError("a work item needs a title")
     if depends_on is not None:
         get(root, int(depends_on))          # LookupError if the link is a fiction
+    if max_runtime_s is not None and int(max_runtime_s) <= 0:
+        raise ValueError("max_runtime_s must be positive")
     with db.tx(root) as conn:
         cur = conn.execute(
             "INSERT INTO work_item (seat, title, brief, priority, source, "
-            "source_ref, chain_id, chain_pos, depends_on) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source_ref, chain_id, chain_pos, depends_on, "
+            "max_runtime_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (seat, title.strip(), brief, priority, source, source_ref,
              chain_id.strip(), int(chain_pos),
-             int(depends_on) if depends_on is not None else None),
+             int(depends_on) if depends_on is not None else None,
+             int(max_runtime_s) if max_runtime_s is not None else None),
         )
         item_id = int(cur.lastrowid)
         if chain_self:
@@ -258,7 +262,6 @@ def get(root: str | os.PathLike[str], item_id: int) -> dict:
 def update(root: str | os.PathLike[str], item_id: int, *,
            title: Optional[str] = None, brief: Optional[str] = None,
            seat: Optional[str] = None, priority: Optional[int] = None,
-           max_cost_usd: Optional[float] = None,
            max_runtime_s: Optional[int] = None) -> dict:
     """Edit an existing item in place, without changing its status/lineage.
 
@@ -280,13 +283,9 @@ def update(root: str | os.PathLike[str], item_id: int, *,
         sets.append("seat = ?"); params.append(seat)
     if priority is not None:
         sets.append("priority = ?"); params.append(int(priority))
-    # Per-item ceilings override the project budget for one expensive item —
-    # editable here so raising them is a deliberate edit, not a dispatch flag
-    # nobody sees again.
-    if max_cost_usd is not None:
-        if float(max_cost_usd) <= 0:
-            raise ValueError("max_cost_usd must be positive")
-        sets.append("max_cost_usd = ?"); params.append(float(max_cost_usd))
+    # A per-item runtime ceiling overrides the project default for one slow
+    # item — editable here so raising it is a deliberate edit, not a dispatch
+    # flag nobody sees again.
     if max_runtime_s is not None:
         if int(max_runtime_s) <= 0:
             raise ValueError("max_runtime_s must be positive")
@@ -1093,6 +1092,59 @@ def note_auto_retry(root: str | os.PathLike[str], item_id: int) -> int:
         return 0
 
 
+# A FAILURE THAT NAMES ITS NEXT MOVE IS NOT THE FAILURE THE CAP WAS BUILT FOR.
+#
+# followup's automatic retry budget is one round and its stated reason is sound:
+# a STRUCTURAL failure - a missing key, a credit block, an asset that does not
+# exist, a lane the seat cannot write to - fails identically every round, so
+# every retry past the first buys the same blocker at the same price.
+#
+# It is wrong for the other kind. Iterative craft work fails by NARROWING.
+# MEASURED, on one rig repair: round one blamed knee weight-bleed, round two
+# found the real defect was non-manifold damage in the ankle, round three
+# cleaned that patch's topology (9550 -> 0 non-manifold faces) and left only a
+# union seam. Each round was cheaper and more specific than the one before, and
+# the run that ended it closed 'failed' while holding an untried, cheaper
+# approach it had just written into its own result note - because one automatic
+# round was the entire budget, and the escalation that followed handed a human a
+# diagnosis instead of an asset.
+#
+# So the CLASS IS DECLARED BY THE AGENT THAT HIT IT, which is the only party
+# that knows: an explicit next_approach on queue_complete buys exactly one extra
+# automatic round (see followup.PROGRESS_BONUS - it is a bonus, not a bypass;
+# qa.max_rounds still ends it). It rides in the result text rather than in a
+# column so a project whose database predates this gets the behaviour anyway,
+# and so the human reading the board sees the same sentence the router acted on.
+NEXT_APPROACH_MARKER = "NEXT APPROACH (untried):"
+MAX_NEXT_APPROACH = 600
+
+
+def with_next_approach(result: str, next_approach: str) -> str:
+    """A result paragraph with the agent's next move appended, machine-readably.
+
+    Whitespace is collapsed because the marker is parsed by ``next_approach_of``
+    off the tail of the note, and a multi-paragraph "next approach" that runs
+    past the clip would come back to the retry as half a sentence.
+    """
+    text = " ".join((next_approach or "").split())
+    if not text:
+        return result
+    return ((result or "").rstrip() + '\n\n' + NEXT_APPROACH_MARKER + " "
+            + text[:MAX_NEXT_APPROACH])
+
+
+def next_approach_of(item: dict) -> str:
+    """What a failed item said to try next, or "" - the retry-class signal.
+
+    ``rpartition``, so a run that quoted the previous attempt's note (a reopen
+    appends the old result to the brief, and agents echo it) is read for ITS
+    own last word rather than for the round before it.
+    """
+    body = str((item or {}).get("result") or "")
+    _, sep, tail = body.rpartition(NEXT_APPROACH_MARKER)
+    return tail.strip()[:MAX_NEXT_APPROACH] if sep else ""
+
+
 MAX_PREMISE = 1200
 
 
@@ -1290,7 +1342,7 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
 # deliberately out of update()'s reach — a reviewer editing a brief must not be
 # able to rewrite what a run cost or where it branched from.
 _RUN_FIELDS = ("actor", "base_commit", "branch", "worktree", "num_turns",
-               "total_cost_usd", "max_cost_usd", "max_runtime_s")
+               "total_cost_usd", "max_runtime_s")
 
 
 def set_run_fields(root: str | os.PathLike[str], item_id: int, **fields) -> dict:
