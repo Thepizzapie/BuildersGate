@@ -433,6 +433,28 @@ def start(root: str | os.PathLike[str], graph: dict, *, name: str = "",
     return advance(root, run_id)
 
 
+# WHAT A CALLER IS TOLD WHEN A STEP FAILS FOR A REASON NOBODY ANTICIPATED.
+#
+# The same rule api.safe_error states for the HTTP layer, applied at the place
+# the text is MADE rather than where it is served: nothing derived from an
+# exception object goes into a preflight result, because that result is
+# returned to the browser verbatim. CodeQL's py/stack-trace-exposure query has
+# no sanitizer implementation, so scrubbing the message does not clear it and
+# logging it instead trades a medium for a high - the only thing that works is
+# the text not being there.
+#
+# Deliberate refusals are unaffected and that is the point: every message a
+# user is meant to act on ("every workflow node needs an id", a provider's own
+# readiness reason) is a literal or a value we already hold, and each one is
+# now carried as DATA rather than caught out of an exception. What is withheld
+# is the wording of failures nobody planned for, which is exactly the set that
+# can name a path, a key or somebody's home directory.
+UNEXPECTED_STEP_FAILURE = ("this step could not be planned - the message is "
+                           "withheld because an unanticipated exception can "
+                           "name paths or values that are not ours to repeat. "
+                           "The traceback is on the server.")
+
+
 def preflight(root: str | os.PathLike[str], graph: dict) -> dict:
     """Validate executors, provider readiness, shape, and the run ceiling."""
     strict = not bool(graph.get("manual"))
@@ -443,13 +465,17 @@ def preflight(root: str | os.PathLike[str], graph: dict) -> dict:
         errors.append("a workflow run needs at least one step")
     specs: dict[str, dict] = {}
     for node in nodes:
-        try:
-            spec = _spec(node)
-            if spec["id"] in specs:
-                errors.append(f"duplicate node id {spec['id']!r}")
-            specs[spec["id"]] = spec
-        except ValueError as exc:
-            errors.append(str(exc))
+        # CHECKED HERE RATHER THAN CAUGHT. _spec raises exactly one ValueError
+        # and its message is a literal in this file, so asking the question
+        # directly says the same sentence without an exception object having
+        # to carry it into a response body.
+        if not str(node.get("id") or "").strip():
+            errors.append("every workflow node needs an id")
+            continue
+        spec = _spec(node)
+        if spec["id"] in specs:
+            errors.append(f"duplicate node id {spec['id']!r}")
+        specs[spec["id"]] = spec
     edges = [edge for edge in (graph.get("edges") or [])
              if _edge_pair(edge, specs)]
     cyclic = sorted(_cycle_nodes(list(specs), edges))
@@ -467,6 +493,13 @@ def preflight(root: str | os.PathLike[str], graph: dict) -> dict:
     for spec in specs.values():
         if spec["kind"] != "generate":
             continue
+        # AN UNAVAILABLE PROVIDER IS AN ANSWER, NOT A FAULT, so its reason
+        # travels as the value the registry already returned. Raising it and
+        # reading it back off `str(exc)` turned a sentence we own into
+        # exception-derived text, and cost the user a real diagnosis
+        # ("no OPENAI_API_KEY in this project") the moment that text was
+        # withheld for the failures that genuinely need withholding.
+        reason = ""
         try:
             plan = _generate.plan(spec.get("config") or {}, root=root)
             provider = str(plan.get("provider") or "")
@@ -474,17 +507,20 @@ def preflight(root: str | os.PathLike[str], graph: dict) -> dict:
                 from ..runtime import providers as _providers
                 provider_row = _providers.status_for(root, provider)
                 if not provider_row.get("available"):
-                    raise ValueError(provider_row.get("reason") or
-                                     f"{provider} is not available")
+                    reason = str(provider_row.get("reason") or
+                                 f"{provider} is not available")
+        except Exception:
+            reason = UNEXPECTED_STEP_FAILURE
+        if reason:
+            generators.append({"type": spec["type"], "label": spec["label"],
+                               "ok": False, "reason": reason})
+            if strict:
+                errors.append(f"{spec['label']}: {reason}")
+        else:
             generators.append({"type": spec["type"], "label": spec["label"],
                                "ok": True, "provider": provider,
                                "model": plan.get("model", ""),
                                "estimate_usd": float(plan.get("projected_usd") or 0.0)})
-        except Exception as exc:
-            generators.append({"type": spec["type"], "label": spec["label"],
-                               "ok": False, "reason": str(exc)})
-            if strict:
-                errors.append(f"{spec['label']}: {exc}")
 
     planned = sum(float(row.get("estimate_usd") or 0.0)
                   for row in generators if row.get("ok"))
