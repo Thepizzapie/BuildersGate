@@ -4925,6 +4925,72 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     return {**got, "ran_from": from_path} if from_path else got
 
 
+
+# THE EXPORT IS A DIFFERENT PROGRAM FROM THE EDITOR RUN. MEASURED (Corniche,
+# 2026-09-04): six cars carried per-instance texture overrides that resolved in
+# every godot_screenshot and vanished in the exported pck - the human saw six
+# identical cars while every agent's evidence showed six liveries. Nothing in the
+# pipeline had ever loaded the pck. This runs a SceneTree script against it.
+@_tool
+def godot_export_probe(pck: Annotated[str, Field(description='The exported .pck (or .zip) to probe - e.g. build/windows/Game.pck. Absolute or relative to the project root.')],
+                       script: Annotated[str, Field(description='GDScript source OR a path to a .gd file. MUST `extends SceneTree`, load what it wants to check from res:// (which IS the pck), print findings, and call quit().')],
+                       godot_project: Optional[str] = None,
+                       timeout: int = 120,
+                       headless: bool = True) -> dict:
+    """Run a SceneTree script against an EXPORTED pck - what the player gets.
+
+    `res://` inside the script resolves to the pck, not the project, so scene
+    overrides, imports and resources are exactly the shipped ones. Use it for
+    the release gate and after any delivery whose evidence came from an
+    editor run: load the scene, walk the nodes, print the property you are
+    asserting. `headless=False` opens a window so the script can save a
+    viewport image (root.get_viewport().get_texture().get_image()). Returns
+    stdout/stderr/exit_code; a missing pck or a script without quit() is an
+    error, not a timeout to wait for.
+    """
+    import tempfile
+    from pathlib import Path as _P
+    _contained_path(godot_project, "godot_project")
+    root = _P(godot_project or _root())
+    pck_path = _P(pck) if _P(pck).is_absolute() else root / pck
+    if not pck_path.is_file():
+        return {"ok": False, "error": f"no pck at {pck_path} - export first "
+                                      "(godot --headless --export-release <preset> <exe>)"}
+    source, from_path = _script_source(script, godot_project)
+    if from_path and source is None:
+        return {"ok": False, "error": f"{script} looks like a path and is not readable"}
+    src = source if source is not None else script
+    if "quit(" not in src:
+        return {"ok": False, "error": "the script never calls quit() - it would run until the timeout"}
+    exe = _godot.find_godot()
+    tmp = _P(tempfile.mkdtemp(prefix="bgate_pckprobe_"))
+    try:
+        sp = tmp / "probe.gd"
+        sp.write_text(src, encoding="utf-8")
+        cmd = [exe]
+        if headless:
+            cmd.append("--headless")
+        else:
+            cmd += ["--position", "2000,2000", "--resolution", "1280x720"]
+        cmd += ["--main-pack", str(pck_path), "--script", str(sp)]
+        import subprocess as _sp
+        try:
+            proc = _godot._spawn(cmd, timeout=timeout, cwd=str(pck_path.parent))
+        except _sp.TimeoutExpired:
+            return {"ok": False, "error": f"probe timed out after {timeout}s", "pck": str(pck_path)}
+        out = proc.stdout or ""
+        err = proc.stderr or ""
+        errors = [ln for ln in (out + "
+" + err).splitlines()
+                  if "SCRIPT ERROR" in ln or ln.startswith("ERROR:")]
+        return {"ok": proc.returncode == 0 and not any("SCRIPT ERROR" in e for e in errors),
+                "pck": str(pck_path), "exit_code": proc.returncode,
+                "stdout": out[-20000:], "stderr": err[-4000:], "errors": errors[:20]}
+    finally:
+        import shutil as _sh
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
 # THE QA SEAT HAD NO WAY TO RUN A TEST. Its mission is "Own tests, repro,
 # regression" and the brief it is dispatched with demands "tests at the known
 # baseline, no new failures" - a question that could only be answered by
@@ -6776,6 +6842,34 @@ def queue_get(item_id: int) -> dict:
     return _q.get(_root(), int(item_id))
 
 
+
+def _near_duplicate(_q, title: str, seat: str) -> Optional[dict]:
+    """The open item whose title shares most of its words with `title`, if any.
+
+    Token Jaccard over words of 4+ letters, threshold 0.5: cheap, and it is the
+    shape every measured duplicate had - the same nouns in a different order
+    ('Hero car mesh ... split Body + 4 wheels' twice, 'Swap art materials ...'
+    twice, three re-pins of one test file).
+    """
+    import re as _re
+    def toks(t: str) -> set:
+        return {w for w in _re.findall(r"[a-z0-9_]+", (t or "").lower()) if len(w) >= 4}
+    mine = toks(title)
+    if len(mine) < 3:
+        return None
+    best, best_j = None, 0.0
+    for r in _q.list_items(_root()):
+        if r.get("status") not in ("queued", "dispatched", "review"):
+            continue
+        theirs = toks(r.get("title") or "")
+        if not theirs:
+            continue
+        j = len(mine & theirs) / float(len(mine | theirs))
+        if j > best_j:
+            best, best_j = r, j
+    return best if best_j >= 0.5 else None
+
+
 @_tool
 def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
               depends_on: Optional[int] = None) -> dict:
@@ -6791,8 +6885,33 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     Full notes: docs/tools.md#queue_add
     """
     from bgate_core.board import queue as _q
+    # A SPAWNED AGENT FILES AT MOST TWO ITEMS, AND NEVER A DUPLICATE. MEASURED
+    # (Corniche, 2026-09-04): 11 of 16 QA items and 6 duplicates of work the
+    # director had already queued were filed agent-to-agent - re-pins, re-checks,
+    # audits of green work - and every one dispatched a full run. The director
+    # is the one participant who sees the whole board; an agent that thinks more
+    # work exists says so in its RESULT NOTE and the director files it.
+    own_item = (os.environ.get("BGATE_WORK_ITEM") or "").strip()
+    if own_item:
+        filed = [r for r in _q.list_items(_root())
+                 if str(r.get("source_ref") or "") == own_item]
+        if len(filed) >= 2:
+            return {"ok": False, "refused": "filing_cap",
+                    "error": f"item {own_item} has already filed {len(filed)} item(s) "
+                             "- the cap for a spawned agent is two. Put the rest in "
+                             "your queue_complete result note; the director files "
+                             "what the board actually needs.",
+                    "already_filed": [r["id"] for r in filed]}
+    dup = _near_duplicate(_q, title, seat)
+    if dup is not None:
+        return {"ok": False, "refused": "duplicate",
+                "error": f"an open item with the same work already exists: #{dup['id']} "
+                         f"[{dup['seat']}] {dup['title'][:90]} - steer it or let it "
+                         "run instead of filing a twin",
+                "existing": dup["id"]}
     item = _q.add(_root(), seat, title, brief=brief, priority=priority,
                   source=f"seat:{_seat() or 'unknown'}",
+                  source_ref=own_item,
                   depends_on=depends_on)
     if depends_on is None:
         return item
