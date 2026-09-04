@@ -123,12 +123,29 @@ def _stem_view(job: dict) -> dict:
              "stems", "error", "created_at")}
 
 
+def _contained(project_root: Path, candidate: Path) -> Path:
+    """Re-prove containment on every path DERIVED from a request value.
+
+    `_audio` already refuses an escaping `rel`, but each path built from its
+    result is a fresh path expression, and a guard that only ran on the input
+    is one refactor away from being the wrong guard. This one is a plain
+    realpath prefix test so it holds for the derived path itself.
+    """
+    base = os.path.realpath(str(project_root))
+    real = os.path.realpath(str(candidate))
+    if real != base and not real.startswith(base + os.sep):
+        raise api.forbidden("path escapes the project root",
+                            rel=candidate.name)
+    return candidate
+
+
 def _stem_target(project_root: Path, source_target: Path) -> Path:
-    base = source_target.parent / f"{source_target.stem}_stems"
-    candidate = base
+    parent = _contained(project_root, source_target).parent
+    base = parent / f"{source_target.stem}_stems"
+    candidate = _contained(project_root, base)
     n = 2
     while candidate.exists():
-        candidate = base.with_name(f"{base.name}_{n}")
+        candidate = _contained(project_root, base.with_name(f"{base.name}_{n}"))
         n += 1
     return candidate
 
@@ -207,9 +224,10 @@ def lab_stems_start(payload: dict) -> dict:
     if not clean_name:
         clean_name = "audio"
     job_id = uuid.uuid4().hex[:12]
-    work_dir = project_root / ".bgate_out" / "audio_stems" / job_id
+    work_dir = _contained(
+        project_root, project_root / ".bgate_out" / "audio_stems" / job_id)
     work_dir.mkdir(parents=True, exist_ok=False)
-    source = work_dir / f"{clean_name}.wav"
+    source = _contained(work_dir, work_dir / f"{clean_name}.wav")
     source.write_bytes(blob)
     target_dir = _stem_target(project_root, source_target)
     job = {
