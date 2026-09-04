@@ -212,12 +212,20 @@ def bundle() -> str:
     things this file exists to protect, and asserting them against the bundle
     keeps that protection rather than deleting it. The bundle is committed, so
     this needs no build step; a stale dist is itself worth failing on.
+
+    EVERY CHUNK, NOT THE ENTRY FILE. The shell was split into lazy per-view
+    chunks (bgate-Assets.js, bgate-Overview.js, ...), which moved the asset
+    categoriser out of bgate.js and turned three of these invariants red while
+    the code they protect was present and correct one file over. What the
+    assertions mean is "this ships in the app", and the app is the directory.
     """
     from pathlib import Path
 
-    dist = Path(__file__).resolve().parents[2] / "src" / "bgate_ui" / "static" / "dist" / "bgate.js"
-    assert dist.is_file(), "no built bundle — run `cd frontend && npm run build`"
-    return dist.read_text(encoding="utf-8", errors="replace")
+    dist = Path(__file__).resolve().parents[2] / "src" / "bgate_ui" / "static" / "dist"
+    assert (dist / "bgate.js").is_file(), (
+        "no built bundle — run `cd frontend && npm run build`")
+    return "\n".join(chunk.read_text(encoding="utf-8", errors="replace")
+                      for chunk in sorted(dist.glob("*.js")))
 
 
 def island(name: str) -> str:
