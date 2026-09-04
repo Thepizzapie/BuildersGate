@@ -20,15 +20,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import os
+import re
 import shutil
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter
 
-from bgate_core.audio import audiolab
+from bgate_core.audio import audiolab, audiostems
 from bgate_ui import api
 from bgate_ui.deps import root
 
@@ -39,6 +43,9 @@ SKIP_DIRS = {".git", ".godot", ".bgate", ".bgate_out", ".asset_work",
 SCAN_CAP = 4000
 BACKUP_DIRNAME = "audio_backups"
 MAX_PAYLOAD_CHARS = 180 * 1024 * 1024      # base64 of the WAV cap, with room
+_STEM_JOBS: dict[str, dict] = {}
+_STEM_LOCK = threading.Lock()
+_LOG = logging.getLogger(__name__)
 
 
 def _backup_dir(project_root: Path) -> Path:
@@ -106,7 +113,151 @@ def lab_status() -> dict:
         "ffmpeg": bool(ffmpeg),
         "max_seconds": audiolab.MAX_SECONDS,
         "loop_modes": sorted(audiolab.LOOP_MODES),
+        "stems": audiostems.capability(),
     }
+
+
+def _stem_view(job: dict) -> dict:
+    return {key: job.get(key) for key in
+            ("id", "state", "stage", "profile", "source", "output_dir",
+             "stems", "error", "created_at")}
+
+
+def _stem_target(project_root: Path, source_target: Path) -> Path:
+    base = source_target.parent / f"{source_target.stem}_stems"
+    candidate = base
+    n = 2
+    while candidate.exists():
+        candidate = base.with_name(f"{base.name}_{n}")
+        n += 1
+    return candidate
+
+
+def _run_stem_job(job_id: str, project_root: Path, source: Path,
+                  work_dir: Path, target_dir: Path) -> None:
+    def stage(text: str) -> None:
+        with _STEM_LOCK:
+            if job_id in _STEM_JOBS:
+                _STEM_JOBS[job_id]["stage"] = text
+
+    def cancelled() -> bool:
+        with _STEM_LOCK:
+            return bool(_STEM_JOBS.get(job_id, {}).get("cancel_requested"))
+
+    with _STEM_LOCK:
+        job = _STEM_JOBS[job_id]
+        job.update(state="running", stage="analysing the clip")
+        profile = job["profile"]
+    try:
+        outputs = audiostems.separate(source, work_dir, target_dir, profile, stage, cancelled)
+        stems = []
+        for output in outputs:
+            rel = output.relative_to(project_root).as_posix()
+            stems.append({"name": output.stem, "rel": rel})
+            try:
+                from bgate_core.store import assets
+                assets.track(project_root, output)
+            except Exception:
+                pass
+        with _STEM_LOCK:
+            _STEM_JOBS[job_id].update(
+                state="complete", stage="ready as mixer lanes", stems=stems)
+    except audiostems.StemCancelled:
+        with _STEM_LOCK:
+            _STEM_JOBS[job_id].update(
+                state="cancelled", stage="cancelled", error="")
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+    except Exception:
+        _LOG.exception("Audio Lab stem job %s failed", job_id)
+        with _STEM_LOCK:
+            _STEM_JOBS[job_id].update(
+                state="failed", stage="separation failed",
+                error="The stem engine could not separate this clip. Check the server log.")
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@router.post("/api/audio/lab/stems")
+def lab_stems_start(payload: dict) -> dict:
+    """Start local model-backed source separation without blocking the UI."""
+    cap = audiostems.capability()
+    if not cap["available"]:
+        raise api.unavailable(cap["reason"])
+    profile = str(payload.get("profile") or "four")
+    if profile not in audiostems.PROFILES:
+        raise api.bad_request("unknown stem profile", profile=profile)
+
+    raw = str(payload.get("wav") or "")
+    if raw.startswith("data:"):
+        raw = raw.split(",", 1)[-1]
+    if not raw or len(raw) > MAX_PAYLOAD_CHARS:
+        raise api.ApiError(413 if raw else 400, "invalid stem source payload")
+    try:
+        blob = base64.b64decode(raw, validate=True)
+        audiolab.validate_wav(blob)
+    except (binascii.Error, ValueError, audiolab.AudioError) as exc:
+        raise api.bad_request(f"stem source is not valid WAV audio: {exc}")
+
+    source_rel = str(payload.get("source_rel") or "game/assets/audio/untitled.wav")
+    project_root, source_target = _audio(source_rel, must_exist=False)
+    clean_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", source_target.stem).strip("_-")
+    if not clean_name:
+        clean_name = "audio"
+    job_id = uuid.uuid4().hex[:12]
+    work_dir = project_root / ".bgate_out" / "audio_stems" / job_id
+    work_dir.mkdir(parents=True, exist_ok=False)
+    source = work_dir / f"{clean_name}.wav"
+    source.write_bytes(blob)
+    target_dir = _stem_target(project_root, source_target)
+    job = {
+        "id": job_id, "state": "queued", "stage": "queued",
+        "profile": profile, "source": source_rel,
+        "output_dir": target_dir.relative_to(project_root).as_posix(),
+        "stems": [], "error": "", "created_at": int(time.time()),
+        "root": str(project_root.resolve()),
+    }
+    with _STEM_LOCK:
+        active = [value for value in _STEM_JOBS.values()
+                  if value.get("root") == str(project_root.resolve())
+                  and value.get("state") in {"queued", "running"}]
+        if active:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise api.conflict("a stem separation is already running",
+                               job_id=active[0]["id"])
+        # Bound an in-memory status list that otherwise survives for the server lifetime.
+        finished = [key for key, value in _STEM_JOBS.items()
+                    if value.get("state") in {"complete", "failed"}]
+        for key in finished[:-24]:
+            _STEM_JOBS.pop(key, None)
+        _STEM_JOBS[job_id] = job
+    threading.Thread(target=_run_stem_job,
+                     args=(job_id, project_root, source, work_dir, target_dir),
+                     daemon=True, name=f"audio-stems-{job_id}").start()
+    return api.ok(_stem_view(job))
+
+
+@router.get("/api/audio/lab/stems/{job_id}")
+def lab_stems_job(job_id: str) -> dict:
+    with _STEM_LOCK:
+        job = _STEM_JOBS.get(job_id)
+        if not job or job.get("root") != str(root().resolve()):
+            raise api.not_found("no such stem job", job_id=job_id)
+        return _stem_view(dict(job))
+
+
+@router.post("/api/audio/lab/stems/{job_id}/cancel")
+def lab_stems_cancel(job_id: str) -> dict:
+    with _STEM_LOCK:
+        job = _STEM_JOBS.get(job_id)
+        if not job or job.get("root") != str(root().resolve()):
+            raise api.not_found("no such stem job", job_id=job_id)
+        if job.get("state") in {"queued", "running"}:
+            job["cancel_requested"] = True
+            job["stage"] = "stopping the stem engine"
+        return api.ok(_stem_view(dict(job)))
 
 
 @router.get("/api/audio/lab/list")

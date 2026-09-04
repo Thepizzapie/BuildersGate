@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, Group, ScrollArea, Textarea } from "@mantine/core";
+import { Button, Group, ScrollArea, Select, Textarea } from "@mantine/core";
 import { Ti } from "../Ti";
 import { Markdown } from "../../components/Markdown";
 import { useEvents, FALLBACK_MS } from "../../hooks";
 import { toast } from "../../bridge";
-import { directorChat, directorNew, directorSay, type ChatMsg } from "./api";
+import { directorChat, directorConfigure, directorNew, directorSay,
+         directorUsageConnect, directorUsageDisconnect,
+         type ChatMsg, type ChatState } from "./api";
 
 /* A CLAUDE CODE SESSION, IN A PANE. Nothing else.
  *
@@ -31,6 +33,13 @@ export function DirectorChat({ active, onSent }: {
   const [waiting, setWaiting] = useState("");
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [runner, setRunner] = useState("claude");
+  const [model, setModel] = useState("opus");
+  const [runners, setRunners] = useState<NonNullable<ChatState["runners"]>>([]);
+  const [models, setModels] = useState<NonNullable<ChatState["models"]>>({});
+  const [usage, setUsage] = useState<NonNullable<ChatState["usage"]>>({});
+  const [usageBridge, setUsageBridge] = useState<NonNullable<ChatState["usage_bridge"]>>({});
+  const [bridgeBusy, setBridgeBusy] = useState(false);
   const seen = useRef(0);
   const feed = useRef<HTMLDivElement>(null);
   const wasRunning = useRef(false);
@@ -45,6 +54,12 @@ export function DirectorChat({ active, onSent }: {
     }
     setRunning(!!got.running);
     setWaiting(String(got.waiting || ""));
+    if (got.runner) setRunner(got.runner);
+    if (got.model) setModel(got.model);
+    if (got.runners) setRunners(got.runners);
+    if (got.models) setModels(got.models);
+    if (got.usage) setUsage(got.usage);
+    if (got.usage_bridge) setUsageBridge(got.usage_bridge);
     // The board only changes when a turn ends, so refresh it then rather than
     // on every tick of this poll.
     if (wasRunning.current && !got.running) onSent?.();
@@ -91,6 +106,31 @@ export function DirectorChat({ active, onSent }: {
     toast("new session", "ok");
   }
 
+  async function choose(nextRunner: string, nextModel: string) {
+    if (running || sending) return;
+    setSending(true);
+    const r = await directorConfigure(nextRunner, nextModel);
+    setSending(false);
+    if (!r.ok || !r.data) return;
+    if (r.data.runner) setRunner(r.data.runner);
+    if (r.data.model) setModel(r.data.model);
+    if (r.data.usage) setUsage(r.data.usage);
+    if (r.data.models) setModels(r.data.models);
+  }
+
+  async function toggleUsageBridge() {
+    if (bridgeBusy) return;
+    setBridgeBusy(true);
+    const r = usageBridge.enabled
+      ? await directorUsageDisconnect()
+      : await directorUsageConnect();
+    setBridgeBusy(false);
+    if (!r.ok || !r.data) return;
+    setUsageBridge(r.data);
+    if (!r.data.enabled) setUsage((was) => ({ ...was, five_hour: {}, weekly: {} }));
+    poll();
+  }
+
   return (
     <div className="bg4-console-main">
       <ScrollArea className="bg4-transcript" type="auto" viewportRef={feed}>
@@ -98,9 +138,9 @@ export function DirectorChat({ active, onSent }: {
           <div className="bg4-console-quiet">
             <b>Director session</b>
             <span>
-              A Claude Code session in this project, holding the builders-gate
-              tools. Ask it something, or tell it what to build and it files the
-              work for a seat.
+              A native coding session in this project, holding the builders-gate
+              tools. Ask it something, or tell it what to build and it files
+              the work for a seat.
             </span>
           </div>
         )}
@@ -114,6 +154,52 @@ export function DirectorChat({ active, onSent }: {
       </ScrollArea>
 
       <div className="bg4-composer">
+        <div className="bg4-director-strip">
+          <Group gap={6} wrap="nowrap" className="bg4-director-pickers">
+            <Select aria-label="Director coding tool" size="xs" allowDeselect={false}
+                    value={runner} disabled={running || sending}
+                    data={runners.map((r) => ({ value: r.value, label: r.label,
+                                                disabled: !r.installed }))}
+                    onChange={(value) => {
+                      if (!value || value === runner) return;
+                      const rows = models[value] || [];
+                      const preferred = rows.find((r) => r.default) || rows[0];
+                      choose(value, preferred?.value || "");
+                    }} />
+            <Select aria-label="Director model" size="xs" allowDeselect={false}
+                    searchable value={model} disabled={running || sending}
+                    data={(models[runner] || []).map((m) => ({
+                      value: m.value, label: m.label,
+                    }))}
+                    onChange={(value) => {
+                      if (value && value !== model) choose(runner, value);
+                    }} />
+          </Group>
+          <div className="bg4-director-usage" aria-label="Director usage">
+            <Usage label="context" value={usage.context?.limit
+              ? Math.round(100 * Number(usage.context.used || 0) / usage.context.limit)
+              : undefined}
+              text={formatTokens(usage.context?.used, usage.context?.limit)} />
+            <Usage label="5h" value={usage.five_hour?.used_percent}
+                   text={formatWindow(usage.five_hour)} />
+            <Usage label="week" value={usage.weekly?.used_percent}
+                   text={formatWindow(usage.weekly)} />
+          </div>
+        </div>
+        {runner === "claude" && (
+          <div className={`bg4-usage-bridge${usageBridge.enabled ? " on" : ""}`}>
+            <Ti name={usageBridge.enabled ? "shield-check" : "shield"} size={13} />
+            <span>{usageBridge.enabled
+              ? usageBridge.has_snapshot
+                ? "Claude usage is linked locally"
+                : "Linked locally — use Claude once, then restart Claude Code if needed"
+              : "Show Claude limits locally without sharing credentials"}</span>
+            <Button variant="subtle" size="compact-xs" loading={bridgeBusy}
+                    onClick={toggleUsageBridge}>
+              {usageBridge.enabled ? "disconnect" : "connect"}
+            </Button>
+          </div>
+        )}
         <Group gap="xs" align="flex-end" wrap="nowrap">
           <div style={{ flex: 1, minWidth: 0 }}>
             <Textarea autosize minRows={1} maxRows={10} variant="unstyled"
@@ -133,6 +219,31 @@ export function DirectorChat({ active, onSent }: {
       </div>
     </div>
   );
+}
+
+function Usage({ label, value, text }: { label: string; value?: number; text: string }) {
+  const safe = Math.max(0, Math.min(100, Number(value || 0)));
+  return (
+    <div className="bg4-usage" title={`${label}: ${text}`}>
+      <span><b>{label}</b>{text}</span>
+      <i><em style={{ width: `${safe}%` }} /></i>
+    </div>
+  );
+}
+
+function formatTokens(used?: number, limit?: number): string {
+  if (!used && !limit) return " —";
+  const short = (n: number) => n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+  return ` ${short(Number(used || 0))}${limit ? ` / ${short(limit)}` : ""}`;
+}
+
+function formatWindow(window?: { used_percent?: number; resets_at?: number }): string {
+  if (window?.used_percent == null) return " —";
+  const reset = window.resets_at
+    ? ` · ${new Date(window.resets_at * 1000).toLocaleTimeString([], {
+        hour: "numeric", minute: "2-digit",
+      })}` : "";
+  return ` ${window.used_percent}%${reset}`;
 }
 
 /** One message. A tool call is a single dim line — the name and what it was

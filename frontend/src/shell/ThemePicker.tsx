@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Ti } from "./Ti";
 
 export type Ground = {
-  id: "dark" | "light" | "system" | "orbit" | "blueprint" | "pocket" | "candy";
+  id: "dark" | "light" | "system" | "orbit" | "blueprint" | "pocket" | "candy" | "mythic" | "flux";
   icon: string;
   label: string;
   note: string;
@@ -15,6 +15,8 @@ export const GROUNDS: Ground[] = [
   { id: "blueprint", icon: "ruler-2", label: "Blueprint", note: "Drafting blue and safety yellow" },
   { id: "pocket", icon: "device-gamepad-2", label: "Pocket", note: "Four-tone LCD and raspberry controls" },
   { id: "candy", icon: "device-gamepad", label: "Candy cab", note: "Pearl shell and cobalt arcade controls" },
+  { id: "mythic", icon: "swords", label: "Mythic", note: "Obsidian, spellfire and gilded relics" },
+  { id: "flux", icon: "activity", label: "Flux", note: "Builders Gate blue and orange, alive to time and focus" },
   { id: "system", icon: "device-desktop", label: "System", note: "Follow this device" },
 ];
 
@@ -40,10 +42,25 @@ export function useGround(): [Ground["id"], (id: Ground["id"]) => void] {
 }
 
 export function ThemeSample({ ground, compact = false }: { ground: Ground; compact?: boolean }) {
+  const moveFlux = (event: React.PointerEvent<HTMLSpanElement>) => {
+    if (ground.id !== "flux") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    event.currentTarget.style.setProperty("--flux-preview-x", `${event.clientX - rect.left}px`);
+    event.currentTarget.style.setProperty("--flux-preview-y", `${event.clientY - rect.top}px`);
+  };
   return (
-    <span className={`bg4-theme-sample${compact ? " compact" : ""}`} data-ground={ground.id} aria-hidden="true">
+    <span className={`bg4-theme-sample${compact ? " compact" : ""}`} data-ground={ground.id}
+          aria-hidden="true" onPointerMove={moveFlux}>
       <span className="rail"><i /><i /><i /></span>
       <span className="stage"><i className="head" /><i className="card"><b /><b /></i></span>
+      {ground.id === "flux" && <span className="flux-live">
+        <i className="flux-focus" />
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+          <path className="route" d="M7 74 C30 74 31 25 54 25 S72 66 94 48" />
+          <path className="pulse" d="M7 74 C30 74 31 25 54 25 S72 66 94 48" />
+          <circle cx="7" cy="74" r="3" /><circle cx="54" cy="25" r="3" /><circle cx="94" cy="48" r="3" />
+        </svg>
+      </span>}
     </span>
   );
 }

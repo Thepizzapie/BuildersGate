@@ -311,6 +311,73 @@
     --r-xs:1px; --r-sm:2px; --r-md:3px; --r-lg:4px; --r-xl:6px;
   }
 
+  /* Mythic treats the production desk like a legendary inventory screen:
+     cold obsidian, bruised-violet depth and gold reserved for decisions. */
+  :root[data-theme="mythic"]{
+    color-scheme:dark;
+    --bg:#09060d;
+    --surface-1:#110a16; --surface-2:#190e20; --surface-3:#25142e; --surface-4:#34203d;
+    --line:#3f2946; --line-soft:#28182f; --line-strong:#76506f;
+    --text:#f6e8c8; --text-2:#d3bea0; --text-3:#a89588; --text-dim:#70616c;
+    --brand-post:#bd79ff;
+    --accent:#ffc857; --accent-hover:#ffdb87; --accent-press:#dca43d; --accent-fg:#241408;
+    --accent-soft:rgba(255,200,87,.15); --accent-wash:rgba(255,200,87,.07); --accent-line:rgba(255,200,87,.5);
+    --spark:#d36cff;
+    --good:#62e6b0; --good-line:#347b66; --good-soft:rgba(98,230,176,.13);
+    --warn:#ffc857; --warn-line:#8d6b31; --warn-soft:rgba(255,200,87,.14);
+    --bad:#ff668e; --bad-line:#853650; --bad-soft:rgba(255,102,142,.14);
+    --info:#bd8cff; --info-line:#674d8b; --info-soft:rgba(189,140,255,.14);
+    --c-director:#ffc857; --c-narrative:#bd8cff; --c-gameplay:#ff715b;
+    --c-tech:#66c7ff; --c-art:#ff79bd; --c-audio:#62e6b0; --c-cinematic:#ff9e57; --c-qa:#b5e66a;
+    --shadow-1:0 1px 2px rgba(0,0,0,.55),inset 0 1px rgba(255,232,190,.025);
+    --shadow-2:0 7px 20px rgba(0,0,0,.55),0 0 18px rgba(130,45,160,.08);
+    --shadow-3:0 18px 46px rgba(0,0,0,.68),0 0 34px rgba(130,45,160,.12);
+    --shadow-4:0 30px 84px rgba(0,0,0,.78),0 0 54px rgba(130,45,160,.16);
+    --scrim:rgba(7,3,10,.72); --overlay:rgba(12,6,16,.92);
+    --checker-a:#100a14; --checker-b:#1b1021; --grid-dot:rgba(255,200,87,.075);
+    --ambient:radial-gradient(680px 480px at 88% -8%,rgba(183,67,255,.2),transparent 65%),
+              radial-gradient(780px 560px at -8% 108%,rgba(255,105,63,.1),transparent 68%),
+              repeating-linear-gradient(135deg,rgba(255,200,87,.018) 0 1px,transparent 1px 18px);
+    --sans:"Trebuchet MS","Segoe UI",system-ui,sans-serif;
+    --sans-display:Georgia,"Times New Roman",serif;
+    --r-xs:1px; --r-sm:3px; --r-md:5px; --r-lg:8px; --r-xl:12px;
+  }
+
+  /* Flux is a responsive signal field rather than a fixed material. The
+     palette stays restrained and readable; only the light behind the work
+     moves, following pointer focus while its blue carrier warms with local
+     daylight. index.html owns those three live variables. */
+  :root[data-theme="flux"]{
+    color-scheme:dark;
+    --bg:#060817;
+    --surface-1:#0a0e22; --surface-2:#0e142b; --surface-3:#151d38; --surface-4:#1e2948;
+    --line:#293759; --line-soft:#182341; --line-strong:#4d6090;
+    --text:#f1f3ff; --text-2:#c2c8e2; --text-3:#929dbc; --text-dim:#687394;
+    --brand-post:#7166ff;
+    --accent:#ff6a3d; --accent-hover:#ff8a66; --accent-press:#da4e27; --accent-fg:#190802;
+    --accent-soft:rgba(255,106,61,.16); --accent-wash:rgba(255,106,61,.075); --accent-line:rgba(255,106,61,.5);
+    --spark:#8490ff;
+    --good:#64e6aa; --good-line:#348469; --good-soft:rgba(100,230,170,.13);
+    --warn:#ffd072; --warn-line:#92723b; --warn-soft:rgba(255,208,114,.14);
+    --bad:#ff7f91; --bad-line:#914755; --bad-soft:rgba(255,127,145,.14);
+    --info:#8490ff; --info-line:#4b579b; --info-soft:rgba(132,144,255,.14);
+    --c-director:#ffd072; --c-narrative:#ae91ff; --c-gameplay:#ff8b79;
+    --c-tech:#8490ff; --c-art:#ff86c6; --c-audio:#57d7bd; --c-cinematic:#ff9a68; --c-qa:#a7dc70;
+    --shadow-1:0 2px 5px rgba(0,3,16,.4),inset 0 1px rgba(207,211,255,.025);
+    --shadow-2:0 10px 28px rgba(0,3,16,.5),inset 0 1px rgba(207,211,255,.035);
+    --shadow-3:0 20px 54px rgba(0,2,14,.62),0 0 24px rgba(24,0,173,.08);
+    --shadow-4:0 34px 86px rgba(0,2,12,.74),0 0 46px rgba(255,106,61,.07);
+    --scrim:rgba(2,3,16,.74); --overlay:rgba(7,9,25,.93);
+    --checker-a:#0b1025; --checker-b:#111831; --grid-dot:rgba(113,102,255,.12);
+    --ambient:none; --flux-px:72vw; --flux-py:18vh; --flux-h:250;
+    --glass-1:rgba(8,12,31,.95); --glass-2:rgba(12,17,40,.96); --glass-3:rgba(17,24,51,.97);
+    --glass-filter:none;
+    --solid-1:#0a0e22; --solid-2:#0e142b; --solid-3:#151d38;
+    --sheen:inset 0 1px rgba(210,214,255,.045); --sheen-strong:inset 0 1px rgba(210,214,255,.075);
+    --glow:0 0 22px rgba(255,106,61,.12);
+    --r-xs:2px; --r-sm:4px; --r-md:6px; --r-lg:10px; --r-xl:15px;
+  }
+
   /* ── ground: orbit ─────────────────────────────────────────────────────────
      A THIRD GROUND, NOT A VARIANT OF DARK. Absolute black, glass panels that
      exist because of their edges rather than their fill, and one iridescent
@@ -4771,3 +4838,89 @@
   background: color-mix(in srgb, var(--danger, #e5484d) 14%, transparent);
   border-color: var(--danger, #e5484d);
 }
+
+/* Mythic's memorable move is a single enormous, barely-visible summoning seal
+   under the workspace. The interface above it stays disciplined and readable. */
+:root[data-theme="mythic"] body::before{
+  content:""; position:fixed; z-index:0; width:min(72vw,820px); aspect-ratio:1;
+  right:-18vw; bottom:-34vw; border-radius:50%; pointer-events:none; opacity:.24;
+  background:
+    repeating-conic-gradient(from 22.5deg,transparent 0 21deg,rgba(255,200,87,.18) 21deg 22.5deg),
+    radial-gradient(circle,transparent 0 31%,rgba(211,108,255,.22) 31.3% 31.8%,transparent 32.1% 47%,rgba(255,200,87,.16) 47.3% 47.8%,transparent 48.1% 65%,rgba(211,108,255,.12) 65.2% 65.7%,transparent 66%);
+  filter:drop-shadow(0 0 34px rgba(211,108,255,.24));
+}
+
+/* Flux has one moving element: the signal field under the workspace. Its hot
+   point follows focus and the carrier hue moves only 24 degrees over a day,
+   so motion changes atmosphere without changing semantic colours. */
+:root[data-theme="flux"] body::before{
+  content:""; position:fixed; z-index:0; left:-360px; top:-360px;
+  width:720px; height:720px; border-radius:50%; pointer-events:none;
+  opacity:.72; transform:translate3d(var(--flux-px),var(--flux-py),0);
+  background:
+    radial-gradient(ellipse 48% 38% at 56% 46%,
+      hsl(var(--flux-h) 86% 58% / .32),transparent 66%),
+    radial-gradient(ellipse 38% 48% at 34% 68%,
+      rgba(255,106,61,.2),transparent 70%),
+    conic-gradient(from 210deg at 52% 48%,transparent 0 32%,rgba(24,0,173,.12) 40%,
+      transparent 49% 72%,rgba(255,106,61,.08) 80%,transparent 88%);
+  filter:blur(14px) saturate(1.12);
+  animation:flux-breathe 14s ease-in-out infinite alternate;
+  will-change:transform,opacity;
+}
+@keyframes flux-breathe{
+  from{opacity:.58}
+  to{opacity:.82}
+}
+:root[data-theme="flux"] :is(.qbtn:not(.ghost),.primary,.run-btn){
+  box-shadow:inset 0 1px rgba(255,225,214,.34),0 5px 20px rgba(255,106,61,.16);
+}
+:root[data-theme="flux"] :is(.panel,.spanel,.revision-pane,.asset-tile,.nc-node,.wf-card){
+  box-shadow:var(--shadow-1),var(--sheen);
+}
+:root[data-theme="flux"] .nc-host{
+  background-color:rgba(6,16,24,.72);
+  background-image:radial-gradient(circle at 72% 18%,
+    hsl(var(--flux-h) 82% 58% / .12),transparent 34%),
+    radial-gradient(circle,var(--grid-dot) 1px,transparent 1px);
+}
+@media (prefers-reduced-motion: reduce){
+  :root[data-theme="flux"] body::before{
+    animation:none;transform:translate3d(var(--flux-px),var(--flux-py),0);opacity:.64
+  }
+}
+@media (prefers-reduced-transparency: reduce){
+  :root[data-theme="flux"] body::before{opacity:.38;filter:none}
+}
+:root[data-theme="mythic"] :is(h1,h2,h3,.view-title,.bg4-insp-title,.bg4-dialog-title,.asset-desk-title h2){
+  font-family:var(--sans-display); letter-spacing:.015em;
+}
+:root[data-theme="mythic"] :is(.panel,.spanel,.revision-pane,.asset-tile,.nc-node,.wf-card,.toast){
+  border-color:color-mix(in srgb,var(--accent) 26%,var(--line));
+  background-image:linear-gradient(145deg,rgba(255,232,190,.035),transparent 42%),
+                   linear-gradient(315deg,rgba(211,108,255,.045),transparent 48%);
+  box-shadow:var(--shadow-2),inset 0 0 0 1px rgba(255,200,87,.025);
+}
+:root[data-theme="mythic"] :is(.qbtn:not(.ghost),.primary,.run-btn,.themebtn.on){
+  background:linear-gradient(135deg,#ffe092 0%,var(--accent) 42%,#e89839 100%);
+  border-color:#ffe6a8; color:var(--accent-fg); text-shadow:0 1px rgba(255,255,255,.18);
+  box-shadow:inset 0 1px rgba(255,255,255,.55),0 4px 14px rgba(255,157,45,.18);
+}
+:root[data-theme="mythic"] :is(input,textarea,select):focus{
+  border-color:var(--spark); box-shadow:0 0 0 1px var(--spark),0 0 18px rgba(211,108,255,.2);
+}
+:root[data-theme="mythic"] .nc-host{
+  background:radial-gradient(700px 460px at 74% 12%,rgba(129,40,158,.16),transparent 64%),var(--bg);
+}
+:root[data-theme="mythic"] .nc-node::before{
+  height:3px; opacity:1; background:linear-gradient(90deg,transparent,var(--nc-a) 22% 78%,transparent);
+  box-shadow:0 0 12px var(--nc-a);
+}
+:root[data-theme="mythic"] .nc-node[data-status="running"]{
+  animation:mythic-spellfire 1.8s ease-in-out infinite;
+}
+@keyframes mythic-spellfire{
+  50%{box-shadow:0 0 0 1px var(--nc-a),0 0 26px color-mix(in srgb,var(--nc-a) 38%,transparent),0 16px 38px rgba(0,0,0,.65)}
+}
+:root[data-theme="mythic"] ::selection{background:var(--spark);color:#16091d}
+:root[data-theme="mythic"] *{scrollbar-color:#7b4b82 #120a17}

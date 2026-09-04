@@ -57,8 +57,8 @@ function clip(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
-/** `C:\Users\robin\Desktop\downsizing\game\scenes\floor_0.tscn` is 55 characters
- *  of which 15 identify the file. The parent directory stays because
+/** `project/game/scenes/floor_0.tscn` spends most of its width on directories.
+ *  The parent directory stays because
  *  `floor_0.tscn` alone does not distinguish game/scenes from a backup. */
 function shortPath(raw: string): string {
   const parts = raw.replace(/\\/g, "/").split("/").filter(Boolean);
@@ -334,6 +334,19 @@ export function Inspector() {
      disagree about how many there are. */
   const entries = useMemo(() => foldSteps(act.steps || []), [act.steps]);
   const failedCount = entries.filter((e) => e.kind === "tool" && e.bad).length;
+  const runHealth = useMemo(() => {
+    const tools = entries.filter((e): e is Extract<Entry, { kind: "tool" }> => e.kind === "tool");
+    const current = [...tools].reverse().find((e) => !e.raw) || tools[tools.length - 1] || null;
+    const lastGood = [...tools].reverse().find((e) => !e.bad && (e.images.length || e.files.length)) || null;
+    const repeats = new Map<string, { label: string; count: number }>();
+    tools.filter((e) => e.bad).forEach((e) => {
+      const label = errorOf(e.raw);
+      const key = `${e.verb}:${label}`;
+      const prior = repeats.get(key);
+      repeats.set(key, { label, count: (prior?.count || 0) + e.count });
+    });
+    return { current, lastGood, repeat: [...repeats.values()].sort((a, b) => b.count - a.count)[0] || null };
+  }, [entries]);
 
   /* WHERE THE FAILURE IS, not just that there is one. A forty-step run puts
      its one red step wherever it happened, and on a rail this narrow that is
@@ -465,13 +478,40 @@ export function Inspector() {
         {/* THE SAME DRILLDOWN SERVES THE BOARD, THE GRAPH AND THE FLOOR, so
             putting this here puts it on all three at once. */}
         {itemId != null && <ResumeInCli itemId={itemId} />}
-        {/* WHAT HAS TO HAPPEN BEFORE THIS. Draws nothing for an unchained
-            item, which is most of them; for a chained one it is the answer to
-            the question a card cannot fit - see ExecutionPath. */}
-        {itemId != null && <ExecutionPath itemId={itemId} />}
+        {itemId != null && (runHealth.current || runHealth.repeat || runHealth.lastGood) && (
+          <div className="bg4-runhealth">
+            {runHealth.current && (
+              <div className="bg4-runhealth-row">
+                <Ti name={running ? "loader-2" : "activity"} size={12} />
+                <span>{running ? "now" : "last"}</span>
+                <b title={runHealth.current.subject}>{runHealth.current.verb}{runHealth.current.subject ? ` · ${runHealth.current.subject}` : ""}</b>
+                {runHealth.current.at && <time>{runHealth.current.at}</time>}
+              </div>
+            )}
+            {runHealth.repeat && runHealth.repeat.count > 1 && (
+              <button className="bg4-runhealth-row danger" onClick={jumpToFailure}
+                      title={runHealth.repeat.label}>
+                <Ti name="repeat" size={12} /><span>loop</span>
+                <b>{runHealth.repeat.count} matching failures</b>
+              </button>
+            )}
+            {runHealth.lastGood && (
+              <div className="bg4-runhealth-row">
+                <Ti name="checkpoint" size={12} /><span>last output</span>
+                <b title={runHealth.lastGood.files[0] || runHealth.lastGood.images[0]}>
+                  {shortPath(runHealth.lastGood.images[0] || runHealth.lastGood.files[0])}
+                </b>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="bg4-insp-body" ref={bodyRef}>
+        {/* Dependency history is supporting detail, not header chrome. Keeping
+            it in the scrolling body prevents long chains from consuming the
+            entire inspector before the run's output and activity can begin. */}
+        {!composing && itemId != null && <ExecutionPath itemId={itemId} />}
         {composing && (
           <div className="bg4-seatbox">
             <div className="bg4-insp-eyebrow" style={{ marginBottom: 8 }}>

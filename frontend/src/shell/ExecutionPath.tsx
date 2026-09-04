@@ -76,8 +76,13 @@ export function ExecutionPath({ itemId }: { itemId: number }) {
     (id) => (path.find((l) => l.id === id)?.status ?? "done") !== "done");
 
   return (
-    <div className="bg4-execpath">
-      <div className="bg4-insp-eyebrow">Execution path</div>
+    <details className="bg4-execpath">
+      <summary>
+        <span>Execution path</span>
+        <span className="count">{path.length} items</span>
+        <Ti name="chevron-down" size={13} />
+      </summary>
+      <div className="bg4-execpath-content">
       {reply.waiting_line && (
         <div className="bg4-execwait">
           <Ti name="hand-stop" size={12} />
@@ -113,6 +118,7 @@ export function ExecutionPath({ itemId }: { itemId: number }) {
         later-numbered item can legitimately run first when it was inserted into
         an existing chain. Ids are creation identifiers and never change.
       </p>
-    </div>
+      </div>
+    </details>
   );
 }

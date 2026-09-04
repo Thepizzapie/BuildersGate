@@ -14,6 +14,7 @@ import io
 import json
 import math
 import struct
+import time
 import wave
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from bgate_core.audio import audiolab
 from bgate_ui.app import app
+from bgate_ui.routes import audiolab as lab_routes
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +338,54 @@ def test_status_reports_what_can_be_written(client):
     assert ".wav" in d["writable"]
     if not d["ogg"]:
         assert d["ogg_reason"], "an unavailable format must say why"
+
+
+def test_status_describes_real_stem_profiles(client):
+    stems = client.get("/api/audio/lab/status").json()["stems"]
+    assert stems["engine"] == "Demucs"
+    assert {p["id"] for p in stems["profiles"]} == {"vocals", "four", "six"}
+    assert next(p for p in stems["profiles"] if p["id"] == "six")["stems"] == [
+        "vocals", "drums", "bass", "guitar", "piano", "other"]
+
+
+def test_stem_job_refuses_to_pretend_when_engine_is_missing(client, monkeypatch):
+    monkeypatch.setattr(lab_routes.audiostems, "capability", lambda: {
+        "available": False, "engine": "Demucs", "reason": "not installed", "profiles": []})
+    r = client.post("/api/audio/lab/stems", json={"profile": "four", "wav": "anything"})
+    assert r.status_code == 503
+
+
+def test_stem_job_files_outputs_and_reports_progress(client, game, monkeypatch):
+    monkeypatch.setattr(lab_routes.audiostems, "capability", lambda: {
+        "available": True, "engine": "Demucs", "reason": "", "profiles": []})
+
+    def fake_separate(source, work_dir, target_dir, profile, on_stage, cancelled):
+        assert source.is_file() and profile == "four"
+        assert cancelled() is False
+        on_stage("filing separated lanes into the project")
+        target_dir.mkdir(parents=True)
+        result = []
+        for name in ("vocals", "drums", "bass", "other"):
+            path = target_dir / f"{name}.wav"
+            path.write_bytes(_wav_bytes(seconds=0.05))
+            result.append(path)
+        return result
+
+    monkeypatch.setattr(lab_routes.audiostems, "separate", fake_separate)
+    r = client.post("/api/audio/lab/stems", json={
+        "profile": "four", "source_rel": HIT,
+        "wav": base64.b64encode(_wav_bytes()).decode()})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["data"]["id"]
+    job = None
+    for _ in range(100):
+        job = client.get(f"/api/audio/lab/stems/{job_id}").json()
+        if job["state"] in {"complete", "failed"}:
+            break
+        time.sleep(0.01)
+    assert job and job["state"] == "complete", job
+    assert [s["name"] for s in job["stems"]] == ["vocals", "drums", "bass", "other"]
+    assert all((game / s["rel"]).is_file() for s in job["stems"])
 
 
 def test_the_listing_probes_and_flags_looping(client):

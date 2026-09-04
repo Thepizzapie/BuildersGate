@@ -12,7 +12,7 @@ a conversation modelled as a job queue.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from bgate_ui import api as _api
 from bgate_ui.agents import directorsession as _director
@@ -51,6 +51,36 @@ def director_new() -> dict:
     """Start a fresh conversation. The old transcript is archived beside the
     new one on disk, never deleted."""
     return _director.reset(str(root()))
+
+
+@router.put("/api/director/config")
+def director_config(payload: dict) -> dict:
+    """Select the native CLI and one of the models that CLI currently offers."""
+    try:
+        return _director.configure(
+            str(root()), str(payload.get("runner") or ""),
+            str(payload.get("model") or ""))
+    except ValueError as exc:
+        raise _api.bad_request(str(exc))
+
+
+@router.post("/api/director/usage-bridge")
+def director_usage_connect(request: Request) -> dict:
+    """Opt in to Claude's local, credential-free quota status feed."""
+    _api.require_human(_api.current_actor(request), "connect Claude usage")
+    from bgate_ui.agents import claudeusage
+    try:
+        return {"ok": True, **claudeusage.install()}
+    except ValueError as exc:
+        raise _api.bad_request(str(exc))
+
+
+@router.delete("/api/director/usage-bridge")
+def director_usage_disconnect(request: Request) -> dict:
+    """Remove the bridge, its quota snapshot, and restore the prior status line."""
+    _api.require_human(_api.current_actor(request), "disconnect Claude usage")
+    from bgate_ui.agents import claudeusage
+    return {"ok": True, **claudeusage.uninstall()}
 
 
 @router.post("/api/director/stop")

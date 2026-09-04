@@ -519,3 +519,13 @@ class TestTheDirectorChat:
         directorsession._post(root, "assistant", "two")
         body = client.get(f"/api/director/chat?after={first}").json()
         assert [m["text"] for m in body["messages"]] == ["two"]
+
+    def test_runner_and_model_can_be_selected(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "bgate_ui.agents.directorsession.configure",
+            lambda root, runner, model: {
+                "ok": True, "runner": runner, "model": model})
+        body = client.put("/api/director/config", json={
+            "runner": "codex", "model": "gpt-5.6-sol"}).json()
+        assert body == {"ok": True, "runner": "codex",
+                        "model": "gpt-5.6-sol"}

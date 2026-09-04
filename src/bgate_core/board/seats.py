@@ -351,6 +351,43 @@ PRODUCTION_ROUTE_RULE = (
     "structural, and say in your result note what you changed and why."
 )
 
+
+ART_MESH_ROUTE_RULES = {
+    "smart": (
+        "3D CREATION ROUTE — SMART: choose by modelling complexity. Hand-author "
+        "simple low-detail forms with blender_run — an apple, crate, basic rock, "
+        "terrain piece, or block-out. Use API-backed character_generate or "
+        "blender_generate for complex, detailed, organic, or multipart assets — "
+        "a character, creature, or finished car. When uncertain, count distinct "
+        "shaped parts and surface details: a form that needs more than eight "
+        "purposeful parts takes the API route. This project setting is the route "
+        "decision; do not choose by habit."
+    ),
+    "api": (
+        "3D CREATION ROUTE — API GENERATORS: every NEW mesh starts with "
+        "character_generate or blender_generate. Do not hand-author replacement "
+        "geometry in blender_run, even for a simple prop. Blender remains the "
+        "required downstream tool for inspection, repair, rigging, texturing, "
+        "turnarounds, and export. This setting overrides the default primitive "
+        "route in the 3D workflow."
+    ),
+    "blender": (
+        "3D CREATION ROUTE — BLENDER: hand-author every NEW mesh with blender_run "
+        "and the built-in Blender kit. Do not call character_generate or "
+        "blender_generate for geometry unless the work item's brief explicitly "
+        "requires generated geometry. API image generation remains available "
+        "for concept references, decals, and texture maps. This setting overrides "
+        "the default generated-organic route in the 3D workflow."
+    ),
+}
+
+
+def art_mesh_route_rule(root: str | os.PathLike[str]) -> str:
+    """The human-selected geometry route injected into every art run."""
+    from ..store import settings
+    route = str(settings.get(root, "art.mesh_route") or "smart")
+    return ART_MESH_ROUTE_RULES.get(route, ART_MESH_ROUTE_RULES["smart"])
+
 DISPATCH_RULES = {
     # gameplay and tech both hold the `level` craft, so both can run
     # level_generate - and both can spend an afternoon on a level whose
@@ -575,8 +612,10 @@ def dispatch_rules(root: str | os.PathLike[str], seat: str) -> str:
     # genuinely wants different ownership doctrine states it in the BIBLE, which
     # the rule itself defers to - that is one place to look, and it is the place
     # that worked in the benchmark.
+    mesh_route = art_mesh_route_rule(root) if seat == "art" else ""
     return "\n\n".join(part for part in
-                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, own) if part)
+                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, own, mesh_route)
+                        if part)
 
 
 # ---------------------------------------------------------------------------
@@ -2268,6 +2307,10 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
     for entry in board:
         entry["title"] = str(entry.get("title") or "")[:120]
 
+    workflow = workflow_for(role, dimension, seat.get("workflow", ""))
+    if role == "art" and dimension in ("3d", "2d+3d"):
+        workflow = f"{workflow}\n\n{art_mesh_route_rule(root)}"
+
     return _fit({
         "role": role,
         "your_role": SEAT_IDENTITY,
@@ -2280,7 +2323,7 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         # to dispatched work and not to anything else.
         "personality": (seat.get("persona") or {}).get("style") or "",
         "dimension": dimension,
-        "workflow": workflow_for(role, dimension, seat.get("workflow", "")),
+        "workflow": workflow,
         "write_lanes": seat["write_globs"],
         "pinned_refs": (cap(_refs.list_refs(root), MAX_REFS, "ref_list")
                         if role in PINNED_REF_SEATS else []),

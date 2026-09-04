@@ -321,6 +321,20 @@ body:has(.bg4) .statusbar { display: none }
   font: 500 10px var(--mono); white-space: nowrap;
 }
 .bg4-jumpfail:hover { background: color-mix(in srgb, var(--bad) 22%, transparent) }
+.bg4-runhealth {
+  display: grid; gap: 1px; margin-top: 12px; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--line);
+}
+.bg4-runhealth-row {
+  min-width: 0; min-height: 28px; display: grid; grid-template-columns: 14px 55px minmax(0, 1fr) auto;
+  align-items: center; gap: 6px; padding: 5px 8px; border: 0; background: var(--solid-2);
+  color: var(--text-3); font: 500 9px var(--mono); text-align: left;
+}
+button.bg4-runhealth-row { width: 100%; cursor: pointer; }
+.bg4-runhealth-row b { min-width: 0; overflow: hidden; color: var(--text-2); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.bg4-runhealth-row time { color: var(--text-3); }
+.bg4-runhealth-row.danger { color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, var(--solid-2)); }
+.bg4-runhealth-row.danger b { color: var(--bad); }
 .bg4-insp-body { padding: 14px 16px 6px; flex: 1; min-height: 0; overflow-y: auto }
 .bg4-insp-foot {
   display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); flex: none;
@@ -500,7 +514,30 @@ body:has(.bg4) .statusbar { display: none }
    correct, and a numeric reading of the same three rows says it is a bug.
    The id is set small and dim on purpose; it identifies a row, it does not
    order one. */
-.bg4-execpath { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line) }
+.bg4-execpath {
+  margin: 0 0 14px; border: 1px solid var(--line); border-radius: 6px;
+  background: color-mix(in srgb, var(--solid-2) 72%, transparent);
+}
+.bg4-execpath > summary {
+  display: flex; align-items: center; gap: 8px; min-height: 36px;
+  padding: 8px 10px; cursor: pointer; list-style: none;
+  font: 500 10px var(--mono); color: var(--text-2);
+}
+.bg4-execpath > summary::-webkit-details-marker { display: none }
+.bg4-execpath > summary .count {
+  margin-left: auto; color: var(--text-3); font-size: 9px;
+}
+.bg4-execpath > summary > i {
+  flex: none; color: var(--text-3); transition: transform var(--dur-fast, .14s) ease;
+}
+.bg4-execpath[open] > summary {
+  border-bottom: 1px solid var(--line); color: var(--text);
+}
+.bg4-execpath[open] > summary > i { transform: rotate(180deg) }
+.bg4-execpath-content {
+  max-height: min(46vh, 440px); overflow-y: auto; padding: 9px;
+  scrollbar-gutter: stable;
+}
 .bg4-execwait {
   display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 10px;
   font: 500 11px var(--mono); line-height: 1.5;
@@ -615,9 +652,58 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-failure-actions .bg4-escalated { background: var(--info-soft); border: 1px solid var(--info-line); color: var(--info) }
 
 .bg4-composer {
-  flex: none; border-top: 1px solid var(--line); padding: 10px 12px;
-  background: var(--solid-1);
-}
+    flex: none; border-top: 1px solid var(--line); padding: 10px 12px;
+    background: var(--solid-1);
+  }
+  .bg4-director-strip {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding-bottom: 9px; margin-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  .bg4-director-pickers { flex: none }
+  .bg4-director-pickers .mantine-Select-root:first-child { width: 132px }
+  .bg4-director-pickers .mantine-Select-root:last-child { width: 168px }
+  .bg4-director-pickers .mantine-Input-input {
+    height: 26px; min-height: 26px; padding-left: 9px;
+    font: 500 10px var(--mono); letter-spacing: .03em;
+  }
+  .bg4-director-usage {
+    display: grid; grid-template-columns: repeat(3, minmax(86px, 1fr));
+    gap: 12px; flex: 1; max-width: 410px;
+  }
+  .bg4-usage span {
+    display: flex; justify-content: space-between; gap: 6px; margin-bottom: 4px;
+    white-space: nowrap; font: 500 9px var(--mono); color: var(--text-3);
+  }
+  .bg4-usage span b {
+    color: var(--text-2); font: inherit; text-transform: uppercase;
+    letter-spacing: .1em;
+  }
+  .bg4-usage i {
+    display: block; height: 2px; border-radius: 2px; overflow: hidden;
+    background: color-mix(in srgb, var(--text-3) 18%, transparent);
+  }
+  .bg4-usage em {
+    display: block; height: 100%; border-radius: inherit; background: var(--accent);
+    transition: width .25s ease;
+  }
+  .bg4-usage-bridge {
+    display: flex; align-items: center; gap: 7px;
+    min-height: 25px; margin: -1px 0 8px; padding: 2px 3px 2px 8px;
+    border-left: 2px solid var(--line); color: var(--text-3);
+    font: 500 10px var(--sans);
+  }
+  .bg4-usage-bridge.on {
+    border-left-color: var(--good); color: var(--text-2);
+  }
+  .bg4-usage-bridge > span { flex: 1; min-width: 0 }
+  .bg4-usage-bridge .mantine-Button-root {
+    color: inherit; font: 600 9px var(--mono); letter-spacing: .03em;
+  }
+  @media (max-width: 780px) {
+    .bg4-director-strip { align-items: stretch; flex-direction: column }
+    .bg4-director-pickers .mantine-Select-root { width: 50% !important }
+    .bg4-director-usage { max-width: none }
+  }
 
 .bg4-msg { padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; max-width: 900px }
 .bg4-msg .who {
@@ -826,7 +912,7 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-theme-sample {
   --pv-bg: #090a0d; --pv-rail: #101218; --pv-card: #1a1e26;
   --pv-line: #333a46; --pv-text: #eef2f5; --pv-accent: #ff6a3d;
-  width: 100%; height: 112px; display: grid; grid-template-columns: 23% 1fr;
+  position: relative; width: 100%; height: 112px; display: grid; grid-template-columns: 23% 1fr;
   overflow: hidden; border-radius: 7px; background: var(--pv-bg);
   border: 1px solid var(--pv-line); box-shadow: inset 0 1px rgba(255,255,255,.06);
 }
@@ -863,6 +949,50 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   background-image: radial-gradient(circle at 88% 12%,rgba(24,71,199,.16),transparent 34%);
   box-shadow: inset 0 2px rgba(255,255,255,.8), 0 5px 14px rgba(39,91,112,.18);
 }
+.bg4-theme-sample[data-ground="mythic"] {
+  --pv-bg: #09060d; --pv-rail: #160d1c; --pv-card: #25142e;
+  --pv-line: #7c586f; --pv-text: #f6e8c8; --pv-accent: #ffc857;
+  border-color: #a87b45;
+  background-image: radial-gradient(circle at 78% 22%,rgba(190,70,255,.28),transparent 30%),
+                    linear-gradient(135deg,transparent 46%,rgba(255,200,87,.12) 47% 49%,transparent 50%);
+  box-shadow: inset 0 0 0 1px rgba(255,200,87,.18),0 5px 18px rgba(92,25,115,.32);
+}
+.bg4-theme-sample[data-ground="flux"] {
+  --pv-bg: #060817; --pv-rail: #0a0e22; --pv-card: #151d38;
+  --pv-line: #596aa0; --pv-text: #f1f3ff; --pv-accent: #ff6a3d;
+  background-image: radial-gradient(circle at 72% 18%,rgba(24,0,173,.62),transparent 34%),
+                    radial-gradient(circle at 18% 82%,rgba(255,106,61,.4),transparent 38%);
+  animation: bg4-flux-sample 7s ease-in-out infinite alternate;
+  box-shadow: inset 0 1px rgba(185,255,241,.12),0 6px 18px rgba(0,10,18,.35);
+  --flux-preview-x: 74%; --flux-preview-y: 20%;
+}
+@keyframes bg4-flux-sample {
+  to { background-position: -16px 9px, 18px -7px; filter: hue-rotate(16deg) }
+}
+.bg4-theme-sample[data-ground="flux"] :is(.rail,.stage) { position: relative; z-index: 1 }
+.bg4-theme-sample .flux-live {
+  position: absolute; z-index: 2; inset: 0 0 0 23%; overflow: hidden; pointer-events: none;
+}
+.bg4-theme-sample .flux-live svg { position: absolute; inset: 0; width: 100%; height: 100% }
+.bg4-theme-sample .flux-live path { fill: none; vector-effect: non-scaling-stroke }
+.bg4-theme-sample .flux-live .route { stroke: rgba(113,102,255,.5); stroke-width: 1.2 }
+.bg4-theme-sample .flux-live .pulse {
+  stroke: #ff6a3d; stroke-width: 1.8; stroke-linecap: round;
+  stroke-dasharray: 3 18; animation: bg4-flux-route 2.8s linear infinite;
+  filter: drop-shadow(0 0 2px rgba(255,106,61,.8));
+}
+.bg4-theme-sample .flux-live circle {
+  fill: #0e142b; stroke: #8490ff; stroke-width: 1.5; vector-effect: non-scaling-stroke;
+}
+.bg4-theme-sample .flux-focus {
+  position: absolute; z-index: -1; left: calc(var(--flux-preview-x) - 34px);
+  top: calc(var(--flux-preview-y) - 34px); width: 68px; height: 68px; border-radius: 50%;
+  background: radial-gradient(circle,rgba(24,0,173,.7),rgba(255,106,61,.2) 42%,transparent 70%);
+  transition: left .18s ease-out,top .18s ease-out;
+}
+@keyframes bg4-flux-route { to { stroke-dashoffset: -42 } }
+.bg4-theme-sample.compact .flux-live .pulse { stroke-width: 1.2; filter: none }
+.bg4-theme-sample.compact .flux-focus { width: 30px; height: 30px; left: calc(var(--flux-preview-x) - 15px); top: calc(var(--flux-preview-y) - 15px) }
 .bg4-theme-sample[data-ground="system"] {
   --pv-bg: #111318; --pv-rail: #f1f3f5; --pv-card: #fafbfc;
   --pv-line: #9ea8b2; --pv-text: #20252a; --pv-accent: #ff6a3d;
@@ -911,6 +1041,20 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 }
 @media (max-width: 720px) { .bg4-theme-grid { grid-template-columns: 1fr } }
 @media (prefers-reduced-motion: reduce) { .bg4-theme-grid > button { transition: none } }
+@media (prefers-reduced-motion: reduce) {
+  .bg4-theme-sample[data-ground="flux"],.bg4-theme-sample .flux-live .pulse { animation: none }
+  .bg4-theme-sample .flux-focus { transition: none }
+}
+
+/* Flux lets the live field pass through the shell chrome without turning
+   every interior card into glass. Large containment surfaces carry the blur;
+   reading surfaces stay solid. */
+:root[data-theme="flux"] :is(.bg4-rail, .bg4-nav, .bg4-head) {
+  background: var(--glass-1);
+}
+:root[data-theme="flux"] :is(.bg4-insp, .bg4-console-side) {
+  background: var(--glass-2);
+}
 
 /* ── orbit ────────────────────────────────────────────────────────────────
    The ONE ground that changes this shell's material rather than its colours.
@@ -1614,3 +1758,30 @@ body.ptn-open .bg4 {
 }
 .bg4-made-thumb .dot.ok { background: var(--good-line); border-color: var(--good-line); color: #10240f }
 .bg4-made-thumb .dot.no { background: var(--bad-line); border-color: var(--bad-line); color: #2a0d0d }
+
+/* Mythic shell: a carved reliquary frame around the operational surface. */
+:root[data-theme="mythic"] :is(.bg4-rail,.bg4-nav,.bg4-head,.bg4-insp,.bg4-console-side) {
+  background:
+    linear-gradient(135deg,rgba(255,224,146,.035),transparent 35%),
+    linear-gradient(180deg,#170d1d 0%,#100914 100%);
+  border-color:color-mix(in srgb,var(--accent) 34%,var(--line));
+  box-shadow:inset 0 0 0 1px rgba(255,200,87,.025),var(--shadow-3);
+}
+:root[data-theme="mythic"] .bg4-brand {
+  background:radial-gradient(circle at 50% 40%,rgba(211,108,255,.18),transparent 64%);
+}
+:root[data-theme="mythic"] :is(.bg4-navitem[aria-current="true"],.bg4-nav .active,.bg4-rail .active) {
+  color:var(--text); background:linear-gradient(90deg,rgba(211,108,255,.16),rgba(255,200,87,.06));
+  box-shadow:inset 3px 0 var(--accent),inset 0 1px rgba(255,200,87,.08),0 0 18px rgba(211,108,255,.07);
+}
+:root[data-theme="mythic"] :is(.bg4-act.primary,.bg4-cli-go) {
+  background:linear-gradient(135deg,#ffe092 0%,var(--accent) 44%,#e89839 100%);
+  color:var(--accent-fg); border-color:#ffe6a8;
+  box-shadow:inset 0 1px rgba(255,255,255,.5),0 5px 18px rgba(255,157,45,.16);
+}
+:root[data-theme="mythic"] .bg4-theme-menu-item:hover {
+  background:linear-gradient(90deg,rgba(211,108,255,.13),rgba(255,200,87,.06));
+}
+@media(prefers-reduced-motion:reduce){
+  :root[data-theme="mythic"] .nc-node[data-status="running"]{animation:none}
+}

@@ -7137,7 +7137,6 @@ def _near_duplicate(_q, title: str, seat: str) -> Optional[dict]:
     ('Hero car mesh ... split Body + 4 wheels' twice, 'Swap art materials ...'
     twice, three re-pins of one test file).
     """
-    import re as _re
     def toks(t: str) -> set:
         return {w for w in _re.findall(r"[a-z0-9_]+", (t or "").lower()) if len(w) >= 4}
     mine = toks(title)

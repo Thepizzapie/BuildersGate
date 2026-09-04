@@ -152,7 +152,21 @@ export type ChatState = {
   waiting?: string;
   live?: boolean;
   session_id?: string;
+  runner?: "claude" | "codex";
   model?: string;
+  runners?: { value: string; label: string; installed: boolean }[];
+  models?: Record<string, {
+    value: string; label: string; description?: string; default?: boolean;
+  }[]>;
+  usage?: {
+    context?: { used?: number; limit?: number };
+    five_hour?: { used_percent?: number; resets_at?: number; status?: string };
+    weekly?: { used_percent?: number; resets_at?: number; status?: string };
+  };
+  usage_bridge?: {
+    enabled?: boolean; has_snapshot?: boolean; updated_at?: number;
+    needs_restart?: boolean;
+  };
 };
 
 export const directorChat = (after = 0) =>
@@ -164,3 +178,18 @@ export const directorSay = (text: string) =>
 /** Fresh conversation. The old transcript is archived on disk, not deleted. */
 export const directorNew = () =>
   mutate("/api/director/new", { quiet: true });
+
+export const directorConfigure = (runner: string, model: string) =>
+  mutate<ChatState>("/api/director/config", {
+    method: "PUT", body: { runner, model }, quiet: true,
+  });
+
+export const directorUsageConnect = () =>
+  mutate<NonNullable<ChatState["usage_bridge"]>>("/api/director/usage-bridge", {
+    method: "POST", quiet: true,
+  });
+
+export const directorUsageDisconnect = () =>
+  mutate<NonNullable<ChatState["usage_bridge"]>>("/api/director/usage-bridge", {
+    method: "DELETE", quiet: true,
+  });
