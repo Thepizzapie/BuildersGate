@@ -1132,6 +1132,56 @@ def _writable_console() -> None:
             pass
 
 
+def _cmd_animlib(rest: list) -> int:
+    """bgate animlib [status | list <pack> | fetch <pack> [--force]]
+
+    THE ONE DOWNLOAD IN THE 3D PATH, and it lives in the CLI on purpose: a
+    commit-pinned zip, SHA-256 checked before a byte is unpacked, into
+    ~/.bgate/animlib where every project shares it. No MCP tool fetches -
+    the same rule that keeps key-writing out of an agent's hands.
+    """
+    from bgate_adapters import animlib
+    sub_cmd = rest[0] if rest else "status"
+    if sub_cmd == "status":
+        st = animlib.status()
+        print(f"animation libraries in {st['home']}")
+        for name, row in st["packs"].items():
+            mark = "OK  " if row["fetched"] else "MISS"
+            tail = (f"{row.get('clips', 0)} clips" if row["fetched"]
+                    else f"run: {row['fetch']}")
+            print(f"  {mark} {name:<18} {row['license']:<9} {tail}")
+        return 0
+    if sub_cmd == "list":
+        if len(rest) < 2:
+            print("bgate animlib list <pack>")
+            return 2
+        try:
+            rows = animlib.clips(rest[1])
+        except FileNotFoundError as exc:
+            print(exc)
+            return 1
+        for c in rows:
+            flags = ("loop" if c["loop"] else "") + (" root-motion" if c["root_motion"] else "")
+            print(f"  {c['name']:<28} {c['seconds']:>6.2f}s  {flags}")
+        return 0
+    if sub_cmd == "fetch":
+        if len(rest) < 2:
+            print("bgate animlib fetch <pack> [--force]")
+            return 2
+        got = animlib.fetch(rest[1], force="--force" in rest)
+        if not got.get("ok"):
+            print(f"FAILED: {got.get('error')}")
+            return 1
+        if got.get("fetched"):
+            print(f"fetched {got['pack']}: {got['clips']} clips, "
+                  f"{got['bytes']} bytes, sha256 {got['sha256'][:12]}")
+        else:
+            print(f"{got['pack']} already fetched at {got['path']}")
+        return 0
+    print("bgate animlib [status | list <pack> | fetch <pack> [--force]]")
+    return 2
+
+
 def main() -> int:
     _writable_console()
     args = sys.argv[1:]
@@ -1242,6 +1292,9 @@ def main() -> int:
                        force="--force" in rest, dry_run="--dry-run" in rest,
                        as_json="--json" in rest, serve_port=port)
 
+    if cmd == "animlib":
+        return _cmd_animlib(args[1:])
+
     if cmd == "doctor":
         positional = [a for a in args[1:] if not a.startswith("-")]
         return doctor(positional[0] if positional else "", as_json="--json" in args)
@@ -1317,7 +1370,7 @@ def main() -> int:
             return 1
         if "--yes" not in args:
             print(f"This will DELETE {marker} — the board, the bible, the lore, "
-                  "the artifact ledger and the spend history for this project.")
+                  "and the artifact ledger for this project.")
             print("Your game files are untouched, and so are the marked blocks "
                   "in .gitignore and CLAUDE.md (delete those by hand if you "
                   "want them gone — they are marker-delimited).")

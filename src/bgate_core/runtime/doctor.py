@@ -61,7 +61,7 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 # edit here.
 CHECKS = ("python", "art_key", "local_runtimes", "agent_cli", "ffmpeg",
           "ffprobe", "blender", "godot", "godot_web_templates", "whisper",
-          "imageto3d", "local_image", "aseprite")
+          "imageto3d", "local_image", "aseprite", "anim_library")
 
 # Rows that SUMMARISE A REGISTRY rather than probe one binary on PATH.
 #
@@ -76,7 +76,9 @@ CHECKS = ("python", "art_key", "local_runtimes", "agent_cli", "ffmpeg",
 # absent-binaries test already learned that lesson once, when adding the
 # imageto3d row broke a hand-written count that passed on the two machines it
 # was written on.
-SUMMARY_CHECKS = ("local_runtimes", "agent_cli")
+# anim_library is the third: it asks a cache directory how many packs are
+# unpacked, so there is no binary a test can put on PATH and no path to stub.
+SUMMARY_CHECKS = ("local_runtimes", "agent_cli", "anim_library")
 
 # What the code in this repo actually assumes, not aspirational floors.
 # blender: the default warmup engine is BLENDER_EEVEE_NEXT, which is 4.2+.
@@ -125,6 +127,10 @@ MIN_REQUIRED = {
     # not as broken scripts. Optional row: red costs .aseprite masters and
     # palette derivation, nothing else.
     "aseprite": "1.3",
+    # No floor and no binary: a CC0 clip pack in ~/.bgate/animlib. Red means
+    # blender_animate can still author its procedural clips and cannot yet
+    # retarget hand-keyed ones; the row names the one command that fixes it.
+    "anim_library": "",
 }
 
 CACHE_SECONDS = 5.0
@@ -483,6 +489,19 @@ def _probe_local_image() -> dict:
                 reason="" if ok else row.get("detail", ""))
 
 
+def _probe_anim_library() -> dict:
+    """Which CC0 animation packs are fetched. Optional, like imageto3d."""
+    try:
+        from bgate_adapters import animlib
+    except Exception as exc:
+        return _missing("anim_library", f"adapter unavailable: {exc}")
+    row = animlib.doctor_row()
+    return _row(available=bool(row.get("available")), path=row.get("path", ""),
+                version=row.get("version", ""),
+                min_required=MIN_REQUIRED["anim_library"],
+                reason=row.get("reason", ""))
+
+
 def _probe_local_runtimes() -> dict:
     """Which generators on THIS machine could run right now.
 
@@ -544,6 +563,7 @@ _PROBES: dict[str, Callable[[], dict]] = {
     "godot_web_templates": _probe_godot_web_templates,
     "whisper": _probe_whisper,
     "imageto3d": _probe_imageto3d,
+    "anim_library": _probe_anim_library,
     "local_image": _probe_local_image,
     "aseprite": _probe_aseprite,
 }

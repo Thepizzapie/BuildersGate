@@ -211,6 +211,9 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                 # feet actually do. Both are the 3D seat's own checks on a rig
                 # it just changed.
                 "skin_dominance", "animation_contacts",
+                # The clip-pack roster: which CC0 packs blender_animate can
+                # retarget from. Reads a cache, spawns nothing.
+                "animation_library",
                 "local_status"),
     "music": ("music_", "audio_listen_record"),
     "cinematic": ("cinematic_", "storyboard_", "kie_video_"),

@@ -117,11 +117,25 @@ def _describe(project_root: Path, target: Path) -> dict:
         "mtime": int(target.stat().st_mtime),
         "res_path": _res_path(project_root, target),
         "viewable": suffix in VIEWABLE,
-        "raw_url": f"/api/model3d/raw/{target.relative_to(project_root).as_posix()}",
+        # VERSIONED, so a rewritten file is a new URL. The loader fetches this
+        # directly, and a browser that has seen the path before hands back the
+        # old bytes: measured - the owner was re-exported three times and the
+        # viewer kept drawing the model from a week earlier after a refresh.
+        "raw_url": _raw_url(project_root, target),
         "sidecar": modelmap.sidecar_path(target).relative_to(project_root).as_posix(),
         "model": modelmap.load(target),
         "known_slots": list(modelmap.KNOWN_SLOTS),
     }
+
+
+def _raw_url(project_root: Path, target: Path) -> str:
+    """The geometry URL, stamped with the file's mtime and size."""
+    rel = target.relative_to(project_root).as_posix()
+    try:
+        stat = target.stat()
+        return f"/api/model3d/raw/{rel}?v={int(stat.st_mtime)}-{stat.st_size}"
+    except OSError:
+        return f"/api/model3d/raw/{rel}"
 
 
 @router.get("/api/model3d/open")
@@ -192,7 +206,13 @@ def model_raw(rel: str) -> FileResponse:
     if not target.is_file():
         raise api.not_found(f"no file at {rel}", rel=rel)
     media = _MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream")
-    return FileResponse(target, media_type=media)
+    # NO HEURISTIC CACHING. With Last-Modified and no Cache-Control a browser
+    # may serve this from cache without asking, and a plain reload only
+    # revalidates the document - not the .glb the loader fetches. Measured:
+    # the owner was re-exported three times and the viewer kept drawing the
+    # week-old model after every F5. no-cache = always revalidate (ETag).
+    return FileResponse(target, media_type=media,
+                        headers={"Cache-Control": "no-cache"})
 
 
 @router.post("/api/model3d/save")
@@ -417,6 +437,20 @@ try:
         _import(P["path"], P["ext"])
     bpy.context.view_layer.update()
     scene = bpy.context.scene
+    # THE IMPORTER'S BONE SHAPE IS NOT THE MODEL. io_scene_gltf2 builds a
+    # 42-vertex "Icosphere" at the origin for any rigged .glb and leaves it
+    # parentless (see blender.bgate_drop_shapes). Measured here: a 1.75 m
+    # one-mesh character reported "2 / 3 objects, 2.713 m" and SCALE TO UNIT
+    # offered to shrink him to fit - the runner drops it before export, this
+    # panel never did.
+    shapes = set()
+    for rig in [o for o in scene.objects if o.type == "ARMATURE"]:
+        for posed in rig.pose.bones:
+            if posed.custom_shape is not None:
+                shapes.add(posed.custom_shape.name)
+    for o in [o for o in scene.objects
+              if o.type == "MESH" and o.parent is None and o.name in shapes]:
+        bpy.data.objects.remove(o, do_unlink=True)
     meshes = [o for o in scene.objects if o.type == "MESH"]
     arms = [o for o in scene.objects if o.type == "ARMATURE"]
 
@@ -829,7 +863,7 @@ def model_bake(payload: dict) -> dict:
     rel_out = out_path.relative_to(project_root).as_posix()
     return api.ok({
         "rel": rel, "out": rel_out,
-        "raw_url": f"/api/model3d/raw/{rel_out}",
+        "raw_url": _raw_url(project_root, out_path),
         "replaced": out_path == target, "backup": backup_rel,
         "bytes": out_path.stat().st_size,
         "before": report.get("before"), "after": report.get("after"),

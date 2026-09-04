@@ -53,7 +53,8 @@ def test_open_reports_paths_and_an_empty_sidecar(client, game):
     d = r.json()
     assert d["res_path"] == "res://assets/models/hero.glb"
     assert d["viewable"] is True
-    assert d["raw_url"] == "/api/model3d/raw/assets/models/hero.glb"
+    # Versioned by mtime and size, so a rewritten file is a new URL.
+    assert d["raw_url"].startswith("/api/model3d/raw/assets/models/hero.glb?v=")
     assert d["model"]["sockets"] == []
     assert "main_hand" in d["known_slots"]
 
