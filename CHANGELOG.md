@@ -9,152 +9,48 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.44] - 2026-09-04
+
 ### Removed
-- **The spend ledger and every budget ceiling.** `spend_event`,
-  `spend_budget` and `spend_hold` are dropped (db migration 0045), and with
-  them: the per-item / per-day / per-project dollar caps, the reservation gate
-  that refused an MCP tool mid-run, the per-run `max_cost_usd` on work items
-  and on `image_sprites`/`animation_generate`/`tileset_generate`, the
-  `console.max_usd` and `brainstorm.max_usd` session ceilings and the
-  `--max-budget-usd` they passed to the CLI, the `budget.refused` event kind,
-  `GET /api/spend`, `PATCH /api/spend/budget`, `GET /api/art/cost`, the
-  Settings panel's Budget group, the Overview's spend tile, the brainstorm
-  room's per-seat dollar column, and the spend block on `board_digest`.
-
-  It was wrong at the concept, not in the arithmetic. Every figure in it was a
-  guessed unit price multiplied by a count: kie publishes no per-model price,
-  Krea publishes none for 3D, an agent session on a subscription reports an
-  API-equivalent number nobody is charged, and gpt-image is priced by quality
-  tier while the real price moves with resolution. The total matched no
-  statement anywhere, and the ceilings built on it refused real work on behalf
-  of imaginary spend.
-
-  **The only budget is your provider account's balance**, which the provider
-  reports — `provider_status` and `kie_status` read it. What survives on this
-  side is per-call and forward-looking: a paid tool still quotes THIS call
-  before it runs (`image_sprites` returns `spend.estimated_usd`,
-  `kie_video_generate` returns `estimated_usd`, the workflow canvas still shows
-  `~$X.XX est` per node) and still reports what the provider said THIS call
-  cost afterwards. Nothing sums either.
-
-  The two limits that were never about money stay, in a new `run_limits` row:
-  `dispatch.max_concurrent` and `limits.max_runtime_s` (was
-  `budget.max_runtime_s`). The wall clock is what actually stopped every
-  runaway run in the benchmarks; the dollar cap never did.
+- **The spend ledger and every budget ceiling**
 
 ### Added
-- **`bgate connect` — connecting your coding agent is a command now, not a
-  paragraph.** Setup told a new user to type
-
-      claude mcp add builders-gate --scope user -- <ABSOLUTE-python-path> -m bgate_mcp.server
-
-  and then explained, correctly, that getting that one argument wrong produces
-  a registration which looks fine, fails at the first tool call, and reports
-  "failed to connect" pointing nowhere near the cause — the most common setup
-  failure on the supported platform. Asking someone to hand-assemble the
-  argument the docs admit is the trap was the papercut. `bgate connect` fills
-  it in, because the interpreter it should name is the one the command is
-  running on.
-
-  With no argument it writes nothing and reports every client: installed or
-  not, registered or not, and — the state nothing else could see — whether that
-  registration names an interpreter that can actually import the server. Every
-  write is verified afterwards by asking that interpreter to import it, because
-  "registered" is precisely the claim that has been wrong before.
-
-- **Six more clients, and an answer for the ones not on the list**
-  (`bgate_ui/agentcli.py`). Wiring was Claude Code and Codex, and it was
-  coupled to the dispatch table: a client had to be something the board could
-  run work on before it could be something the human's own sessions could call
-  the tools from. Those are different capabilities and the second is why people
-  install this. `WIRINGS` no longer requires a `RUNNERS` entry, so Gemini CLI,
-  VS Code (Copilot), Cursor, Windsurf and opencode all get rows — each marked
-  "wiring only" where the board cannot dispatch to it, which is a true sentence
-  rather than an absence.
-
-  Where a client ships its own `mcp add`, that subcommand still performs the
-  write. Cursor, Windsurf and opencode do not, and keep their servers in a JSON
-  file the user also hand-edits: those are **read** — a bare `python` is the
-  same bug in `~/.cursor/mcp.json` as in `~/.claude.json`, and nothing could see
-  it there before — and rendered as a paste-in block with the interpreter
-  already correct. Nothing merges into a config this tool does not own.
-  `bgate connect --show` also prints a generic block for any MCP client that is
-  not on the list at all.
+- **The director console runs on Codex as well as Claude Code**
+- **An opt-in, credential-free Claude usage bridge**
+- **Audio Lab separates a clip into stems locally**
+- **`art.mesh_route` settles how the art seat makes NEW geometry**
+- **`track_generate` builds a measured, drivable circuit from a JSON spec**
+- **`ui_concept` paints the game's screens and derives a palette and a Godot Theme**
+- **`sfx_prompt` generates real SFX through kie sounds**
+- **`godot_export_probe` runs a script against the EXPORTED pck**
+- **`bgate connect` — wiring your coding agent is a command, not a paragraph to retype**
+- …and 1 more, in the decisions file.
 
 ### Changed
-- **The root config files carry rules, not essays.** `.gitignore`, `pyproject.toml`,
-  `.gitattributes` and `.env.example` had grown 285 lines of commentary between
-  them — history that belongs in history. They are 159 lines of declarations now,
-  with the same behaviour: every ignore rule, negation and package-data pattern is
-  unchanged, and the packaging tests that read pyproject still pass. `.gitattributes`
-  also still pointed at the pre-`src/` bundle path.
-- **The README is 232 lines instead of 308.** The screen-by-screen tour is one
-  paragraph and a link to `docs/screenshots.md`; the rest is trimmed rather than
-  cut, and the `CONTRIBUTING.md`/`SECURITY.md` links follow those files into
-  `.github/`.
-- **The repository root is a table of contents again.** Six importable
-  packages sat at the top level beside the docs, the CI config, the front end
-  and the build scripts, so the first thing a reader saw was a list that did
-  not say where the product was. They are under `src/` now — with
-  `templates/`, which has to stay their sibling because `scaffold.py` resolves
-  it relative to its own file and site-packages is the layout that has to
-  match. `CONTRIBUTING.md` and `SECURITY.md` moved to `.github/`, where GitHub
-  reads them from just the same.
-- **`bgate_engine/` is `docs/engine/`, and stops shipping.** It is a design
-  proposal — a README, a DESIGN.md and seven JSON schemas, no runtime code and
-  no importer — and it was being installed into every wheel and bundled into
-  every .exe. A document belongs in `docs/`; the wheel is for the product.
-- **The dashboard package and the suite got the same treatment.** `bgate_ui`
-  had 22 loose modules beside `routes/`; the ones that belong together are now
-  `agents/` (dispatch, runners, follow-up, the QA gate, the two CLI sessions),
-  `pumps/` (the shared loop shape and the three loops using it) and `window/`
-  (`bgate app`). `tests/` was 226 files in one directory and is now grouped to
-  mirror the packages it tests — `store/`, `board/`, `art/`, `ui/`,
-  `adapters/`, `mcp/`, `packaging/` and the rest. Same 6557 tests collected
-  before and after.
-- **`bgate_core` is ten subpackages, not 117 files in a heap.** The domain
-  package had every module at its top level, so the tree said nothing about
-  what belonged with what and a new module's only home was the same flat pile:
-  `store/` (db, project, settings, assets, events), `board/` (seats, queue,
-  workflows, spend, gates), `design/` (bible, lore, canon, greenlight),
-  `runtime/` (providers, doctor, external binaries), `art/`, `three_d/`,
-  `audio/`, `cine/`, `level/`, `qa/`. Every import site moved with them and
-  nothing re-exports the old paths — one name per module, not two.
-- `tools/` held a single file. `panel_api.py` is a script, so it lives in
-  `scripts/` with the others and the Pulsiron routines call it there.
-- **One sandbox path for the floor-art scripts.** `_sandbox()` was copied
-  byte-for-byte into four of them under the comment explaining why the
-  hardcoded Desktop path it replaced was wrong — while `gen_floor_layers.py`
-  and `gen_floor_rooms.py` still carried that very `Path.home() / "Desktop" /
-  "bg-testbed"`. Setting `BGATE_CAST_PROJECT` therefore moved four scripts and
-  silently did nothing for the other two. All six now read
-  `scripts/_floorpaths.sandbox()`.
+- **A spawned agent files at most two non-duplicate items**
+- **The root config files carry rules, not essays**
+- **The README is 232 lines instead of 308**
+- **The repository root is a table of contents again**
+- **`bgate_engine/` is `docs/engine/`, and stops shipping**
+- **The dashboard package and the suite got the same treatment**
+- **`bgate_core` is ten subpackages, not 117 files in a heap**
+- **`tools/` is gone; `panel_api.py` is a script and lives in `scripts/`**
+- **One sandbox path for the floor-art scripts**
 
 ### Security
-- **`bgate publish` put the author's own directory on the public web.** Every
-  entry in the generated `games.json` carried `root` — the absolute path to
-  that game on the machine that ran the command, which on Windows names the
-  user's home directory. The report keeps it (it is printed locally and the
-  CLI needs it); the published index no longer does, and a test asserts the
-  project path appears in neither `games.json` nor `index.html`.
-- **`0.0.0.0` is no longer an accepted `Host`.** The dashboard's rebinding gate
-  allowed it, and it is the one spelling of loopback that a browser will route
-  to a 127.0.0.1 listener while treating the origin as foreign — walking around
-  the private-network protections `localhost` gets. Refused like any other
-  non-loopback name, with a test.
-- `release-exe.yml` asked for `contents: write` across the whole workflow, which
-  also runs on pull requests. The permission is now on the one job that attaches
-  release artefacts, and that job says what would close the remaining gap.
-- `.claude/launch.json.example` shipped a backslash-escape typo, so its
-  placeholder `BGATE_ROOT` contained a literal tab character.
+- **Every path derived from an Audio Lab stem request is re-checked**
+- **`bgate publish` put the author's own directory on the public web**
+- **`0.0.0.0` is no longer an accepted `Host`**
+- **`release-exe.yml` narrows `contents: write` to the one job that needs it**
+- **`.claude/launch.json.example` had a literal tab in its `BGATE_ROOT` placeholder**
 
 ### Fixed
-- The copyable registration line escaped nothing, so VS Code's — which carries
-  a JSON object as one argument — ended at its first inner quote when pasted.
-- `bgate doctor`'s agent row read "no coding-agent CLI found on PATH — the board
-  can file work but nothing can be dispatched" for a machine that could be
-  perfectly well wired and merely have no runner. Wiring and dispatch are now
-  two sentences, because a green lamp on the first does not settle the second.
+- **Three MCP tools were joining the shared spine by accident**
+- **The model card on the workflow canvas gets its per-node run button back**
+- **The copyable registration line escapes its JSON, so VS Code's pastes whole**
+- **`bgate doctor` no longer conflates "nothing is wired" with "no runner installed"**
+
+Full narrative: [docs/decisions/0.1.44.md](https://github.com/Thepizzapie/BuildersGate/blob/main/docs/decisions/0.1.44.md)
 
 ## [0.1.43] - 2026-09-01
 
