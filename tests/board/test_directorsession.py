@@ -20,7 +20,7 @@ import pytest
 
 from bgate_core.board import queue
 from bgate_core.store import settings
-from bgate_ui.agents import directorsession, runners
+from bgate_ui.agents import codexmeta, directorsession, runners
 
 FAKE_SESSION_CLI = r'''
 import json, os, sys
@@ -156,7 +156,44 @@ def test_director_argv_shape():
 
 
 def test_console_settings_defaults(root):
+    assert settings.get(root, "console.runner") == "claude"
     assert settings.get(root, "console.model") == "opus"
+
+
+def test_codex_director_uses_native_exec_resume():
+    fresh = runners._codex_director_args(
+        "codex", model="gpt-5.6-sol", cwd="C:/game")
+    assert fresh[:3] == ["codex", "exec", "--json"]
+    assert "workspace-write" in fresh and "mcp_servers.builders-gate" in " ".join(fresh)
+    resumed = runners._codex_director_args(
+        "codex", model="gpt-5.6-terra", cwd="C:/game", resume="thread-4")
+    assert resumed[:4] == ["codex", "exec", "resume", "--json"]
+    assert resumed[-2:] == ["thread-4", "-"]
+
+
+def test_runner_and_model_switch_keep_native_sessions(root, monkeypatch):
+    monkeypatch.setattr(runners, "find_codex", lambda: "codex")
+    monkeypatch.setattr(codexmeta, "snapshot", lambda force=False: {
+        "models": [{"value": "gpt-test", "label": "GPT Test", "default": True}],
+        "limits": {}})
+    directorsession._write_sidecar(root, {
+        "sessions": {"claude": "claude-1", "codex": "codex-1"}})
+    got = directorsession.configure(root, "codex", "gpt-test")
+    assert got["runner"] == "codex" and got["model"] == "gpt-test"
+    assert directorsession._session_for(root, "claude") == "claude-1"
+    assert directorsession._session_for(root, "codex") == "codex-1"
+
+
+def test_usage_windows_are_named_by_duration(monkeypatch):
+    monkeypatch.setattr(codexmeta, "snapshot", lambda force=False: {
+        "models": [], "limits": {"codex": {
+            "primary": {"usedPercent": 21, "windowDurationMins": 300,
+                        "resetsAt": 100},
+            "secondary": {"usedPercent": 34, "windowDurationMins": 10080,
+                          "resetsAt": 200}}}})
+    got = codexmeta.usage_for("gpt-any")
+    assert got["five_hour"]["used_percent"] == 21
+    assert got["weekly"]["used_percent"] == 34
 
 
 def test_registry_write_does_not_wipe_on_bad_read(root, monkeypatch):

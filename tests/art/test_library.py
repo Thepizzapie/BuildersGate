@@ -438,8 +438,14 @@ def test_the_library_panel_is_loaded_and_owns_the_assets_view():
     # always written to. Asserted against the BUILT bundle, because a source
     # tree whose dist/ has not been rebuilt is exactly the failure this catches:
     # the panel would have no host at runtime.
-    bundle = (root / "src" / "bgate_ui" / "static" / "dist"
-              / "bgate.js").read_text(encoding="utf-8")
+    # EVERY CHUNK: the shell is code-split, so the assets deck is its own lazy
+    # file (bgate-Assets.js) rather than text in the entry bundle. What this
+    # asserts is that the panel ships, and the app is the directory.
+    dist = root / "src" / "bgate_ui" / "static" / "dist"
+    assert (dist / "bgate.js").is_file(), (
+        "no built bundle — run `cd frontend && npm run build`")
+    bundle = "\n".join(chunk.read_text(encoding="utf-8", errors="replace")
+                        for chunk in sorted(dist.glob("*.js")))
     assert 'id="asset-lib-root"' in html or "asset-lib-root" in bundle, \
         "assetlib.js has nothing to render into"
     assert 'data-react="assets"' in html, "the assets deck must mount its island"

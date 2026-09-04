@@ -45,7 +45,7 @@
 (function(){
   try{
     var t = localStorage.getItem("bgate-theme");
-    if (["light", "dark", "orbit", "blueprint", "pocket", "candy"].indexOf(t) >= 0) document.documentElement.dataset.theme = t;
+    if (["light", "dark", "orbit", "blueprint", "pocket", "candy", "mythic", "flux"].indexOf(t) >= 0) document.documentElement.dataset.theme = t;
   }catch(e){}
 })();
 </script>
@@ -267,6 +267,7 @@ function setTheme(mode){
   if (mode === "system") { delete root.dataset.theme; }
   else { root.dataset.theme = mode; }
   try { localStorage.setItem("bgate-theme", mode); } catch (e) {}
+  if (window.BGDynamicTheme) BGDynamicTheme.sync();
   syncThemeButtons();
   // Anything drawn to a <canvas> reads its colours once, at paint time, and
   // cannot resolve var() — those modules have to redraw on a ground change.
@@ -297,6 +298,52 @@ try{
     window.dispatchEvent(new CustomEvent("bgate:theme", { detail:{ mode:"system" } }));
   });
 }catch(e){}
+
+/* Flux is the one ground with a live light source. Pointer movement changes
+   where the field is focused; local time shifts its carrier hue through a
+   narrow, contrast-safe range. No timer or animation survives after leaving
+   the ground, and reduced-motion keeps the time tint but freezes the field. */
+window.BGDynamicTheme = (() => {
+  const root = document.documentElement;
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  let x = innerWidth * .72, y = innerHeight * .18, tx = x, ty = y;
+  let frame = 0, clock = 0, active = false;
+  const phase = () => {
+    const d = new Date(), minutes = d.getHours() * 60 + d.getMinutes();
+    const daylight = (Math.cos((minutes / 1440) * Math.PI * 2 - Math.PI) + 1) / 2;
+    root.style.setProperty("--flux-h", String(Math.round(242 + daylight * 16)));
+  };
+  const paint = () => {
+    frame = 0;
+    x += (tx - x) * .13; y += (ty - y) * .13;
+    root.style.setProperty("--flux-px", x.toFixed(1) + "px");
+    root.style.setProperty("--flux-py", y.toFixed(1) + "px");
+    if (active && (Math.abs(tx - x) > .08 || Math.abs(ty - y) > .08))
+      frame = requestAnimationFrame(paint);
+  };
+  const point = event => {
+    if (!active || reduce.matches) return;
+    tx = event.clientX;
+    ty = event.clientY;
+    if (!frame) frame = requestAnimationFrame(paint);
+  };
+  const sync = () => {
+    active = root.dataset.theme === "flux";
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0; clearInterval(clock); clock = 0;
+    if (!active){
+      for (const name of ("--flux-px", "--flux-py", "--flux-h")) root.style.removeProperty(name);
+      return;
+    }
+    phase(); paint();
+    clock = setInterval(phase, 300000);
+  };
+  addEventListener("pointermove", point, { passive:true });
+  reduce.addEventListener("change", sync);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) sync(); });
+  setTimeout(sync, 0);
+  return { sync };
+})();
 
 /* ── the navigation rail ──────────────────────────────────────────────────
    Closed to 64px at rest; hover and focus-within open it, and both of those

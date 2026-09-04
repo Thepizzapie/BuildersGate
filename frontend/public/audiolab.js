@@ -400,6 +400,21 @@ window.AudioLab = (() => {
       ".ab-warn{color:var(--warn)}",
       ".ab-cols{display:flex;gap:var(--s-6);align-items:flex-start;flex-wrap:wrap}",
       ".ab-col{flex:1;min-width:240px;display:flex;flex-direction:column;gap:var(--s-5)}",
+      ".ab-stemprofiles{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:var(--s-3);margin-bottom:var(--s-4)}",
+      ".ab-stemcard{position:relative;text-align:left;padding:var(--s-4);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);color:var(--text);cursor:pointer;min-height:94px}",
+      ".ab-stemcard:hover{border-color:var(--line-strong);background:var(--surface-3)}",
+      ".ab-stemcard.on{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent);background:var(--accent-wash)}",
+      ".ab-stemcard b{display:block;font-family:var(--mono);font-size:var(--fs-xs);margin-bottom:var(--s-2)}",
+      ".ab-stemcard span{display:block;font-size:var(--fs-xs);line-height:var(--lh);color:var(--text-2)}",
+      ".ab-stemcard small{display:block;margin-top:var(--s-2);font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3)}",
+      ".ab-job{padding:var(--s-4);border:1px solid var(--accent-line);border-radius:var(--r-sm);background:var(--accent-wash);margin-bottom:var(--s-4)}",
+      ".ab-jobline{display:flex;align-items:center;gap:var(--s-3);font-family:var(--mono);font-size:var(--fs-xs)}",
+      ".ab-jobdot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft);flex:none}",
+      ".ab-job.running .ab-jobdot{animation:ab-pulse 1.2s ease-in-out infinite}",
+      ".ab-job.failed{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,transparent)}",
+      ".ab-job.failed .ab-jobdot{background:var(--bad);box-shadow:none}",
+      "@keyframes ab-pulse{50%{opacity:.35;transform:scale(.7)}}",
+      "@media(max-width:760px){.ab-stemprofiles{grid-template-columns:1fr}.ab-rail{width:56px}.ab-rb{width:46px}}",
       ".ab-pick{position:fixed;inset:0;z-index:1401;background:var(--overlay);display:flex;align-items:center;justify-content:center;padding:40px}",
       ".ab-pbox{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-md);width:min(720px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}",
       ".ab-plist{overflow-y:auto;padding:var(--s-4)}",
@@ -530,6 +545,7 @@ window.AudioLab = (() => {
       // layers have — but it is NOT pushed into S.tracks, because the server's
       // normalise_session rejects a track with no `source`.
       clipLane: { muted: false, solo: false, gain_db: 0, pan: 0 },
+      stems: { profile: "four", scope: "clip", job: null, imported: null },
       status: null, mode: "clip", studioMounted: false,
       // Which context panel the bottom sheet is showing, and how tall it is.
       sheet: "clip", sheetOpen: true, sheetH: 330,
@@ -725,6 +741,7 @@ window.AudioLab = (() => {
       lrange: null,
       lplay: null, lhead: 0,
       clipLane: { muted: false, solo: false, gain_db: 0, pan: 0 },
+      stems: { profile: "four", scope: "clip", job: null, imported: null },
       status: null, mode: "clip", studioMounted: false,
       sheet: "clip", sheetOpen: true, sheetH: 330,
       master: null, masterVol: 0.8, monMuted: false,
@@ -938,6 +955,7 @@ window.AudioLab = (() => {
     { id: "synth",   icon: "audio",    label: "synth",   title: "Instrument - a sound effect out of nothing" },
     { id: "pattern", icon: "atlas",    label: "pattern", title: "Patterns - the step sequencer" },
     { id: "mix",     icon: "agents",   label: "mix",     title: "Mix - layers, mixdown and bounce" },
+    { id: "stems",   icon: "rebuild",  label: "stems",   title: "Stems - separate a song into editable instrument lanes" },
     { id: "out",     icon: "assets",   label: "out",     title: "Export - save, and the Godot loop points" },
   ];
   const SHEET_MIN = 132, SHEET_MAX_FRAC = 0.78;
@@ -3552,6 +3570,7 @@ window.AudioLab = (() => {
       : id === "synth"   ? paneSynth()
       : id === "pattern" ? `<div id="ab-studio-slot" style="flex:1;min-width:0;display:flex"></div>`
       : id === "mix"     ? paneMix()
+      : id === "stems"   ? paneStems()
       :                    paneOut();
 
     if (id === "clip"){
@@ -3849,7 +3868,146 @@ window.AudioLab = (() => {
     </div>`;
   }
 
-  /* EXPORT — how this leaves the lab. Where it saves, in what format, and the
+  /* STEMS - inference-backed source separation, kept apart from destructive
+     clip editing and ordinary track mixing because it can take minutes. */
+  function paneStems(){
+    const state = S.stems || (S.stems = { profile:"four", scope:"clip", job:null, imported:null });
+    const cap = S.status && S.status.stems;
+    const profiles = cap && cap.profiles || [
+      {id:"vocals", label:"Voice + music", description:"Vocals and everything else.", stems:["vocals","no vocals"]},
+      {id:"four", label:"Core four", description:"Vocals, drums, bass, and other.", stems:["vocals","drums","bass","other"]},
+      {id:"six", label:"Expanded six", description:"Adds guitar and piano.", stems:["vocals","drums","bass","guitar","piano","other"]},
+    ];
+    const job = state.job;
+    const busy = job && (job.state === "queued" || job.state === "running");
+    const ready = cap && cap.available;
+    const jobHtml = job ? `<div class="ab-job ${E(job.state || "")}">
+      <div class="ab-jobline"><i class="ab-jobdot"></i><b>${E(job.stage || job.state)}</b>
+        <span class="ab-spacer"></span><span class="ab-read">${E(job.state)}</span></div>
+      ${job.error ? `<div class="ab-note ab-warn" style="margin:var(--s-3) 0 0">${E(job.error)}</div>` : ""}
+      ${job.state === "complete" ? `<div class="ab-note" style="margin:var(--s-3) 0 0">
+        ${job.stems.length} lanes added from <b>${E(job.output_dir)}</b>. The original clip is muted so the reconstructed stems do not play twice.</div>` : ""}
+      ${busy ? `<button class="ab-tg" style="margin-top:var(--s-3)" onclick="AudioLab.cancelStems()">stop separation</button>` : ""}
+    </div>` : "";
+    return `<div class="ab-cols">
+      <div class="ab-col" style="flex:2;min-width:420px">
+        ${sec("rebuild", "Separate this clip", `
+          <div class="ab-note">Turn a finished song or audio bite into independent mixer lanes. This runs a local source-separation model; it does not send the audio to an API.</div>
+          <div class="ab-stemprofiles">${profiles.map(p => `
+            <button class="ab-stemcard${state.profile === p.id ? " on" : ""}"
+                    onclick="AudioLab.stemProfile('${E(p.id)}')" ${busy ? "disabled" : ""}>
+              <b>${E(p.label)}</b><span>${E(p.description)}</span>
+              <small>${p.stems.length} lanes - ${E(p.stems.join(", "))}</small>
+            </button>`).join("")}</div>
+          <div class="ab-row">
+            <button class="ab-tg${state.scope === "clip" ? " on" : ""}"
+                    onclick="AudioLab.stemScope('clip')" ${busy ? "disabled" : ""}>whole clip</button>
+            <button class="ab-tg${state.scope === "selection" ? " on" : ""}"
+                    onclick="AudioLab.stemScope('selection')" ${!S.sel || busy ? "disabled" : ""}>selection only</button>
+            <span class="ab-read">${state.scope === "selection" && S.sel
+              ? fmt((S.sel.b - S.sel.a) / S.buf.sampleRate) + " will be analysed"
+              : fmt(S.buf.duration) + " will be analysed"}</span>
+          </div>
+          ${jobHtml}
+          <button class="ab-btn wide go" onclick="AudioLab.startStems()" ${!ready || busy ? "disabled" : ""}>
+            ${busy ? "separating..." : job && job.state === "complete" ? "separate another copy" : "separate into mixer lanes"}</button>`,
+          { note: ready ? "local model" : "engine required" })}
+      </div>
+      <div class="ab-col">
+        ${sec("audio", "How it lands", `
+          <div class="ab-note">Each result is written as a WAV beside the source in a dedicated <b>_stems</b> folder, then added to the arrangement above at time zero.</div>
+          <div class="ab-note">Muting, soloing, trimming, panning and bouncing work exactly like imported layers. The original stays intact and is muted after import.</div>`,
+          { kind:"k-read", note:"non-destructive" })}
+        ${sec("settings", "Stem engine", `
+          <div class="ab-note"><b>${E(cap && cap.engine || "Demucs")}</b><br>${ready
+            ? "Ready. The first run for a model downloads its model weights; later runs reuse them."
+            : E(cap && cap.reason || "Checking the local stem engine...")}</div>`,
+          { note: ready ? "ready" : "not installed", tone: ready ? "good" : "" })}
+      </div>
+    </div>`;
+  }
+
+  function stemProfile(profile){
+    if (!S || !S.stems) return;
+    const cap = S.status && S.status.stems;
+    if (cap && cap.profiles && !cap.profiles.some(p => p.id === profile)) return;
+    S.stems.profile = profile;
+    renderSheet();
+  }
+
+  function stemScope(scope){
+    if (!S || !S.stems) return;
+    S.stems.scope = scope === "selection" && S.sel ? "selection" : "clip";
+    renderSheet();
+  }
+
+  async function startStems(){
+    if (!S || !S.stems) return;
+    const cap = S.status && S.status.stems;
+    if (!cap || !cap.available){ say(cap && cap.reason || "the stem engine is not available"); return; }
+    const current = S.stems.job;
+    if (current && (current.state === "queued" || current.state === "running")) return;
+    let source = S.buf;
+    if (S.stems.scope === "selection" && S.sel)
+      source = sliceBuf(S.ctx, S.buf, S.sel.a / S.buf.sampleRate, S.sel.b / S.buf.sampleRate, false);
+    S.stems.job = { state:"queued", stage:"encoding the clip", stems:[], error:"" };
+    S.stems.imported = null;
+    renderSheet();
+    const wav = encodeWav(source);
+    if (wav.length > MAX_B64){
+      S.stems.job = { state:"failed", stage:"clip is too large", stems:[],
+                      error:"Shorten the clip or separate a selection." };
+      renderSheet(); return;
+    }
+    const r = await mutate("/api/audio/lab/stems", { body: {
+      wav, profile: S.stems.profile, source_rel: S.rel || S.saveAs,
+    }});
+    if (!S) return;
+    if (!r.ok){
+      S.stems.job = { state:"failed", stage:"could not start", stems:[],
+                      error:r.error || "The stem job could not start." };
+      renderSheet(); return;
+    }
+    S.stems.job = r.data;
+    renderSheet();
+    pollStemJob(r.data.id);
+  }
+
+  async function pollStemJob(id){
+    await new Promise(resolve => setTimeout(resolve, 900));
+    if (!S || !S.stems || !S.stems.job || S.stems.job.id !== id) return;
+    const job = await readJSON(`/api/audio/lab/stems/${encodeURIComponent(id)}`, null);
+    if (!S || !S.stems || !S.stems.job || S.stems.job.id !== id) return;
+    if (!job || job.__error){
+      S.stems.job = { id, state:"failed", stage:"lost connection to the job", stems:[],
+                      error:(job && job.__error) || "Could not read stem progress." };
+      renderSheet(); return;
+    }
+    S.stems.job = job;
+    if (job.state === "complete" && S.stems.imported !== id){
+      S.stems.imported = id;
+      S.clipLane.muted = true;
+      for (const stem of job.stems || []) await addTrack(stem.rel);
+      if (!S) return;
+      S.lsel = 0;
+      renderHeads(); paintLayers(); renderSheet();
+      say(`${job.stems.length} stems added as mixer lanes`, "ok");
+      return;
+    }
+    renderSheet();
+    if (job.state === "queued" || job.state === "running") pollStemJob(id);
+  }
+
+  async function cancelStems(){
+    if (!S || !S.stems || !S.stems.job || !S.stems.job.id) return;
+    const job = S.stems.job;
+    if (job.state !== "queued" && job.state !== "running") return;
+    job.stage = "stopping the stem engine";
+    renderSheet();
+    await mutate(`/api/audio/lab/stems/${encodeURIComponent(job.id)}/cancel`, { body:{} });
+  }
+
+  /* EXPORT - how this leaves the lab. Where it saves, in what format, and the
      Godot loop points, which are the one setting no audio editor can hear. */
   function paneOut(){
     const st = S.status, loop = S.loop || {}, sel = S.sel;
@@ -5069,6 +5227,7 @@ window.AudioLab = (() => {
     speed, toMono,
     synthField, synthPreview, synthReplace, synthAppend,
     addTrack, trackField, resetTrim, dropTrack, mixdown, bounce, bounceAsField,
+    stemProfile, stemScope, startStems, cancelStems,
     layersFit, splitLayer,
     setLayerTool, clearRange, rangeTrim, rangeRemove, rangePlay,
     importFiles, importPicked,

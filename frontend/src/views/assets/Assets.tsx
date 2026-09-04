@@ -5,6 +5,7 @@ import { askText, mutate, pollQueue, pollState, previewURL, seatColor, toast, va
 import { setUrlParams, urlParam } from "../../shell/urlState";
 import { Ti } from "../../shell/Ti";
 import { AssetDrawer } from "./AssetDrawer";
+import { RevisionPane } from "./RevisionPane";
 import { assetCategory, catOrder, groupStatus, groupThumb } from "./categorise";
 import "./assets.css";
 
@@ -31,6 +32,8 @@ export default function Assets() {
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
   const [drawer, setDrawer] = useState<string | null>(() => urlParam("asset") || null);
+  const [compareTarget, setCompareTarget] = useState<string | null>(null);
+  const [compareArmed, setCompareArmed] = useState(false);
   const [auditing, setAuditing] = useState(false);
 
   const counts = useMemo(() => {
@@ -60,6 +63,7 @@ export default function Assets() {
   }, [groups, filter, category, search, canon]);
 
   const open = drawer ? groups.find((group) => group.logical_name === drawer) || null : null;
+  const comparison = compareTarget ? groups.find((group) => group.logical_name === compareTarget) || null : null;
   const visibleCount = buckets.reduce((total, [, list]) => total + list.length, 0);
 
   async function review(id: number, status: string) {
@@ -143,17 +147,30 @@ export default function Assets() {
             count={item.count} onClick={() => setCategory(item.name)} />)}</FilterSection>
       </aside>
       <main className="asset-review-main">
-        <div className="asset-review-bar"><TextInput placeholder="Search production assets" value={search}
+        <div className="asset-review-bar"><TextInput placeholder={compareArmed ? "Choose the second asset below" : "Search production assets"} value={search}
           leftSection={<Ti name="search" size={14} />} onChange={(event) => setSearch(event.currentTarget.value)} aria-label="Search production assets" />
+          {open && <Button variant={compareArmed ? "filled" : "default"} size="compact-xs"
+            leftSection={<Ti name="columns-2" size={13} />}
+            onClick={() => { setCompareArmed(!compareArmed); if (!compareArmed) setCompareTarget(null); }}>
+            {compareArmed ? "Pick second" : "Compare"}
+          </Button>}
           <span>{visibleCount} shown</span></div>
         <div className="asset-scroll">
           {!buckets.length && <div className="asset-empty"><Ti name="photo-off" size={22} /><b>No assets match</b>
             <span>Clear a filter or rescan the project library.</span></div>}
           {buckets.map(([name, list]) => <AssetSection key={name} name={name} groups={list} selected={drawer}
-            onSelect={(logicalName) => { setDrawer(logicalName); setUrlParams({ asset: logicalName }); }} />)}
+            compareTarget={compareTarget} compareArmed={compareArmed}
+            onSelect={(logicalName) => {
+              if (compareArmed && drawer && logicalName !== drawer) {
+                setCompareTarget(logicalName); setCompareArmed(false); return;
+              }
+              setCompareTarget(null); setDrawer(logicalName); setUrlParams({ asset: logicalName });
+            }} />)}
         </div>
       </main>
-      {open ? <AssetDrawer group={open} inline onClose={closeInspector} onReview={review} onRegenerate={regenerate}
+      {open && comparison ? <AssetComparison left={open} right={comparison}
+        onClose={() => setCompareTarget(null)} onReview={review} onRegenerate={regenerate} />
+      : open ? <AssetDrawer group={open} inline onClose={closeInspector} onReview={review} onRegenerate={regenerate}
         onOpenSprite={(rel) => window.SpriteEdit?.open(rel)} onOpenModel={(rel) => window.ModelEdit?.open(rel)} />
       : <aside className="asset-inspector asset-inspector-empty"><Ti name="versions" size={26} /><b>Select an asset</b>
           <span>Compare revisions, inspect generation context, and approve the version that belongs in the game.</span></aside>}
@@ -197,14 +214,17 @@ function FilterButton({ active, label, count, dot, onClick }: {
     {dot && <span className={`sdot ${dot === "all" ? "neutral" : dot}`} />}<span>{label}</span><b>{count}</b></button>;
 }
 
-function AssetSection({ name, groups, selected, onSelect }: {
-  name: string; groups: AssetGroup[]; selected: string | null; onSelect: (name: string) => void;
+function AssetSection({ name, groups, selected, compareTarget, compareArmed, onSelect }: {
+  name: string; groups: AssetGroup[]; selected: string | null; compareTarget: string | null;
+  compareArmed: boolean; onSelect: (name: string) => void;
 }) {
   return <div className="asset-section"><div className="asset-section-head">{name}<span className="n">{groups.length}</span></div>
     <div className="asset-grid">{groups.map((group) => {
       const status = groupStatus(group); const thumb = groupThumb(group);
       const candidates = group.candidates?.length || 0; const revisions = group.revisions?.length || 0;
-      return <button key={group.logical_name} type="button" className={`asset-tile ${status}${selected === group.logical_name ? " sel" : ""}`}
+      const picked = selected === group.logical_name; const compared = compareTarget === group.logical_name;
+      return <button key={group.logical_name} type="button" disabled={compareArmed && picked}
+        className={`asset-tile ${status}${picked ? " sel" : ""}${compared ? " compare" : ""}${compareArmed && !picked ? " compare-ready" : ""}`}
         onClick={() => onSelect(group.logical_name)}>
         {candidates > 0 && <span className="asset-badge">{candidates} new</span>}
         <div className="asset-thumb">{thumb ? <img src={previewURL(thumb)} alt="" loading="lazy" />
@@ -215,4 +235,30 @@ function AssetSection({ name, groups, selected, onSelect }: {
       </button>;
     })}</div>
   </div>;
+}
+
+function AssetComparison({ left, right, onClose, onReview, onRegenerate }: {
+  left: AssetGroup; right: AssetGroup; onClose: () => void;
+  onReview: (id: number, status: string) => void; onRegenerate: (id: number) => void;
+}) {
+  const pick = (group: AssetGroup) => group.candidates?.[0] || group.approved
+    || group.revisions[group.revisions.length - 1] || null;
+  const a = pick(left); const b = pick(right);
+  return <aside className="asset-inspector asset-cross-compare" aria-label="Asset comparison">
+    <div className="drawer-head"><div><h3>Side-by-side review</h3><div className="st">Current candidate or approved revision</div></div>
+      <button className="drawer-x" onClick={onClose} title="Close comparison">&times;</button></div>
+    <div className="drawer-body">
+      <div className="asset-cross-grid">
+        <div><div className="asset-cross-name" title={left.logical_name}>{left.logical_name}</div>
+          <RevisionPane a={a} label="left" candidate={a?.status === "candidate"}
+            onReview={onReview} onRegenerate={onRegenerate} /></div>
+        <div><div className="asset-cross-name" title={right.logical_name}>{right.logical_name}</div>
+          <RevisionPane a={b} label="right" candidate={b?.status === "candidate"}
+            onReview={onReview} onRegenerate={onRegenerate} /></div>
+      </div>
+      <div className="asset-cross-diff"><span>Producer</span><b>{a?.producer || "unknown"}</b><b>{b?.producer || "unknown"}</b>
+        <span>Model</span><b>{a?.model || a?.kind || "-"}</b><b>{b?.model || b?.kind || "-"}</b>
+        <span>Build</span><b>{a?.used_in_current_build ? "in build" : "not in build"}</b><b>{b?.used_in_current_build ? "in build" : "not in build"}</b></div>
+    </div>
+  </aside>;
 }

@@ -276,6 +276,27 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
     return args
 
 
+def _codex_director_args(exe: str, *, model: Optional[str], cwd: str,
+                         resume: str = "") -> list[str]:
+    """A full Codex director turn, new or resumed.
+
+    ``codex exec`` is intentionally one process per turn. Its native resume
+    command preserves the conversation while avoiding a fake long-lived stdin
+    channel (Codex closes stdin after one prompt). Both shapes keep the same
+    workspace sandbox and Builders Gate MCP overlay as dispatched Codex work.
+    """
+    if not resume:
+        return _codex_args(
+            exe, permission_mode="acceptEdits", model=model, cwd=cwd,
+            native_images=True) + ["-"]
+    args = [exe, "exec", "resume", "--json"]
+    args += mcp_overrides()
+    args += ["--enable", "image_generation"]
+    if model:
+        args += ["--model", model]
+    return args + [resume, "-"]
+
+
 # THE FLAGS THAT MAKE A BRAINSTORM SESSION UNABLE TO WRITE.
 #
 # Named as a constant, and read by both the argv builder and the sentence shown

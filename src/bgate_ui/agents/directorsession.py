@@ -211,11 +211,38 @@ def _write_sidecar(root, data: dict) -> None:
         pass
 
 
-def forget(root) -> None:
+def _session_for(root, runner: str) -> str:
+    note = _read_sidecar(root)
+    sessions = note.get("sessions")
+    if isinstance(sessions, dict) and sessions.get(runner):
+        return str(sessions[runner])
+    # Compatibility with sidecars written before the console had two CLIs.
+    return str(note.get("cli_session_id") or "") if runner == "claude" else ""
+
+
+def _remember(root, **changes) -> dict:
+    note = _read_sidecar(root)
+    for key, value in changes.items():
+        if isinstance(value, dict) and isinstance(note.get(key), dict):
+            note[key] = {**note[key], **value}
+        else:
+            note[key] = value
+    note["ts"] = time.time()
+    _write_sidecar(root, note)
+    return note
+
+
+def forget(root, runner: str = "") -> None:
     """Drop the resume marker, so the next message starts a fresh conversation.
     What "clear the console" means for this module."""
     note = _read_sidecar(root)
     note.pop("cli_session_id", None)
+    sessions = note.get("sessions") if isinstance(note.get("sessions"), dict) else {}
+    if runner:
+        sessions.pop(runner, None)
+    else:
+        sessions = {}
+    note["sessions"] = sessions
     _write_sidecar(root, note)
 
 
@@ -290,7 +317,9 @@ def history(root, after: int = 0) -> dict:
             "waiting": str(live.get("waiting") or ""),
             "live": bool(live.get("live")),
             "session_id": live.get("cli_session_id") or "",
-            "model": _model_for(root)}
+            **configuration(root),
+            "usage": usage(root),
+            "usage_bridge": usage_bridge(root)}
 
 
 def send(root, text: str) -> dict:
@@ -362,8 +391,150 @@ def _setting(root, key: str, fallback):
 def _model_for(root) -> str:
     """Named, never inherited — same rule as dispatch and brainsession, same
     measured reason (see brainsession.FALLBACK_MODEL)."""
-    return str(_setting(root, "console.model", FALLBACK_MODEL)
-               or "").strip() or FALLBACK_MODEL
+    runner = _runner_for(root)
+    models = _read_sidecar(root).get("models")
+    if isinstance(models, dict) and str(models.get(runner) or "").strip():
+        return str(models[runner]).strip()
+    if runner == "claude":
+        return str(_setting(root, "console.model", FALLBACK_MODEL)
+                   or "").strip() or FALLBACK_MODEL
+    from bgate_ui.agents import codexmeta
+
+    rows = codexmeta.snapshot().get("models") or []
+    preferred = next((r for r in rows if r.get("default")), None)
+    return str((preferred or (rows[0] if rows else {})).get("value") or "")
+
+
+def _runner_for(root) -> str:
+    name = str(_setting(root, "console.runner", "claude") or "claude").lower()
+    return name if name in _runners.RUNNERS else "claude"
+
+
+def _model_options(root) -> dict[str, list[dict]]:
+    from bgate_core.runtime import modelcatalog
+    from bgate_ui.agents import codexmeta
+
+    claude = [{"value": value, "label": value.title()}
+              for value in modelcatalog.AGENT_MODELS]
+    codex = list(codexmeta.snapshot().get("models") or [])
+    current = _read_sidecar(root).get("models")
+    current = current if isinstance(current, dict) else {}
+    for name, rows in (("claude", claude), ("codex", codex)):
+        value = str(current.get(name) or "")
+        if value and all(row.get("value") != value for row in rows):
+            rows.insert(0, {"value": value, "label": value})
+    return {"claude": claude, "codex": codex}
+
+
+def configuration(root) -> dict:
+    installed = _runners.available()
+    return {"runner": _runner_for(root), "model": _model_for(root),
+            "runners": [
+                {"value": key,
+                 "label": "Claude Code" if key == "claude" else "Codex",
+                 "installed": bool(row.get("installed"))}
+                for key, row in installed.items()],
+            "models": _model_options(root)}
+
+
+def configure(root, runner: str, model: str) -> dict:
+    runner = str(runner or "").strip().lower()
+    model = str(model or "").strip()
+    if runner not in _runners.RUNNERS:
+        raise ValueError(f"unknown director runner '{runner}'")
+    if not _runners.RUNNERS[runner].find():
+        raise ValueError(f"{runner} CLI is not installed")
+    if status(root).get("running"):
+        raise ValueError("the director is working; switch after this turn")
+    rows = _model_options(root).get(runner) or []
+    if not model:
+        preferred = next((r for r in rows if r.get("default")), None)
+        model = str((preferred or (rows[0] if rows else {})).get("value") or "")
+    if rows and model not in {str(r.get("value") or "") for r in rows}:
+        raise ValueError(f"model '{model}' is not offered by {runner}")
+    stop(root)
+    _settings.set(root, "console.runner", runner)
+    _settings.set(root, "console.model", model)
+    _remember(root, models={runner: model})
+    return {"ok": True, **configuration(root), "usage": usage(root)}
+
+
+def _store_usage(root, runner: str, tokens: dict, context_limit=0) -> None:
+    if not tokens:
+        return
+    if runner == "claude":
+        used = sum(int(tokens.get(k) or 0)
+                   for k in ("input", "cache_read", "cache_write"))
+    else:
+        used = int(tokens.get("input") or tokens.get("input_tokens") or 0)
+    note = _read_sidecar(root)
+    all_usage = note.get("usage") if isinstance(note.get("usage"), dict) else {}
+    runner_usage = all_usage.get(runner) if isinstance(all_usage.get(runner), dict) else {}
+    runner_usage["context"] = {"used": max(0, used),
+                               "limit": max(0, int(context_limit or 0))}
+    all_usage[runner] = runner_usage
+    _remember(root, usage=all_usage)
+
+
+def _rate_window(info: dict) -> tuple[str, dict]:
+    kind = str(info.get("rateLimitType") or info.get("type") or "").lower()
+    key = "five_hour" if "five" in kind or "5h" in kind else \
+          "weekly" if "week" in kind or "seven" in kind else ""
+    raw = info.get("usedPercent", info.get("utilization"))
+    try:
+        percent = float(raw)
+        if percent <= 1:
+            percent *= 100
+        percent = max(0, min(100, round(percent)))
+    except (TypeError, ValueError):
+        percent = None
+    row = {"status": str(info.get("status") or "")}
+    if percent is not None:
+        row["used_percent"] = percent
+    reset = info.get("resetsAt", info.get("resetAt"))
+    if reset is not None:
+        row["resets_at"] = reset
+    return key, row
+
+
+def _store_rate_window(root, runner: str, info: dict) -> None:
+    key, window = _rate_window(info)
+    if not key:
+        return
+    note = _read_sidecar(root)
+    all_usage = note.get("usage") if isinstance(note.get("usage"), dict) else {}
+    runner_usage = all_usage.get(runner) if isinstance(all_usage.get(runner), dict) else {}
+    runner_usage[key] = window
+    all_usage[runner] = runner_usage
+    _remember(root, usage=all_usage)
+
+
+def usage(root) -> dict:
+    runner = _runner_for(root)
+    note = _read_sidecar(root)
+    all_usage = note.get("usage") if isinstance(note.get("usage"), dict) else {}
+    out = dict(all_usage.get(runner) or {})
+    if runner == "codex":
+        from bgate_ui.agents import codexmeta
+        out.update(codexmeta.usage_for(_model_for(root)))
+        context = dict(out.get("context") or {})
+        if context and not context.get("limit"):
+            context["limit"] = codexmeta.context_for(_model_for(root))
+            out["context"] = context
+    elif runner == "claude":
+        from bgate_ui.agents import claudeusage
+        out.update(claudeusage.usage())
+    return {"context": out.get("context") or {},
+            "five_hour": out.get("five_hour") or {},
+            "weekly": out.get("weekly") or {}}
+
+
+def usage_bridge(root) -> dict:
+    if _runner_for(root) != "claude":
+        return {"enabled": False, "has_snapshot": False,
+                "needs_restart": False}
+    from bgate_ui.agents import claudeusage
+    return claudeusage.status()
 
 
 def _kill_tree(pid: int) -> None:
@@ -432,6 +603,7 @@ def _spawn(root, resume: str = "") -> dict:
         handle.close()
         raise Unavailable(f"could not start claude: {exc}") from exc
     entry = {"proc": proc, "handle": handle, "stdin": proc.stdin,
+             "root": str(root), "runner": "claude", "model": _model_for(root),
              "log": str(path), "scan_pos": handle.tell(), "rem": b"",
              "turns": 0, "ok_turns": 0,
              "cli_session_id": str(resume or ""), "resumed": bool(resume),
@@ -497,10 +669,11 @@ def status(root) -> dict:
     with _lock:
         entry = _live.get(_pkey(root))
         if entry is None:
-            note = _read_sidecar(root)
+            runner = _runner_for(root)
             return {"live": False, "running": False, "current_item": 0,
                     "thinking": "",
-                    "cli_session_id": str(note.get("cli_session_id") or ""),
+                    "runner": runner,
+                    "cli_session_id": _session_for(root, runner),
                     "turns": 0}
         says = list(entry.get("says") or [])
         waiting = str(entry.get("rate_limited") or entry.get("waiting") or "")
@@ -509,6 +682,7 @@ def status(root) -> dict:
                 "current_item": int(entry.get("current_item") or 0),
                 "thinking": (says[-1][:400] if says else waiting[:400]),
                 "waiting": waiting[:400],
+                "runner": str(entry.get("runner") or "claude"),
                 "cli_session_id": str(entry.get("cli_session_id") or ""),
                 "turns": int(entry.get("turns") or 0)}
 
@@ -572,6 +746,27 @@ def _model_of(ev: dict) -> str:
     return str(ev.get("model") or "")
 
 
+def _context_limit(ev: dict) -> int:
+    """Read a provider-reported context window without assuming one by model."""
+    wanted = {"context_window", "contextwindow", "model_context_window",
+              "modelcontextwindow"}
+    stack = [ev]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if str(key).lower() in wanted:
+                    try:
+                        return max(0, int(child or 0))
+                    except (TypeError, ValueError):
+                        pass
+                if isinstance(child, (dict, list)):
+                    stack.append(child)
+        elif isinstance(value, list):
+            stack.extend(value)
+    return 0
+
+
 def _tool_note(block: dict) -> str:
     """One line saying what a tool call is ABOUT — the path, the command, the
     pattern — the way a terminal session shows it. Falls back to compact JSON
@@ -617,6 +812,7 @@ def _collect(entry: dict, deadline: float) -> dict:
                 # brainsession._collect, where this was observed live.
                 info = ev.get("rate_limit_info")
                 info = info if isinstance(info, dict) else {}
+                _store_rate_window(entry.get("root") or "", "claude", info)
                 if str(info.get("status") or "") not in ("", "allowed"):
                     entry["rate_limited"] = (
                         f"the {info.get('rateLimitType') or 'usage'} limit is "
@@ -642,7 +838,8 @@ def _collect(entry: dict, deadline: float) -> dict:
                 subtype = str(ev.get("subtype") or "")
                 out = {"cost": ev.get("total_cost_usd"), "text": text,
                        "subtype": subtype, "tokens": _tokens(ev),
-                       "model": _model_of(ev)}
+                       "model": _model_of(ev),
+                       "context_limit": _context_limit(ev)}
                 if ev.get("is_error") or subtype != "success" or not text:
                     out["dead"] = subtype not in ("", "success")
                     out["ok"] = False
@@ -672,6 +869,181 @@ def _collect(entry: dict, deadline: float) -> dict:
         time.sleep(POLL_S)
 
 
+_codex_turn_locks: dict[str, threading.Lock] = {}
+
+
+def _codex_lock(root) -> threading.Lock:
+    key = _pkey(root)
+    with _lock:
+        return _codex_turn_locks.setdefault(key, threading.Lock())
+
+
+def _codex_tool(item: dict) -> tuple[str, str]:
+    kind = str(item.get("type") or "")
+    if kind == "command_execution":
+        return "Bash", str(item.get("command") or "")[:400]
+    if kind == "mcp_tool_call":
+        name = str(item.get("tool") or item.get("name") or "MCP")
+        args = item.get("arguments") or item.get("input") or {}
+        try:
+            hint = json.dumps(args)[:400] if isinstance(args, dict) else str(args)[:400]
+        except (TypeError, ValueError):
+            hint = ""
+        return name, hint
+    if kind in ("file_change", "web_search"):
+        return kind.replace("_", " ").title(), str(
+            item.get("path") or item.get("query") or "")[:400]
+    return "", ""
+
+
+def _collect_codex(entry: dict, deadline: float) -> dict:
+    final = ""
+    def consume(events: list[dict]):
+        nonlocal final
+        for ev in events:
+            kind = str(ev.get("type") or "")
+            if kind == "thread.started":
+                entry["cli_session_id"] = str(
+                    ev.get("thread_id") or ev.get("threadId") or "")
+            elif kind == "item.completed":
+                item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+                if item.get("type") == "agent_message":
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        final = text
+                        entry["says"].append(text)
+                        del entry["says"][:-12]
+                        if entry.get("record"):
+                            _post(entry["record"], "assistant", text)
+                elif entry.get("record"):
+                    tool, hint = _codex_tool(item)
+                    if tool:
+                        _post(entry["record"], "tool", hint, tool=tool)
+            elif kind == "turn.completed":
+                raw = ev.get("usage") if isinstance(ev.get("usage"), dict) else {}
+                tokens = {"input": int(raw.get("input_tokens") or 0),
+                          "output": int(raw.get("output_tokens") or 0),
+                          "cache_read": int(raw.get("cached_input_tokens") or 0)}
+                return {"ok": bool(final), "text": final, "tokens": tokens,
+                        "context_limit": _context_limit(ev),
+                        "error": "Codex completed without an answer" if not final else ""}
+            elif kind in ("turn.failed", "error"):
+                error = ev.get("error")
+                if isinstance(error, dict):
+                    error = error.get("message") or error.get("code")
+                return {"ok": False, "dead": True,
+                        "error": str(error or "Codex turn failed")[:400]}
+        return None
+
+    while True:
+        got = consume(_read_events(entry))
+        if got is not None:
+            return got
+        code = entry["proc"].poll()
+        if code is not None:
+            # Drain output written between the poll and this read.
+            got = consume(_read_events(entry))
+            if got is not None:
+                return got
+            return {"ok": False, "dead": True,
+                    "error": f"Codex exited ({code}) without answering"}
+        if time.monotonic() >= deadline:
+            return {"ok": False, "dead": True,
+                    "error": f"Codex did not answer within {int(TURN_TIMEOUT_S)}s and was stopped"}
+        time.sleep(POLL_S)
+
+
+def _codex_deliver(root, prompt: str, *, resume: str, record: bool,
+                   item_id: int) -> dict:
+    exe = _runners.find_codex()
+    if not exe:
+        raise Unavailable("codex CLI not found; install or select Claude Code")
+    reason = _runners.preflight(_runners.RUNNERS["codex"], str(root), exe)
+    if reason:
+        raise Unavailable(reason)
+    path = log_path(root)
+    handle = open(path, "ab")
+    handle.write((json.dumps({"type": "bgate_console_start", "runner": "codex",
+                              "resumed": bool(resume), "ts": time.time()}) + "\n").encode())
+    handle.flush()
+    model = _model_for(root)
+    args = _runners._codex_director_args(
+        exe, model=model, cwd=str(root), resume=resume)
+    try:
+        proc = subprocess.Popen(
+            args, cwd=str(root), env=_environ(root), stdin=subprocess.PIPE,
+            stdout=handle, stderr=handle, creationflags=_NO_WINDOW,
+            start_new_session=(sys.platform != "win32"))
+    except OSError as exc:
+        handle.close()
+        raise Unavailable(f"could not start Codex: {exc}") from exc
+    entry = {"proc": proc, "handle": handle, "stdin": proc.stdin,
+             "root": str(root), "runner": "codex", "model": model,
+             "log": str(path), "scan_pos": handle.tell(), "rem": b"",
+             "cli_session_id": resume, "resumed": bool(resume),
+             "current_item": int(item_id), "busy": True,
+             "record": str(root) if record else "", "says": [], "waiting": "",
+             "turns": 0, "started_at": time.monotonic(),
+             "last_at": time.monotonic()}
+    with _lock:
+        _live[_pkey(root)] = entry
+    try:
+        proc.stdin.write(prompt.encode("utf-8"))
+        proc.stdin.close()
+        entry["stdin"] = None
+        return _collect_codex(entry, time.monotonic() + max(30.0, TURN_TIMEOUT_S))
+    finally:
+        if proc.poll() is None:
+            _kill_tree(proc.pid)
+        _reap(_pkey(root), entry)
+
+
+def _turn_codex(root, prompt: str, reseed_context: str, settle, *,
+                item_id: int = 0, record: bool = False) -> None:
+    with _codex_lock(root):
+        resume = _session_for(root, "codex")
+        for attempt in range(2):
+            text = prompt
+            if not resume:
+                context = ("\n\nRecent dashboard conversation:\n" + reseed_context
+                           if reseed_context else "")
+                text = system_prompt(root) + context + "\n\nHuman request:\n" + prompt
+            got = _codex_deliver(root, text, resume=resume, record=record,
+                                 item_id=item_id)
+            if got.get("ok"):
+                session_id = str(got.get("session_id") or "")
+                # The collector stores the id on the live entry; recover it
+                # from the start event if the result did not carry it.
+                if not session_id:
+                    session_id = _last_codex_session(log_path(root))
+                _remember(root, sessions={"codex": session_id})
+                _store_usage(root, "codex", got.get("tokens") or {},
+                             got.get("context_limit") or 0)
+                settle(str(got.get("text") or ""), False)
+                return
+            if resume and attempt == 0:
+                forget(root, "codex")
+                resume = ""
+                continue
+            settle(str(got.get("error") or "Codex answered nothing"), True)
+            return
+
+
+def _last_codex_session(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines[-500:]):
+        try:
+            ev = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if ev.get("type") == "thread.started":
+            return str(ev.get("thread_id") or ev.get("threadId") or "")
+    return ""
+
+
 def _resume_failed(entry: dict, got: dict) -> bool:
     """Same crude-and-honest rule as brainsession._resume_failed, for the same
     measured reason: the CLI has no machine-readable 'that session is gone',
@@ -687,12 +1059,14 @@ def _ensure(root) -> dict:
     with _lock:
         entry = _live.get(key)
     if entry is not None:
-        stale = (entry["proc"].poll() is not None
+        stale = (entry.get("runner") != "claude"
+                 or entry.get("model") != _model_for(root)
+                 or entry["proc"].poll() is not None
                  or time.monotonic() - entry["last_at"] > IDLE_S)
         if not stale:
             return entry
         _reap(key, entry)
-    resume = str(_read_sidecar(root).get("cli_session_id") or "")
+    resume = _session_for(root, "claude")
     return _spawn(root, resume=resume)
 
 
@@ -726,6 +1100,10 @@ def _turn(root, prompt: str, reseed_context: str, settle,
           *, item_id: int = 0, record: bool = False) -> None:
     """One turn through the session. ``settle(text, failed)`` is what to do
     with the answer — post it to the chat, or close a work item with it."""
+    if _runner_for(root) == "codex":
+        _turn_codex(root, prompt, reseed_context, settle,
+                    item_id=item_id, record=record)
+        return
     # A loop, not a single re-check: this thread may wait on the turn lock
     # while the previous turn kills the process (a timeout). The
     # lock and the process belong to ONE entry — carrying a fresh entry under
@@ -793,9 +1171,11 @@ def _deliver(root, entry: dict, prompt: str) -> tuple[dict, float]:
         entry["turns"] = int(entry["turns"]) + 1
     if got.get("ok"):
         entry["ok_turns"] = int(entry.get("ok_turns") or 0) + 1
-        _write_sidecar(root, {
-            "cli_session_id": entry.get("cli_session_id") or "",
-            "turns": int(entry["turns"]), "ts": time.time()})
+        session_id = entry.get("cli_session_id") or ""
+        _remember(root, cli_session_id=session_id,
+                  sessions={"claude": session_id}, turns=int(entry["turns"]))
+    _store_usage(root, "claude", got.get("tokens") or {},
+                 got.get("context_limit") or 0)
     if got.get("dead") and entry["proc"].poll() is None:
         # A turn declared dead (timeout) over a process still running: kill it,
         # or the next turn interleaves with this one's late output.

@@ -309,7 +309,9 @@
         // An edge may say what KIND of relation it is. Delegation and "these
         // two agents are on the same asset" are not the same line, and a graph
         // that draws them identically is asserting they are.
-        if (e.cls) path.setAttribute("class", "nc-edge " + e.cls);
+        const dynamicClass = this.o.edgeClass ? this.o.edgeClass(e) : "";
+        const edgeClass = [e.cls, dynamicClass].filter(Boolean).join(" ");
+        if (edgeClass) path.setAttribute("class", "nc-edge " + edgeClass);
         if (e.title) {
           const tip = document.createElementNS(NS, "title");
           tip.textContent = e.title;
@@ -986,6 +988,11 @@
       .nc-edge.temp{stroke-dasharray:5 4;opacity:.95}
       /* a sideways relation, not a delegation — see the e.cls note above */
       .nc-edge.nc-soft{stroke-dasharray:4 5;stroke-width:1.5;opacity:.6}
+      .nc-edge.nc-passed{opacity:.45}
+      .nc-edge.nc-failed{stroke:var(--bad)!important;opacity:.8}
+      .nc-edge.nc-live{stroke-width:3;stroke-dasharray:9 7;animation:nc-flow .7s linear infinite;filter:drop-shadow(0 0 4px currentColor)}
+      @keyframes nc-flow{to{stroke-dashoffset:-16}}
+      @media (prefers-reduced-motion:reduce){.nc-edge.nc-live{animation:none}}
       .nc-hit{fill:none;stroke:transparent;stroke-width:16;pointer-events:stroke;cursor:pointer}
       .nc-hit:hover{stroke:var(--nc-edge);opacity:.18}
       .nc-world{position:absolute;top:0;left:0;transform-origin:0 0}

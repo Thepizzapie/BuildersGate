@@ -144,6 +144,7 @@ LABELS: dict[str, str] = {
     "art.lora_strength": "How strongly the trained style is applied",
     "art.runner": "Which tool generates images",
     "art.image_backend": "Image provider",
+    "art.mesh_route": "How art agents build 3D models",
     "art.auto_approve": "Accept generated art without review",
     # Generators
     "art.provider": "Preferred image provider",
@@ -174,6 +175,7 @@ LABELS: dict[str, str] = {
     # Console
     "console.poll_live_ms": "Refresh rate while work is running",
     "console.poll_idle_ms": "Refresh rate when nothing is running",
+    "console.runner": "Coding tool used by the director console",
     "console.model": "Model the director console session runs on",
     "graph.phase_cap": "Most steps to show per agent on the graph",
     "brainstorm.runner": "Which assistant the brainstorm room uses",
@@ -193,6 +195,9 @@ GROUP_ICONS: dict[str, str] = {
     "Follow-up": "rotate-clockwise",
     "Notifications": "bell",
     "Budget": "coin",
+    # What survived the spend ledger: concurrency and the wall clock, which
+    # are the two limits that were never about money.
+    "Limits": "gauge",
     "Console": "terminal-2",
     "Modules": "puzzle",
     "Privacy": "eye-off",
@@ -489,6 +494,19 @@ SETTINGS: tuple[Setting, ...] = (
              "made; only the generation call changes. On a runner with no image "
              "tool of its own this falls back to `bgate` rather than failing."),
     Setting(
+        key="art.mesh_route", group="Art", kind=ENUM, default="smart",
+        choices=("smart", "api", "blender"),
+        store=("registry", "art.mesh_route"), human_only=True,
+        env="BGATE_ART_MESH_ROUTE",
+        help="Choose how the art seat creates NEW 3D geometry. `smart` uses "
+             "Blender authoring for simple low-detail forms and API generators "
+             "for complex, detailed, or multipart assets. `api` sends every new mesh "
+             "through character_generate or blender_generate, then uses Blender "
+             "only to inspect, repair, rig and export it. `blender` hand-authors "
+             "every new mesh with blender_run; API image generation can still "
+             "make textures and references. The selected rule is written into "
+             "every art-agent prompt and seat brief."),
+    Setting(
         key="art.auto_approve", group="Art", kind=BOOL, default=False,
         store=("registry", "art.auto_approve"),
         env="BGATE_ART_AUTO_APPROVE",
@@ -731,6 +749,13 @@ SETTINGS: tuple[Setting, ...] = (
         help="How many phase rows the graph draws per item before it stops. A "
              "long-running agent otherwise paints a node taller than the "
              "canvas."),
+    Setting(
+        key="console.runner", group="Console", kind=STRING, default="claude",
+        store=("registry", "console.runner"), scope=MACHINE,
+        env="BGATE_CONSOLE_RUNNER", human_only=True,
+        help="Which installed coding CLI runs the director console. Switching "
+             "keeps each CLI's own native session id so either conversation "
+             "can be resumed when selected again."),
     Setting(
         key="console.model", group="Console", kind=STRING, default="opus",
         store=("registry", "console.model"), scope=MACHINE,

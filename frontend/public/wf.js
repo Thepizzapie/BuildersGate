@@ -903,6 +903,7 @@
           <span class="wf-total" id="wf-total" hidden></span>
           <div style="flex:1"></div>
           <button class="qbtn small ghost" onclick="WF.checkGraph()">check graph</button>
+          <details class="wf-snap"><summary>snapshots</summary><div class="wf-snap-pop" id="wf-snap-pop"></div></details>
           <button class="qbtn small ghost" onclick="WF.saveAsNode()">save as reusable node</button>
           ${wf.fromTemplate && !wf.adopted
             ? `<span class="wf-scratch" title="Edits are kept so a run can find them, but this stays the shipped template until you save your own copy.">shipped template</span>
@@ -932,6 +933,7 @@
       </div>`;
       this._renderPalette();
       this._mountCanvas();
+      this._renderSnapshots();
       this._attachRun();
     },
     /* A run lives on the server, so reopening the builder (or reloading the
@@ -987,6 +989,14 @@
       const nodes = (this._wf.nodes || []).map(n => this._toCanvasNode(n));
       const nc = new NodeCanvas(host, {
         nodes, edges: (this._wf.edges || []).slice(), accent: "var(--ember)",
+        edgeClass: e => {
+          const target = this._runNodes && this._runNodes[e.to && e.to[0]];
+          if (!target) return "";
+          if (target.status === "running" || target.status === "queued") return "nc-live";
+          if (target.status === "failed") return "nc-failed";
+          if (target.status === "passed") return "nc-passed";
+          return "";
+        },
         // The card body is the step's own preview with the LIVE run status
         // chipped on top — the canvas is where a run reports, not a console.
         renderBody: n => {
@@ -1302,6 +1312,38 @@
                nodes, edges: (nc ? nc.edges : this._wf.edges || []) };
     },
     persist() { clearTimeout(this._saveT); this._saveT = setTimeout(() => this.save(true), 800); },
+    _snapshotKey() { return "bgate:wf:snapshots:" + String(this._wf && this._wf.id || "draft"); },
+    _snapshots() {
+      try {
+        const rows = JSON.parse(localStorage.getItem(this._snapshotKey()) || "[]");
+        return Array.isArray(rows) ? rows : [];
+      } catch (_) { return []; }
+    },
+    snapshot() {
+      const rows = this._snapshots();
+      rows.unshift({ id: Date.now(), at: new Date().toISOString(), graph: this._serialize() });
+      localStorage.setItem(this._snapshotKey(), JSON.stringify(rows.slice(0, 8)));
+      this._renderSnapshots(); toast("workflow snapshot saved");
+    },
+    restoreSnapshot(id) {
+      const row = this._snapshots().find(s => Number(s.id) === Number(id));
+      if (!row || !row.graph) { toast("snapshot is no longer available", true); return; }
+      const graph = JSON.parse(JSON.stringify(row.graph));
+      graph.id = this._wf.id; graph.name = this._wf.name;
+      this.openWorkflow(graph); this.persist(); toast("snapshot restored");
+    },
+    dropSnapshot(id) {
+      localStorage.setItem(this._snapshotKey(), JSON.stringify(
+        this._snapshots().filter(s => Number(s.id) !== Number(id))));
+      this._renderSnapshots();
+    },
+    _renderSnapshots() {
+      const el = document.getElementById("wf-snap-pop"); if (!el) return;
+      const rows = this._snapshots();
+      el.innerHTML = `<button class="wf-snap-new" onclick="WF.snapshot()">save current graph</button>`
+        + (rows.length ? rows.map(s => `<div class="wf-snap-row"><button onclick="WF.restoreSnapshot(${Number(s.id)})"><b>${esc(new Date(s.at).toLocaleString())}</b><span>${esc((s.graph.nodes || []).length)} nodes</span></button><button class="x" title="Delete snapshot" onclick="WF.dropSnapshot(${Number(s.id)})">&times;</button></div>`).join("")
+          : `<div class="wf-snap-empty">No local snapshots yet.</div>`);
+    },
     /* THE WRITE IS CHECKED. The document store answers 409 on a stale write (two
        tabs holding the same workflow) and this used to ignore the response
        entirely: the graph on screen was not the graph on disk, the autosave went
@@ -1455,7 +1497,13 @@
       let moved = false;
       if (this._nc) {
         (run.nodes || []).forEach(n => {
-          if (before[n.node_id] === n.status) return;      // repaint only what moved
+          if (before[n.node_id] === n.status) {
+            if (n.status === "running" || n.status === "queued") {
+              const liveNode = this._nc.nodes.get(n.node_id);
+              if (liveNode) this._nc._renderNode(liveNode);
+            }
+            return;
+          }
           moved = true;
           const cn = this._nc.nodes.get(n.node_id);
           if (cn) {
@@ -1466,6 +1514,7 @@
             this._nc._renderNode(cn);
           }
         });
+        if (moved) this._nc._renderEdges();
       }
       // A step that finished has produced pictures and spent money: re-read the
       // batch once per movement, not once per node and not every tick.
@@ -1476,7 +1525,15 @@
       const n = this._runNodes && this._runNodes[nodeId];
       if (!n) return "";
       const label = STATUS_LABEL[n.status] || n.status;
-      return `<div class="wf-st wf-st-${esc(n.status)}" title="${esc(n.detail || "")}">${esc(label)}</div>`;
+      const stamp = n.updated_at ? new Date(String(n.updated_at).replace(" ", "T") + "Z") : null;
+      const seconds = stamp && Number.isFinite(stamp.getTime())
+        ? Math.max(0, Math.round((Date.now() - stamp.getTime()) / 1000)) : 0;
+      const age = (n.status === "running" || n.status === "queued")
+        ? (seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`) : "";
+      const cached = n.info && n.info.cached ? "cached" : "";
+      const spent = Number(n.output && (n.output.usd || n.output.cost_usd)
+        || n.info && (n.info.usd || n.info.cost_usd) || 0);
+      return `<div class="wf-node-state"><span class="wf-st wf-st-${esc(n.status)}" title="${esc(n.detail || "")}">${esc(label)}</span>${age ? `<span>${esc(age)}</span>` : ""}${spent ? `<span>$${spent.toFixed(4)}</span>` : ""}${cached ? `<span>${cached}</span>` : ""}</div>`;
     },
     _renderRun() {
       const bar = document.getElementById("wf-runbar"); if (!bar) return;
@@ -1513,7 +1570,7 @@
       failed.forEach(f => {
         html += `<div class="wf-fail"><b>${esc(f.label)}</b>${
           f.kind ? ` <span class="wf-run-s">${esc(f.kind)}</span>` : ""} — ${esc(f.detail || "failed with no reason recorded")}${
-          f.work_item_id ? ` <span class="wf-run-s">item #${esc(f.work_item_id)}</span>` : ""}</div>`;
+          f.work_item_id ? ` <span class="wf-run-s">item #${esc(f.work_item_id)}</span>` : ""}<button class="qbtn small ghost" onclick="WF.run()">start clean rerun</button></div>`;
       });
       bar.innerHTML = html;
     },
@@ -1616,6 +1673,18 @@
       .wf-top{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--seam);border-bottom:0;border-radius:12px 12px 0 0;background:var(--iron)}
       .wf-name{background:transparent;border:1px solid transparent;border-radius:7px;color:var(--bone);font:inherit;font-size:14px;font-weight:var(--fw-semi);padding:5px 8px;min-width:160px}
       .wf-name:hover,.wf-name:focus{border-color:var(--seam);background:var(--void);outline:none}
+      .wf-snap{position:relative}
+      .wf-snap>summary{list-style:none;cursor:pointer;border:1px solid var(--seam);border-radius:6px;padding:5px 9px;color:var(--ash);font-size:11px}
+      .wf-snap>summary::-webkit-details-marker{display:none}
+      .wf-snap[open]>summary{border-color:var(--ember);color:var(--bone)}
+      .wf-snap-pop{position:absolute;z-index:50;top:calc(100% + 7px);right:0;width:240px;padding:7px;background:var(--plate);border:1px solid var(--seam2);border-radius:8px;box-shadow:var(--shadow-4)}
+      .wf-snap-new,.wf-snap-row button{width:100%;border:0;background:transparent;color:var(--bone);cursor:pointer;text-align:left;font:inherit}
+      .wf-snap-new{padding:7px 8px;border-radius:5px;background:var(--ember);color:var(--ember-ink)}
+      .wf-snap-row{display:flex;align-items:center;border-top:1px solid var(--seam);margin-top:6px;padding-top:5px}
+      .wf-snap-row>button:first-child{display:grid;gap:2px;padding:4px 5px}
+      .wf-snap-row span,.wf-snap-empty{color:var(--ash2);font:10px var(--mono)}
+      .wf-snap-row .x{width:24px;color:var(--ash2);text-align:center}.wf-snap-row .x:hover{color:var(--bad)}
+      .wf-snap-empty{padding:10px 5px}
       .wf-cat{font-family:var(--mono);font-size:10px;color:var(--ash2);text-transform:uppercase;letter-spacing:.08em}
       .wf-scratch{font-family:var(--mono);font-size:10px;color:var(--warn,#ffbb45);text-transform:uppercase;letter-spacing:.08em;border:1px solid var(--warn-line,rgba(255,187,69,.4));border-radius:3px;padding:2px 7px}
       /* run state */
@@ -1623,9 +1692,12 @@
       .wf-run-head{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--bone)}
       .wf-run-dot{width:8px;height:8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 22%,transparent)}
       .wf-run-s{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ash)}
+      .wf-node-state{display:flex;align-items:center;gap:7px;margin-bottom:7px;font-family:var(--mono);font-size:9px;color:var(--ash2)}
+      .wf-node-state .wf-st{margin-bottom:0}
       .wf-gate{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--bone);background:var(--plate);border:1px solid var(--warn);border-radius:9px;padding:7px 10px}
       .wf-gate-g{color:var(--warn);font-size:14px}
-      .wf-fail{font-size:12px;color:var(--bone);background:var(--plate);border:1px solid var(--bad);border-radius:9px;padding:7px 10px}
+      .wf-fail{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--bone);background:var(--plate);border:1px solid var(--bad);border-radius:9px;padding:7px 10px}
+      .wf-fail .qbtn{margin-left:auto;flex:none}
       .wf-st{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;padding:1px 7px;border:1px solid currentColor;border-radius:20px;margin-bottom:7px}
       .wf-st-pending,.wf-st-skipped{color:var(--ash2)}
       .wf-st-queued{color:var(--spark)}
