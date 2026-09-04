@@ -39,6 +39,12 @@ const here = dirname(fileURLToPath(import.meta.url));
    is already the cache-busting story, and a hashed name would mean editing
    index.html on every build for no gain. */
 export default defineConfig({
+  // The entry itself lives in /static/dist/. Without an explicit public base,
+  // Vite records preload dependencies from the output root (dist/foo.js), then
+  // resolves them relative to that entry as /static/dist/dist/foo.js. Dynamic
+  // screens consequently never mount. Let Vite emit the deployment URL it
+  // already knows how to resolve instead of repairing preload links at runtime.
+  base: "/static/",
   plugins: [react()],
   build: {
     outDir: resolve(here, "../src/bgate_ui/static"),

@@ -84,7 +84,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from bgate_core.store import settings as _settings
-from bgate_core.board import spend as _spend
 from bgate_ui.agents import runners as _runners
 # The only two things taken from dispatch, both capability-REDUCING - see the
 # module docstring for why nothing else may come from there.
@@ -160,7 +159,7 @@ def _key(root, session_id: int, seat: str = "") -> tuple[str, int, str]:
 
 
 # ---------------------------------------------------------------------------
-# Which runner, which model, what it may spend
+# Which runner, which model
 # ---------------------------------------------------------------------------
 
 def _setting(root, key: str, fallback):
@@ -211,13 +210,6 @@ def _model_for(root) -> Optional[str]:
     """
     chosen = str(_setting(root, "brainstorm.model", FALLBACK_MODEL) or "").strip()
     return chosen or FALLBACK_MODEL
-
-
-def _ceiling(root) -> float:
-    try:
-        return max(0.0, float(_setting(root, "brainstorm.max_usd", 2.0)))
-    except (TypeError, ValueError):
-        return 2.0
 
 
 def _scratch(root, session_id: int, seat: str = "") -> Path:
@@ -416,7 +408,6 @@ def thinker(root, session_id: int, seat: str = "") -> dict:
         detail = {
             "live": live,
             "turns": int((entry or {}).get("turns") or note.get("turns") or 0),
-            "spent_usd": round(float((entry or {}).get("spent_usd") or 0.0), 4),
             "cli_session_id": str((entry or {}).get("cli_session_id")
                                   or note.get("cli_session_id") or ""),
             "resumed": bool((entry or {}).get("resumed")),
@@ -430,7 +421,7 @@ def thinker(root, session_id: int, seat: str = "") -> dict:
     # "resumable" is what the CLOSE button can honestly promise. A closed
     # session with a marker reopens where it left off; one without replays.
     detail["resumable"] = bool(note.get("cli_session_id"))
-    return {**ready, **detail, "max_usd": _ceiling(root),
+    return {**ready, **detail,
             "log": str(log_path(root, session_id, seat=seat)),
             "seat": _seat_tag(seat),
             "session_id": int(session_id)}
@@ -728,7 +719,6 @@ def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
     # can trace back to whose opinion it was.
     mcp_config = _pad_config(root, session_id, seat) if pads else ""
     args = runner.chat.build_args(exe, system=system, model=_model_for(root),
-                                  max_usd=_ceiling(root),
                                   mcp_config=mcp_config, resume=resume)
     # The environment is dispatch's SCRUBBED one MINUS the seat stamps. It used
     # to be the dashboard's whole os.environ, which forked the spawn without
@@ -764,7 +754,7 @@ def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
         raise Unavailable(f"could not start {runner.name}: {exc}") from exc
     entry = {"proc": proc, "handle": handle, "stdin": proc.stdin,
              "log": str(path), "scan_pos": start_pos, "rem": b"",
-             "sent": [], "turns": 0, "spent_usd": 0.0,
+             "sent": [], "turns": 0,
              "cli_session_id": str(resume or ""),
              "runner": runner.name, "system": system, "pads": bool(mcp_config),
              "resumed": bool(resume), "tools": [], "seat": _seat_tag(seat),
@@ -928,6 +918,15 @@ def _collect(entry: dict, deadline: float) -> dict:
                 entry["mcp_servers"] = [
                     str((s or {}).get("name") if isinstance(s, dict) else s)
                     for s in servers] if isinstance(servers, list) else []
+            elif kind == "system" and ev.get("subtype") == "api_retry":
+                # NOR IS AN OVERLOADED API. Same shape as the refused window
+                # below, same reason: the CLI backs off for minutes against a
+                # 529 and the room shows a spinner with no cause.
+                entry["rate_limited"] = (
+                    f"the API is {ev.get('error') or 'unavailable'} "
+                    f"({ev.get('error_status') or '?'}) — retrying, attempt "
+                    f"{ev.get('attempt') or '?'} of "
+                    f"{ev.get('max_retries') or '?'}")
             elif kind == "rate_limit_event":
                 # A REFUSED WINDOW IS NOT A HANG, AND MUST NOT LOOK LIKE ONE.
                 # Observed on a real turn: a five_hour window with
@@ -959,11 +958,11 @@ def _collect(entry: dict, deadline: float) -> dict:
                        "model": _model_of(ev)}
                 if ev.get("is_error") or subtype != "success" or not text:
                     # The CLI's OWN words, not a generic sentence. The two
-                    # failures a human actually meets here are an expired login
-                    # and the --max-budget-usd ceiling, and both say so in this
-                    # field; "the model returned nothing" sends them looking in
-                    # the wrong place. A budget stop is also terminal for the
-                    # process, so the caller must reap rather than ask again.
+                    # failure a human actually meets here is an expired login,
+                    # and it says so in this field; "the model returned
+                    # nothing" sends them looking in the wrong place. It is
+                    # also terminal for the process, so the caller must reap
+                    # rather than ask again.
                     out["dead"] = subtype not in ("", "success")
                     out["ok"] = False
                     out["error"] = (f"the thinking session ended as "
@@ -1047,7 +1046,6 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
         return {"ok": False, "error": ready["reason"], "seconds": 0.0,
                 "usd": 0.0, "runner": ready["runner"]}
     runner = runner_for(root)
-    ceiling = _ceiling(root)
     key = _key(root, session_id, seat)
 
     with _lock:
@@ -1055,16 +1053,6 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
     if entry is not None and not _usable(entry, system):
         _reap(key, entry)
         entry = None
-    if entry is not None and ceiling and entry["spent_usd"] >= ceiling:
-        # The CLI's own --max-budget-usd already bounds one process; this bounds
-        # the CONVERSATION, which outlives any one of them. Refused rather than
-        # silently respawned, because a respawn is exactly how a per-process
-        # ceiling gets laundered into no ceiling at all.
-        return {"ok": False, "seconds": 0.0, "usd": 0.0,
-                "runner": runner.name,
-                "error": f"this brainstorm has spent ${entry['spent_usd']:.2f} "
-                         f"of its ${ceiling:.2f} ceiling — raise "
-                         "brainstorm.max_usd, or carry on in a new session"}
     fresh = entry is None
     if fresh:
         if persist:
@@ -1166,7 +1154,7 @@ def start(root, session_id: int, system: str, seat: str = "") -> dict:
     An invite that only wrote a row would leave the roster showing a seat that
     is present with no process behind it, and the human would find out it never
     started when they addressed it and waited. Spawning here means the failure —
-    no CLI, a runner with no read-only mode, a budget refusal — is reported at
+    no CLI, a runner with no read-only mode — is reported at
     the moment somebody pressed Invite, next to the button they pressed.
 
     Raises :class:`Unavailable` with the reason, which is the caller's refusal
@@ -1206,24 +1194,7 @@ def _turn(root, key, entry: dict, turns: list[dict], session_id: int,
         entry["last_at"] = time.monotonic()
         cost = float(got.get("cost") or 0.0)
         if cost or got.get("tokens"):
-            entry["spent_usd"] = float(entry["spent_usd"]) + cost
             entry["turns"] = int(entry["turns"]) + 1
-            # THE LEDGER, because a thinking session that spends silently is
-            # exactly what spend.py exists to prevent. kind="agent" bills to the
-            # subscription side, which is what this is: the CLI's
-            # total_cost_usd is the API-equivalent price of a run a plan already
-            # covers, and summing it into real money is the mistake
-            # spend.totals was fixed to stop making.
-            # seat= is passed through so an invited participant's turns land
-            # against that seat in the ledger. It is left EMPTY for the room's
-            # own partner, which is honest: that partner is nobody's seat.
-            _spend.record(root, cost, kind="agent",
-                          model=str(got.get("model") or ""),
-                          tokens=got.get("tokens") or {},
-                          seat=_seat_tag(seat),
-                          detail=(detail
-                                  or f"brainstorm session {session_id} turn"
-                                  + (f" ({_seat_tag(seat)})" if seat else "")))
         if got.get("ok"):
             # SUCCESSFUL turns, counted apart from billed ones. `turns` goes up
             # whenever tokens were spent, which includes a resume that failed on

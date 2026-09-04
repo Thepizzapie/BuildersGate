@@ -355,11 +355,17 @@ def _static_dir() -> Path:
     reaches the copy.
     """
     built = Path(__file__).with_name("static")
-    if (built / "index.html").is_file():
-        return built
     # ../.. because the packages live under src/ and frontend/ is beside it,
     # at the repository root. A wheel never reaches this line: it ships static/.
     source = Path(__file__).resolve().parents[2] / "frontend" / "public"
+    repo = Path(__file__).resolve().parents[2]
+    # In a source checkout the hand-written modules are the runtime source of
+    # truth. Serving the generated copy made every edit look ineffective until
+    # npm build happened to copy it. The React dist remains mounted separately.
+    if (repo / ".git").exists() and (source / "index.html").is_file():
+        return source
+    if (built / "index.html").is_file():
+        return built
     if not (source / "index.html").is_file():
         # Neither present: let StaticFiles report the missing directory rather
         # than inventing an empty one that 404s every asset with no explanation.
@@ -371,6 +377,7 @@ def _static_dir() -> Path:
 
 
 _STATIC = _static_dir()
+_BUILT_STATIC = Path(__file__).with_name("static")
 
 # Only ever serve images, and only from inside the project. The preview endpoint
 # takes root-relative paths; anything that escapes the root is refused.
@@ -738,6 +745,12 @@ elif not _FLOOR_LOCAL:
         # The radio reads this file; an empty track list with a note is how the
         # floor pane says "not installed" instead of drawing nothing.
         return JSONResponse({"tracks": [], "note": FLOOR_ASSETS_HINT})
+
+# A source checkout serves classic files directly from frontend/public while
+# keeping the compiled React chunks under the package's generated dist tree.
+if _STATIC != _BUILT_STATIC and (_BUILT_STATIC / "dist").is_dir():
+    app.mount("/static/dist", StaticFiles(directory=str(_BUILT_STATIC / "dist")),
+              name="static-dist")
 
 # Per-seat workspace JS modules live under static/ and load as /static/seats/*.js.
 # StaticFiles is part of starlette (ships with FastAPI) — no new dependency.
@@ -1150,8 +1163,12 @@ def queue_add(payload: dict) -> dict:
                           brief=str(payload.get("brief") or ""),
                           priority=priority,
                           source=str(payload.get("source") or "manual"),
-                          source_ref=str(payload.get("source_ref") or ""))
-    except ValueError as exc:
+                          source_ref=str(payload.get("source_ref") or ""),
+                          depends_on=(int(payload["depends_on"])
+                                      if payload.get("depends_on") else None),
+                          max_runtime_s=(int(payload["max_runtime_s"])
+                                         if payload.get("max_runtime_s") else None))
+    except (TypeError, ValueError, LookupError) as exc:
         # Unknown seat and blank title — both the caller's, not the server's.
         raise _api.bad_request(str(exc), seat=seat)
 
@@ -1731,10 +1748,10 @@ def pt_start(payload: Optional[dict] = None) -> dict:
                              launch_native=bool(payload.get("launch_native")))
         # On the bus, so the recorder panel (and any other tab) learns of it
         # from the stream rather than a 4s timer. emit() never raises.
-        rec = (got or {}).get("recording") if isinstance(got, dict) else None
-        if rec:
+        if isinstance(got, dict) and got.get("recording"):
             _events.emit(_root(), "playtest.started",
-                         ref=str(rec.get("id") or ""), payload={"name": rec.get("name")})
+                         ref=str(got.get("session_id") or ""),
+                         payload={"name": got.get("name")})
         return got
     except Exception as exc:
         # Sentence + code at 200, like dispatch(): the record button renders

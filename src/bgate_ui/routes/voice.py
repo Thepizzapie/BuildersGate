@@ -27,12 +27,10 @@ is insecure — it is two facts about THIS product:
    sub-millisecond, against a network leg to Deepgram measured in tens of
    milliseconds. The headline advantage of the token is worth approximately
    nothing at this address.
-2. THE LEDGER GOES BLIND WITHOUT IT. bgate_core/board/spend.py is a budget that
-   REFUSES, not a report — dispatch consults it before spawning. If the browser
-   talks to Deepgram directly, this process never learns how many minutes were
-   transcribed and the spend row cannot be written at all. Metered spend that
-   the budget cannot see is the failure mode spend.py's own docstring was
-   written about. The relay counts the bytes it forwards, so the row is exact.
+2. THE STREAM CEILING GOES BLIND WITHOUT IT. If the browser talks to Deepgram
+   directly, this process never learns how many minutes were transcribed, and
+   MAX_STREAM_BYTES below — the only thing stopping a tab left open with a hot
+   mic — has nothing to count. The relay counts the bytes it forwards.
 
 Against that, `usage:write` is account-wide for its TTL rather than scoped to
 one stream, and a socket opened with a 30-second token stays open long after it
@@ -69,7 +67,6 @@ from fastapi import APIRouter, WebSocket
 from fastapi.responses import Response
 
 from bgate_adapters import deepgram as _dg
-from bgate_core.board import spend
 from bgate_ui import api
 from bgate_ui.deps import root
 
@@ -83,8 +80,7 @@ HANDSHAKE_TIMEOUT_S = 5.0
 # A hard ceiling on one dialogue turn, in bytes of PCM. At 32 KB/s this is ten
 # minutes. It exists because the browser end is a `while(listening)` loop and a
 # tab left open with a hot mic is an unbounded bill against an account the user
-# is not watching — the same reasoning as spend.check, applied where the meter
-# actually runs.
+# is not watching. This is the meter, and it is the only one.
 MAX_STREAM_BYTES = _dg.BYTES_PER_SECOND * 600
 
 # Deepgram closes an idle socket. Its documented KeepAlive is cheap and does not
@@ -162,9 +158,6 @@ def voice_speak(payload: dict) -> Response:
         raise api.ApiError(502, str(result.get("error") or "speech failed"),
                            code="speech_failed")
 
-    _record(kind="speech", usd=result.get("usd"),
-            model=result.get("model", ""),
-            detail=f"deepgram tts {result.get('chars', 0)} chars")
     return Response(
         content=result["audio"],
         media_type=result.get("media_type", "audio/wav"),
@@ -309,8 +302,6 @@ async def voice_listen(socket: WebSocket) -> None:
         with contextlib.suppress(Exception):
             await upstream.close()
         cost = _dg.stream_cost(sent["bytes"], model=model)
-        _record(kind="speech", usd=cost["usd"], model=model,
-                detail=f"deepgram stt {cost['seconds']:.1f}s")
         await _say(socket, {"type": "closed", **cost})
         with contextlib.suppress(Exception):
             await socket.close(code=1000)
@@ -403,17 +394,3 @@ async def _pump_down(socket: WebSocket, upstream) -> None:
         await _say(socket, shaped)
 
 
-def _record(*, kind: str, usd, model: str, detail: str) -> None:
-    """One ledger row. Best effort, exactly like spend.record itself.
-
-    ``usd`` is None for a model this adapter has never been told the price of.
-    It is passed through as 0.0 and spend.record's own zero-guard then drops the
-    row — deliberately, and the detail string says so, because the alternative
-    is inventing a number and every budget check in this product reads a number
-    as permission to spend it (krea.TRAIN_USD set that precedent). A zero-second
-    stream is dropped by the same guard, which is correct: nobody spoke.
-    """
-    with contextlib.suppress(Exception):
-        spend.record(root(), float(usd or 0.0), kind=kind, model=model,
-                     detail=detail if usd is not None
-                     else f"{detail} (unpriced model — no ledger row)")

@@ -433,10 +433,6 @@ export function LocalGenerators({ active }: { active: boolean }) {
   const rows = data.runtimes || [];
   return (
     <div className="gen-wrap" data-panel="local-generators">
-      <div className="gen-head">
-        <span className="gen-eyebrow">No key, no bill, nothing leaves the machine</span>
-        <h3>Local generators</h3>
-      </div>
       <SummaryLine d={data} />
       <StorageNote />
       <div className="gen-grid wide">

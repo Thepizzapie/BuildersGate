@@ -151,8 +151,7 @@
   border:1px solid var(--line);border-radius:var(--r-md);}
 .ptr-hd > .ic{color:var(--text-2);flex:none;display:inline-flex}
 .ptr-hd h3{margin:0;font-family:var(--mono);font-size:var(--fs-2xs);
-  font-weight:var(--fw-semi);letter-spacing:var(--track-label);
-  text-transform:uppercase;color:var(--text);white-space:nowrap}
+  font-weight:var(--fw-semi);color:var(--text);white-space:nowrap}
 .ptr-n{flex:none;font-family:var(--mono);font-size:var(--fs-3xs);line-height:1;
   color:var(--text-2);background:var(--surface-1);border:1px solid var(--line);
   border-radius:var(--r-full);padding:var(--s-2) var(--s-3);
@@ -166,8 +165,8 @@
 /* a group */
 .ptr-g{display:flex;flex-direction:column;gap:var(--s-3)}
 .ptr-gh{display:flex;align-items:center;gap:var(--s-3);
-  font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);
-  text-transform:uppercase;color:var(--text-2)}
+  font-family:var(--sans);font-size:var(--fs-2xs);font-weight:var(--fw-semi);
+  color:var(--text-2)}
 .ptr-gh .why{text-transform:none;letter-spacing:0;color:var(--text-3)}
 /* The folded groups. A <details> because the browser already knows how to do
    this and a hand-rolled toggle would be one more thing to get wrong with the
@@ -231,10 +230,11 @@ details.ptr-fold .ptr-rows{padding:var(--s-4);display:flex;
 .ptr-do{display:flex;align-items:center;gap:var(--s-3);flex:none}
 .ptr-b{display:inline-flex;align-items:center;gap:var(--s-3);cursor:pointer;
   border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-1);
-  color:var(--text-2);font:inherit;font-family:var(--mono);font-size:var(--fs-2xs);
-  letter-spacing:.06em;text-transform:uppercase;padding:var(--s-4) var(--s-5);
+  color:var(--text-2);font:500 var(--fs-2xs) var(--sans);
+  padding:var(--s-4) var(--s-5);
   min-height:32px;white-space:nowrap}
 .ptr-b:hover{color:var(--text);border-color:var(--accent-line)}
+.ptr-b.primary{color:var(--accent);border-color:var(--accent-line)}
 /* Filled ONLY when the director recommended it: emphasis that is everywhere is
    emphasis nowhere. */
 .ptr-b.go{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}

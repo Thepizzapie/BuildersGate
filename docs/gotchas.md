@@ -126,16 +126,16 @@ consistency dies. Rewrite the prompt to describe one frame, or call
 `image_sprites` with one entry in `poses` per frame and let it stitch the sheet.
 One API call per frame, each chained against the anchor.
 
-### The Krea ledger reads $0.00 while money leaves
+### Nothing here tells you what you have spent
 
-A per-day or per-project ceiling never triggers on Krea. There was no
-`spend.record` anywhere in the Krea adapter and `chroma.generate` writes none
-either, so `spend.check` had nothing to sum. It mattered most on the busiest paid
-path, since character work routes to Krea by default.
+There is no ledger and no ceiling. This product used to keep both, and every
+figure it produced was a guessed unit price multiplied by a count — a total
+that matched no statement anywhere, backed by caps that refused real work on
+behalf of imaginary spend. It is gone (db migration 0045).
 
-Fixed in `krea._account`. An unknown cost is recorded as 0.0 with the reason in
-the detail rather than skipped: a confident wrong number is worse than an
-unenforced ceiling.
+A paid tool quotes THIS call before it runs, and reports what the provider said
+THIS call cost afterwards. Nothing sums either. The running total is your
+provider account's, and `provider_status` reads it from the provider.
 
 ## Blender and 3D
 

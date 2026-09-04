@@ -6,8 +6,9 @@ import { ResumeInCli } from "./ResumeInCli";
 import { AgentMade } from "./AgentMade";
 import { SEAT_COLOR } from "./nav";
 import { setSelection, useSelection } from "./selection";
-import { askText, lightbox, mutate, readJSON, toast, watchAgent } from "../bridge";
+import { askText, lightbox, mutate, readJSON, toast } from "../bridge";
 import { useEvents, FALLBACK_MS, WORK_KINDS } from "../hooks";
+import { claimUtility, onUtility } from "./utility";
 
 
 /** Did this step fail? Read from the payload rather than from the step's own
@@ -32,9 +33,17 @@ function failed(raw: string): boolean {
    dispatch._tool_subject for which input key supplies it per tool. `files` and
    `images` are stamped by phases.look() on the way out of /api/agent-activity:
    project-relative paths the step named that actually exist on disk. */
+/* `at` is local HH:MM:SS, stamped by dispatch's feed as each line arrives —
+   the one reader whose clock is the agent's rather than its own. The panel
+   used to render an agent mid-thought and an agent wedged twenty minutes ago
+   as the same wall of rows, so "is it stuck?" meant opening the .log and
+   subtracting by hand. `ts_exact` false means the dashboard absorbed a
+   backlog in one pass and the time is the read's, not the agent's; those are
+   shown with a leading ~ rather than as fact. */
 type Step = {
   kind: string; name?: string; text?: string; result?: string; hint?: string;
   files?: string[]; images?: string[]; truncated?: boolean;
+  at?: string; ts_exact?: boolean;
 };
 type Activity = { steps: Step[]; running: boolean; final?: { text?: string } | null };
 
@@ -155,10 +164,11 @@ function pretty(raw: string): string {
  * tool chip called "steer" with the sentence hidden inside a collapsed pre.
  */
 type Entry =
-  | { kind: "say"; text: string }
-  | { kind: "steer"; text: string }
+  | { kind: "say"; text: string; at: string; approx: boolean }
+  | { kind: "steer"; text: string; at: string; approx: boolean }
   | { kind: "tool"; verb: string; subject: string; count: number;
-      raw: string; bad: boolean; images: string[]; files: string[] };
+      raw: string; bad: boolean; images: string[]; files: string[];
+      at: string; approx: boolean };
 
 /** Union of two path lists, order-preserving and capped. A merged entry that
  *  listed the same file eight times would undo the merge visually. */
@@ -175,7 +185,8 @@ function foldSteps(steps: Step[]): Entry[] {
     const s = steps[i];
     if (s.kind === "say" || s.kind === "steer") {
       const text = (s.text || "").trim();
-      if (text) out.push({ kind: s.kind === "steer" ? "steer" : "say", text });
+      if (text) out.push({ kind: s.kind === "steer" ? "steer" : "say", text,
+                           at: s.at || "", approx: s.ts_exact === false });
       continue;
     }
     let verb = s.name || s.kind;
@@ -183,6 +194,8 @@ function foldSteps(steps: Step[]): Entry[] {
     const images: string[] = [];
     const files: string[] = [];
     let raw = "";
+    let at = s.at || "";
+    let approx = s.ts_exact === false;
     if (s.kind === "result") {
       /* A result with no tool before it - the feed's ring dropped the call, or
          a re-dispatch cut the log. Kept rather than lost, under its own name. */
@@ -195,6 +208,12 @@ function foldSteps(steps: Step[]): Entry[] {
       const next = steps[i + 1];
       if (next && next.kind === "result") {
         raw = next.text || next.result || "";
+        /* THE RESULT'S CLOCK, NOT THE CALL'S. A call that started at 11:37 and
+           answered at 11:53 is the row you are squinting at when you ask
+           whether anything is happening; the answer's time is the one that
+           moves. */
+        at = next.at || at;
+        if (next.at) approx = next.ts_exact === false;
         addAll(images, next.images, 4); addAll(files, next.files, 5);
         i += 1;
       }
@@ -205,12 +224,16 @@ function foldSteps(steps: Step[]): Entry[] {
         && last.verb === verb && last.subject === subject) {
       last.count += 1;
       /* The LAST result of a merged run, not the first: when an agent retries
-         the same call it is the newest answer that describes where it got to. */
+         the same call it is the newest answer that describes where it got to.
+         Its clock moves with it, or a merged row reports the time the FIRST of
+         eight attempts began and reads as stalled while it works. */
       if (raw) last.raw = raw;
+      if (at) { last.at = at; last.approx = approx; }
       addAll(last.images, images, 4); addAll(last.files, files, 5);
       continue;
     }
-    out.push({ kind: "tool", verb, subject, count: 1, raw, bad, images, files });
+    out.push({ kind: "tool", verb, subject, count: 1, raw, bad, images, files,
+               at, approx });
   }
   return out;
 }
@@ -221,6 +244,9 @@ export function Inspector() {
   const [busy, setBusy] = useState(false);
 
   const itemId = sel?.itemId;
+
+  useEffect(() => { if (sel) claimUtility("inspector"); }, [sel?.key]);
+  useEffect(() => onUtility((name) => { if (name !== "inspector") setSelection(null); }), []);
 
   const refresh = useCallback(async () => {
     if (!itemId) { setAct({ steps: [], running: false, final: null }); return; }
@@ -505,6 +531,11 @@ export function Inspector() {
               <div className={isSteer ? "bg4-said steer" : "bg4-said"} key={i}>
                 <Ti name={isSteer ? "steering-wheel" : "message-2"} size={13} />
                 <Markdown text={entry.text} />
+                {entry.at && <span className="bg4-at"
+                    title={entry.approx
+                      ? "approximate - the dashboard read this run's backlog "
+                        + "in one pass, so this is when it was read"
+                      : "when the agent wrote this"}>{entry.approx ? "~" : ""}{entry.at}</span>}
               </div>
             );
           }
@@ -530,6 +561,11 @@ export function Inspector() {
                   : <span className="subj none">—</span>}
                 {entry.count > 1 && <span className="mult">×{entry.count}</span>}
                 {entry.bad && <span className="err">failed</span>}
+                {entry.at && <span className="bg4-at"
+                    title={entry.approx
+                      ? "approximate - the dashboard read this run's backlog "
+                        + "in one pass, so this is when it was read"
+                      : "when the agent wrote this"}>{entry.approx ? "~" : ""}{entry.at}</span>}
               </button>
               {/* THE REASON, NOT A BADGE SAYING THERE IS ONE. A failed step
                   that makes you click to find out why is a failed step you
@@ -578,11 +614,6 @@ export function Inspector() {
             itself - stop and steer need a LIVE agent, and on a finished run
             they greyed out with no explanation, which reads as the panel
             being broken rather than the run being over. */}
-        <button className="bg4-act" disabled={!itemId}
-                title="open this agent's full transcript"
-                onClick={() => itemId && watchAgent(itemId)}>
-          <Ti name="file-text" size={14} />log
-        </button>
         <button className="bg4-act" disabled={!itemId || !running || busy}
                 title={running ? "kill this agent where it stands"
                                : "nothing to stop - this run has finished"}

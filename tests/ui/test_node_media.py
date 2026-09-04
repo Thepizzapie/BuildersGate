@@ -5,10 +5,10 @@ made or the dollars it burned. Phase 2 puts both on the card. Two things can
 silently rot:
 
   1. the batch read (``GET /api/node/media``) — one call per canvas load, because
-     ``renderBody`` runs on every paint and must never do I/O. Its payload shape,
-     its spend figures (which must equal ``spend.for_logical``), and its path
-     normalisation (``/api/preview`` REFUSES absolute paths, so an absolute path
-     that escapes the project must come back refused, never leaked);
+     ``renderBody`` runs on every paint and must never do I/O. Its payload shape
+     and its path normalisation (``/api/preview`` REFUSES absolute paths, so an
+     absolute path that escapes the project must come back refused, never
+     leaked);
   2. the price table — the estimate on a node has to be
      ``count x variants x IMAGE_PRICE_USD[quality]`` from the ADAPTER. A price
      constant typed into JavaScript is an estimate that drifts away from the
@@ -25,7 +25,6 @@ from fastapi.testclient import TestClient
 
 from bgate_adapters import imagegen
 from bgate_core.store import artifacts
-from bgate_core.board import spend
 from bgate_ui import api
 from bgate_ui.app import app
 from bgate_ui.routes import node_media
@@ -66,7 +65,6 @@ class TestBatchPayload:
         assert data["prices"] == imagegen.IMAGE_PRICE_USD
         assert data["default_quality"] in imagegen.IMAGE_PRICE_USD
         assert data["assets"] == {} and data["names"] == []
-        assert "project_usd" in data["spend"]
 
     def test_unknown_name_is_an_empty_state_not_an_error(self, client):
         """A node naming an asset nothing has produced must degrade to the empty
@@ -76,7 +74,6 @@ class TestBatchPayload:
         assert entry["latest"] is None
         assert entry["candidates"] == []
         assert entry["revisions"] == 0
-        assert entry["usd"] == 0.0
 
     def test_latest_and_candidate_strip(self, client, root):
         for rev in range(1, 6):
@@ -123,26 +120,9 @@ class TestBatchPayload:
 
 
 # --------------------------------------------------------------------------- #
-# money
+# prices — the FORWARD estimate, and nothing that sums what was spent
 # --------------------------------------------------------------------------- #
-class TestSpendFigures:
-    def test_usd_matches_spend_for_logical(self, client, root):
-        _png(root, "art/scoville.png")
-        artifacts.register(root, "scoville", "art/scoville.png")
-        spend.record(root, 0.042, kind="image", logical_name="scoville")
-        spend.record(root, 0.098, kind="image", logical_name="scoville")
-        spend.record(root, 5.0, kind="agent", logical_name="someone-else")
-
-        entry = _payload(client, names="scoville")["assets"]["scoville"]
-        assert entry["usd"] == pytest.approx(spend.for_logical(root, "scoville"))
-        assert entry["usd"] == pytest.approx(0.14)
-
-    def test_totals_ride_along_so_the_chrome_has_a_number(self, client, root):
-        spend.record(root, 1.25, kind="image", logical_name="scoville")
-        data = _payload(client)
-        assert data["spend"]["project_usd"] == pytest.approx(1.25)
-        assert "budget" in data["spend"]
-
+class TestPrices:
     def test_prices_are_the_adapters_own_table(self, client):
         prices = _payload(client)["prices"]
         assert prices == imagegen.IMAGE_PRICE_USD

@@ -38,8 +38,8 @@ THE TWO SURFACES, read off Deepgram's own reference (sources at the bottom).
                   Authorization: Token <key>, body {"text": "..."}
                   Query: model, encoding, container. Answers audio bytes, with
                   the character count in the ``dg-char-count`` response header —
-                  which is what makes the ledger row exact rather than a guess
-                  at our own strlen. Aura-1 and Aura-2 cap input at 2000
+                  which is what makes the reported cost exact rather than a
+                  guess at our own strlen. Aura-1 and Aura-2 cap input at 2000
                   characters per request, so :func:`speak` refuses past that
                   instead of sending a request that comes back 400.
 
@@ -53,10 +53,10 @@ the credential travels in a header on both surfaces.
 PRICES ARE PUBLISHED, so unlike kie there is a real number to record. Nova-3
 streaming is $0.0048/min monolingual and $0.0058/min multilingual; Aura-2 is
 $0.030 per 1000 characters. Those are pay-as-you-go list rates and a negotiated
-or committed-use account pays less, so a ledger row from here is an UPPER BOUND
-and says so. A model this module has never been told the price of resolves to
-None, never 0.0 — the precedent krea.TRAIN_USD set, because every budget check in
-this product reads a number as permission to spend it.
+or committed-use account pays less, so a figure from here is an UPPER BOUND and
+says so. A model this module has never been told the price of resolves to None,
+never 0.0 — the precedent krea.TRAIN_USD set, because a reader treats a number
+as a quote and 0.0 reads as free.
 
 WEBSOCKETS IS NOT A PINNED DEPENDENCY. It arrives only as an EXTRA of things we
 do pin — ``uvicorn[standard]``, ``mcp[ws]``, ``openai[realtime]`` — so a clean
@@ -294,7 +294,7 @@ def stream_cost(audio_bytes: int, *, model: str = DEFAULT_LISTEN_MODEL) -> dict:
 
     Counted from bytes rather than from wall-clock time on purpose: a socket
     held open while nobody speaks bills nothing, and a session that idles for
-    ten minutes must not appear in the ledger as ten minutes of transcription.
+    ten minutes must not be reported as ten minutes of transcription.
     """
     seconds = max(0.0, audio_bytes) / BYTES_PER_SECOND
     rate = USD_PER_MINUTE.get(model)
@@ -369,8 +369,8 @@ def speak(text: str, *, model: str = DEFAULT_SPEAK_MODEL,
     Returns ``{ok, audio, media_type, chars, usd, model, request_id}``. ``chars``
     is Deepgram's OWN count from the ``dg-char-count`` response header where it
     sent one, because that is the number being billed — our len() differs from
-    it on anything Deepgram normalises before synthesis, and a ledger that
-    disagrees with the invoice is the thing spend.py exists to stop.
+    it on anything Deepgram normalises before synthesis, and a figure that
+    disagrees with the invoice is worse than no figure.
 
     Never raises for an ordinary refusal: a caller mid-conversation needs a
     reason it can render next to the reply, not an exception that loses it.

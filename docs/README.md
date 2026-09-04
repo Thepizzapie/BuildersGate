@@ -21,7 +21,7 @@ New here, or never run an MCP server before? Read these three, in order.
 |---|---|
 | [setup.md](setup.md) | Setup in full: requirements, the API key table, `bgate adopt` for an existing game, switching projects, registering the MCP server, installing the hook, and platform support. |
 | [reference.md](reference.md) | Every surface in detail: the dashboard's views, seats, asset locking, the Blender to Godot round trip, templates, `bgate publish`, playtest mode, and the repository layout. |
-| [design-notes.md](design-notes.md) | The concepts the product rests on: spend and runtime ceilings, human-only approval, facts versus prose, `canon_check`. Plus the technology choices. |
+| [design-notes.md](design-notes.md) | The concepts the product rests on: runtime and concurrency ceilings, human-only approval, facts versus prose, `canon_check`. Plus the technology choices. |
 | [gotchas.md](gotchas.md) | Things that cost real time: GPU cold starts, `stdin=DEVNULL` under a stdio MCP server, whisper segmentation, unrelated clocks, telemetry that lies plausibly. |
 | [screenshots.md](screenshots.md) | The dashboard view by view, with the images in [screenshots/](screenshots). Regenerate them with [capture_screenshots.py](capture_screenshots.py). |
 | [pulsiron-panels.md](pulsiron-panels.md) | The three docked panels this repository ships for Pulsiron — art, music and the board — driven from a Pulsiron session instead of a browser tab. What each button costs, and why a panel sometimes fails to appear. |

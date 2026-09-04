@@ -1,15 +1,17 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  Checkbox, Group, NumberInput, Select, Text, TextInput, MultiSelect, Badge,
+  Checkbox, NumberInput, Select, Text, TextInput, MultiSelect, Badge,
   ScrollArea, Stack,
 } from "@mantine/core";
 import { Ti } from "../Ti";
-import { mutate, readJSON } from "../../bridge";
+import { mutate, readJSON, toast } from "../../bridge";
 import { useEvents, useViewActive } from "../../hooks";
 import { AgentFleet } from "./AgentFleet";
 import { ProviderKeys } from "./ProviderKeys";
 import { LocalGenerators } from "./LocalGenerators";
 import { AgentClis } from "./AgentClis";
+import { askConfirm } from "./confirm";
+import { ThemeGrid } from "../ThemePicker";
 import "./settings.css";
 
 /* 7b · Settings as a FORM.
@@ -42,14 +44,18 @@ type Field = {
   source: "env" | "stored" | "default"; scope: string; help: string;
   min: number | null; max: number | null; env_vars: string[]; env: string;
   locked: boolean; env_override: string; human_only: boolean; guard: boolean;
+  advanced: boolean;
 };
 type Group = { name: string; icon?: string; fields: Field[] };
 type Described = { precedence: string; groups: Group[] };
 
 const EMPTY: Described = { precedence: "", groups: [] };
 
-/** The generator panels are a group in the rail like any other. */
+/** Backend registry group that owns the provider and model defaults. */
 const GENERATORS = "Generators";
+const PROVIDERS = "Provider access";
+const LOCAL_GENERATORS = "Local generators";
+const AGENT_CLIS = "Agent CLIs";
 
 /* THE FLEET IS A RAIL GROUP TOO, and it is not a setting at all - it is a live
    list of processes with a kill button on each. It belongs here because this is
@@ -58,16 +64,70 @@ const GENERATORS = "Generators";
    the board deliberately cannot show it: the board is one project and the whole
    point of this panel is the agents running against the OTHER ones. */
 const FLEET = "Running agents";
+const APPEARANCE = "Appearance";
 
-/* Rail entries that are panels rather than settings groups. Listed once so the
-   rail, the icon lookup and the count suppression cannot disagree - they did,
-   and Generators rendered a "0" beside itself for a while. */
-const PANELS: Record<string, string> = { [GENERATORS]: "sparkles", [FLEET]: "robot" };
+/* Rail entries that are panels rather than settings registry groups. */
+const PANELS: Record<string, string> = {
+  [APPEARANCE]: "theme_auto",
+  [PROVIDERS]: "key",
+  [LOCAL_GENERATORS]: "device-desktop-cog",
+  [AGENT_CLIS]: "plug-connected",
+  [FLEET]: "robot",
+};
+const GROUP_LABELS: Record<string, string> = { [GENERATORS]: "Models" };
+
+/* The registry groups are implementation boundaries. The rail is a human map:
+   what runs work, what shapes the studio, what controls the app, and what is
+   happening on this machine. Keep the backend vocabulary intact while giving
+   it one level of information architecture. */
+const SECTIONS = [
+  { name: "Work", groups: ["Dispatch", "Gates", "Follow-up", "Limits"] },
+  { name: "Studio", groups: ["Art", GENERATORS, "Modules"] },
+  { name: "Connections", groups: [PROVIDERS, LOCAL_GENERATORS, AGENT_CLIS] },
+  { name: "App", groups: [APPEARANCE, "Console", "Notifications", "Community", "Privacy"] },
+  { name: "Machine", groups: [FLEET] },
+];
+
+const GROUP_NOTES: Record<string, string> = {
+  Dispatch: "How work starts, which runner takes it, and how many can run together.",
+  Gates: "The evidence and sign-off rules work must pass before it counts as done.",
+  "Follow-up": "What happens after work finishes or fails.",
+  Limits: "Runtime and concurrency ceilings for dispatched work. There is no money ceiling: the only budget is your provider account's balance.",
+  Art: "Style training, art routing, and approval behavior.",
+  Generators: "Choose the default provider and model for each kind of generation.",
+  "Provider access": "Connect hosted generation services and inspect their available capabilities.",
+  "Local generators": "Set up and control generation runtimes that stay on this machine.",
+  "Agent CLIs": "Connect coding-agent command lines to this Builders Gate installation.",
+  Modules: "Choose which parts of the studio this project uses.",
+  Console: "Refresh cadence and model limits for interactive sessions.",
+  Notifications: "Which events reach you, where they go, and when they stay quiet.",
+  Community: "How viewer chat becomes feedback during sessions and playtests.",
+  Privacy: "Machine-wide controls for what can appear on stream.",
+  Appearance: "Choose the studio’s visual ground. Changes apply immediately across every workspace.",
+  "Running agents": "Processes running on this machine, including other projects.",
+};
 
 const show = (v: unknown): string =>
   Array.isArray(v) ? (v.length ? v.join(", ") : "none")
   : typeof v === "boolean" ? (v ? "on" : "off")
   : v === "" || v == null ? "-" : String(v);
+
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const settingId = (key: string) => `setting-${key.replace(/[^a-z0-9_-]/gi, "-")}`;
+
+function settingHref(key: string): string {
+  const url = new URL(window.location.href);
+  url.searchParams.set("setting", key);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function highlighted(text: string, needle: string): ReactNode {
+  const q = needle.trim();
+  if (!q) return text;
+  const parts = text.split(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"));
+  return parts.map((part, i) => part.toLowerCase() === q.toLowerCase()
+    ? <mark key={i}>{part}</mark> : part);
+}
 
 export function Settings() {
   const host = useRef<HTMLDivElement>(null);
@@ -75,24 +135,18 @@ export function Settings() {
   const [desc, setDesc] = useState<Described>(EMPTY);
   const [q, setQ] = useState("");
   const [onlyChanged, setOnlyChanged] = useState(false);
-  /* ONE GROUP AT A TIME. Every row rendered at once is 9,000px of page, and
-     the three Generator panels - which are whole classic UIs, ~2,500px between
-     them - were sitting at the TOP of it, so opening Settings showed a wall of
-     provider cards and pushed the first actual setting three screens down.
-     The reference has a group rail for exactly this reason. */
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [saveState, setSaveState] = useState("");
+  const [linkedKey, setLinkedKey] = useState(() => new URLSearchParams(location.search).get("setting") || "");
+  /* Render one destination at a time so each section keeps a clear scope. */
   const [group, setGroup] = useState<string>("Dispatch");
 
   const refresh = useCallback(async () => {
     setDesc(await readJSON<Described>("/api/settings", EMPTY));
   }, []);
 
-  /* THE THREE GENERATOR PANELS ARE REACT NOW (ProviderKeys.tsx,
-     LocalGenerators.tsx, AgentClis.tsx) and render below when their group is
-     selected. ProviderKeys is still the ONLY surface in the product that may
-     write an API key — deliberately not an MCP tool, because an agent that can
-     write credentials can hand itself a provider nobody paid for — and it never
-     fetches through this file: the providers read stays out of Settings.tsx so
-     a credential can never be described beside a registry value. */
+  /* Connection panels own their own reads and writes; registry settings stay
+     isolated in this component. */
   // Settings do not move on their own; one read on arrival is the whole need.
   useEvents(refresh, { enabled: active, kinds: ["settings.*", "gate.*"], fallbackMs: 60000 });
 
@@ -101,11 +155,48 @@ export function Settings() {
      rather than guessed at. That reply is the new state; nothing is applied
      optimistically. */
   async function save(key: string, value: unknown) {
+    setSaveState("Saving…");
     const r = await mutate<Described>("/api/settings", {
       method: "PATCH", body: { [key]: value }, quiet: true,
     });
-    if (r.ok && r.data) setDesc(r.data);
-    else if (!r.ok) refresh();
+    if (r.ok && r.data) { setDesc(r.data); setSaveState("Saved"); }
+    else if (!r.ok) { setSaveState("Save failed"); refresh(); }
+  }
+
+  useEffect(() => {
+    if (!linkedKey || !desc.groups.length) return;
+    const field = desc.groups.flatMap((g) => g.fields).find((f) => f.key === linkedKey);
+    if (!field) return;
+    setGroup(field.group);
+    if (field.advanced) setShowAdvanced(true);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.getElementById(settingId(linkedKey))?.scrollIntoView({ block: "center" });
+    }));
+  }, [desc.groups, linkedKey]);
+
+  function selectGroup(name: string) {
+    setGroup(name); setQ(""); setOnlyChanged(false); setSaveState(""); setLinkedKey("");
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("setting")) {
+      url.searchParams.delete("setting");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+  }
+
+  async function resetSection(fields: Field[]) {
+    const changedFields = fields.filter((f) => f.source !== "env" && !sameValue(f.value, f.default));
+    if (!changedFields.length) return;
+    const yes = await askConfirm({
+      title: `Restore ${changedFields.length} setting${changedFields.length === 1 ? "" : "s"}?`,
+      body: "This restores the default values for this section. Environment-controlled settings stay unchanged.",
+      ok: "restore defaults", cancel: "keep values",
+    });
+    if (!yes) return;
+    setSaveState("Saving…");
+    const body = Object.fromEntries(changedFields.map((f) => [f.key, f.default]));
+    const r = await mutate<Described>("/api/settings", { method: "PATCH", body, quiet: true });
+    if (r.ok && r.data) { setDesc(r.data); setSaveState("Defaults restored"); toast("defaults restored", "ok"); }
+    else { setSaveState("Reset failed"); toast(r.error || "defaults could not be restored", "bad"); refresh(); }
   }
 
   /* FILTERS NARROW WHAT IS IN A CATEGORY. THEY DO NOT REMOVE THE CATEGORY.
@@ -118,14 +209,20 @@ export function Settings() {
      authority over the map. */
   const groups = useMemo(() => {
     const needle = q.toLowerCase().trim();
-    return desc.groups.map((g) => ({
-      ...g,
-      fields: g.fields.filter((f) =>
-        (!onlyChanged || f.source !== "default")
-        && (!needle
-            || f.key.toLowerCase().includes(needle)
-            || f.help.toLowerCase().includes(needle))),
-    }));
+    return desc.groups.map((g) => {
+      const groupHit = g.name.toLowerCase().includes(needle)
+        || (GROUP_LABELS[g.name] || "").toLowerCase().includes(needle);
+      return {
+        ...g,
+        fields: g.fields.filter((f) =>
+          (!onlyChanged || !sameValue(f.value, f.default))
+          && (!needle || groupHit
+              || (f.label || "").toLowerCase().includes(needle)
+              || f.key.toLowerCase().includes(needle)
+              || f.help.toLowerCase().includes(needle)
+              || f.env_vars.some((v) => v.toLowerCase().includes(needle)))),
+      };
+    });
   }, [desc, q, onlyChanged]);
 
   /* Whether a filter is doing anything, and therefore whether the rail should
@@ -143,14 +240,38 @@ export function Settings() {
                    && name.toLowerCase().includes(q.toLowerCase().trim()));
 
   const changed = desc.groups.flatMap((g) => g.fields)
-    .filter((f) => f.source !== "default").length;
+    .filter((f) => !sameValue(f.value, f.default)).length;
+
+  const orderedNames = SECTIONS.flatMap((s) => s.groups);
+  const looseNames = [
+    ...groups.map((g) => g.name),
+    ...Object.keys(PANELS).filter((p) => !groups.some((g) => g.name === p)),
+  ].filter((name) => !orderedNames.includes(name));
+  const navSections = looseNames.length
+    ? [...SECTIONS, { name: "Other", groups: looseNames }]
+    : SECTIONS;
+  const selected = groups.find((g) => g.name === group);
+  const selectedRaw = desc.groups.find((g) => g.name === group);
+  const selectedFields = (selected?.fields || []).filter((f) => showAdvanced || !f.advanced);
+  const advancedCount = (selectedRaw?.fields || []).filter((f) => f.advanced).length;
+  const resetCount = (selectedRaw?.fields || [])
+    .filter((f) => f.source !== "env" && !sameValue(f.value, f.default)).length;
+  const resultGroups = filtering ? groups.filter((g) => g.fields.length) : [];
+  const resultCount = resultGroups.reduce((n, g) => n + g.fields.length, 0);
+  const panelResults = filtering && !onlyChanged
+    ? Object.keys(PANELS).filter(panelHit)
+    : [];
 
   return (
     <div className="bg4-settings" ref={host}>
-      <Group className="bg4-settings-bar" gap="sm" wrap="nowrap">
-        <TextInput size="xs" placeholder="filter key or help text" style={{ flex: 1 }}
-                   value={q} onChange={(e) => setQ(e.currentTarget.value)}
-                   leftSection={<Ti name="search" size={13} />} />
+      <div className="bg4-settings-bar">
+        <div className="bg4-settings-search">
+          <Ti name="search" size={15} />
+          <input placeholder="Find a setting" aria-label="Find a setting"
+                 value={q} onChange={(e) => setQ(e.currentTarget.value)} />
+          {q && <button type="button" className="clear" aria-label="Clear search"
+                        onClick={() => setQ("")}><Ti name="x" size={13} /></button>}
+        </div>
         {/* IT IS A TOGGLE, AND IT READ AS A STATISTIC. "changed 17" next to a
             search box looks like a count of something, so the one control on
             this bar that filters was the one nobody could tell was a control -
@@ -165,91 +286,140 @@ export function Settings() {
                        + "the environment)"}
                 onClick={() => setOnlyChanged((v) => !v)}>
           <Ti name={onlyChanged ? "square-check" : "square"} size={12} />
-          only changed ({changed})
+          Changed <span>{changed}</span>
         </button>
-        {/* The precedence rule, said once, at the top of the thing it governs - and then shown as the stripe on every row below it. */}
-        <Text size="xs" c="dimmed" ff="var(--mono)">{desc.precedence}</Text>
-      </Group>
+        <div className="bg4-settings-legend" title={desc.precedence}>
+          <span><i className="env" /> environment</span>
+          <span><i className="stored" /> project</span>
+          <span><i /> default</span>
+        </div>
+      </div>
 
       <div className="bg4-settings-split">
-        <nav className="bg4-settings-rail">
+        <nav className="bg4-settings-rail" aria-label="Settings sections">
           {/* AN ICON PER CATEGORY. Ten identical text rows are ten things you
               have to read; a glyph is the thing you actually navigate by once
               you have been here twice. The name comes from the registry
               (settings.GROUP_ICONS) so a new group cannot arrive iconless. */}
-          {/* MERGED, NOT APPENDED. The registry grew a group named
-              Generators (the provider/model pickers) while PANELS already
-              carried one (the key panels), and appending both rendered two
-              identical rail entries - selection is by NAME, so the first one
-              could never show its own fields. One entry, both contents. */}
-          {[...groups.map((g) => g.name),
-            ...Object.keys(PANELS).filter((p) => !groups.some((x) => x.name === p)),
-          ].map((name) => {
-            const g = groups.find((x) => x.name === name);
-            const hits = (g?.fields.length ?? 0)
-              + (PANELS[name] && panelHit(name) ? 1 : 0);
-            /* Dimmed, never hidden. A destination that disappears while you are
-               reading it is worse than one that says "nothing in here matches",
-               and the count is how you find the group your search DID land in
-               without clicking through ten of them. */
-            const cls = [name === group ? "on" : "",
-                         filtering && !hits ? "empty" : ""].filter(Boolean).join(" ");
-            return (
-              <button key={name} className={cls} onClick={() => setGroup(name)}>
-                <Ti name={PANELS[name] || g?.icon || "adjustments"} size={15} />
-                <span className="l">{name}</span>
-                {!PANELS[name] && (
-                  <span className="n">{g?.fields.length ?? 0}</span>
-                )}
-              </button>
-            );
-          })}
+          {navSections.map((section) => (
+            <div className="bg4-settings-navgroup" key={section.name}>
+              <div className="bg4-settings-navlabel">{section.name}</div>
+              {section.groups.map((name) => {
+                const g = groups.find((x) => x.name === name);
+                if (!g && !PANELS[name]) return null;
+                const hits = (g?.fields.length ?? 0)
+                  + (PANELS[name] && panelHit(name) ? 1 : 0);
+                const cls = [name === group && !filtering ? "on" : "",
+                             filtering && !hits ? "empty" : ""].filter(Boolean).join(" ");
+                return (
+                  <button key={name} className={cls} onClick={() => selectGroup(name)}>
+                    <Ti name={PANELS[name] || g?.icon || "adjustments"} size={15} />
+                    <span className="l">{GROUP_LABELS[name] || name}</span>
+                    {!PANELS[name] && <span className="n">{g?.fields.length ?? 0}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         <ScrollArea className="bg4-settings-body" type="auto">
-          {group === FLEET ? (
+          {filtering ? (
+            <section className="bg4-settings-results">
+              <CategoryHead name={onlyChanged && !q ? "Changed settings" : "Search results"}
+                            note={`${resultCount} setting${resultCount === 1 ? "" : "s"} found`} />
+              {!!panelResults.length && (
+                <div className="bg4-settings-destinations">
+                  {panelResults.map((name) => (
+                    <button type="button" key={name} onClick={() => selectGroup(name)}>
+                      <Ti name={PANELS[name]} size={15} />
+                      <span><b>{name}</b><small>{GROUP_NOTES[name]}</small></span>
+                      <Ti name="chevron-right" size={13} />
+                    </button>
+                  ))}
+                </div>
+              )}
+              {resultGroups.map((g) => (
+                <div className="bg4-settings-resultgroup" key={g.name}>
+                  <button type="button" onClick={() => selectGroup(g.name)}>
+                    <Ti name={g.icon || "adjustments"} size={13} />
+                    {GROUP_LABELS[g.name] || g.name}<span>{g.fields.length}</span>
+                  </button>
+                  <Stack gap={0}>{g.fields.map((f) => <Row key={f.key} f={f} onSave={save} needle={q} linked={f.key === linkedKey} />)}</Stack>
+                </div>
+              ))}
+              {!resultCount && !panelResults.length && (
+                <Text size="sm" c="dimmed" ta="center" py="xl">No settings match.</Text>
+              )}
+            </section>
+          ) : group === APPEARANCE ? (
+            <section className="bg4-settings-group bg4-appearance">
+              <CategoryHead name={APPEARANCE} note={GROUP_NOTES[APPEARANCE]} />
+              <ThemeGrid />
+            </section>
+          ) : group === FLEET ? (
             /* `active` is the DECK's activity, not the rail's: the fleet polls,
                and a poller left running behind a screen the user navigated away
                from is the thing usePoll's enabled flag exists to stop. The rail
                selection is already accounted for by not rendering this at all. */
-            <AgentFleet active={active} />
+            <section className="bg4-settings-group">
+              <CategoryHead name={FLEET} note={GROUP_NOTES[FLEET]} />
+              <AgentFleet active={active} />
+            </section>
+          ) : group === PROVIDERS ? (
+            <section className="bg4-settings-group">
+              <CategoryHead name={PROVIDERS} note={GROUP_NOTES[PROVIDERS]} />
+              <ProviderKeys active={active} />
+            </section>
+          ) : group === LOCAL_GENERATORS ? (
+            <section className="bg4-settings-group">
+              <CategoryHead name={LOCAL_GENERATORS} note={GROUP_NOTES[LOCAL_GENERATORS]} />
+              <LocalGenerators active={active} />
+            </section>
+          ) : group === AGENT_CLIS ? (
+            <section className="bg4-settings-group">
+              <CategoryHead name={AGENT_CLIS} note={GROUP_NOTES[AGENT_CLIS]} />
+              <AgentClis active={active} />
+            </section>
           ) : group === GENERATORS ? (
             <section className="bg4-settings-group">
+              <CategoryHead name={GROUP_LABELS[GENERATORS]} note={GROUP_NOTES[GENERATORS]}
+                            count={selectedRaw?.fields.length}
+                            actions={<SectionTools advancedCount={advancedCount}
+                              showAdvanced={showAdvanced} onAdvanced={setShowAdvanced}
+                              resetCount={resetCount} saveState={saveState}
+                              onReset={() => resetSection(selectedRaw?.fields || [])} />} />
               {/* The registry half first: the provider and model pickers,
                   which live beside the keys they depend on. */}
               <Stack gap={0}>
-                {(groups.find((x) => x.name === GENERATORS)?.fields ?? [])
-                  .map((f) => <Row key={f.key} f={f} onSave={save} />)}
+                {selectedFields
+                  .map((f) => <Row key={f.key} f={f} onSave={save} linked={f.key === linkedKey} />)}
               </Stack>
-              {/* THE THREE GENERATOR PANELS. The keys (the only surface that may
-                  write one), the local runtimes, and the agent CLIs — the last
-                  lives here and nowhere else, because Studio is about making
-                  things and an MCP registration makes nothing. `active` is the
-                  deck's; the group selection is accounted for by not rendering
-                  them at all. */}
-              <ProviderKeys active={active} />
-              <LocalGenerators active={active} />
-              <AgentClis active={active} />
             </section>
           ) : (
-            groups.filter((g) => g.name === group || q).map((g) => (
+            groups.filter((g) => g.name === group).map((g) => (
               <section key={g.name} className="bg4-settings-group">
-                {q && (
-                  <div className="bg4-settings-head">
-                    <Ti name={g.icon || "adjustments"} size={13} />
-                    <span>{g.name}</span><span className="n">{g.fields.length}</span>
-                  </div>
-                )}
+                <CategoryHead name={g.name} note={GROUP_NOTES[g.name] || "Project settings."}
+                              count={selectedRaw?.fields.length}
+                              actions={<SectionTools advancedCount={advancedCount}
+                                showAdvanced={showAdvanced} onAdvanced={setShowAdvanced}
+                                resetCount={resetCount} saveState={saveState}
+                                onReset={() => resetSection(selectedRaw?.fields || [])} />} />
                 <Stack gap={0}>
-                  {g.fields.map((f) => <Row key={f.key} f={f} onSave={save} />)}
+                  {selectedFields.map((f) => <Row key={f.key} f={f} onSave={save} linked={f.key === linkedKey} />)}
                 </Stack>
+                {!selectedFields.length && advancedCount > 0 && (
+                  <Text size="sm" c="dimmed" ta="center" py="xl">
+                    This section only contains advanced settings.
+                  </Text>
+                )}
               </section>
             ))
           )}
           {/* Only for the SETTINGS groups. A panel that legitimately has no
               rows of its own - the fleet with nothing running - was being told
               "nothing matches that" under a filter box it does not use. */}
-          {!groups.length && !PANELS[group] && (
+          {!filtering && !selected && !PANELS[group] && (
             <Text size="xs" c="dimmed" ta="center" py="xl">nothing matches that</Text>
           )}
         </ScrollArea>
@@ -258,40 +428,90 @@ export function Settings() {
   );
 }
 
-function Row({ f, onSave }: { f: Field; onSave: (k: string, v: unknown) => void }) {
+function CategoryHead({ name, note, count, actions }: {
+  name: string; note: string; count?: number; actions?: ReactNode;
+}) {
+  return (
+    <header className="bg4-settings-category">
+      <div>
+        <h2>{name}</h2>
+        <p>{note}</p>
+      </div>
+      <div className="bg4-settings-category-side">
+        {count != null && <span>{count} setting{count === 1 ? "" : "s"}</span>}
+        {actions}
+      </div>
+    </header>
+  );
+}
+
+function SectionTools({ advancedCount, showAdvanced, onAdvanced, resetCount, saveState, onReset }: {
+  advancedCount: number; showAdvanced: boolean; onAdvanced: (value: boolean) => void;
+  resetCount: number; saveState: string; onReset: () => void;
+}) {
+  return (
+    <div className="bg4-settings-tools">
+      {saveState && (
+        <span className={saveState.includes("failed") ? "save-state bad" : "save-state"}>
+          <Ti name={saveState === "Saving…" ? "loader-2" : saveState.includes("failed") ? "alert-circle" : "check"} size={12} />
+          {saveState}
+        </span>
+      )}
+      {!!advancedCount && (
+        <button type="button" className={showAdvanced ? "on" : ""}
+                aria-pressed={showAdvanced} onClick={() => onAdvanced(!showAdvanced)}>
+          <Ti name="adjustments-horizontal" size={13} />
+          {showAdvanced ? "Hide advanced" : `Show advanced (${advancedCount})`}
+        </button>
+      )}
+      {!!resetCount && (
+        <button type="button" className="reset" onClick={onReset}>
+          <Ti name="restore" size={13} />Reset defaults
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Row({ f, onSave, needle = "", linked = false }: {
+  f: Field; onSave: (k: string, v: unknown) => void; needle?: string; linked?: boolean;
+}) {
   const locked = f.locked || !!f.env_override;
   return (
-    <div className={`bg4-set ${f.source}${locked ? " locked" : ""}`}>
-      <div className="head">
+    <div id={settingId(f.key)} className={`bg4-set ${f.source}${locked ? " locked" : ""}${linked ? " linked" : ""}`}>
+      <div className="copy">
         {/* THE NAME, NOT THE IDENTIFIER. This row used to be titled
             `dispatch.allow_dirty`, which tells a reader who wrote the code
             exactly what it does and tells everybody else nothing. The key is
             still here, under the name - it is what you search for and what an
             env override is called - it is just no longer the heading. */}
-        <span className="label">{f.label || f.key}</span>
-        {f.scope === "machine" && <Badge size="xs" variant="default">machine</Badge>}
-        {f.guard && (
-          <Badge size="xs" variant="light" color="yellow"
-                 leftSection={<Ti name="lock" size={10} />}>guarded</Badge>
-        )}
-        <span className="spacer" />
-        <div className="control">{control(f, locked, onSave)}</div>
+        <div className="head">
+          <span className="label">{highlighted(f.label || f.key, needle)}</span>
+          {f.scope === "machine" && <Badge size="xs" variant="default">machine</Badge>}
+          {f.guard && (
+            <Badge size="xs" variant="light" color="yellow"
+                   leftSection={<Ti name="lock" size={10} />}>guarded</Badge>
+          )}
+          {f.advanced && <Badge size="xs" variant="default">advanced</Badge>}
+          <a className="bg4-setting-link" href={settingHref(f.key)}
+             aria-label={`Link to ${f.label || f.key}`} title="Link to this setting">
+            <Ti name="link" size={12} />
+          </a>
+        </div>
+        <code className="key">{highlighted(f.key, needle)}</code>
+        <p className="help">{highlighted(f.help, needle)}</p>
+        <div className="foot">
+          <span>Default <b>{show(f.default)}</b></span>
+          {f.source !== "default" && <span className="drift">Current <b>{show(f.value)}</b></span>}
+          {locked && (
+            <span className="env">
+              Forced by {f.env_vars.join(", ") || "the environment"}
+              {f.env_override ? ` = ${f.env_override}` : ""}
+            </span>
+          )}
+        </div>
       </div>
-      <code className="key">{f.key}</code>
-      {/* EVERY WORD KEPT. The help is the reason this page is worth reading;
-          what changed is that it no longer sits between a label and its own
-          control. */}
-      <p className="help">{f.help}</p>
-      <div className="foot">
-        <span>default <b>{show(f.default)}</b></span>
-        {f.source !== "default" && <span className="drift">now <b>{show(f.value)}</b></span>}
-        {locked && (
-          <span className="env">
-            forced by {f.env_vars.join(", ") || "the environment"}
-            {f.env_override ? ` = ${f.env_override}` : ""}
-          </span>
-        )}
-      </div>
+      <div className="control">{control(f, locked, onSave)}</div>
     </div>
   );
 }

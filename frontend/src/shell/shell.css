@@ -165,11 +165,62 @@ body:has(.bg4) {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .bg4-chips { margin-left: auto; display: flex; align-items: center; gap: 8px }
+.bg4-find {
+  display: inline-flex; align-items: center; gap: 7px; min-width: 154px;
+  padding: 5px 7px 5px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--solid-2); color: var(--text-2); cursor: pointer;
+  font: 500 11px var(--sans); text-align: left;
+}
+.bg4-find:hover { border-color: var(--line-strong); color: var(--text) }
+.bg4-find span { flex: 1 }
+.bg4-find kbd, .bg4-command-row kbd {
+  padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--solid-1); color: var(--text-3); font: 500 9px var(--mono);
+}
+.bg4-command { background: var(--solid-1) !important; border: 1px solid var(--line) }
+.bg4-command-head { background: var(--solid-1) !important }
+.bg4-command-results { display: flex; flex-direction: column; gap: 3px }
+.bg4-command-row {
+  width: 100%; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center; gap: 9px; padding: 9px 10px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--text-2); cursor: pointer; text-align: left;
+}
+.bg4-command-row:hover, .bg4-command-row:focus-visible { background: var(--solid-2); color: var(--text) }
+.bg4-command-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+.bg4-command-row > i { color: var(--text-3) }
+.bg4-command-row span { min-width: 0 }
+.bg4-command-row b, .bg4-command-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.bg4-command-row b { font: 500 12px var(--sans) }
+.bg4-command-row small { margin-top: 2px; color: var(--text-3); font: 400 10px var(--mono) }
+.bg4-command-empty { padding: 28px 10px; color: var(--text-3); text-align: center; font-size: 12px }
+.bg4-asset-browser { display: flex; flex-direction: column; gap: 3px }
+.bg4-asset-browser button { display: grid; grid-template-columns: 24px minmax(0,1fr) auto; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer }
+.bg4-asset-browser button:hover,.bg4-asset-browser button:focus-visible { background: var(--solid-2) }
+.bg4-asset-browser button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+.bg4-asset-browser button>i { color: var(--text-3) }.bg4-asset-browser button span { min-width: 0 }
+.bg4-asset-browser b,.bg4-asset-browser small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.bg4-asset-browser b { font: 520 12px var(--sans) }.bg4-asset-browser small { margin-top: 2px; color: var(--text-3); font: 400 10px var(--mono) }.bg4-asset-browser .kind { color: var(--text-3); font: 500 9px var(--sans) }
+.bg4-ready-score { display: flex; align-items: baseline; gap: 9px }.bg4-ready-score strong { font: 560 24px var(--mono) }.bg4-ready-score span { color: var(--text-3); font-size: 11px }
+.bg4-ready-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 6px; overflow: hidden }
+.bg4-ready-list button { display: grid; grid-template-columns: 22px minmax(0,1fr) 16px; align-items: center; gap: 9px; padding: 10px 11px; border: 0; border-bottom: 1px solid var(--line); background: var(--solid-2); color: var(--text); text-align: left; cursor: pointer }
+.bg4-ready-list button:last-child { border-bottom: 0 }.bg4-ready-list button:hover { background: var(--solid-3) }.bg4-ready-list button.ok>i:first-child { color: var(--good) }.bg4-ready-list button.todo>i:first-child { color: var(--warn) }
+.bg4-ready-list b,.bg4-ready-list small { display: block }.bg4-ready-list b { font: 520 12px var(--sans) }.bg4-ready-list small { margin-top: 2px; color: var(--text-3); font: 400 10px var(--sans) }
+.bg4-state { display: grid; justify-items: center; gap: 7px; padding: 34px 20px; color: var(--text-3); text-align: center }.bg4-state b { color: var(--text); font-size: 13px }.bg4-state span { max-width: 48ch; font-size: 11px }.bg4-state.loading>i { animation: bg4-spin .9s linear infinite }
+@media (max-width: 760px) { .bg4-find { min-width: 0 } .bg4-find span, .bg4-find kbd { display: none } }
 /* The header is the other thing that moves when the nav closes — it starts at
    the stage's left edge, so it travels with the track. Same duration, same
    curve; two surfaces easing at different rates is what makes a collapse feel
    loose. */
 .bg4-head { transition: padding var(--dur-slow, .24s) var(--ease, ease) }
+.bg4-history { display: flex; gap: 2px }
+.bg4-history button { display: grid; place-items: center; width: 25px; height: 25px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); cursor: pointer }
+.bg4-history button:hover:not(:disabled) { background: var(--solid-2); color: var(--text) }.bg4-history button:disabled { color: var(--text-dim); cursor: default }
+.bg4-breadcrumb { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; font-size: 12px }
+.bg4-breadcrumb span { color: var(--text-3) }.bg4-breadcrumb i { color: var(--text-dim); font-style: normal }.bg4-breadcrumb b { color: var(--text); font-weight: 550 }
+.bg4-readiness.needs { color: var(--warn); border-color: var(--warn-line); background: var(--warn-soft) }.bg4-readiness.ready { color: var(--good); border-color: var(--good-line); background: var(--good-soft) }
+.bg4-readiness.loading i { animation: bg4-spin .9s linear infinite }@keyframes bg4-spin { to { transform: rotate(360deg) } }
+@media (prefers-reduced-motion: reduce) { .bg4-readiness.loading i,.bg4-state.loading>i { animation: none } }
+@media (max-width: 980px) { .bg4-note,.bg4-readiness { display: none } }
 .bg4-chip {
   display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
   border: 1px solid var(--line); border-radius: 9999px; background: transparent;
@@ -537,8 +588,9 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 /* IDLE IS ONE COLUMN, LIVE IS TWO — the same element, re-tracked. The board
    only exists once there is work in it, so an idle console does not reserve
    320px for an empty pane. */
-.bg4-console { display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0 }
+.bg4-console { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0 }
 .bg4-console.live { grid-template-columns: minmax(0, 1fr) 340px }
+.bg4-mobile-board,.bg4-mobile-close,.bg4-mobile-scrim { display: none }
 @media (max-width: 1180px) { .bg4-console.live { grid-template-columns: minmax(0, 1fr) } }
 .bg4-console-main { display: flex; flex-direction: column; min-width: 0; min-height: 0 }
 .bg4-transcript { flex: 1; min-height: 0; padding: 4px 4px 12px }
@@ -550,6 +602,17 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-sidecard { cursor: pointer; background: var(--solid-2) }
 .bg4-sidecard:hover { border-color: var(--line-strong) }
 .bg4-sidecard .dot { width: 6px; height: 6px; border-radius: 50%; flex: none }
+.bg4-rail-summary { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0 8px 8px; border: 1px solid var(--line); border-radius: 5px; overflow: hidden }
+.bg4-rail-summary > div { padding: 8px; border-right: 1px solid var(--line); background: var(--solid-2) }
+.bg4-rail-summary > div:last-child { border-right: 0 }
+.bg4-rail-summary b, .bg4-rail-summary span { display: block }
+.bg4-rail-summary b { font: 550 14px var(--mono); color: var(--text) }
+.bg4-rail-summary span { margin-top: 2px; font: 450 9px var(--sans); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.bg4-attention-group { display: flex; flex-direction: column; gap: 7px; padding-bottom: 5px }
+.bg4-attention-group > p:first-child { padding: 2px; color: var(--text-2) }
+.bg4-failure-actions .mantine-Button-root { background: var(--solid-3); border-color: var(--line-strong); color: var(--text) }
+.bg4-failure-actions .mantine-Button-root:hover { background: var(--surface-4); border-color: var(--accent-line); color: var(--accent) }
+.bg4-failure-actions .bg4-escalated { background: var(--info-soft); border: 1px solid var(--info-line); color: var(--info) }
 
 .bg4-composer {
   flex: none; border-top: 1px solid var(--line); padding: 10px 12px;
@@ -636,6 +699,11 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 
 /* ── 5b · the live console ───────────────────────────────────────────────── */
 .bg4-side-head { border-bottom: 1px solid var(--line); flex: none }
+.bg4-modes .mantine-SegmentedControl-indicator { background: var(--solid-2); border: 1px solid var(--accent); box-shadow: none }
+.bg4-modes .mantine-SegmentedControl-label { color: var(--text-2) }
+.bg4-modes [data-active] .mantine-SegmentedControl-label,
+.bg4-modes .mantine-SegmentedControl-label[data-active] { color: var(--text) !important }
+.bg4-modes .mantine-SegmentedControl-label:hover { color: var(--text) }
 .bg4-side-tabs { flex: none; padding-top: 8px }
 .bg4-side-body { flex: 1; min-height: 0 }
 .bg4-side-note {
@@ -742,6 +810,107 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 :root:root .mantine-Tooltip-arrow {
   background: var(--solid-2); border: 1px solid var(--line);
 }
+
+/* The theme switch is a visual decision, so it shows the material instead of
+   asking four labels to describe it. The miniature is deliberately structural:
+   rail, stage, toolbar and card are the same hierarchy the app actually uses. */
+.bg4-theme-menu-item .mantine-Menu-itemLabel {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+}
+.bg4-theme-menu-copy { flex: 1; min-width: 0; display: grid; gap: 1px }
+.bg4-theme-menu-copy b { color: var(--text); font: 500 12px var(--sans) }
+.bg4-theme-menu-copy small {
+  color: var(--text-3); font: 400 10px var(--sans); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-theme-sample {
+  --pv-bg: #090a0d; --pv-rail: #101218; --pv-card: #1a1e26;
+  --pv-line: #333a46; --pv-text: #eef2f5; --pv-accent: #ff6a3d;
+  width: 100%; height: 112px; display: grid; grid-template-columns: 23% 1fr;
+  overflow: hidden; border-radius: 7px; background: var(--pv-bg);
+  border: 1px solid var(--pv-line); box-shadow: inset 0 1px rgba(255,255,255,.06);
+}
+.bg4-theme-sample.compact { width: 44px; height: 30px; border-radius: 4px; flex: none }
+.bg4-theme-sample[data-ground="light"] {
+  --pv-bg: #e9edf0; --pv-rail: #f2f4f6; --pv-card: #fff;
+  --pv-line: #b8c0c7; --pv-text: #20252a; --pv-accent: #ad390d;
+}
+.bg4-theme-sample[data-ground="orbit"] {
+  --pv-bg: #000; --pv-rail: #08090d; --pv-card: #0e1118;
+  --pv-line: #78bae6; --pv-text: #e3f0fa; --pv-accent: #9fc7ea;
+  border-color: #8ebbd4;
+  box-shadow: 0 0 0 1px rgba(180,160,238,.35), inset 0 1px rgba(255,255,255,.12);
+}
+.bg4-theme-sample[data-ground="blueprint"] {
+  --pv-bg: #073b78; --pv-rail: #0a4b91; --pv-card: #0b4382;
+  --pv-line: #5db9e8; --pv-text: #f1f8ff; --pv-accent: #ffd24a;
+  background-color: var(--pv-bg);
+  background-image: linear-gradient(rgba(106,194,235,.12) 1px,transparent 1px),
+                    linear-gradient(90deg,rgba(106,194,235,.12) 1px,transparent 1px);
+  background-size: 9px 9px;
+}
+.bg4-theme-sample[data-ground="pocket"] {
+  --pv-bg: #899a5d; --pv-rail: #9dae6e; --pv-card: #adbd7d;
+  --pv-line: #59683c; --pv-text: #172016; --pv-accent: #7d164f;
+  border-color: #4b5934;
+  background-image: repeating-linear-gradient(0deg,rgba(23,32,22,.08) 0 1px,transparent 1px 4px);
+  box-shadow: 3px 3px 0 rgba(37,48,29,.28), inset 0 1px rgba(255,255,220,.24);
+}
+.bg4-theme-sample[data-ground="candy"] {
+  --pv-bg: #cadde5; --pv-rail: #dcebef; --pv-card: #f7fbfc;
+  --pv-line: #8eb1bf; --pv-text: #15252e; --pv-accent: #1847c7;
+  border-color: #7da5b5;
+  background-image: radial-gradient(circle at 88% 12%,rgba(24,71,199,.16),transparent 34%);
+  box-shadow: inset 0 2px rgba(255,255,255,.8), 0 5px 14px rgba(39,91,112,.18);
+}
+.bg4-theme-sample[data-ground="system"] {
+  --pv-bg: #111318; --pv-rail: #f1f3f5; --pv-card: #fafbfc;
+  --pv-line: #9ea8b2; --pv-text: #20252a; --pv-accent: #ff6a3d;
+  background: linear-gradient(90deg,#0b0d11 0 50%,#e9edf0 50%);
+}
+.bg4-theme-sample .rail {
+  padding: 9px 5px; display: flex; flex-direction: column; gap: 5px;
+  background: var(--pv-rail); border-right: 1px solid var(--pv-line);
+}
+.bg4-theme-sample .rail i { height: 4px; border-radius: 3px; background: var(--pv-line) }
+.bg4-theme-sample .rail i:first-child { background: var(--pv-accent); width: 70% }
+.bg4-theme-sample .stage { padding: 10px; display: grid; grid-template-rows: 7px 1fr; gap: 10px }
+.bg4-theme-sample .head { width: 58%; border-radius: 4px; background: var(--pv-text); opacity: .8 }
+.bg4-theme-sample .card {
+  display: grid; align-content: center; gap: 6px; padding: 10px;
+  border-radius: 5px; border: 1px solid var(--pv-line); background: var(--pv-card);
+}
+.bg4-theme-sample .card b { display: block; height: 4px; border-radius: 3px; background: var(--pv-text); opacity: .72 }
+.bg4-theme-sample .card b:last-child { width: 63%; opacity: .34 }
+
+.bg4-theme-grid {
+  display: grid; grid-template-columns: repeat(2,minmax(220px,1fr));
+  gap: 12px; padding: 22px 0 8px; max-width: 820px;
+}
+.bg4-theme-grid > button {
+  position: relative; min-width: 0; padding: 7px; display: grid;
+  grid-template-columns: 1fr auto; gap: 10px; text-align: left;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--solid-1);
+  color: var(--text); cursor: pointer; transition: border-color .12s ease, transform .12s ease;
+}
+.bg4-theme-grid > button:hover { border-color: var(--line-strong); transform: translateY(-1px) }
+.bg4-theme-grid > button.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft) }
+.bg4-theme-grid .bg4-theme-sample { grid-column: 1/-1 }
+.bg4-theme-grid .copy { display: grid; gap: 2px; padding: 0 4px 3px }
+.bg4-theme-grid .name { display: flex; align-items: center; gap: 6px; font: 500 13px var(--sans) }
+.bg4-theme-grid .note { color: var(--text-3); font: 400 11px var(--sans) }
+.bg4-theme-grid .check {
+  width: 24px; height: 24px; display: grid; place-items: center;
+  border-radius: 50%; color: var(--accent); background: var(--accent-soft);
+}
+.bg4-theme-grid > button[data-ground="system"] {
+  grid-column: 1/-1; grid-template-columns: 112px minmax(0,1fr) auto; align-items: center;
+}
+.bg4-theme-grid > button[data-ground="system"] .bg4-theme-sample {
+  grid-column: auto; height: 58px;
+}
+@media (max-width: 720px) { .bg4-theme-grid { grid-template-columns: 1fr } }
+@media (prefers-reduced-motion: reduce) { .bg4-theme-grid > button { transition: none } }
 
 /* ── orbit ────────────────────────────────────────────────────────────────
    The ONE ground that changes this shell's material rather than its colours.
@@ -873,7 +1042,15 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 @media (max-width: 1180px) {
   .bg4-console.live { grid-template-columns: minmax(0, 1fr) }
   .bg4-railgrip { display: none }
+  .bg4-mobile-board { position: absolute; z-index: 5; top: 8px; right: 10px; display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--solid-2); color: var(--text); font: 550 11px var(--sans); cursor: pointer }
+  .bg4-mobile-board span { display: grid; place-items: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--warn); color: var(--bg); font: 650 9px var(--mono) }
+  .bg4-console-side { display: flex !important; position: fixed; z-index: 502; top: 42px; right: 0; bottom: 0; width: min(420px, 94vw); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow-4); transform: translateX(102%); transition: transform var(--dur-slow) var(--ease) }
+  .bg4-console.rail-open .bg4-console-side { transform: translateX(0) }
+  .bg4-mobile-scrim { position: fixed; z-index: 501; inset: 42px 0 0; border: 0; background: var(--scrim); cursor: default }
+  .bg4-console.rail-open .bg4-mobile-scrim { display: block }
+  .bg4-mobile-close { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); cursor: pointer }
 }
+@media (prefers-reduced-motion: reduce) { .bg4-console-side { transition: none } }
 .bg4-railgrip {
   cursor: col-resize; background: transparent; position: relative;
   border-left: 1px solid var(--line); touch-action: none;
@@ -958,6 +1135,10 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   border: 0; background: transparent; color: var(--text-3); cursor: pointer;
   font: 500 9px var(--mono); letter-spacing: .1em; text-transform: uppercase;
   padding: 3px 9px; border-radius: 3px;
+}
+.bg4-graphbar > span.on {
+  color: var(--accent); font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; padding: 3px 9px;
 }
 .bg4-graphbar button:hover { color: var(--text-2) }
 .bg4-graphbar button.on { background: var(--accent-soft); color: var(--accent) }
@@ -1373,6 +1554,17 @@ body.ptn-open .bg4 {
   flex: 0 0 auto; font-size: 10px; color: var(--text-3);
   border: 1px solid var(--line); border-radius: 3px; padding: 0 4px;
 }
+/* THE CLOCK, PUSHED TO THE RIGHT EDGE AND QUIET. Every step has carried an
+   epoch since the log format was written and nothing ever showed it, so a feed
+   that had not moved in twenty minutes looked exactly like one mid-thought and
+   "is it stuck?" was answered by opening the .log. It sits after the subject
+   deliberately: right-aligned it forms its own column to read down, and dim
+   enough that it never competes with what the step was. */
+.bg4-at {
+  margin-left: auto; flex: 0 0 auto; font: 400 10px/1.5 var(--mono);
+  color: var(--text-3); opacity: .55; font-variant-numeric: tabular-nums;
+}
+.bg4-said .bg4-at { align-self: flex-start; padding-top: 2px }
 .bg4-tl-head .err {
   flex: 0 0 auto; font: 500 9px var(--mono); letter-spacing: .12em;
   text-transform: uppercase; color: var(--bad);

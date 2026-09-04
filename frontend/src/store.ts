@@ -62,6 +62,7 @@ export type Verify = {
 export type Project = { name: string; engine?: string; dimension?: string };
 
 export type AppState = {
+  hydrated: boolean;
   asset_groups: AssetGroup[];
   assets: TrackedAsset[];
   verify: Verify;
@@ -77,6 +78,7 @@ export type AppState = {
 };
 
 const EMPTY: AppState = {
+  hydrated: false,
   asset_groups: [], assets: [], verify: {}, canon: [],
   project: null, root: "", sessions: [], controls: null,
 };
@@ -93,6 +95,7 @@ function subscribe(fn: () => void) {
 export function push(raw: Record<string, unknown>): void {
   const lore = (raw.lore || {}) as { canon?: { name?: string }[] };
   current = {
+    hydrated: true,
     asset_groups: (raw.asset_groups as AssetGroup[]) || [],
     assets: (raw.assets as TrackedAsset[]) || [],
     verify: (raw.verify as Verify) || {},

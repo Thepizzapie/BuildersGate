@@ -213,10 +213,6 @@ export function AgentClis({ active }: { active: boolean }) {
   const on = rows.filter((r) => r.installed).length;
   return (
     <div className="gen-wrap" data-panel="agent-clis">
-      <div className="gen-head">
-        <span className="gen-eyebrow">Installation &amp; wiring</span>
-        <h3>Agent CLIs</h3>
-      </div>
       <div className={`gen-sum${wired ? " good" : ""}`}>
         <Ti name="stethoscope" size={13} />
         <span>{on} of {rows.length} installed, {wired} wired to this interpreter</span>

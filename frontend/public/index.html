@@ -45,7 +45,7 @@
 (function(){
   try{
     var t = localStorage.getItem("bgate-theme");
-    if (["light", "dark", "orbit"].indexOf(t) >= 0) document.documentElement.dataset.theme = t;
+    if (["light", "dark", "orbit", "blueprint", "pocket", "candy"].indexOf(t) >= 0) document.documentElement.dataset.theme = t;
   }catch(e){}
 })();
 </script>
@@ -135,7 +135,7 @@
       <section class="deck-view" id="view-settings"><div data-react="settings"></div></section>
 
       <section class="deck-view" id="view-studio">
-        <div class="view-heading" style="margin-bottom:12px"><div><span class="eyebrow">Node studio</span><h2>Studio</h2></div><p>Visual node editors for asset generation, agent orchestration, and the game.</p></div>
+        <div class="view-heading" style="margin-bottom:12px"><div><span class="eyebrow">Generator graph</span><h2>Studio</h2></div><p>Build and run direct image, audio, video, and 3D generation pipelines. No agents or queue items.</p></div>
         <!-- Rendered by flows.js from the registered StudioFlows. Hardcoding
              the tabs here is what hid the asset and agent flows: both modules
              were fully built and simply never listed. -->
@@ -1162,7 +1162,9 @@ window.Inspector = Inspector;
 
 /* ── live agent activity view ────────────────────────────────────────── */
 let _watching = null;
-function watchAgent(id){ Inspector.agent(id); }
+function watchAgent(id){
+  window.dispatchEvent(new CustomEvent("bgate:select-item", { detail: { itemId: Number(id) } }));
+}
 
 async function steerAgent(id, prefill){
   const inp = document.getElementById("steer-input");
@@ -1313,7 +1315,7 @@ document.addEventListener("DOMContentLoaded", () => activateWorkspace(initialWor
 BGEvents.watch(pollState, { kinds: ["*"], every: 30000 });
 BGEvents.watch(pollActivity, { kinds: ["*"], every: 30000 });
 BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*",
-                                     "budget.*", "playtest.*"], every: 30000 });
+                                     "playtest.*"], every: 30000 });
 </script>
 
 <!-- askText / askConfirm / askPick are React now (frontend/src/ask.tsx) and
@@ -1351,11 +1353,7 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
      (frontend/src/shell/settings/); the Settings deck renders them and the
      Studio "Generators" tab is registered on StudioFlows from the bundle. -->
 <script src="/static/wf.js"></script>
-<script src="/static/wf_steps_asset.js"></script>
 <script src="/static/wf_steps_model.js"></script>
-<script src="/static/wf_steps_world.js"></script>
-<script src="/static/wf_steps_3d.js"></script>
-<script src="/static/wf_steps_agent.js"></script>
 <script src="/static/wf_steps_tools.js"></script>
 <!-- LAST of the wf_steps_* files: it registers the templates for the tool-node
      families and replaces WF._renderLibrary with the panelled one, so it has to

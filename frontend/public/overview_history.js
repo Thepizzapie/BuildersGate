@@ -437,6 +437,12 @@ window.OverviewHistory = (() => {
 
   /* ── the log drawer ─────────────────────────────────────────────────── */
   function openLog(id) {
+    const item = state.items.find(x => x.id === id) || {};
+    window.dispatchEvent(new CustomEvent("bgate:select-item", { detail: {
+      itemId: id, title: item.title || `Work item ${id}`, seat: item.seat || "",
+      seatState: item.status || "",
+    }}));
+    return;
     log = { id, offset: -1, run: 0, q: "", data: null, mi: 0, loading: true,
             error: "", expanded: {}, work: null, workErr: "",
             diff: null, diffOpen: false, files: false };

@@ -21,10 +21,10 @@ pydantic v2 puts the OFFENDING INPUT in each error's ``ctx``/``input``. A key
 that fails a model constraint would come straight back out in the error body.
 Validating by hand keeps the value out of every response shape there is.
 
-WRITING IS HUMAN-ONLY. Same rule and same mechanism as ``PATCH /api/settings``
-and ``/api/spend/budget``: an agent that can write credentials can hand itself a
-provider the human never paid for, and a dispatched agent's session is exactly
-the caller ``api.current_actor`` exists to recognise.
+WRITING IS HUMAN-ONLY. Same rule and same mechanism as ``PATCH /api/settings``:
+an agent that can write credentials can hand itself a provider the human never
+paid for, and a dispatched agent's session is exactly the caller
+``api.current_actor`` exists to recognise.
 """
 from __future__ import annotations
 

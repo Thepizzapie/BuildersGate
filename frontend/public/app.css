@@ -73,11 +73,11 @@
   :root, :root[data-theme="dark"]{
     color-scheme:dark;
 
-    --bg:#0b0a0a;
-    --surface-1:#111013;   /* rail, status bar, sunken wells */
-    --surface-2:#17161a;   /* cards, panels, drawers */
-    --surface-3:#1e1d22;   /* hover, raised, active fills */
-    --surface-4:#26252c;   /* pressed, selected */
+    --bg:#08090c;
+    --surface-1:#0e1014;   /* rail, status bar, sunken wells */
+    --surface-2:#14171c;   /* cards, panels, drawers */
+    --surface-3:#1b1f26;   /* hover, raised, active fills */
+    --surface-4:#242a33;   /* pressed, selected */
 
     /* SOFTENED. These were tuned so a 1px seam is unmistakable, and the
        result was an interface where every edge shouts at the same volume: a
@@ -86,14 +86,16 @@
        Dimmed roughly 12% each, keeping the three-step ladder intact — the
        point is that they now differ from each other more than they differ
        from the background. */
-    --line:#232229;        /* default seam — visible at 1px */
-    --line-soft:#191820;   /* internal dividers, list rows */
-    --line-strong:#33323b;
+    --line:#252a33;        /* default seam — visible at 1px */
+    --line-soft:#191d24;   /* internal dividers, list rows */
+    --line-strong:#38404c;
 
-    --text:#f4f2ef;        /* 17.7:1 */
-    --text-2:#aca8a2;      /*  8.4:1 — secondary copy, values */
-    --text-3:#8e8a84;      /*  5.8:1 — labels, hints, placeholders */
-    --text-dim:#6b6863;    /*  3.6:1 — NON-TEXT ONLY */
+    --text:#f2f5f7;
+    --text-2:#b2bac2;
+    --text-3:#87929d;
+    --text-dim:#66717c;    /* NON-TEXT ONLY */
+    --ambient:radial-gradient(900px 520px at 82% -15%,rgba(69,91,128,.09),transparent 62%),
+              radial-gradient(700px 440px at 10% 110%,rgba(255,106,61,.035),transparent 68%);
 
     /* The logo's gate posts. The mark's real blue is #1800ad, which is fine on
        a light ground and all but invisible on this one, so the dark theme keeps
@@ -135,26 +137,28 @@
   }
 
   /* ── ground: light ─────────────────────────────────────────────────────────
-     Warm parchment canvas, paper cards lifted off it, ink text with no blue
-     cast. The accent darkens to hold 4.6:1 on parchment — ember at its dark
+     Cool drafting paper, clean white work surfaces, and dense ink. The accent
+     darkens to hold 4.6:1 on the ground — ember at its dark
      value is 4.2:1 there, which is why it is not simply reused. */
   :root[data-theme="light"]{
     color-scheme:light;
 
-    --bg:#eae7e1;
-    --surface-1:#f2f0ec;
-    --surface-2:#fbfaf8;
+    --bg:#e9edf0;
+    --surface-1:#f1f4f6;
+    --surface-2:#f8fafb;
     --surface-3:#ffffff;
-    --surface-4:#e3dfd7;
+    --surface-4:#dfe5e9;
 
-    --line:#d5d0c7;
-    --line-soft:#e4e0d9;
-    --line-strong:#b0aa9e;
+    --line:#cfd6dc;
+    --line-soft:#e0e5e9;
+    --line-strong:#a8b2ba;
 
-    --text:#1c1b18;        /* 14.0:1 */
-    --text-2:#4e4b45;      /*  7.0:1 */
-    --text-3:#6a665f;      /*  4.6:1 */
-    --text-dim:#9b968b;    /*  2.4:1 — NON-TEXT ONLY */
+    --text:#171b1e;
+    --text-2:#444b51;
+    --text-3:#626c74;
+    --text-dim:#929da5;    /* NON-TEXT ONLY */
+    --ambient:linear-gradient(135deg,rgba(255,255,255,.46),transparent 38%),
+              radial-gradient(700px 420px at 100% 0,rgba(55,88,125,.055),transparent 65%);
 
     --brand-post:#1800ad;  /* 11.2:1 — the logo's own blue, unmodified */
 
@@ -178,15 +182,133 @@
 
     /* Shadows on parchment are contact shadows, not glows — the dark ground's
        depths read as smudges on paper. */
-    --shadow-1:0 1px 2px rgba(40,34,24,.07);
-    --shadow-2:0 3px 10px rgba(40,34,24,.09);
-    --shadow-3:0 10px 26px rgba(40,34,24,.13);
-    --shadow-4:0 18px 46px rgba(40,34,24,.18);
-    --scrim:rgba(40,34,24,.32);
-    --overlay:rgba(234,231,225,.86);
+    --shadow-1:0 1px 2px rgba(28,38,48,.07);
+    --shadow-2:0 3px 10px rgba(28,38,48,.09);
+    --shadow-3:0 10px 26px rgba(28,38,48,.13);
+    --shadow-4:0 18px 46px rgba(28,38,48,.18);
+    --scrim:rgba(28,38,48,.32);
+    --overlay:rgba(233,237,240,.88);
 
-    --checker-a:#dedad2; --checker-b:#e9e6e0;
-    --grid-dot:rgba(28,27,24,.07);
+    --checker-a:#d9dfe3; --checker-b:#e7ebee;
+    --grid-dot:rgba(23,27,30,.07);
+  }
+
+  /* ── ground: blueprint ─────────────────────────────────────────────────────
+     A working drawing rather than another night mode: saturated drafting blue,
+     cool construction lines, paper-white type, and one safety-yellow action
+     colour. The grid belongs to the ground only; readable surfaces stay solid. */
+  :root[data-theme="blueprint"]{
+    color-scheme:dark;
+
+    --bg:#06366f;
+    --surface-1:#083d79;
+    --surface-2:#0a4483;
+    --surface-3:#0d4d91;
+    --surface-4:#1159a1;
+
+    --line:#3277ae;
+    --line-soft:#1b5d98;
+    --line-strong:#62abd6;
+
+    --text:#f2f8fc;
+    --text-2:#c4ddec;
+    --text-3:#9fc7dd;
+    --text-dim:#71a2bf;
+
+    --brand-post:#b9b2ff;
+    --accent:#ffd24a;
+    --accent-hover:#ffe078;
+    --accent-press:#eab929;
+    --accent-fg:#19324c;
+    --accent-soft:rgba(255,210,74,.16);
+    --accent-wash:rgba(255,210,74,.08);
+    --accent-line:rgba(255,210,74,.56);
+    --spark:#ffd24a;
+
+    --good:#65e3bb; --good-line:#369d82; --good-soft:rgba(101,227,187,.14);
+    --warn:#ffd24a; --warn-line:#b28d27; --warn-soft:rgba(255,210,74,.15);
+    --bad:#ff8b83;  --bad-line:#b45a5d;  --bad-soft:rgba(255,139,131,.14);
+    --info:#9bd8ff; --info-line:#5598c4; --info-soft:rgba(155,216,255,.14);
+
+    --c-director:#ffd24a; --c-narrative:#d3b3ff; --c-gameplay:#ff9183;
+    --c-tech:#9bd8ff; --c-art:#ffb4db; --c-audio:#65e3bb; --c-cinematic:#ffc878;
+    --c-qa:#c8ea75;
+
+    --shadow-1:0 1px 2px rgba(0,20,48,.22);
+    --shadow-2:0 5px 14px rgba(0,20,48,.28);
+    --shadow-3:0 15px 36px rgba(0,20,48,.34);
+    --shadow-4:0 24px 58px rgba(0,20,48,.42);
+    --scrim:rgba(0,22,53,.58);
+    --overlay:rgba(4,38,78,.91);
+
+    --checker-a:#063166; --checker-b:#0b407b;
+    --grid-dot:rgba(150,215,244,.15);
+    --ambient:linear-gradient(rgba(130,205,239,.075) 1px,transparent 1px),
+              linear-gradient(90deg,rgba(130,205,239,.075) 1px,transparent 1px),
+              linear-gradient(rgba(130,205,239,.025) 1px,transparent 1px),
+              linear-gradient(90deg,rgba(130,205,239,.025) 1px,transparent 1px);
+    --ambient-size:96px 96px,96px 96px,24px 24px,24px 24px;
+
+    /* Drafting instruments are exact: corners tighten and focus marks stay
+       square enough to read as measured, without flattening every control. */
+    --r-xs:1px; --r-sm:2px; --r-md:3px; --r-lg:5px; --r-xl:8px;
+  }
+
+  /* Candy cab borrows from Japanese arcade hardware rather than arcade neon:
+     pearl moulded plastic, cool glass, cobalt controls and deep printed ink. */
+  :root[data-theme="candy"]{
+    color-scheme:light;
+    --bg:#cadde5;
+    --surface-1:#dcebef; --surface-2:#edf5f7; --surface-3:#ffffff; --surface-4:#b9d2db;
+    --line:#9ab8c3; --line-soft:#c5d9df; --line-strong:#739ba9;
+    --text:#14232c; --text-2:#304a56; --text-3:#465f6a; --text-dim:#78909a;
+    --brand-post:#40278e;
+    --accent:#1847c7; --accent-hover:#1239a7; --accent-press:#0d2d87; --accent-fg:#ffffff;
+    --accent-soft:rgba(24,71,199,.12); --accent-wash:rgba(24,71,199,.055); --accent-line:rgba(24,71,199,.40);
+    --spark:#9a155b;
+    --good:#087153; --good-line:#74ae9b; --good-soft:rgba(8,113,83,.11);
+    --warn:#765300; --warn-line:#c4a65e; --warn-soft:rgba(118,83,0,.11);
+    --bad:#a52343; --bad-line:#d89aab; --bad-soft:rgba(165,35,67,.10);
+    --info:#1847c7; --info-line:#91a9df; --info-soft:rgba(24,71,199,.10);
+    --c-director:#795a00; --c-narrative:#6240a2; --c-gameplay:#b33848;
+    --c-tech:#185b93; --c-art:#9a155b; --c-audio:#087153; --c-cinematic:#a55218; --c-qa:#47740b;
+    --shadow-1:inset 0 1px 0 rgba(255,255,255,.75),0 1px 2px rgba(39,91,112,.10);
+    --shadow-2:inset 0 2px 0 rgba(255,255,255,.78),0 6px 18px rgba(39,91,112,.14);
+    --shadow-3:inset 0 2px 0 rgba(255,255,255,.82),0 16px 34px rgba(39,91,112,.18);
+    --shadow-4:inset 0 2px 0 rgba(255,255,255,.88),0 24px 52px rgba(39,91,112,.24);
+    --scrim:rgba(35,67,80,.32); --overlay:rgba(218,235,240,.90);
+    --checker-a:#c0d5dc; --checker-b:#d8e7eb; --grid-dot:rgba(20,35,44,.08);
+    --ambient:radial-gradient(760px 520px at 94% -5%,rgba(24,71,199,.14),transparent 62%),
+              radial-gradient(640px 480px at 4% 105%,rgba(154,21,91,.08),transparent 66%);
+    --r-xs:3px; --r-sm:6px; --r-md:10px; --r-lg:16px; --r-xl:24px;
+  }
+
+  /* Pocket turns the studio into handheld hardware: a four-tone LCD field,
+     cartridge ink and one raspberry control colour. */
+  :root[data-theme="pocket"]{
+    color-scheme:light;
+    --bg:#899a5d;
+    --surface-1:#9dae6e; --surface-2:#adbd7d; --surface-3:#bdcc8c; --surface-4:#7f9054;
+    --line:#667546; --line-soft:#84925e; --line-strong:#495735;
+    --text:#152015; --text-2:#2d3929; --text-3:#3c4935; --text-dim:#657451;
+    --brand-post:#3d315f;
+    --accent:#7d164f; --accent-hover:#64103f; --accent-press:#500c32; --accent-fg:#fff4dc;
+    --accent-soft:rgba(125,22,79,.14); --accent-wash:rgba(125,22,79,.07); --accent-line:rgba(125,22,79,.48); --spark:#5d183f;
+    --good:#175d3c; --good-line:#3b7351; --good-soft:rgba(23,93,60,.13);
+    --warn:#694500; --warn-line:#84642b; --warn-soft:rgba(105,69,0,.13);
+    --bad:#8c1c2e; --bad-line:#994758; --bad-soft:rgba(140,28,46,.12);
+    --info:#294d75; --info-line:#506d83; --info-soft:rgba(41,77,117,.12);
+    --c-director:#584300; --c-narrative:#533b75; --c-gameplay:#812d24;
+    --c-tech:#244e6b; --c-art:#7d164f; --c-audio:#175d3c; --c-cinematic:#74430c; --c-qa:#3a5e18;
+    --shadow-1:1px 1px 0 rgba(37,48,29,.28); --shadow-2:3px 3px 0 rgba(37,48,29,.30);
+    --shadow-3:6px 6px 0 rgba(37,48,29,.32); --shadow-4:10px 10px 0 rgba(37,48,29,.36);
+    --scrim:rgba(30,39,24,.46); --overlay:rgba(137,154,93,.9);
+    --checker-a:#7f9054; --checker-b:#95a666; --grid-dot:rgba(21,32,21,.13);
+    --ambient:repeating-linear-gradient(0deg,rgba(21,32,21,.045) 0 1px,transparent 1px 4px),
+              radial-gradient(900px 560px at 50% 45%,rgba(226,239,166,.2),transparent 72%);
+    --sans:Bahnschrift,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+    --sans-display:var(--sans);
+    --r-xs:1px; --r-sm:2px; --r-md:3px; --r-lg:4px; --r-xl:6px;
   }
 
   /* ── ground: orbit ─────────────────────────────────────────────────────────
@@ -299,6 +421,8 @@
                  0 0 3px  -1px  rgba(190,205,255,.22);
 
     --bg:#000000;          /* vanta. zero. */
+    --ambient:radial-gradient(720px 420px at 82% -10%,rgba(120,186,230,.07),transparent 68%),
+              radial-gradient(580px 360px at 12% 108%,rgba(168,150,238,.045),transparent 70%);
     /* DEEPER, AND FAINTLY COOL. These were neutral white at .026–.11, which
        composites to a flat charcoal — the grey of an unlit interface rather
        than of black glass. Dropping the alphas puts the panels closer to the
@@ -465,20 +589,22 @@
     :root:not([data-theme]){
       color-scheme:light;
 
-      --bg:#eae7e1;
-      --surface-1:#f2f0ec;
-      --surface-2:#fbfaf8;
+      --bg:#e9edf0;
+      --surface-1:#f1f4f6;
+      --surface-2:#f8fafb;
       --surface-3:#ffffff;
-      --surface-4:#e3dfd7;
+      --surface-4:#dfe5e9;
 
-      --line:#d5d0c7;
-      --line-soft:#e4e0d9;
-      --line-strong:#b0aa9e;
+      --line:#cfd6dc;
+      --line-soft:#e0e5e9;
+      --line-strong:#a8b2ba;
 
-      --text:#1c1b18;
-      --text-2:#4e4b45;
-      --text-3:#6a665f;
-      --text-dim:#9b968b;
+      --text:#171b1e;
+      --text-2:#444b51;
+      --text-3:#626c74;
+      --text-dim:#929da5;
+      --ambient:linear-gradient(135deg,rgba(255,255,255,.46),transparent 38%),
+                radial-gradient(700px 420px at 100% 0,rgba(55,88,125,.055),transparent 65%);
 
       --brand-post:#1800ad;
 
@@ -500,15 +626,15 @@
       --c-tech:#1e5fb8; --c-art:#b03370; --c-audio:#0e7457; --c-cinematic:#a35c00;
     --c-qa:#45720f;
 
-      --shadow-1:0 1px 2px rgba(40,34,24,.07);
-      --shadow-2:0 3px 10px rgba(40,34,24,.09);
-      --shadow-3:0 10px 26px rgba(40,34,24,.13);
-      --shadow-4:0 18px 46px rgba(40,34,24,.18);
-      --scrim:rgba(40,34,24,.32);
-      --overlay:rgba(234,231,225,.86);
+      --shadow-1:0 1px 2px rgba(28,38,48,.07);
+      --shadow-2:0 3px 10px rgba(28,38,48,.09);
+      --shadow-3:0 10px 26px rgba(28,38,48,.13);
+      --shadow-4:0 18px 46px rgba(28,38,48,.18);
+      --scrim:rgba(28,38,48,.32);
+      --overlay:rgba(233,237,240,.88);
 
-      --checker-a:#dedad2; --checker-b:#e9e6e0;
-      --grid-dot:rgba(28,27,24,.07);
+      --checker-a:#d9dfe3; --checker-b:#e7ebee;
+      --grid-dot:rgba(23,27,30,.07);
     }
   }
 
@@ -677,7 +803,9 @@
      is good at. Half-pixel font sizes were the fourth cause and were rounded
      out of the shell's stylesheets in the same pass. */
   body{
-    background:var(--bg); color:var(--text);
+    background-color:var(--bg); background-image:var(--ambient,none);
+    background-size:var(--ambient-size,auto); color:var(--text);
+    background-attachment:fixed;
     font-family:var(--sans); font-size:var(--fs-base); line-height:var(--lh);
     -moz-osx-font-smoothing:grayscale;
     font-synthesis-weight:none;

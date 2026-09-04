@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import "./shell.css";
-import { Menu } from "@mantine/core";
+import { Menu, Modal, ScrollArea, TextInput } from "@mantine/core";
 import { Ti } from "./Ti";
-import { AREAS, SCREEN_NOTE, SEAT_COLOR, SEAT_ICON, areaOf, byScreen } from "./nav";
+import { AREAS, LOOSE, SCREEN_NOTE, SEAT_COLOR, SEAT_ICON, areaOf, byScreen } from "./nav";
 import type { Area } from "./nav";
 import { Inspector } from "./Inspector";
 import { Bell } from "./Bell";
@@ -12,6 +12,11 @@ import type { Floor } from "./useFloor";
 import { useAppState } from "../store";
 import { setSelection } from "./selection";
 import { setScreen as publishScreen } from "./screen";
+import { AssetBrowser } from "./AssetBrowser";
+import { Readiness } from "./Readiness";
+import { claimUtility, onUtility, type UtilityName } from "./utility";
+import { setUrlParams, urlParam } from "./urlState";
+import { GROUNDS, ThemeSample, useGround } from "./ThemePicker";
 
 /* The shell: four areas, the screens inside one of them, a header, and the
  * inspector. Everything BETWEEN those is still the existing stage.
@@ -31,6 +36,57 @@ import { setScreen as publishScreen } from "./screen";
 
 const KEY = "bgate-screen";
 const NAV_KEY = "bgate-nav-open";
+
+type FindResult = { key: string; icon: string; label: string; detail: string; pick(): void };
+
+function CommandPalette({ opened, onClose, onScreen, floor }: {
+  opened: boolean; onClose(): void; onScreen(id: string): void; floor: Floor;
+}) {
+  const [query, setQuery] = useState("");
+  const state = useAppState();
+  useEffect(() => { if (opened) setQuery(""); }, [opened]);
+  const finish = (fn: () => void) => { fn(); onClose(); };
+  const screens: FindResult[] = [...AREAS.flatMap((a) => a.screens), ...LOOSE].map((s) => ({
+    key: `screen-${s.id}`, icon: s.icon, label: s.label,
+    detail: `${areaOf(s.id)?.label || "App"} screen`, pick: () => onScreen(s.id),
+  }));
+  const work: FindResult[] = floor.items.map((item) => ({
+    key: `item-${item.id}`, icon: SEAT_ICON[item.seat] || "point",
+    label: item.title || `Work item ${item.id}`,
+    detail: `#${item.id} · ${item.seat || "unassigned"} · ${item.status || "unknown"}`,
+    pick: () => { onScreen("agents"); setSelection({ key: `i${item.id}`, kind: "item",
+      itemId: item.id, title: item.title, seat: item.seat }); },
+  }));
+  const assets: FindResult[] = state.asset_groups.map((asset) => ({
+    key: `asset-${asset.logical_name}`, icon: "photo", label: asset.logical_name,
+    detail: "Asset family", pick: () => onScreen("assets"),
+  }));
+  const needle = query.trim().toLowerCase();
+  const results = [...screens, ...work, ...assets]
+    .filter((r) => !needle || `${r.label} ${r.detail}`.toLowerCase().includes(needle))
+    .slice(0, 30);
+  return (
+    <Modal opened={opened} onClose={onClose} title="Find anything" centered size="lg"
+           classNames={{ content: "bg4-command", header: "bg4-command-head" }}>
+      <TextInput data-autofocus value={query} onChange={(e) => setQuery(e.currentTarget.value)}
+                 onKeyDown={(e) => { if (e.key === "Enter" && results[0]) finish(results[0].pick); }}
+                 leftSection={<Ti name="search" size={15} />} placeholder="Screens, work, assets…"
+                 aria-label="Search Builders Gate" />
+      <ScrollArea.Autosize mah={420} mt="sm">
+        <div className="bg4-command-results">
+          {results.map((r, index) => (
+            <button key={r.key} className="bg4-command-row" onClick={() => finish(r.pick)}>
+              <Ti name={r.icon} size={16} />
+              <span><b>{r.label}</b><small>{r.detail}</small></span>
+              {index === 0 && needle && <kbd>Enter</kbd>}
+            </button>
+          ))}
+          {!results.length && <div className="bg4-command-empty">No matching screen, work, or asset.</div>}
+        </div>
+      </ScrollArea.Autosize>
+    </Modal>
+  );
+}
 
 declare global {
   interface Window {
@@ -52,20 +108,11 @@ declare global {
    are one exclusive choice, and the planet in particular reads as a feature.
    The button wears the ground you are ON and pops the other three out, which
    is both smaller and self-explaining. */
-const GROUNDS = [
-  { id: "dark", icon: "moon", label: "Always dark" },
-  { id: "light", icon: "sun", label: "Always light" },
-  { id: "system", icon: "device-desktop", label: "Follow the OS setting" },
-  { id: "orbit", icon: "planet", label: "Orbit — glass on vanta black" },
-];
-
 function Grounds() {
-  const [mode, setMode] = useState<string>(() => {
-    try { return localStorage.getItem("bgate-theme") || "system"; } catch { return "system"; }
-  });
-  const current = GROUNDS.find((g) => g.id === mode) || GROUNDS[2];
+  const [mode, setMode] = useGround();
+  const current = GROUNDS.find((g) => g.id === mode) || GROUNDS[GROUNDS.length - 1];
   return (
-    <Menu position="right-end" offset={8} withArrow shadow="md" width={210}>
+    <Menu position="right-end" offset={8} withArrow shadow="md" width={270}>
       <Menu.Target>
         <button className="bg4-area" title={`Theme · ${current.label}`}
                 aria-label="Colour theme">
@@ -73,13 +120,14 @@ function Grounds() {
         </button>
       </Menu.Target>
       <Menu.Dropdown>
-        <Menu.Label>Theme</Menu.Label>
+        <Menu.Label>Appearance</Menu.Label>
         {GROUNDS.map((g) => (
-          <Menu.Item key={g.id}
+          <Menu.Item key={g.id} className="bg4-theme-menu-item"
                      leftSection={<Ti name={g.icon} size={14} />}
                      rightSection={g.id === mode ? <Ti name="check" size={13} /> : undefined}
-                     onClick={() => { window.setTheme?.(g.id); setMode(g.id); }}>
-            {g.label}
+                     onClick={() => setMode(g.id)}>
+            <span className="bg4-theme-menu-copy"><b>{g.label}</b><small>{g.note}</small></span>
+            <ThemeSample ground={g} compact />
           </Menu.Item>
         ))}
       </Menu.Dropdown>
@@ -201,9 +249,30 @@ function RunningChip({ floor, onOpenFloor }: {
 }
 
 export function Shell() {
+  const [utility, setUtility] = useState<UtilityName | null>(null);
   const [screen, setScreen] = useState<string>(() => {
+    if (new URLSearchParams(location.search).has("setting")) return "settings";
+    const linked = urlParam("screen");
+    if (linked && byScreen(linked)) return linked;
     try { return localStorage.getItem(KEY) || "floor"; } catch { return "floor"; }
   });
+  useEffect(() => onUtility(setUtility), []);
+  const visited = useRef<string[]>([screen]);
+  const visitIndex = useRef(0);
+  const replaying = useRef(false);
+  const [, redrawHistory] = useState(0);
+  useEffect(() => {
+    if (replaying.current) { replaying.current = false; redrawHistory((v) => v + 1); return; }
+    if (visited.current[visitIndex.current] === screen) return;
+    visited.current = [...visited.current.slice(0, visitIndex.current + 1), screen];
+    visitIndex.current = visited.current.length - 1;
+    redrawHistory((v) => v + 1);
+  }, [screen]);
+  const moveHistory = (delta: number) => {
+    const next = visitIndex.current + delta;
+    if (next < 0 || next >= visited.current.length) return;
+    visitIndex.current = next; replaying.current = true; setScreen(visited.current[next]); setSelection(null);
+  };
   /* The screen column collapses. On a laptop it is 176px of labels you already
      know by heart, and the rail beside it still names every area — so the
      labels are worth having open while you learn the app and worth reclaiming
@@ -249,6 +318,7 @@ export function Shell() {
     publishScreen(screen);
     if (deck) window.setWorkspace?.(deck);
     try { localStorage.setItem(KEY, screen); } catch { /* private mode */ }
+    setUrlParams({ screen, setting: screen === "settings" ? urlParam("setting") : null });
   }, [screen]);
 
   // Follow a deck change this shell did not make.
@@ -269,6 +339,24 @@ export function Shell() {
     playtests: (state.sessions || []).length,
     assets: state.asset_groups.length,
   };
+  const assetScreens = new Set(["assets", "spriteedit", "audiolab", "modeledit", "atlas"]);
+  const drift = (state.verify.counts?.modified || 0) + (state.verify.counts?.missing || 0) + (state.verify.counts?.pending || 0);
+  const review = state.asset_groups.reduce((n, g) => n + (g.candidates?.length || 0), 0);
+  const readinessIssues = Number(!state.project) + Number(!state.asset_groups.length) + Number(drift > 0)
+    + Number(review > 0) + Number(!state.controls?.length) + Number(!state.sessions.length);
+
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        if (utility === "command") setUtility(null); else claimUtility("command");
+      }
+      if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); moveHistory(-1); }
+      if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); moveHistory(1); }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [utility]);
 
   return (
     <div className={navOpen && !loose ? "bg4" : "bg4 nav-closed"}>
@@ -341,18 +429,28 @@ export function Shell() {
             {s.count && counts[s.count] > 0 && <span className="n">{counts[s.count]}</span>}
           </button>
         ))}
-        <div className="bg4-navfoot">
-          <div>{state.project?.name || "no project"}</div>
-          <div className={state.project ? "ok" : "bad"}>
-            {state.project ? "connected" : "offline"}
-          </div>
-        </div>
       </div>
 
       <header className="bg4-head">
-        <span className="bg4-title">{meta?.label || "Builders Gate"}</span>
+        <div className="bg4-history">
+          <button disabled={visitIndex.current <= 0} onClick={() => moveHistory(-1)} aria-label="Previous workspace"><Ti name="chevron-left" size={15} /></button>
+          <button disabled={visitIndex.current >= visited.current.length - 1} onClick={() => moveHistory(1)} aria-label="Next workspace"><Ti name="chevron-right" size={15} /></button>
+        </div>
+        <div className="bg4-breadcrumb"><span>{areaOf(screen)?.label || "App"}</span><i>/</i><b>{meta?.label || "Builders Gate"}</b></div>
         <span className="bg4-note">{SCREEN_NOTE[screen] || ""}</span>
         <div className="bg4-chips">
+          {assetScreens.has(screen) && <button className="bg4-chip bg4-assets-open" onClick={() => claimUtility("assets")}>
+            <Ti name="stack-2" size={14} />Browse assets
+          </button>}
+          <button className={`bg4-chip bg4-readiness ${!state.hydrated ? "loading" : readinessIssues ? "needs" : "ready"}`}
+                  aria-busy={!state.hydrated} onClick={() => claimUtility("readiness")}>
+            <Ti name={!state.hydrated ? "loader-2" : readinessIssues ? "clipboard-check" : "circle-check"} size={14} />
+            {!state.hydrated ? "Checking project" : readinessIssues ? `${readinessIssues} setup gaps` : "Project ready"}
+          </button>
+          <button className="bg4-find" onClick={() => claimUtility("command")}
+                  aria-label="Find screens, work, and assets">
+            <Ti name="search" size={14} /><span>Find</span><kbd>Ctrl K</kbd>
+          </button>
           <RunningChip floor={floor}
                        /* "agents", NOT "floor". There is no screen with the id
                           `floor` — it is a DECK name, used by Work history.
@@ -369,6 +467,12 @@ export function Shell() {
       </header>
 
       <Inspector />
+      <CommandPalette opened={utility === "command"} onClose={() => setUtility(null)}
+                      onScreen={(id) => { setScreen(id); setSelection(null); }} floor={floor} />
+      <AssetBrowser opened={utility === "assets"} onClose={() => setUtility(null)}
+                    onScreen={(id) => { setScreen(id); setSelection(null); }} />
+      <Readiness opened={utility === "readiness"} onClose={() => setUtility(null)}
+                 onScreen={(id) => { setScreen(id); setSelection(null); }} />
     </div>
   );
 }

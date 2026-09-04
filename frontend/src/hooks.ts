@@ -197,4 +197,4 @@ export function useEvents(fn: () => void, opts: EventsOptions = {}): void {
 }
 
 /* The kinds most panels mean by "the board moved". */
-export const WORK_KINDS = ["item.*", "chain.*", "agent.*", "dispatch.*", "budget.*"];
+export const WORK_KINDS = ["item.*", "chain.*", "agent.*", "dispatch.*"];

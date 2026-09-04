@@ -31,6 +31,7 @@
   border: 1px solid var(--line); border-radius: 9999px; background: transparent;
   color: var(--text-2); padding: 3px 9px; font: 500 10px var(--mono);
 }
+.bg4-roomsbtn, .bg4-roomsclose, .bg4-roomshade { display: none }
 .bg4-rosterbtn:hover { color: var(--text); border-color: var(--text-3) }
 .bg4-rosterclose {
   display: none; position: absolute; top: 8px; right: 10px; z-index: 2;
@@ -57,6 +58,33 @@
   .bg4-rosterclose { display: block }
 }
 
+@media (max-width: 760px) {
+  .bg4-room { grid-template-columns: minmax(0, 1fr) }
+  .bg4-rooms {
+    position: absolute; inset: 0 auto 0 0; z-index: 10; width: min(300px, 88vw);
+    transform: translateX(-102%); transition: transform var(--dur-slow, .24s) var(--ease, ease);
+    box-shadow: var(--shadow-4); border-right: 1px solid var(--line);
+  }
+  .bg4-rooms.open { transform: none }
+  .bg4-roomsbtn {
+    display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none;
+    border: 1px solid var(--line); border-radius: 5px; background: transparent;
+    color: var(--text-2); cursor: pointer;
+  }
+  .bg4-roomsclose {
+    display: grid; place-items: center; position: absolute; top: 8px; right: 8px;
+    z-index: 2; width: 25px; height: 25px; padding: 0; border: 0;
+    border-radius: 4px; background: var(--solid-2); color: var(--text-2); cursor: pointer;
+  }
+  .bg4-roomshade {
+    display: block; position: absolute; inset: 0; z-index: 7; padding: 0;
+    border: 0; background: rgba(0, 0, 0, .48); cursor: default;
+  }
+  .bg4-roster { z-index: 10 }
+  .bg4-roomhead { padding-inline: 10px }
+  .bg4-roomscroll { padding-inline: 10px }
+}
+
 /* ---- rooms ------------------------------------------------------------- */
 
 .bg4-rooms {
@@ -65,8 +93,7 @@
 }
 .bg4-rooms-head {
   display: flex; align-items: center; gap: 8px; padding: 0 2px 10px;
-  font: 500 10px var(--mono); letter-spacing: .18em;
-  text-transform: uppercase; color: var(--text-2);
+  font: 600 11px var(--sans); color: var(--text-2);
 }
 .bg4-rooms-head span { flex: 1 }
 .bg4-mini {
@@ -373,8 +400,7 @@
 .bg4-padhead {
   display: flex; align-items: center; gap: 9px; flex: none;
   padding: 11px 14px 8px; color: var(--text-2);
-  font: 500 10px var(--mono); letter-spacing: .18em;
-  text-transform: uppercase;
+  font: 600 11px var(--sans);
 }
 .bg4-padhead.bordered { border-top: 1px solid var(--line); margin-top: 4px }
 .bg4-padhead .sub {
@@ -382,9 +408,7 @@
   color: var(--text-3); font-size: 10px;
 }
 
-/* One participant. The spend column is only ever drawn when the session
-   actually reports a number — an invented $0.00 is the kind of figure people
-   make budget decisions against. */
+/* One participant. */
 .bg4-part {
   display: flex; align-items: flex-start; gap: 9px; flex: none;
   padding: 9px 14px; border-top: 1px solid var(--line);
@@ -393,7 +417,7 @@
 .bg4-part .w { flex: 1; min-width: 0 }
 /* THE ROW THAT WAS WRAPPING ITS OWN BADGE. `.st` carried no `white-space`,
    so "in the room · not running" line-broke INSIDE the pill, turning one
-   status marker into a two-line block that crowded the spend figure beside
+   status marker into a two-line block that crowded the stats column beside
    it. Copy is shorter now (the section this sits in is already headed
    "IN THE ROOM" — a badge repeating that said nothing new) and nowrap is
    the backstop so a translation or a longer status can never do this again. */
@@ -420,20 +444,18 @@
   margin-top: 3px; font: 500 10px/1.5 var(--mono); color: var(--text-3);
 }
 .bg4-part.empty { opacity: .8 }
-/* THE NUMBERS, AS A COLUMN. Turns and spend used to live at two different
-   places — one buried at the end of the runtime sentence, one floating on
-   its own — so four rows of "...· N turns" read as the same sentence
-   repeated and the actual differences (which seat is expensive, which has
-   answered the most) took real effort to compare. Stacked and right-aligned,
-   they read the way a ledger does: down the column, not across the prose. */
+/* THE NUMBERS, AS A COLUMN. The turn count used to sit at the end of the
+   runtime sentence, so four rows of "...· N turns" read as the same sentence
+   repeated and the actual difference (which seat has answered the most) took
+   real effort to compare. Right-aligned in its own column, it reads down
+   rather than across the prose. */
 .bg4-part .stats {
   flex: none; display: flex; flex-direction: column; align-items: flex-end;
   gap: 2px; margin-left: 6px;
 }
-.bg4-part .turns, .bg4-part .spend {
+.bg4-part .turns {
   font: 500 10px var(--mono); color: var(--text-3); white-space: nowrap;
 }
-.bg4-part .spend { color: var(--text-2) }
 
 .bg4-invite { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 12px 12px }
 .bg4-invite .chip {

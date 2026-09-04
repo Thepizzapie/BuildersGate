@@ -299,6 +299,21 @@ window.SpriteEdit = (() => {
       ".se-pick-i .m{margin-left:auto;color:var(--ash2);font-size:10px}",
       ".se-tag{font-size:9px;padding:1px 5px;border-radius:999px;border:1px solid var(--seam);color:var(--ash2)}",
       ".se-tag.on{border-color:var(--good);color:var(--good)}",
+      ".se-new-box{background:var(--iron);border:1px solid var(--seam);border-radius:12px;width:min(620px,100%);overflow:hidden;box-shadow:0 22px 70px rgba(0,0,0,.55)}",
+      ".se-new-body{padding:22px;display:grid;gap:18px}",
+      ".se-new-tabs{display:flex;gap:4px;padding:4px;background:var(--void);border:1px solid var(--seam);border-radius:8px}",
+      ".se-new-tabs button{flex:1;border:0;border-radius:5px;padding:8px;background:transparent;color:var(--ash2);font:500 11px var(--mono);cursor:pointer}",
+      ".se-new-tabs button.on{background:var(--plate2);color:var(--bone)}",
+      ".se-new-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}",
+      ".se-new-field{display:grid;gap:5px}",
+      ".se-new-field.wide{grid-column:1/-1}",
+      ".se-new-field label{font:500 10px var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--ash2)}",
+      ".se-new-total{padding:12px 14px;border:1px solid var(--seam);border-radius:8px;background:var(--void);font:11px var(--mono);color:var(--ash2)}",
+      ".se-new-total b{color:var(--bone)}",
+      ".se-drop{min-height:126px;border:1px dashed var(--line-strong);border-radius:9px;display:grid;place-items:center;text-align:center;padding:18px;color:var(--ash2);cursor:pointer;background:var(--void)}",
+      ".se-drop:hover{border-color:var(--ember);color:var(--bone)}",
+      ".se-drop b{display:block;color:var(--bone);margin-bottom:5px}",
+      ".se-new-actions{display:flex;justify-content:flex-end;gap:8px}",
 
       /* the hot wheel. `inset:0` on .se-back, so in the Studio tab it is
          clipped to the embedded host and can never escape onto the page. */
@@ -338,7 +353,7 @@ window.SpriteEdit = (() => {
   /* ── open / close ─────────────────────────────────────────────────────── */
   async function open(rel){
     injectStyle();
-    if (S && S.dirty && !(await askConfirm({
+    if (S && (S.dirty || S.rigDirty) && !(await askConfirm({
       title: "Discard unsaved pixel edits?",
       body: "The pixels you painted and the undo history for this sheet go with it.",
       ok: "discard", danger: true,
@@ -458,6 +473,8 @@ window.SpriteEdit = (() => {
                  style="flex:1;max-width:280px" oninput="SpriteEdit.pickSearch(this.value)">
           <span class="se-sub" id="se-pick-n"></span>
           <span class="se-spacer"></span>
+          <button class="se-btn" onclick="SpriteEdit.newDialog('blank')">new sheet</button>
+          <button class="se-btn" onclick="SpriteEdit.newDialog('import')">import</button>
           <button class="se-btn" onclick="SpriteEdit.closePick()">close</button></div>
         <div class="se-pick-body">
           <div class="se-pick-cats" id="se-pick-cats"></div>
@@ -587,6 +604,132 @@ window.SpriteEdit = (() => {
   }
   function closePick(){ const p = document.getElementById("se-pick"); if (p) p.remove(); }
 
+  /* ── create / import ─────────────────────────────────────────────────── */
+  let _newMode = "blank", _importFile = null;
+
+  function newDialog(mode){
+    injectStyle(); closePick(); closeNew();
+    _newMode = mode === "import" ? "import" : "blank";
+    _importFile = null;
+    const host = document.createElement("div");
+    host.className = "se-pick"; host.id = "se-new";
+    host.innerHTML = `<div class="se-new-box">
+      <div class="se-bar"><span class="se-title">new sprite sheet</span>
+        <span class="se-spacer"></span>
+        <button class="se-btn" onclick="SpriteEdit.closeNew()">close</button></div>
+      <div class="se-new-body">
+        <div class="se-new-tabs">
+          <button id="se-new-blank" onclick="SpriteEdit.newMode('blank')">blank sheet</button>
+          <button id="se-new-import" onclick="SpriteEdit.newMode('import')">import image</button>
+        </div>
+        <div id="se-new-content"></div>
+      </div></div>`;
+    document.body.appendChild(host);
+    host.addEventListener("click", ev => { if (ev.target === host) closeNew(); });
+    newMode(_newMode);
+  }
+
+  function closeNew(){ const el = document.getElementById("se-new"); if (el) el.remove(); }
+
+  function newMode(mode){
+    _newMode = mode === "import" ? "import" : "blank";
+    ["blank", "import"].forEach(k => {
+      const b = document.getElementById(`se-new-${k}`);
+      if (b) b.classList.toggle("on", k === _newMode);
+    });
+    const body = document.getElementById("se-new-content");
+    if (!body) return;
+    if (_newMode === "blank") body.innerHTML = `
+      <div class="se-new-grid">
+        <div class="se-new-field wide"><label>project path</label>
+          <input class="se-in" id="se-new-path" value="game/assets/sprites/untitled.png"></div>
+        <div class="se-new-field"><label>frame width</label>
+          <input class="se-in" id="se-new-cw" type="number" min="1" max="2048" value="32" oninput="SpriteEdit.newSummary()"></div>
+        <div class="se-new-field"><label>frame height</label>
+          <input class="se-in" id="se-new-ch" type="number" min="1" max="2048" value="32" oninput="SpriteEdit.newSummary()"></div>
+        <div class="se-new-field"><label>columns</label>
+          <input class="se-in" id="se-new-cols" type="number" min="1" max="64" value="4" oninput="SpriteEdit.newSummary()"></div>
+        <div class="se-new-field"><label>rows</label>
+          <input class="se-in" id="se-new-rows" type="number" min="1" max="64" value="4" oninput="SpriteEdit.newSummary()"></div>
+      </div>
+      <div class="se-new-total" id="se-new-total"></div>
+      <div class="se-new-actions"><button class="se-btn" onclick="SpriteEdit.closeNew()">cancel</button>
+        <button class="se-btn go" id="se-new-go" onclick="SpriteEdit.createSheet()">create and open</button></div>`;
+    else body.innerHTML = `
+      <div class="se-new-grid">
+        <div class="se-new-field wide"><label>source image</label>
+          <label class="se-drop" for="se-new-file" id="se-new-file-label"><span><b>Choose an image</b>PNG, WebP, or JPEG · up to 18 MB</span></label>
+          <input id="se-new-file" type="file" accept="image/png,image/webp,image/jpeg" hidden onchange="SpriteEdit.importPicked(event)"></div>
+        <div class="se-new-field wide"><label>project path</label>
+          <input class="se-in" id="se-new-path" value="game/assets/sprites/imported.png"></div>
+      </div>
+      <div class="se-new-total">The source is converted to an editable RGBA PNG. The original file is not changed.</div>
+      <div class="se-new-actions"><button class="se-btn" onclick="SpriteEdit.closeNew()">cancel</button>
+        <button class="se-btn go" id="se-new-go" onclick="SpriteEdit.importSheet()" disabled>import and open</button></div>`;
+    newSummary();
+  }
+
+  function newSummary(){
+    if (_newMode !== "blank") return;
+    const n = id => Math.max(0, parseInt((document.getElementById(id)||{}).value, 10) || 0);
+    const cw=n("se-new-cw"), ch=n("se-new-ch"), cols=n("se-new-cols"), rows=n("se-new-rows");
+    const el=document.getElementById("se-new-total");
+    if (el) el.innerHTML = `<b>${cw*cols} × ${ch*rows}px</b> canvas · <b>${cols*rows}</b> frames · transparent background`;
+  }
+
+  function importPicked(ev){
+    const input = ev && ev.target;
+    _importFile = input && input.files && input.files[0] || null;
+    if (!_importFile) return;
+    const stem = String(_importFile.name || "imported").replace(/\.[^.]+$/, "")
+      .toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^[_-]+|[_-]+$/g, "").slice(0, 64) || "imported";
+    const path = document.getElementById("se-new-path");
+    if (path) path.value = `game/assets/sprites/${stem}.png`;
+    const label = document.getElementById("se-new-file-label");
+    if (label) label.innerHTML = `<span><b>${E(_importFile.name)}</b>${Math.ceil(_importFile.size/1024)} KB · ready to import</span>`;
+    const go = document.getElementById("se-new-go"); if (go) go.disabled = false;
+  }
+
+  async function mayReplaceEditor(){
+    return !(S && (S.dirty || S.rigDirty)) || await askConfirm({
+      title:"Discard unsaved pixel edits?",
+      body:"The pixels you painted and the undo history for this sheet go with it.",
+      ok:"discard", danger:true,
+    });
+  }
+
+  async function createSheet(){
+    if (!(await mayReplaceEditor())) return;
+    const val = id => (document.getElementById(id)||{}).value;
+    const body = {rel:val("se-new-path"), cell_w:val("se-new-cw"), cell_h:val("se-new-ch"),
+                  cols:val("se-new-cols"), rows:val("se-new-rows")};
+    const r = await mutate("/api/sprite/create", {body, button:"se-new-go", quiet:true});
+    if (!r.ok){ say(r.error || "could not create that sheet"); return; }
+    closeNew(); if (S) await close(true); await open(r.data.rel);
+    say(`created ${r.data.rel}`, "ok");
+  }
+
+  function fileDataURL(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
+    });
+  }
+
+  async function importSheet(){
+    if (!_importFile){ say("choose an image to import"); return; }
+    if (_importFile.size > 18 * 1024 * 1024){ say("that image is larger than the 18 MB import limit"); return; }
+    if (!(await mayReplaceEditor())) return;
+    let image;
+    try { image = await fileDataURL(_importFile); }
+    catch (e) { say("the browser could not read that image"); return; }
+    const path = (document.getElementById("se-new-path")||{}).value;
+    const r = await mutate("/api/sprite/import", {body:{rel:path, image}, button:"se-new-go", quiet:true});
+    if (!r.ok){ say(r.error || "could not import that image"); return; }
+    closeNew(); if (S) await close(true); await open(r.data.rel);
+    say(`imported ${r.data.rel}`, "ok");
+  }
+
   /* ── DOM ──────────────────────────────────────────────────────────────── */
   function mount(){
     const back = document.createElement("div");
@@ -603,6 +746,8 @@ window.SpriteEdit = (() => {
         <button class="se-btn" id="se-redo" onclick="SpriteEdit.redo()"
                 title="Redo (Ctrl+Shift+Z)" aria-label="Redo">${I("redo")}</button>
         <button class="se-btn" onclick="SpriteEdit.fit()" title="Fit to view (0)">fit</button>
+        <button class="se-btn" onclick="SpriteEdit.newDialog('blank')">new</button>
+        <button class="se-btn" onclick="SpriteEdit.newDialog('import')">import</button>
         <button class="se-btn" onclick="SpriteEdit.pick()">open…</button>
         <button class="se-btn go" id="se-save" onclick="SpriteEdit.save()">save sheet</button>
         <button class="se-btn" id="se-handoff" onclick="SpriteEdit.handoff()"
@@ -2712,8 +2857,12 @@ window.SpriteEdit = (() => {
       '<div class="se-land">' +
         '<div class="se-land-in">' +
           '<h3>Sprite sheet editor</h3>' +
-          '<p>Choose a sprite sheet to work on. Everything you open here saves back to the project.</p>' +
-          '<button class="qbtn" onclick="SpriteEdit.pick()">open a sprite sheet…</button>' +
+          '<p>Create a transparent frame grid by hand, import existing art, or continue an existing sheet.</p>' +
+          '<div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap">' +
+            '<button class="qbtn" onclick="SpriteEdit.newDialog(\'blank\')">create blank sheet</button>' +
+            '<button class="qbtn ghost" onclick="SpriteEdit.newDialog(\'import\')">import image</button>' +
+            '<button class="qbtn ghost" onclick="SpriteEdit.pick()">open existing</button>' +
+          '</div>' +
         '</div></div>';
     return null;
   }
@@ -2771,6 +2920,7 @@ window.SpriteEdit = (() => {
 
   return {
     open, close, pick, pickSearch, closePick, fit, undo, redo, save, saveRig, exportFrames,
+    newDialog, closeNew, newMode, newSummary, createSheet, importPicked, importSheet,
     handoff,
     activate,
     previewToggle, previewField, setOnion,

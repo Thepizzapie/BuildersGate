@@ -216,6 +216,32 @@ def _export_glb(path):
     """
     import bpy
 
+    # THE SCENE'S FURNITURE IS NOT THE ASSET, and it shipped inside one.
+    # MEASURED on a delivered character: owner_v7c_rigged.glb carried the
+    # factory-startup "Cube", the glTF importer's 42-vertex bone-shape
+    # "Icosphere", a Light and a Camera alongside the 44,287-triangle body.
+    # It is not cosmetic. Those two meshes span z -1..1 around the origin, so
+    # the rig's height fit measured 9.87m of SCENE where the person was
+    # 8.875m, delivered the character at FIVE TIMES its intended height, and
+    # reported "midline fills at 10% of height, not a crotch (a calf)" -
+    # landmark detection reading a cube. The agent that hit it could not fix
+    # it from any exposed parameter, because the junk was upstream of every
+    # parameter.
+    #
+    # Bone custom shapes are dropped by name (the armature names them), the
+    # rest by type. A mesh is never removed for its NAME - a project may
+    # legitimately ship something called Cube - only for being an unparented
+    # bone shape.
+    shapes = set()
+    for armature in [o for o in bpy.context.scene.objects
+                     if o.type == "ARMATURE"]:
+        for posed in armature.pose.bones:
+            if posed.custom_shape is not None:
+                shapes.add(posed.custom_shape.name)
+    for obj in list(bpy.context.scene.objects):
+        if obj.type in ("LIGHT", "CAMERA") or obj.name in shapes:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
     flags = _export_flags()
     has_shapes = bool(flags["shape_keys"])
     modifiers = {"applied": [], "skipped": []}
@@ -321,6 +347,23 @@ def main():
 
     buffer = io.StringIO()
     try:
+        # THE EMPTY SCENE run_script HAS ALWAYS PROMISED. Its docstring says
+        # "None starts from an empty scene (no default cube - scripts should
+        # build what they mean)", and nothing ever made that true: with no
+        # .blend to open, Blender starts on factory startup, which is a Cube,
+        # a Light and a Camera. They exported into finished assets - a
+        # delivered character carried the default Cube, and because that cube
+        # spans z -1..1 about the origin the rig's height fit measured 9.87m
+        # of scene against an 8.875m person and shipped the character five
+        # times too tall.
+        #
+        # `bpy.data.filepath` is the discriminator and it is exact: empty
+        # means no file was opened, so everything present is Blender's own
+        # furniture. A run given a blend_file is untouched - that scene's
+        # contents are the caller's, whatever they are named.
+        if not bpy.data.filepath:
+            for obj in list(bpy.data.objects):
+                bpy.data.objects.remove(obj, do_unlink=True)
         with open(script_path, encoding="utf-8") as fh:
             code = compile(fh.read(), "<agent_script>", "exec")
         # Give the script a real module namespace so `import bpy` inside it and

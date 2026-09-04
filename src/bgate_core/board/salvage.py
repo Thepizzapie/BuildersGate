@@ -199,7 +199,6 @@ def ceilings(item: dict) -> dict:
     return {
         "max_runtime_s": item.get("max_runtime_s"),
         "num_turns": item.get("num_turns"),
-        "max_cost_usd": item.get("max_cost_usd"),
         "total_cost_usd": item.get("total_cost_usd"),
         "note": ("these ceilings are independent of one another. Raising the "
                  "clock does nothing for a run that died on turns, and raising "

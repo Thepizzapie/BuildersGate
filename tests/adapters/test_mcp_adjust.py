@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from bgate_core.board import seats, spend
+from bgate_core.board import seats
 from bgate_mcp import server
 
 
@@ -268,7 +268,7 @@ async def test_an_answer_of_no_is_not_a_failure(wired):
 
 
 # ---------------------------------------------------------------------------
-# The expensive tool is capped
+# The expensive tool preflights the account
 # ---------------------------------------------------------------------------
 @pytest.fixture()
 def no_paid_calls(monkeypatch):
@@ -276,7 +276,7 @@ def no_paid_calls(monkeypatch):
     from bgate_adapters import imagegen
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("a paid image call escaped the spend gate")
+        raise AssertionError("a paid image call escaped the provider gate")
 
     monkeypatch.setattr(imagegen, "generate", forbidden)
     monkeypatch.setattr(imagegen, "edit", forbidden)
@@ -288,37 +288,28 @@ POSES = [{"name": "idle/0", "description": "standing"},
 
 
 @pytest.mark.anyio
-async def test_image_sprites_refuses_past_the_per_run_ceiling(wired, no_paid_calls,
-                                                              routable_gateway):
-    spend.set_budget(wired, per_item_usd=0.05, enforced=1)
+async def test_image_sprites_refuses_when_nothing_can_serve_it(wired,
+                                                               no_paid_calls,
+                                                               monkeypatch):
+    """The only refusal left before a paid call is an ACCOUNT one: there is no
+    dollar ceiling in this product, and a drained or unkeyed board is the thing
+    an agent must be told about instead of discovering on a 402."""
+    from bgate_core.runtime import gateway as _gateway
+    monkeypatch.setattr(_gateway, "pick",
+                        lambda *a, **k: {"provider": "", "why": "nothing keyed"})
 
     got = await call("image_sprites", character_prompt="a fighter", poses=POSES,
                      name="tommy")
 
-    assert got["ok"] is False and got["stage"] == "spend_gate"
-    assert got["usd"] > 0.05 and got["ceiling_usd"] == 0.05
-    assert "ceiling" in got["error"]
+    assert got["ok"] is False and got["stage"] == "provider_gate"
+    assert "nothing keyed" in got["error"]
 
 
 @pytest.mark.anyio
-async def test_image_sprites_refuses_past_the_project_budget(wired, no_paid_calls,
-                                                              routable_gateway):
-    spend.set_budget(wired, per_project_usd=1.0, enforced=1)
-    spend.record(wired, 0.95, kind="image", detail="earlier batch")
-
-    got = await call("image_sprites", character_prompt="a fighter", poses=POSES,
-                     name="tommy")
-
-    assert got["ok"] is False and got["stage"] == "spend_gate"
-    assert "budget" in got["error"]
-
-
-@pytest.mark.anyio
-async def test_an_affordable_run_passes_the_gate(wired, monkeypatch,
+async def test_a_routable_run_gets_past_the_gate(wired, monkeypatch,
                                                  routable_gateway):
-    """The cap must refuse the overrun and nothing else — a gate that also
-    blocks affordable work is just an outage."""
-    spend.set_budget(wired, per_item_usd=5.0, enforced=1)
+    """The preflight must refuse the unservable case and nothing else — a gate
+    that also blocks work a keyed account can do is just an outage."""
     reached = []
 
     def generate(*args, **kwargs):
@@ -329,32 +320,21 @@ async def test_an_affordable_run_passes_the_gate(wired, monkeypatch,
     monkeypatch.setattr(imagegen, "generate", generate)
 
     got = await call("image_sprites", character_prompt="a fighter", poses=POSES,
-                     name="tommy", limits={"max_cost_usd": 5.0})
+                     name="tommy")
 
     assert got["stage"] == "reference"      # got past the gate, into the work
     assert reached == [300.0]               # and the call carried a timeout
 
 
 @pytest.mark.anyio
-async def test_max_cost_usd_overrides_the_configured_ceiling(wired, monkeypatch,
-                                                             routable_gateway):
-    """The confirm-the-spend escape hatch item_variants already had as `limit`:
-    a tighter cap than the budget still binds, a deliberate looser one buys."""
-    spend.set_budget(wired, per_item_usd=0.05, enforced=1)
-    bought = []
+async def test_limits_refuses_a_key_it_does_not_take(wired, routable_gateway):
+    """`max_cost_usd` was one of these and is gone with the rest of the money
+    accounting. An unknown key is refused BY NAME rather than ignored."""
+    got = await call("image_sprites", character_prompt="a fighter", poses=POSES,
+                     name="tommy", limits={"max_cost_usd": 5.0})
 
-    from bgate_adapters import imagegen
-    monkeypatch.setattr(imagegen, "generate", lambda *a, **k: (
-        bought.append(1), {"ok": False, "error": "no API key"})[1])
-
-    tight = await call("image_sprites", character_prompt="a fighter", poses=POSES,
-                       name="tommy", limits={"max_cost_usd": 0.01})
-    assert tight["ok"] is False and tight["ceiling_usd"] == 0.01
-    assert not bought                       # refused before anything was bought
-
-    loose = await call("image_sprites", character_prompt="a fighter", poses=POSES,
-                       name="tommy", limits={"max_cost_usd": 50.0})
-    assert loose["stage"] == "reference" and bought
+    assert got["ok"] is False
+    assert "max_cost_usd" in got["error"]
 
 
 # ---------------------------------------------------------------------------

@@ -33,13 +33,14 @@ function Fold({ label, text }: { label: string; text?: string | null }) {
   );
 }
 
-export function AssetDrawer({ group, onClose, onReview, onRegenerate, onOpenSprite, onOpenModel }: {
+export function AssetDrawer({ group, onClose, onReview, onRegenerate, onOpenSprite, onOpenModel, inline = false }: {
   group: AssetGroup | null;
   onClose: () => void;
   onReview: (id: number, status: string) => void;
   onRegenerate: (id: number) => void;
   onOpenSprite: (rel: string) => void;
   onOpenModel: (rel: string) => void;
+  inline?: boolean;
 }) {
   /* Which revision the operator clicked. Dropped when the drawer changes asset:
      a stale id falls through to the default pick and reads as a dead click. */
@@ -61,11 +62,7 @@ export function AssetDrawer({ group, onClose, onReview, onRegenerate, onOpenSpri
     || g.revisions[g.revisions.length - 1]
     || null;
 
-  return (
-    <Drawer opened={!!group} onClose={onClose} position="right" size="min(760px, 92vw)"
-            withCloseButton={false} padding={0} classNames={{ content: "asset-drawer-panel" }}
-            overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}
-            aria-label={`${g.logical_name} revisions`}>
+  const contents = <>
       <div className="drawer-head">
         <div>
           <h3>{g.logical_name}</h3>
@@ -133,6 +130,20 @@ export function AssetDrawer({ group, onClose, onReview, onRegenerate, onOpenSpri
           )}
         </div>
       </div>
+    </>;
+
+  if (inline) return (
+    <aside className="asset-inspector" aria-label={`${g.logical_name} revisions`}>
+      {contents}
+    </aside>
+  );
+
+  return (
+    <Drawer opened={!!group} onClose={onClose} position="right" size="min(760px, 92vw)"
+            withCloseButton={false} padding={0} classNames={{ content: "asset-drawer-panel" }}
+            overlayProps={{ backgroundOpacity: 0.55, blur: 2 }}
+            aria-label={`${g.logical_name} revisions`}>
+      {contents}
     </Drawer>
   );
 }

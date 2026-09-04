@@ -126,6 +126,52 @@ def test_garbage_payloads_are_refused(client, game):
 
 
 # ---------------------------------------------------------------------------
+# Creating and importing sheets
+# ---------------------------------------------------------------------------
+def test_create_makes_a_transparent_sheet_with_the_requested_grid(client, game):
+    rel = "assets/sprites/handmade.png"
+    r = client.post("/api/sprite/create", json={
+        "rel": rel, "cell_w": 24, "cell_h": 32, "cols": 5, "rows": 3})
+    assert r.status_code == 200, r.text
+    with Image.open(game / rel) as image:
+        assert image.size == (120, 96)
+        assert image.mode == "RGBA"
+        assert image.getbbox() is None
+    saved = rigmap.load(game / rel)
+    assert saved["grid"] == {"cell_w": 24, "cell_h": 32, "cols": 5, "rows": 3}
+
+
+def test_create_never_replaces_an_existing_asset(client, game):
+    before = (game / SHEET).read_bytes()
+    r = client.post("/api/sprite/create", json={
+        "rel": SHEET, "cell_w": 32, "cell_h": 32, "cols": 1, "rows": 1})
+    assert r.status_code == 409
+    assert (game / SHEET).read_bytes() == before
+
+
+def test_import_converts_external_art_to_an_editable_png(client, game):
+    rel = "assets/sprites/imported_portrait.png"
+    r = client.post("/api/sprite/import", json={
+        "rel": rel, "image": "data:image/png;base64," + _png((17, 23), (5, 6, 7, 128))})
+    assert r.status_code == 200, r.text
+    with Image.open(game / rel) as image:
+        assert image.size == (17, 23)
+        assert image.mode == "RGBA"
+        assert image.getpixel((0, 0)) == (5, 6, 7, 128)
+
+
+def test_create_and_import_refuse_unsafe_or_invalid_inputs(client, game):
+    common = {"cell_w": 32, "cell_h": 32, "cols": 1, "rows": 1}
+    assert client.post("/api/sprite/create",
+                       json={"rel": "../../escape.png", **common}).status_code == 403
+    assert client.post("/api/sprite/create",
+                       json={"rel": "assets/huge.png", "cell_w": 2048,
+                             "cell_h": 2048, "cols": 64, "rows": 64}).status_code == 413
+    assert client.post("/api/sprite/import",
+                       json={"rel": "assets/bad.png", "image": "bm90IGFuIGltYWdl"}).status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # The rig sidecar
 # ---------------------------------------------------------------------------
 def test_rig_saves_next_to_the_sheet_and_comes_back_on_open(client, game):

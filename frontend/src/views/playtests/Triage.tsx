@@ -347,18 +347,18 @@ export function Triage({ data, reload, seek, close }: Props) {
     const suggested = item.director_recommendation === "promote";
     const routed = Boolean(item.seat && item.seat !== "unassigned");
     return <>
-      <button className={`ptr-b${suggested ? " go" : ""}`} type="button" disabled={busy}
+      <button className={`ptr-b primary${suggested ? " go" : ""}`} type="button" disabled={busy}
         title={(routed
           ? `File this as work for the ${item.seat} seat.`
           : `Nothing routed this one - pick the seat that owns it.`)
           + (suggested ? " The director suggests this." : "")}
         onClick={() => { setCursor(item.id); void promote(item.id); }}>
-        <Icon name="task" />{routed ? `promote → ${item.seat}` : "promote…"}
+        <Icon name="task" />{routed ? `Promote to ${item.seat}` : "Choose owner…"}
       </button>
       <button className="ptr-b bin" type="button" disabled={busy}
         title="Not worth acting on. It stays in the record."
         onClick={() => { setCursor(item.id); void dismiss(item.id); }}>
-        <Icon name="close" />bin
+        <Icon name="close" />Bin
       </button>
       {more(item)}
     </>;
@@ -485,7 +485,7 @@ export function Triage({ data, reload, seek, close }: Props) {
   return (
     <div ref={host} id="pt-triage">
       <div className="ptr">
-        <div className="ptr-hd"><Icon name="playtests" size={15} /><h3>triage</h3>
+        <div className="ptr-hd"><Icon name="playtests" size={15} /><h3>Review feedback</h3>
           <span className={`ptr-n${todo ? "" : " good"}`}>{todo ? `${todo} to decide` : "all decided"}</span>
           <span className="ptr-keys"><kbd>j</kbd>/<kbd>k</kbd> move ·{" "}
             <kbd>p</kbd> promote · <kbd>x</kbd> bin ·{" "}
@@ -495,7 +495,7 @@ export function Triage({ data, reload, seek, close }: Props) {
             speech was transcribed and no notes were typed.</div>
         ) : <>
           {g.open.length ? (
-            <div className="ptr-g"><div className="ptr-gh">to decide
+            <div className="ptr-g"><div className="ptr-gh">To decide
               <span className="ptr-n">{g.open.length}</span></div>
               {openGroups
                 ? openGroups.map((grp) => (

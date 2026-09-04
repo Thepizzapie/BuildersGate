@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import os
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -961,6 +962,64 @@ def catalogue() -> list[dict]:
                 "options": list(arg.options),
             } for name, arg in node.args.items()],
         })
+    return out
+
+
+_PAID_CAPABILITY = {
+    "music_generate": "audio",
+    "voice_speak": "speech",
+    "storyboard_auto": "image_2d",
+    "storyboard_frame_generate": "image_2d",
+    "cinematic_generate_shot": "video",
+    "item_generate": "image_2d",
+    "item_variants": "image_2d",
+    "image_generate": "image_2d",
+}
+
+
+def readiness(root, node_types: list[str]) -> list[dict]:
+    """Resolve the exact tools a graph needs without executing any of them.
+
+    This is intentionally opt-in (the Studio preflight), not part of catalogue:
+    opening the palette stays cheap while Run fails before a provider is billed.
+    """
+    provider_rows = None
+    out: list[dict] = []
+    for node_type in dict.fromkeys(str(value or "") for value in node_types):
+        spec = spec_for(node_type)
+        if spec is None:
+            out.append({"type": node_type, "ok": False,
+                        "reason": "this build has no executor for this node type"})
+            continue
+        reason = ""
+        try:
+            _, inner = resolve(spec.tool)
+            signature = inspect.signature(inner)
+            accepts_extra = any(p.kind == inspect.Parameter.VAR_KEYWORD
+                                for p in signature.parameters.values())
+            unknown = [name for name in spec.args
+                       if name not in signature.parameters and not accepts_extra]
+            if unknown:
+                reason = (f"{spec.tool} no longer accepts: "
+                          + ", ".join(sorted(unknown)))
+        except Exception as exc:
+            reason = str(exc)
+
+        capability = _PAID_CAPABILITY.get(spec.tool, "") if spec.paid else ""
+        if not reason and capability:
+            try:
+                if provider_rows is None:
+                    from ..runtime import providers as _providers
+                    provider_rows = _providers.status(root)
+                usable = [row["label"] for row in provider_rows
+                          if row.get("available") and capability in row.get("powers", [])]
+                if not usable:
+                    reason = f"no connected provider can supply {capability.replace('_', ' ')}"
+            except Exception as exc:
+                reason = f"provider readiness failed: {type(exc).__name__}: {exc}"
+        out.append({"type": node_type, "tool": spec.tool, "label": spec.label,
+                    "paid": spec.paid, "capability": capability,
+                    "ok": not reason, "reason": reason})
     return out
 
 

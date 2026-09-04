@@ -232,7 +232,6 @@
     edges: [],
     sel: null,
     positions: {},
-    filter: "active",
     _sig: "",
     _saveT: null,
     _fitted: false,
@@ -265,8 +264,6 @@
       }
       this.host = host;
       this._detail = detail || null;
-      try { this.filter = localStorage.getItem("bgate-graph-filter") || "active"; }
-      catch (e) { this.filter = "active"; }
       // CLICK, NOT DRAG. NodeCanvas reports a selection on pointer DOWN, which
       // is correct for the canvas (a node has to highlight the instant you grab
       // it) and wrong for a panel that covers a third of the graph: reaching
@@ -288,16 +285,6 @@
 
     railOpen() {
       return !!(this._detail && this._detail.classList.contains("open"));
-    },
-
-    setFilter(mode) {
-      this.filter = mode === "all" ? "all" : "active";
-      try { localStorage.setItem("bgate-graph-filter", this.filter); } catch (e) {}
-      this._sig = "";
-      this.nodes = new Map();
-      this.rebuild();
-      this.fit();
-      return this.filter;
     },
 
     /* ---- data → nodes -------------------------------------------------- */
@@ -387,10 +374,9 @@
      * (measured: 74 against 60). A break you did not watch happen is history; the
      * board below owns it, and re-running it from there puts it back here live.
      *
-     * Ancestors come back whatever the filter says, because a chain with its
+     * Ancestors come back with active work because a chain with its
      * middle removed is a lie about who caused what. */
     keep(items, live) {
-      if (this.filter === "all") return items.slice(0, 60);
       const byId = new Map(items.map(i => [Number(i.id), i]));
       const parents = ((this.state || {}).lineage || {}).parents || {};
       const gated = new Set(((this.state || {}).gates || [])
@@ -761,8 +747,7 @@
     voidNote(taskCount) {
       if (!this.host) return;
       let el = this.host.querySelector(":scope > .ck-void");
-      const hidden = this.filter === "active"
-        && !taskCount
+      const hidden = !taskCount
         && ((this.state || {}).items || []).some(i => i.source !== "chat");
       if (!hidden) { if (el) el.remove(); return; }
       if (!el) {
@@ -770,12 +755,7 @@
         el.className = "ck-void";
         el.innerHTML = `<b>nothing in flight</b>
           <span>No agent is running and nothing broke in the last half hour.
-          Queued and finished work lives on the board below.</span>
-          <button class="qbtn small ghost" type="button">show everything</button>`;
-        el.querySelector("button").onclick = () => {
-          const btn = document.getElementById("ck-filter");
-          if (btn) btn.click(); else this.setFilter("all");
-        };
+          Queued and finished work lives on the board.</span>`;
         this.host.appendChild(el);
       }
     },

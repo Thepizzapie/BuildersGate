@@ -57,7 +57,7 @@ class ApiError(Exception):
     """An error with a machine-readable code and a message worth showing.
 
     ``detail`` carries structured context the UI can render — the conflicting
-    lock's owner, the budget that was exceeded, the field that failed.
+    lock's owner, the limit that was exceeded, the field that failed.
     """
 
     def __init__(self, status: int, message: str, *,

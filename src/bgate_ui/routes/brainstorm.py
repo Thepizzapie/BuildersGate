@@ -344,7 +344,7 @@ def invite(session_id: int, payload: dict) -> dict:
 
 @router.delete("/api/brainstorm/{session_id:int}/invite/{seat}")
 def leave(session_id: int, seat: str) -> dict:
-    """A seat leaves the room. Its process stops; its row and its spend stay.
+    """A seat leaves the room. Its process stops; its row stays.
 
     Not a delete of the record: the messages that seat wrote are still in the
     transcript, and a roster that could not name the seat beside them would

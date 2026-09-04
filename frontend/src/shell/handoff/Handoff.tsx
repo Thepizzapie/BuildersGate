@@ -539,7 +539,7 @@ function Panel({ init, onClose, expose }: {
     <div className="hoff-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="hoff" role="dialog" aria-modal="true" aria-label="Put this asset in the game">
         <div className="hoff-bar">
-          <span className="t">put it in the game</span>
+          <span className="t">Put it in the game</span>
           <span className="hoff-asset" title={a ? a.rel : s.path}>
             {a ? <><Ti name={KIND_ICON[a.kind] || "grid-dots"} size={13} /><b>{a.name}</b><span>{a.rel}</span></> : s.path}
           </span>

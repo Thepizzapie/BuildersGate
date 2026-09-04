@@ -308,7 +308,27 @@ CHARACTER_KINDS = frozenset({
     "sprite",     # a character sprite is a character, whatever it is called
     "sheet",      # a sheet is many poses of one identity — the hardest case
     "portrait",   # a face that has to stay the same face
+    # AND THE 3D PLATE, which was missing for the same reason `sprite` was:
+    # the name at the call site is not the name in this set. blender.character()
+    # — the single call that decides what a whole 3D character looks like, and
+    # the one conditioning on the humanoid pose template — passes
+    # task_kind="character", so it fell through to the STYLE model and threw
+    # away the pose reference it had just been handed. Measured cost on this
+    # project: two rebuilds of one owner (items #7 and #66) off plates that
+    # were never the same figure twice.
+    "character",  # the conditioned 3D plate, from blender.character()
 })
+
+# The character kinds that are NOT on chroma.KEYED_KINDS, and must not be.
+# Every other kind here asks the model for a flat chroma backdrop and lets the
+# keyer audit it. The 3D plate deliberately does not: blender.character()
+# generates FLAT and then keys with a SWEPT tolerance (blender._key_plate),
+# because a mottled backdrop the sprite audit correctly refuses is still a
+# usable plate once the tolerance is swept, and the sprite clause turns a
+# character sheet into pixel art. Named rather than implied so the invariant
+# ("a character kind the keyer does not know comes back opaque") keeps biting
+# for every kind added after this one.
+SELF_KEYED_KINDS = frozenset({"character"})
 
 
 def model_for(task_kind: str = "") -> str:
@@ -1035,43 +1055,6 @@ def download(url: str, out_path: str, *, timeout: float = 120.0,
         raise KreaError(str(exc), provider="krea", status=exc.status) from exc
 
 
-def _account(result: dict, root: Any, *, task_kind: str = "",
-             logical_name: str = "", work_item_id: Optional[int] = None,
-             detail: str = "") -> None:
-    """Write this generation to the spend ledger. Best-effort by construction:
-    losing a ledger row must never lose the image that was paid for.
-
-    KREA HAS NEVER WRITTEN ONE. There was no spend.record anywhere in this
-    module, and chroma.generate — the door every sprite goes through — does not
-    write one either. spend.check compares its ceilings against the SUM of
-    spend_event, so the per-day and per-project budgets could not be reached by
-    Krea spend at all: the ledger read $0.00 while the money left. That is worse
-    than an unenforced ceiling, because the number shown is confident and wrong.
-    Character work now ROUTES here by default (providers.provider_for), so this
-    was the gap under the busiest paid path in the product.
-
-    An UNKNOWN cost is recorded as 0.0 and said so in the detail rather than
-    skipped: a row that exists with an honest note is recoverable, and one that
-    was never written cannot be found at all.
-    """
-    if not root or not result.get("ok"):
-        return
-    try:
-        from bgate_core.board import spend
-
-        usd = result.get("usd")
-        note = detail or f"krea {result.get('model', '')}"
-        if usd is None:
-            note += " (cost unknown - Krea publishes no price for this call)"
-        spend.record(root, float(usd or 0.0),
-                     kind="mesh" if task_kind == "mesh" else "image",
-                     work_item_id=work_item_id,
-                     logical_name=logical_name or "", detail=note,
-                     model=str(result.get("model") or ""))
-    except Exception:                                            # noqa: BLE001
-        pass
-
-
 def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
              size: str = "1024x1024", seed: Optional[int] = None,
              style_refs: Optional[list[dict]] = None, image_url: str = "",
@@ -1134,11 +1117,11 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         # the whole 2D pipeline runs through, kept doing exactly what that fix
         # was written about. Once there is a job_id the generation is accepted
         # and may already be paid for: dropping the id makes a finished image
-        # unrecoverable, and reporting usd 0.0 tells a spend ledger a
-        # charge that happened did not.
+        # unrecoverable, and reporting usd 0.0 says a charge that happened
+        # did not.
         #
         # None, not the quote: it is not known whether this one billed, and this
-        # module's rule about zeros applies to every number a gate might read.
+        # module's rule about zeros applies to every number a reader might see.
         return {"ok": False, "error": str(exc), "provider": "krea",
                 "model": model, "job_id": job_id,
                 "seconds": round(time.monotonic() - started, 2),
@@ -1157,9 +1140,6 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         "seconds": round(time.monotonic() - started, 2),
         "usd": price_for(model, style_refs=len(refs)),
     })
-    _account(result, root, task_kind=task_kind,
-             detail=f"krea {model} {size}"
-                    + (f" +{len(refs)} ref" if refs else ""))
     if tileable:
         # After the download, never instead of it: the image is already paid
         # for, so a post-pass that cannot run must degrade to a note.
@@ -1264,8 +1244,8 @@ def price_for_3d(model: str = DEFAULT_MODEL_3D) -> Optional[float]:
     API's USD balance; quoting those would be inventing a number.
 
     So a price here comes from a real invoice or it does not exist. None means
-    unknown and a spend gate can refuse on it; 0.0 is never returned, because
-    every budget check in the product would read that as free.
+    unknown and the caller must say so; 0.0 is never returned, because a reader
+    would take that for free.
     """
     spec = MODELS_3D.get(model)
     if not spec:
@@ -1484,11 +1464,8 @@ def generate_3d(out_path: str, *, prompt: str = "", images=(),
     out = _result.shape({**base, "ok": True, "path": str(out_path),
                          "bytes": written, "job_id": str(job_id), "url": url,
                          "seconds": round(time.monotonic() - started, 2)})
-    # Krea publishes no 3D price, so usd is None here and _account
-    # writes a 0.00 row that SAYS the cost is unknown. A mesh costing roughly
-    # $0.30-0.60 that leaves no trace at all is how a project discovers its
-    # spend on an invoice instead of on its own ledger.
-    _account(out, root, task_kind="mesh", detail=f"krea 3d {model}")
+    # Krea publishes no 3D price, so ``usd`` is None here rather than 0.0. The
+    # caller shows the gap; nothing invents a figure to fill it.
     return {**out,
             "next_steps": ("merge and clean the shells",
                            "scale to the project's unit convention",

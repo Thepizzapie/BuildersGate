@@ -57,15 +57,15 @@ export const theme = createTheme({
 
 /** Which ground the page is on, in the two words Mantine understands.
  *
- *  The page has four settings — dark, light, system and orbit — and Mantine has
- *  two. Orbit is glass on vanta black, so it is dark; system is whatever the OS
+ *  The page has seven settings — dark, light, system, orbit, blueprint, pocket and candy — and Mantine has
+ *  two. Orbit and Blueprint are dark; Pocket and Candy are light; system is whatever the OS
  *  says right now. Kept in sync rather than fixed, because a Mantine component
  *  that stays dark on a light page is exactly the seam this bridge exists to
  *  prevent. */
 function usePageScheme(): "light" | "dark" {
   const read = (): "light" | "dark" => {
     const set = document.documentElement.dataset.theme;
-    if (set === "light") return "light";
+    if (set === "light" || set === "pocket" || set === "candy") return "light";
     if (set) return "dark";                       // dark, orbit, anything later
     return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   };

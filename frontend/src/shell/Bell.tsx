@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Button, Textarea } from "@mantine/core";
 import { mutate, readJSON, toast, watchAgent } from "../bridge";
 import { useEvents } from "../hooks";
 import { SEAT_COLOR } from "./nav";
-import { answered, normalizeQuestion, useQuestions, type Question } from "../notify-store";
+import { normalizeQuestion, useQuestions, type Question } from "../notify-store";
+import { openAttention } from "./screen";
+import { claimUtility, onUtility } from "./utility";
 
 /* Bell.tsx — the header bell, and the drawer behind it.
  *
@@ -58,7 +59,6 @@ const KINDS: Record<string, { label: string; tone: string }> = {
   "chain.advanced": { label: "handoff", tone: "info" },
   "chain.stalled": { label: "stalled", tone: "bad" },
   "gate.mode": { label: "gate", tone: "info" },
-  "budget.refused": { label: "budget", tone: "bad" },
   "director.question": { label: "question", tone: "warn" },
   "agent.spawned": { label: "spawned", tone: "mute" },
   "agent.exited": { label: "exited", tone: "mute" },
@@ -150,9 +150,6 @@ function lineOf(e: Ev): ReactNode {
       {p.previous ? ` (was ${String(p.previous)})` : ""}
       {p.env_override ? ` · ${trunc(p.env_override, 70)}` : ""}</>;
   }
-  if (kind === "budget.refused") {
-    return <><b>{String(p.what || "a dispatch")}</b> was refused - {trunc(p.reason || "over a ceiling", 110)}</>;
-  }
   if (kind === "director.question") return trunc(p.question || "the director asked you something", 120);
   if (p.title) {
     return <><b>{trunc(p.title, 48)}</b>{p.chain_id ? ` · link ${num(p.chain_pos)}` : ""}
@@ -224,7 +221,6 @@ export function Bell() {
   logRef.current = log;
   // A draft answer lives here, not in the DOM: the drawer repaints whenever
   // the log moves and a textarea's value used to go with it.
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const fetching = useRef(false);
   const coldRef = useRef(true);
   const driven = useQuestions();
@@ -265,7 +261,8 @@ export function Bell() {
   useEvents(() => { void refresh(false); }, { kinds: ["*"], fallbackMs: FALLBACK_MS });
 
   const close = useCallback(() => setOpen(false), []);
-  const openDrawer = useCallback(() => { setOpen(true); void refresh(true); }, [refresh]);
+  const openDrawer = useCallback(() => { claimUtility("notifications"); setOpen(true); void refresh(true); }, [refresh]);
+  useEffect(() => onUtility((name) => { if (name !== "notifications") setOpen(false); }), []);
 
   /* Click outside shuts it — testing BOTH the bell's host and the drawer,
      because the drawer is a portal sibling of the host, not a child. */
@@ -295,8 +292,7 @@ export function Bell() {
         .filter((e) => e.kind === "director.question")
         .map((e) => normalizeQuestion({ event_seq: e.id, asked_at: e.created_at, ...(e.payload || {}) }))
         .slice(0, 6);
-  const [localAnswers, setLocalAnswers] = useState<Record<number, string>>({});
-  const openQs = questions.filter((q) => q.seq && !q.answer && !localAnswers[q.seq]);
+  const openQs = questions.filter((q) => q.seq && !q.answer);
 
   /* Mark everything read. `seq` is omitted on purpose: the server resolves it
      against the head it can see, so a page that has been open across a dozen
@@ -325,32 +321,6 @@ export function Bell() {
     } catch { /* fall through to the log */ }
     watchAgent(id);
     close();
-  };
-
-  const answer = async (seq: number) => {
-    const key = String(seq);
-    const text = String(drafts[key] || "").trim();
-    if (!text) { toast("write the answer first - an empty reply is not an answer"); return; }
-    const r = await mutate<{ delivery?: string; delivery_error?: string }>(
-      "/api/console/answer", { body: { seq, answer: text }, quiet: true });
-    if (!r.ok) {
-      // 409 is "somebody already answered this one" — the stored answer is
-      // authoritative and the draft is not, so resync rather than retry.
-      toast(r.error || "the answer was refused");
-      if (r.status === 409) { coldRef.current = true; void refresh(true); }
-      return;
-    }
-    const d = r.data || {};
-    setDrafts((ds) => { const n = { ...ds }; delete n[key]; return n; });
-    // The reply's whole value is WHERE it landed: a live agent got it as a
-    // steer, a finished one left a handoff note. Saying "sent" would hide the
-    // difference that matters.
-    toast(String(d.delivery || "answer recorded"), "ok");
-    if (d.delivery_error) toast(`partly delivered - ${d.delivery_error}`);
-    setLocalAnswers((a) => ({ ...a, [seq]: text }));
-    answered(seq, text);
-    coldRef.current = true;
-    void refresh(true);
   };
 
   // notify.in_app off means the bell does not RING. The drawer still opens
@@ -394,36 +364,11 @@ export function Bell() {
                     waiting on the human for a sentence rather than for
                     attention. Answered ones are dropped — the answer is on the
                     event and in the handoff thread. */}
-                {openQs.map((q) => {
-                  const who = q.seat || "director";
-                  return (
-                    <div className="nt-q" key={q.seq}>
-                      <div className="nt-q-top">
-                        <span className="nt-k warn">question</span>
-                        <span className="nt-item" style={{ color: seatColor(who) }}>
-                          {who}{q.item_id ? ` · #${q.item_id}` : ""}
-                        </span>
-                        <span className="nt-when">{ago(q.asked_at)}</span>
-                      </div>
-                      <div className="nt-q-q">{q.question}</div>
-                      {q.refs.length > 0 && (
-                        <div className="nt-q-refs">
-                          {q.refs.map((r, i) => <code key={i}>{trunc(r, 60)}</code>)}
-                        </div>
-                      )}
-                      <Textarea className="nt-q-reply" rows={2} autosize={false} size="xs"
-                        value={drafts[String(q.seq)] || ""}
-                        onChange={(e) => { const v = e.currentTarget.value; setDrafts((d) => ({ ...d, [String(q.seq)]: v })); }}
-                        placeholder="answer it in a sentence - it is delivered to the agent that asked" />
-                      <div className="nt-q-row">
-                        <span className="nt-q-hint">{q.item_id
-                          ? "a running agent gets this as a steer; a finished one gets a handoff note"
-                          : "filed as a decision the next session reads"}</span>
-                        <Button size="compact-xs" onClick={() => void answer(q.seq)}>send</Button>
-                      </div>
-                    </div>
-                  );
-                })}
+                {openQs.length > 0 && <button className="nt-inbox" onClick={() => { close(); openAttention(); }}>
+                  <span><b>{openQs.length} question{openQs.length === 1 ? "" : "s"} need an answer</b>
+                    <small>Open the Orchestration inbox to review and respond.</small></span>
+                  <span>Open inbox</span>
+                </button>}
                 {log.err && <div className="nt-err">the event log is unreachable - {log.err}</div>}
                 {/* A pruned range is reported, never silently skipped: "you
                     missed 40 events" and "nothing happened" must not look the same. */}

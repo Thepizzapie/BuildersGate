@@ -9,6 +9,39 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Removed
+- **The spend ledger and every budget ceiling.** `spend_event`,
+  `spend_budget` and `spend_hold` are dropped (db migration 0045), and with
+  them: the per-item / per-day / per-project dollar caps, the reservation gate
+  that refused an MCP tool mid-run, the per-run `max_cost_usd` on work items
+  and on `image_sprites`/`animation_generate`/`tileset_generate`, the
+  `console.max_usd` and `brainstorm.max_usd` session ceilings and the
+  `--max-budget-usd` they passed to the CLI, the `budget.refused` event kind,
+  `GET /api/spend`, `PATCH /api/spend/budget`, `GET /api/art/cost`, the
+  Settings panel's Budget group, the Overview's spend tile, the brainstorm
+  room's per-seat dollar column, and the spend block on `board_digest`.
+
+  It was wrong at the concept, not in the arithmetic. Every figure in it was a
+  guessed unit price multiplied by a count: kie publishes no per-model price,
+  Krea publishes none for 3D, an agent session on a subscription reports an
+  API-equivalent number nobody is charged, and gpt-image is priced by quality
+  tier while the real price moves with resolution. The total matched no
+  statement anywhere, and the ceilings built on it refused real work on behalf
+  of imaginary spend.
+
+  **The only budget is your provider account's balance**, which the provider
+  reports — `provider_status` and `kie_status` read it. What survives on this
+  side is per-call and forward-looking: a paid tool still quotes THIS call
+  before it runs (`image_sprites` returns `spend.estimated_usd`,
+  `kie_video_generate` returns `estimated_usd`, the workflow canvas still shows
+  `~$X.XX est` per node) and still reports what the provider said THIS call
+  cost afterwards. Nothing sums either.
+
+  The two limits that were never about money stay, in a new `run_limits` row:
+  `dispatch.max_concurrent` and `limits.max_runtime_s` (was
+  `budget.max_runtime_s`). The wall clock is what actually stopped every
+  runaway run in the benchmarks; the dollar cap never did.
+
 ### Added
 - **`bgate connect` — connecting your coding agent is a command now, not a
   paragraph.** Setup told a new user to type

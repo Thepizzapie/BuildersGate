@@ -26,8 +26,8 @@ from typing import Any
 DEFAULT_MODEL = "gpt-4o-mini"
 
 # Rough, per 1k tokens; a rewrite is a few hundred tokens in and out, so the
-# real figure is a small fraction of a cent. Recorded so the ledger is honest
-# rather than pretending text is free.
+# real figure is a small fraction of a cent. Reported rather than pretending
+# text is free.
 USD_PER_CALL = 0.0002
 
 _SYSTEM = (

@@ -3,6 +3,7 @@ import { Ti } from "../Ti";
 import { SEAT_ICON } from "../nav";
 import { useViewActive } from "../../hooks";
 import { useJSON, useSeats, type QueueItem, type Seat as SeatRow } from "./api";
+import { setUrlParams, urlParam } from "../urlState";
 import type { SeatBodyProps, SeatTab } from "./types";
 import { ReadError } from "./prims";
 import { Director } from "./Director";
@@ -13,10 +14,8 @@ import { Art } from "./Art";
 import { Audio } from "./Audio";
 import { Cinematic } from "./Cinematic";
 import { Qa } from "./Qa";
-import { Persona } from "./Persona";
 import { Work } from "./Work";
 import { SeatBrainstorm } from "./Brainstorm";
-import { Generate } from "./Generate";
 import { ChipSink, type Chip } from "./chips";
 import "./seats.css";
 
@@ -91,19 +90,16 @@ const TABS: Record<string, SeatTab[]> = {
   ],
   art: [
     { id: "sheets", label: "Sheets", icon: "photo", hint: "the sheet in progress and its measurement" },
-    { id: "generate", label: "Generate", icon: "wand", hint: "this craft's generation workflows — board, generate, gate, install" },
     { id: "locks", label: "Locks", icon: "lock", hint: "binaries do not merge" },
     { id: "work", label: "Queue", icon: "list-check" },
   ],
   audio: [
     { id: "hooks", label: "Hooks", icon: "plug", hint: "which game events actually play a sound" },
-    { id: "generate", label: "Generate", icon: "wand", hint: "this craft's generation workflows — board, generate, gate, install" },
     { id: "library", label: "Library", icon: "music", hint: "files on disk, and whether anything asks for them" },
     { id: "work", label: "Queue", icon: "list-check" },
   ],
   cinematic: [
     { id: "shots", label: "Shot list", icon: "list-numbers", hint: "board it, then write it, then buy a frame" },
-    { id: "generate", label: "Generate", icon: "wand", hint: "this craft's generation workflows — board, generate, gate, install" },
     { id: "storyboard", label: "Storyboard", icon: "layout-grid", hint: "board it before you buy a frame" },
     { id: "cut", label: "Cut", icon: "scissors", hint: "what is kept, installed and playable" },
     { id: "work", label: "Queue", icon: "list-check" },
@@ -120,13 +116,13 @@ const TABS: Record<string, SeatTab[]> = {
    the same panel for all of them because it is about IDENTITY, like the header,
    and nothing in it is craft-specific. It goes LAST: a seat's own work comes
    before what its carpet is made of. */
-const PERSONA_TAB: SeatTab = {
-  id: "persona", label: "Look", icon: "palette",
-  hint: "how this seat looks on the studio floor",
+const DESK_TAB: SeatTab = {
+  id: "desk", label: "Desk", icon: "send",
+  hint: "brief this seat, start work, and inspect what it owns",
 };
 
 function tabsFor(role: string): SeatTab[] {
-  return [...(TABS[role] || []), PERSONA_TAB];
+  return [DESK_TAB, ...(TABS[role] || []).filter((item) => item.id !== "work")];
 }
 
 const LIVE = new Set(["dispatched", "running", "in_progress"]);
@@ -157,7 +153,7 @@ export function Seats() {
   const queue = useJSON<{ items?: QueueItem[] }>(
     "/api/queue?limit=200", { items: [] }, 5000, onScreen);
 
-  const [pick, setPick] = useState(() => recall("seat", "director"));
+  const [pick, setPick] = useState(() => urlParam("seat") || recall("seat", "director"));
   const [tabs, setTabs] = useState<Record<string, string>>({});
   /* Per-seat header chips, published upward by the seat bodies. Keyed by seat
      so an unmount clearing its own row cannot blank another's. */
@@ -170,8 +166,11 @@ export function Seats() {
   const seat: SeatRow | undefined =
     known.find((s) => s.role === pick) || known[0];
   const tabList = seat ? tabsFor(seat.role) : [];
-  const tab = seat
-    ? (tabs[seat.role] || recall(`tab-${seat.role}`, tabList[0]?.id || "")) : "";
+  const linkedTab = urlParam("seat_tab");
+  const wantedTab = seat
+    ? (tabs[seat.role] || linkedTab || recall(`tab-${seat.role}`, "desk")) : "";
+  const tab = tabList.some((item) => item.id === wantedTab)
+    ? wantedTab : (tabList[0]?.id || "");
 
   const items = queue.items || [];
   const openFor = (role: string) =>
@@ -185,6 +184,7 @@ export function Seats() {
   function pickSeat(role: string) {
     setPick(role);
     remember("seat", role);
+    setUrlParams({ seat: role, seat_tab: null });
   }
 
   /* THE OLD SHELL'S ONE PUBLIC VERB, KEPT ALIVE.
@@ -211,6 +211,7 @@ export function Seats() {
     if (!seat) return;
     setTabs({ ...tabs, [seat.role]: id });
     remember(`tab-${seat.role}`, id);
+    setUrlParams({ seat: seat.role, seat_tab: id });
   }
 
   return (
@@ -275,31 +276,14 @@ export function Seats() {
                     <Ti name="player-play" size={13} />{liveFor(seat.role)} running
                   </span>
                 )}
-                {openFor(seat.role) > 0 && (
-                  <span className="bgs-hchip"><Ti name="list-check" size={13} />{openFor(seat.role)} open</span>
-                )}
-                {!!(seat.locks || []).length && (
-                  <span className="bgs-hchip"><Ti name="lock" size={13} />{(seat.locks || []).length} locked</span>
-                )}
-                {!!seat.promoted_feedback && (
-                  <span className="bgs-hchip"><Ti name="message-report" size={13} />{seat.promoted_feedback} promoted</span>
-                )}
               </div>
-            </div>
-
-            <div className="bgs-mission">
-              <Ti name="target" size={15} color="var(--text-3)" />
-              <div className="m">{seat.mission}</div>
-              <span className="sp" />
-              <span className="globs">{(seat.write_globs || []).join(" · ")}</span>
             </div>
 
             <div className="bgs-body">
               <ChipSink.Provider value={sink}>
-                {tab === "persona"
-                  ? <Persona seat={seat.role} active={onScreen} />
-                  : tab === "work"
-                  ? <Work seat={seat.role} active={onScreen} items={mine} />
+                {tab === "desk"
+                  ? <Work seat={seat} active={onScreen} items={mine}
+                          onRefresh={() => queue.__refresh?.()} />
                   /* The room is intercepted here rather than inside Director and
                      Narrative: brainstorm.js owns every pixel under its host, so
                      a seat body that also mounted it would be two owners of one
@@ -312,8 +296,6 @@ export function Seats() {
                      subtree, so the seat body must not also be mounted into
                      it. Keyed on the seat so switching art→audio re-opens the
                      library scoped to the seat you arrived at. */
-                  : tab === "generate"
-                  ? <Generate key={seat.role} seat={seat} active={onScreen} tab={tab} />
                   : Body && <Body seat={seat} active={onScreen} tab={tab} />}
               </ChipSink.Provider>
             </div>

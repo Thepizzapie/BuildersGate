@@ -61,7 +61,10 @@ export type Item = {
    *  (the once-per-item cap), so the rail shows a badge instead of a button. */
   escalated?: boolean;
 };
-export type Question = { id: number; seat?: string; text?: string; asked_at?: string };
+export type Question = {
+  id: number; event_seq?: number; item_id?: number; seat?: string;
+  text?: string; question?: string; asked_at?: string; refs?: string[];
+};
 /** `blocking` IS THE FIELD THAT DECIDES WHETHER A HUMAN IS NEEDED, and it was
  *  missing from this type while the route has always sent it: routes/console.py
  *  stamps `blocking:false` on a plain qa-gate, because that is an agent
@@ -69,7 +72,7 @@ export type Question = { id: number; seat?: string; text?: string; asked_at?: st
  *  reader that filters on it (the director's rail, the cat's mood) had to reach
  *  past the type to see it. */
 export type Gate = {
-  id: number; seat?: string; title?: string; item_id?: number;
+  id: number | string; seat?: string; title?: string; item_id?: number;
   kind?: string; blocking?: boolean; parked?: boolean;
   result?: string; status?: string; created_at?: string;
 };
@@ -107,14 +110,24 @@ export type ConsoleState = {
    *  floorIsQuiet's whole contract ("one source of words on screen") needs
    *  this shared signal rather than the chat pane's private running flag. */
   director?: { running?: boolean };
+  /** Per-project UI acknowledgements. The underlying item remains on the
+   *  board; only its current attention snapshot is hidden. */
+  dismissed_attention?: string[];
 };
 
 export const EMPTY_CONSOLE: ConsoleState = {
   items: [], agents: [], questions: [], gates: [],
 };
 
-export const consoleState = () =>
-  readJSON<ConsoleState>("/api/console/state", EMPTY_CONSOLE);
+export const consoleState = async () => {
+  const state = await readJSON<ConsoleState>("/api/console/state", EMPTY_CONSOLE);
+  state.questions = (state.questions || []).map((q) => ({
+    ...q,
+    id: Number(q.id || q.event_seq || 0),
+    text: q.text || q.question || "",
+  }));
+  return state;
+};
 
 /* ── the director chat ───────────────────────────────────────────────────────
  *
@@ -134,11 +147,12 @@ export type ChatState = {
   messages: ChatMsg[];
   /** A turn is in flight right now. */
   running?: boolean;
+  /** Why a running turn is silent, when it is not the model thinking: an
+   *  overloaded API being retried, or a refused usage window. */
+  waiting?: string;
   live?: boolean;
   session_id?: string;
-  spent_usd?: number;
   model?: string;
-  ceiling_usd?: number;
 };
 
 export const directorChat = (after = 0) =>

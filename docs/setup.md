@@ -130,8 +130,7 @@ The image tools (`image_generate`, `image_edit`, `image_sprites`,
 there is nowhere else to put the result, created on first use.
 `project_dir="scratch"` asks for it explicitly from inside a project you would
 rather not touch. It is a real project because everything downstream of a
-generation needs one: the artifact registry, the spend ledger, `.bgate_out`, the
-review queue. It carries no game, so a tool that needs an engine still refuses.
+generation needs one: the artifact registry, `.bgate_out`, the review queue. It carries no game, so a tool that needs an engine still refuses.
 
 It is the last resort, below the remembered active project. If you have ever run
 `bgate init`, `bgate adopt` or `bgate use`, your own project keeps winning and a

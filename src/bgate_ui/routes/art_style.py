@@ -1,12 +1,10 @@
 """Training a style from this project's pinned anchors, and choosing to use it.
 
 WHY THIS IS A ROUTE AND NOT AN MCP TOOL. Training is 5-15 minutes at a price Krea
-does not publish, which means `spend.check` cannot bound it — every other money
-path in this tool is capped by a number the dispatcher can compare against, and
-this one has no number to compare. A tool an agent can call is therefore a tool
-that can spend an unknown amount on its own initiative, so the only caller is a
-human, through `api.require_human`, the same rule that guards the budget row and
-the revert.
+does not publish, so nobody — human or agent — can be told what it will cost
+before it runs. A tool an agent can call is therefore a tool that can spend an
+unknown amount on its own initiative, so the only caller is a human, through
+`api.require_human`, the same rule that guards the revert.
 
 The dataset is the PINNED REFERENCES — the images a human already approved
 through `ref_pin`. See bgate_core.art.styles for why that is the point rather than a

@@ -97,15 +97,20 @@
         <div class="nc-marq" hidden></div>
         <div class="nc-map" hidden><canvas class="nc-map-c"></canvas></div>
         <div class="nc-toolbar">
-          <button class="nc-tb" data-a="fit" title="Fit to view">⊡</button>
-          <button class="nc-tb" data-a="zin" title="Zoom in">＋</button>
-          <span class="nc-zoom">100%</span>
-          <button class="nc-tb" data-a="zout" title="Zoom out">－</button>
-        </div>`;
+          <button class="nc-tb nc-tb-wide" data-a="fit" title="Fit nodes to view (F)">Fit</button>
+          <button class="nc-tb" data-a="zout" title="Zoom out (-)" aria-label="Zoom out">−</button>
+          <button class="nc-zoom" data-a="one" title="Reset zoom (0)">100%</button>
+          <button class="nc-tb" data-a="zin" title="Zoom in (+)" aria-label="Zoom in">+</button>
+          <span class="nc-selected" aria-live="polite"></span>
+          <button class="nc-tb" data-a="help" title="Canvas shortcuts (?)" aria-label="Canvas shortcuts">?</button>
+        </div>
+        <div class="nc-help" hidden><b>Canvas controls</b><span><kbd>F</kbd> fit selection or graph</span><span><kbd>0</kbd> reset zoom</span><span><kbd>+</kbd><kbd>−</kbd> zoom</span><span><kbd>Shift</kbd> multi-select</span><span><kbd>Delete</kbd> remove selection</span></div>`;
       this.$grid = h.querySelector(".nc-grid");
       this.$svg = h.querySelector(".nc-edges");
       this.$world = h.querySelector(".nc-world");
       this.$zoom = h.querySelector(".nc-zoom");
+      this.$selected = h.querySelector(".nc-selected");
+      this.$help = h.querySelector(".nc-help");
       this.$marq = h.querySelector(".nc-marq");
       this.$map = h.querySelector(".nc-map");
       this.$mapc = h.querySelector(".nc-map-c");
@@ -285,7 +290,7 @@
 
     _renderEdges() {
       const svg = this.$svg;
-      [...svg.querySelectorAll("path.nc-edge, path.nc-hit")].forEach(p => p.remove());
+      [...svg.querySelectorAll("path.nc-edge, path.nc-edge-shadow, path.nc-hit")].forEach(p => p.remove());
       for (let i = 0; i < this.edges.length; i++) {
         const e = this.edges[i];
         const a = this._portPos(e.from[0], e.from[1], "out");
@@ -295,6 +300,11 @@
         const hit = document.createElementNS(NS, "path");
         hit.setAttribute("class", "nc-hit"); hit.setAttribute("d", d); hit.dataset.i = i;
         svg.appendChild(hit);
+        // A dark casing keeps typed signal colours legible when a wire crosses
+        // a node, another wire, or either density of the orientation grid.
+        const shadow = document.createElementNS(NS, "path");
+        shadow.setAttribute("class", "nc-edge-shadow"); shadow.setAttribute("d", d);
+        svg.appendChild(shadow);
         const path = this._edgePath(d, false, e.color || a.color);
         // An edge may say what KIND of relation it is. Delegation and "these
         // two agents are on the same asset" are not the same line, and a graph
@@ -502,6 +512,8 @@
         if (a.dataset.a === "zin") this._zoomBy(1.15);
         if (a.dataset.a === "zout") this._zoomBy(1 / 1.15);
         if (a.dataset.a === "fit") this.fit();
+        if (a.dataset.a === "one") this._zoomBy(1 / this.zoom);
+        if (a.dataset.a === "help") this.$help.hidden = !this.$help.hidden;
       });
 
       // Wheel zooms the canvas — except over a widget, where the user is
@@ -597,13 +609,20 @@
       window.addEventListener("mouseup", this._winUp);
       this._onKey = (e) => {
         if (!this.host.isConnected) { window.removeEventListener("keydown", this._onKey); return; }
+        if (!this.host.getClientRects().length) return;
+        const t = document.activeElement;
+        if (t && (/INPUT|TEXTAREA|SELECT/.test(t.tagName) || t.isContentEditable)) return;
         if ((e.key === "Delete" || e.key === "Backspace") && (this.sel || this.selection.size)) {
-          const t = document.activeElement;
-          if (t && (/INPUT|TEXTAREA|SELECT/.test(t.tagName) || t.isContentEditable)) return;
           e.preventDefault();
           const ids = this.selection.size ? [...this.selection] : [this.sel];
           ids.forEach(id => this.removeNode(id));
         }
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "f") { e.preventDefault(); this.fit(); }
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === "0") { e.preventDefault(); this._zoomBy(1 / this.zoom); }
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "+" || e.key === "=")) { e.preventDefault(); this._zoomBy(1.15); }
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "-" || e.key === "_")) { e.preventDefault(); this._zoomBy(1 / 1.15); }
+        if (e.key === "?") { e.preventDefault(); this.$help.hidden = !this.$help.hidden; }
+        if (e.key === "Escape" && !this.$help.hidden) this.$help.hidden = true;
       };
       window.addEventListener("keydown", this._onKey);
       this.$svg.addEventListener("click", (e) => {
@@ -698,6 +717,10 @@
     _paintSel() {
       this.$world.querySelectorAll(".nc-node").forEach(el =>
         el.classList.toggle("sel", el.dataset.node === this.sel || this.selection.has(el.dataset.node)));
+      if (this.$selected) {
+        const n = this.selection.size || (this.sel ? 1 : 0);
+        this.$selected.textContent = n ? `${n} selected` : "";
+      }
       this._scheduleMap();
     }
 
@@ -881,12 +904,8 @@
       o = o || {};
       const v = val(n, field, o.value != null ? o.value : 0);
       return row(o.label || field,
-        `<span class="nc-num">
-           <button class="nc-w nc-step" data-wact="dec" data-wval="${esc(field)}" tabindex="-1">−</button>
-           <input class="nc-w nc-in-n" data-w="${esc(field)}" data-wtype="number" type="number"
-             value="${esc(v)}"${o.min != null ? ` min="${o.min}"` : ""}${o.max != null ? ` max="${o.max}"` : ""}${o.step ? ` step="${o.step}"` : ""}>
-           <button class="nc-w nc-step" data-wact="inc" data-wval="${esc(field)}" tabindex="-1">+</button>
-         </span>`, o.hint);
+        `<input class="nc-w nc-in-n" data-w="${esc(field)}" data-wtype="number" type="number"
+           value="${esc(v)}"${o.min != null ? ` min="${o.min}"` : ""}${o.max != null ? ` max="${o.max}"` : ""}${o.step ? ` step="${o.step}"` : ""}>`, o.hint);
     },
     slider(n, field, o) {
       o = o || {};
@@ -923,7 +942,7 @@
       return row(o.label || "seed",
         `<span class="nc-num">
            <input class="nc-w nc-in-n" data-w="${esc(field)}" data-wtype="number" type="number" value="${esc(v)}">
-           <button class="nc-w nc-step nc-dice" data-wact="reseed" data-wval="${esc(field)}" title="randomise">⚄</button>
+           <button class="nc-w nc-step nc-dice" data-wact="reseed" data-wval="${esc(field)}" title="generate a new fixed seed">new</button>
          </span>`, o.hint);
     },
     /** A real image on the node — the difference between a card that describes
@@ -960,36 +979,38 @@
     s.id = "nc-style";
     s.textContent = `
       .nc-host{position:relative;width:100%;height:100%;overflow:hidden;background:var(--bg);border:1px solid var(--seam);border-radius:12px;--nc-edge:var(--ember)}
-      .nc-grid{position:absolute;inset:0;background-image:radial-gradient(var(--grid-dot,rgba(255,255,255,.06)) 1px,transparent 1px);background-size:24px 24px}
+      .nc-grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px),radial-gradient(var(--grid-dot,rgba(255,255,255,.08)) 1px,transparent 1px);background-size:96px 96px,96px 96px,24px 24px;background-position:-1px -1px,-1px -1px,0 0}
       .nc-edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-      .nc-edge{fill:none;stroke:var(--nc-edge);stroke-width:2;opacity:.8}
+      .nc-edge-shadow{fill:none;stroke:rgba(0,0,0,.58);stroke-width:4.5;opacity:.72;pointer-events:none}
+      .nc-edge{fill:none;stroke:var(--nc-edge);stroke-width:2.25;opacity:.92;filter:drop-shadow(0 0 2px rgba(255,255,255,.12))}
       .nc-edge.temp{stroke-dasharray:5 4;opacity:.95}
       /* a sideways relation, not a delegation — see the e.cls note above */
       .nc-edge.nc-soft{stroke-dasharray:4 5;stroke-width:1.5;opacity:.6}
       .nc-hit{fill:none;stroke:transparent;stroke-width:16;pointer-events:stroke;cursor:pointer}
       .nc-hit:hover{stroke:var(--nc-edge);opacity:.18}
       .nc-world{position:absolute;top:0;left:0;transform-origin:0 0}
-      .nc-node{position:absolute;background:var(--plate);border:1px solid var(--seam);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.35);transition:border-color .12s,box-shadow .12s}
-      .nc-node.sel{border-color:var(--nc-a);box-shadow:0 0 0 1px var(--nc-a),0 10px 30px rgba(0,0,0,.5)}
+      .nc-node{position:absolute;background:var(--plate);border:1px solid var(--seam2);border-radius:10px;box-shadow:var(--shadow-2,0 3px 12px rgba(0,0,0,.2));transition:border-color .12s,box-shadow .12s,transform .12s}
+      .nc-node::before{content:"";position:absolute;z-index:2;left:10px;right:10px;top:-1px;height:2px;border-radius:2px;background:var(--nc-a);opacity:.72;pointer-events:none}
+      .nc-node.sel{border-color:var(--nc-a);box-shadow:0 0 0 1px var(--nc-a),0 12px 32px rgba(0,0,0,.5);transform:translateY(-1px)}
       /* RUNNING KEEPS THE NODE'S OWN COLOUR. It used to be forced to --text,
          which is white — so every live node on a seven-colour canvas went the
          same colour at exactly the moment you most need to know WHOSE it is. */
       .nc-node[data-status="running"]{border-color:var(--nc-a);box-shadow:0 0 0 1px var(--nc-a),0 10px 30px rgba(0,0,0,.5)}
       .nc-node[data-status="passed"]{border-color:var(--accent)}
       .nc-node[data-status="failed"]{border-color:var(--bad)}
-      .nc-head{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--seam);cursor:grab;border-radius:12px 12px 0 0;user-select:none}
+      .nc-head{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--seam);background:color-mix(in srgb,var(--nc-a) 5%,var(--plate));cursor:grab;border-radius:10px 10px 0 0;user-select:none}
       .nc-head:active{cursor:grabbing}
       .nc-ico{color:var(--nc-a);font-size:13px;width:16px;text-align:center}
       .nc-title{font-size:12.5px;font-weight:var(--fw-semi);color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
       .nc-cost{font-family:var(--mono);font-size:9.5px;color:var(--ash);opacity:.85;white-space:nowrap}
       .nc-badge{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--nc-a);border:1px solid var(--nc-a);border-radius:20px;padding:1px 7px;opacity:.9}
-      .nc-body{padding:9px 11px;font-size:12px;color:var(--ash);line-height:1.45;min-height:18px}
+      .nc-body{padding:8px 11px 10px;font-size:12px;color:var(--ash);line-height:1.4;min-height:18px}
 
       /* ports: a labelled, typed terminal — not a bare dot with a tooltip.
          They occupy their own band in normal flow so the body starts BELOW
          them; absolutely positioning them over the card made every label sit
          on top of the first widget. Only the dot hangs past the border. */
-      .nc-io{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:8px 11px 0}
+      .nc-io{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:9px 12px 2px}
       .nc-io:empty{display:none}
       .nc-ports{display:flex;flex-direction:column;gap:8px}
       .nc-in{margin-left:-18px}
@@ -997,27 +1018,26 @@
       .nc-ports:empty{display:none}
       .nc-port{display:flex;align-items:center;gap:6px;cursor:crosshair;--pc:var(--nc-a)}
       .nc-out .nc-port{flex-direction:row-reverse}
-      .nc-dot{width:11px;height:11px;border-radius:50%;background:var(--plate2);border:2px solid var(--pc);transition:transform .1s;flex:none}
+      .nc-dot{width:12px;height:12px;border-radius:50%;background:radial-gradient(circle,var(--pc) 0 2px,var(--plate2) 2.5px);border:2px solid var(--pc);box-shadow:0 0 0 2px var(--plate);transition:transform .1s,background .1s;flex:none}
       .nc-port:hover .nc-dot{transform:scale(1.35);background:var(--pc)}
-      .nc-plabel{font-size:9.5px;color:var(--ash);white-space:nowrap;opacity:.9;pointer-events:none;display:flex;gap:4px;align-items:baseline}
-      .nc-plabel b{font-family:var(--mono);font-size:8px;letter-spacing:.06em;color:var(--pc);opacity:.95}
+      .nc-plabel{font-size:10px;color:var(--ash);white-space:nowrap;pointer-events:none;display:flex;gap:4px;align-items:baseline}
+      .nc-plabel b{font-family:var(--mono);font-size:8px;letter-spacing:.06em;color:var(--pc);background:color-mix(in srgb,var(--pc) 10%,transparent);border-radius:3px;padding:0 3px;opacity:.95}
       .nc-port.nc-ok .nc-dot{box-shadow:0 0 0 4px color-mix(in srgb,var(--pc) 30%,transparent)}
       .nc-port.nc-no{opacity:.3}
 
       /* widgets — the node holds its own parameters */
-      .nc-row{display:flex;align-items:center;gap:8px;margin:5px 0;cursor:default}
-      .nc-lab{font-size:10.5px;color:var(--ash);opacity:.85;min-width:64px;flex:none}
+      .nc-row{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:center;gap:8px;margin:6px 0;cursor:default}
+      .nc-lab{font-size:10.5px;color:var(--ash);min-width:0;flex:none}
       .nc-hint{font-size:10px;color:var(--ash);opacity:.6;margin:-2px 0 6px 72px}
       .nc-w{font-family:inherit}
-      .nc-in-t,.nc-ta,.nc-sel,.nc-in-n{flex:1;min-width:0;background:var(--iron);border:1px solid var(--seam);border-radius:6px;color:var(--bone);font-size:11.5px;padding:4px 7px}
+      .nc-in-t,.nc-ta,.nc-sel,.nc-in-n{width:100%;box-sizing:border-box;min-width:0;background:var(--iron);border:1px solid var(--seam2);border-radius:6px;color:var(--bone);font-size:11.5px;padding:5px 7px}
       .nc-ta{resize:vertical;line-height:1.4;font-family:var(--mono);font-size:11px}
       .nc-in-t:focus,.nc-ta:focus,.nc-sel:focus,.nc-in-n:focus{outline:none;border-color:var(--nc-a)}
       .nc-num{display:flex;align-items:center;gap:3px;flex:1}
-      .nc-in-n{text-align:center;-moz-appearance:textfield}
-      .nc-in-n::-webkit-outer-spin-button,.nc-in-n::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+      .nc-in-n{text-align:right;font-family:var(--mono)}
       .nc-step{width:20px;height:22px;flex:none;border:1px solid var(--seam);background:var(--iron);color:var(--ash);border-radius:6px;cursor:pointer;font-size:12px;line-height:1}
       .nc-step:hover{color:var(--bone);border-color:var(--nc-a)}
-      .nc-dice{width:24px}
+      .nc-dice{width:auto;padding:0 6px;font:9px var(--mono);text-transform:uppercase;letter-spacing:.04em}
       .nc-sl{display:flex;align-items:center;gap:7px;flex:1}
       .nc-sl input[type=range]{flex:1;accent-color:var(--nc-a);height:3px}
       .nc-sl b{font-family:var(--mono);font-size:10.5px;color:var(--bone);min-width:26px;text-align:right}
@@ -1032,8 +1052,14 @@
 
       .nc-toolbar{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:4px;background:var(--iron);border:1px solid var(--seam);border-radius:10px;padding:5px 8px;z-index:5}
       .nc-tb{width:26px;height:26px;border:0;border-radius:7px;background:transparent;color:var(--ash);cursor:pointer;font-size:14px}
+      .nc-tb-wide{width:auto;padding:0 8px;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
       .nc-tb:hover{background:var(--plate2);color:var(--bone)}
-      .nc-zoom{font-family:var(--mono);font-size:11px;color:var(--ash);min-width:40px;text-align:center}
+      .nc-zoom{border:0;background:transparent;font-family:var(--mono);font-size:11px;color:var(--ash);min-width:40px;text-align:center;cursor:pointer}
+      .nc-zoom:hover{color:var(--bone)}
+      .nc-selected{font-family:var(--mono);font-size:9px;color:var(--ash);padding:0 4px;white-space:nowrap}
+      .nc-selected:empty{display:none}
+      .nc-help{position:absolute;left:50%;bottom:62px;transform:translateX(-50%);z-index:6;min-width:210px;padding:11px 13px;border:1px solid var(--seam);border-radius:10px;background:var(--iron);box-shadow:0 14px 34px rgba(0,0,0,.3);color:var(--ash);font:11px/1.5 var(--sans)}
+      .nc-help b{display:block;color:var(--bone);margin-bottom:6px}.nc-help span{display:block}.nc-help kbd{display:inline-block;min-width:20px;margin-right:5px;padding:0 4px;border:1px solid var(--seam);border-radius:4px;background:var(--plate2);color:var(--bone);font:10px var(--mono);text-align:center}
       .nc-host.nc-panning{cursor:grabbing}
       .nc-host.nc-panning .nc-world{pointer-events:none}
 
@@ -1059,6 +1085,10 @@
       .nc-map{position:absolute;right:12px;bottom:12px;z-index:5;background:rgba(10,12,15,.82);
               border:1px solid var(--seam);border-radius:8px;padding:4px;cursor:crosshair;line-height:0}
       .nc-map canvas{display:block;width:168px;height:112px;border-radius:5px}
+      :root[data-theme="light"] .nc-edge-shadow{stroke:rgba(66,61,54,.22);opacity:1}
+      :root[data-theme="light"] .nc-edge{filter:none}
+      :root[data-theme="light"] .nc-node.sel{box-shadow:0 0 0 1px var(--nc-a),var(--shadow-3)}
+      :root[data-theme="light"] .nc-in-t,:root[data-theme="light"] .nc-ta,:root[data-theme="light"] .nc-sel,:root[data-theme="light"] .nc-in-n{background:var(--plate2)}
     `;
     document.head.appendChild(s);
   }

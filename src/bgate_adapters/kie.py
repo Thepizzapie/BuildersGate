@@ -40,21 +40,20 @@ no per-model price: the quickstart says image models are "typically 10-50
 credits" and video "typically 100-500", and no credit-to-dollar rate appears in
 the reference at all. Third-party blog arithmetic exists and is not a price. So
 this follows the precedent krea.TRAIN_USD set — declare it None, never 0.0,
-because every budget check in this product reads a number as permission. What
-kie DOES give us that Krea's 3D path did not is `creditsConsumed` on the finished
-record: the true cost of the call comes back after it runs, so a user who tells
-us their rate (BGATE_KIE_USD_PER_CREDIT) gets exact ledger rows rather than
-estimates. Without it the result carries the credit count and says plainly that
-no dollar figure was recorded.
+because a reader treats a number as a quote and 0.0 reads as free. What kie DOES
+give us that Krea's 3D path did not is `creditsConsumed` on the finished record:
+the true cost of the call comes back after it runs, so a user who tells us their
+rate (BGATE_KIE_USD_PER_CREDIT) gets a dollar figure on the result rather than a
+credit count. Without it the result carries the credits and says plainly that no
+dollar figure could be produced.
 
-MEASURING AFTER THE FACT IS NOT ENOUGH FOR A GATE, which is what VIDEO_CREDITS
-and :func:`estimate_usd` are for. A budget check runs BEFORE the spend, so a
-pipeline holding only a post-hoc number had to hand it projected_usd=0.0 and
-could never refuse ONE expensive shot — only a project already over its ceiling.
-The estimate is explicitly an upper bound derived from kie's published band
-rather than a price, it says so on every value it returns, and a model it has no
-rate for yields known=False and NO NUMBER: a fabricated figure in front of a
-spend gate does not read as "unpriced", it reads as "free".
+MEASURING AFTER THE FACT IS NOT ENOUGH FOR SOMEBODY DECIDING WHETHER TO BUY,
+which is what VIDEO_CREDITS and :func:`estimate_usd` are for: `creditsConsumed`
+arrives when the money is already gone, and "this ONE shot is expensive" is the
+question worth answering first. The estimate is explicitly an upper bound
+derived from kie's published band rather than a price, it says so on every value
+it returns, and a model it has no rate for yields known=False and NO NUMBER: a
+fabricated figure does not read as "unpriced", it reads as "free".
 
 LOCAL FILES ARE SENT BY UPLOADING THEM FIRST — A THIRD API FAMILY. Every
 reference field on a generation endpoint is a URI and none of them takes inline
@@ -1257,7 +1256,7 @@ def callback_url(explicit: str = "") -> str:
 # Money
 # ---------------------------------------------------------------------------
 # NOT PUBLISHED, NOT GUESSED. See the module docstring. None propagates all the
-# way to the result, and 0.0 is never returned — a spend gate reads 0.0 as free.
+# way to the result, and 0.0 is never returned — a reader reads 0.0 as free.
 USD_PER_CREDIT: Optional[float] = None
 USD_PER_CREDIT_ENV = "BGATE_KIE_USD_PER_CREDIT"
 
@@ -1266,8 +1265,8 @@ PRICE_NOTE = (
     "says image models are 'typically 10-50 credits' and video '100-500', with "
     "no credit-to-dollar rate anywhere. The finished record reports "
     "creditsConsumed, so set " + USD_PER_CREDIT_ENV + " to your account's rate "
-    "and every call lands in the ledger in dollars. Until then the credits are "
-    "reported and no dollar figure is recorded.")
+    "and every call reports dollars. Until then the credits are reported and no "
+    "dollar figure is.")
 
 
 def usd_per_credit() -> Optional[float]:
@@ -1312,10 +1311,8 @@ def price_for(model: str = DEFAULT_IMAGE_MODEL) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # WHY THIS EXISTS. Everything above measures cost AFTER the fact:
 # `creditsConsumed` arrives on the finished record, which is the truth and is
-# useless to a budget gate, because a gate runs before the spend.
-# bgate_core.cine.cinematic._budget_refusal therefore passed projected_usd=0.0 into
-# spend.check and could only ever catch "this project is already over" — never
-# "this ONE shot is expensive", which for a fifteen-second clip is the larger
+# useless to anyone deciding whether to buy. "This ONE shot is expensive" is the
+# question worth answering first, and for a fifteen-second clip it is the larger
 # number and the one a sequence of eight multiplies.
 #
 # WHERE THESE NUMBERS COME FROM, AND IT IS NOT A PRICE PAGE. kie publishes no
@@ -1331,12 +1328,11 @@ def price_for(model: str = DEFAULT_IMAGE_MODEL) -> Optional[float]:
 #   * IT IS CONSERVATIVE. Each entry spreads the CEILING of kie's published band
 #     across the model's own documented duration range, so the longest shot it
 #     will generate quotes at the top of the band and a shorter one quotes less.
-#     A gate that under-quotes lets through exactly the spend it exists to stop,
-#     so an upper bound is the only safe direction to be wrong in.
+#     An estimate that under-quotes is the one that surprises somebody on an
+#     invoice, so an upper bound is the only safe direction to be wrong in.
 #   * AN UNKNOWN MODEL YIELDS NO NUMBER. `known: False` and `credits: None`,
-#     never 0 — a fabricated credit count that reaches spend.check does not read
-#     as "unpriced", it reads as "free", which is the failure this whole module
-#     was written to avoid.
+#     never 0 — a fabricated credit count does not read as "unpriced", it reads
+#     as "free", which is the failure this whole module was written to avoid.
 #   * EVERY ENTRY IS OVERRIDABLE, because a user with a month of invoices knows
 #     more than this table does. BGATE_KIE_VIDEO_CREDITS takes JSON keyed by the
 #     model name here: {"seedance-2": {"per_second": 30, "per_call": 0}}. A
@@ -1369,7 +1365,7 @@ ESTIMATE_NOTE = (
 
 # WHAT THE ESTIMATE DELIBERATELY DOES NOT MODEL. Resolution almost certainly
 # moves the price — 4k is not 480p — and no published rate says by how much, so
-# inventing a multiplier would put a fabricated number in front of a budget gate
+# inventing a multiplier would put a fabricated number in front of the reader
 # wearing the same label as a derived one. It is named as a caveat instead.
 _ESTIMATE_UNMODELLED = (
     "resolution, reference frames and generated audio are not modelled — kie "
@@ -1393,8 +1389,7 @@ def _rate_numbers(entry: Any) -> Optional[dict]:
     """One rate block as three non-negative numbers, or None if it says nothing.
 
     An all-zero or unparseable block is None rather than a zero rate, for the
-    reason the whole module gives: a zero that reaches a budget gate is
-    permission, not an absence.
+    reason the whole module gives: a zero reads as free, not as an absence.
     """
     if not isinstance(entry, dict):
         return None
@@ -1494,8 +1489,8 @@ def estimate_credits(model: str = "", seconds: Optional[float] = None,
                 "basis": f"{seconds!r} is not a number of seconds, so this "
                          "generation cannot be quoted. Cost UNKNOWN, not zero."}
 
-    # Rounded UP. A budget gate handed the fractional truth of an upper bound is
-    # a gate that lets a shot through on a rounding error.
+    # Rounded UP. An upper bound handed out to the fraction is an upper bound
+    # somebody can be under by a rounding error.
     import math
 
     raw = rate["per_call"] + rate["per_second"] * length
@@ -2149,54 +2144,26 @@ def download(url: str, out_path: str | os.PathLike[str], *,
 
 
 # ---------------------------------------------------------------------------
-# Spend
+# What the call cost, as the provider reported it
 # ---------------------------------------------------------------------------
 
 def _account(result: dict, root: Any, *, kind: str, logical_name: str = "",
              work_item_id: Optional[int] = None, detail: str = "") -> dict:
-    """Write what this call cost to the ledger, if it can be known.
+    """Annotate the result with what this one call cost. Nothing is summed.
 
-    Best effort by construction — losing a ledger row must never lose the file
-    that was paid for; that is imagegen._account's rule and it holds here.
+    There is no ledger to write to any more. kie bills in credits and this
+    product refuses to invent a dollar rate for them, so what a session has
+    actually cost is a question for the kie account balance — `kie_status`
+    reads it — and never for a total assembled here out of guessed unit prices.
 
-    THE HONEST GAP IS STATED ON THE RESULT — AND NOW ON THE LEDGER. With no
-    credit rate configured there is no dollar figure to write, and this used to
-    mean no row at all: the totals silently under-counted a real charge, which
-    with budgets off by default is the whole report reading low. Rather than
-    invent a dollar figure, the result says `accounted: false` and carries the
-    credit count, AND spend.record_unpriced writes a zero-dollar marker row so
-    spend.totals can report "+ N unpriced kie rows" instead of nothing.
+    ``accounted`` survives as "did the provider give this call a dollar
+    figure", which a caller may want to print beside the credits.
     """
     result["credits_consumed"] = result.get("credits_consumed")
     usd = result.get("usd")
-    if not root or not result.get("ok") or not usd:
-        result["accounted"] = False
-        if result.get("ok") and not usd:
-            result["cost_note"] = PRICE_NOTE
-            if root:
-                try:
-                    from bgate_core.board import spend
-
-                    spend.record_unpriced(
-                        root, result.get("credits_consumed"), kind=kind,
-                        work_item_id=work_item_id,
-                        logical_name=logical_name or "",
-                        detail=detail or f"kie {kind}",
-                        model=str(result.get("model") or ""))
-                    result["unpriced_recorded"] = True
-                except Exception:                                # noqa: BLE001
-                    result["unpriced_recorded"] = False
-        return result
-    try:
-        from bgate_core.board import spend
-
-        spend.record(root, float(usd), kind=kind, work_item_id=work_item_id,
-                     logical_name=logical_name or "",
-                     detail=detail or f"kie {kind}",
-                     model=str(result.get("model") or ""))
-        result["accounted"] = True
-    except Exception:                                            # noqa: BLE001
-        result["accounted"] = False
+    result["accounted"] = bool(result.get("ok") and usd)
+    if result.get("ok") and not usd:
+        result["cost_note"] = PRICE_NOTE
     return result
 
 
@@ -2862,7 +2829,7 @@ def generate_music(prompt: str, out_dir: str | os.PathLike[str], *,
     time lands in the same delta. So the result carries `credits_source` and a
     caller comparing two runs can see which number it is looking at. When the
     balance cannot be read at all the credits stay None and `accounted` is
-    false — never 0.0, which every budget check in this product reads as free.
+    false — never 0.0, which reads as free.
     """
     started = time.monotonic()
     # UNKNOWN, STATED, ON EVERY PATH — not absent, and never 0.0. The success

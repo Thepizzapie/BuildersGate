@@ -1,13 +1,64 @@
 /* 7b · Settings as a form.
    The stripe carries precedence; everything else is quiet so the stripe reads. */
 
-.bg4-settings { display: flex; flex-direction: column; height: 100%; min-height: 0 }
+.bg4-settings { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg) }
 .bg4-settings-bar {
-  flex: none; padding: 10px 16px; border-bottom: 1px solid var(--line);
-  background: var(--solid-1);
+  flex: none; min-height: 58px; padding: 10px 18px; border-bottom: 1px solid var(--line);
+  background: var(--solid-1); display: flex; align-items: center; gap: 10px;
 }
+.bg4-settings-search {
+  flex: 1 1 360px; max-width: 560px; height: 36px; display: flex; align-items: center;
+  gap: 9px; padding: 0 10px; background: var(--solid-2); border: 1px solid var(--line);
+  border-radius: 7px; color: var(--text-3);
+}
+.bg4-settings-search:focus-within { border-color: var(--accent); color: var(--accent) }
+.bg4-settings-search input {
+  min-width: 0; flex: 1; border: 0; outline: 0; background: transparent;
+  color: var(--text); font: 400 12px var(--sans);
+}
+.bg4-settings-search input::placeholder { color: var(--text-3) }
+.bg4-settings-search .clear {
+  display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
+  border: 0; border-radius: 4px; background: transparent; color: var(--text-3); cursor: pointer;
+}
+.bg4-settings-search .clear:hover { background: var(--solid-3); color: var(--text) }
 .bg4-settings-body { flex: 1; min-height: 0 }
-.bg4-settings-group { padding: 0 16px }
+.bg4-settings-group, .bg4-settings-results { max-width: 1080px; padding: 0 28px 40px }
+.bg4-settings-category {
+  position: sticky; top: 0; z-index: 4; min-height: 94px;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 24px; padding: 24px 0 16px; border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.bg4-settings-category h2 {
+  margin: 0; color: var(--text); font: 600 20px/1.2 var(--sans); letter-spacing: -.015em;
+  text-transform: none;
+}
+.bg4-settings-category h2::after { display: none }
+.bg4-settings-category p {
+  max-width: 68ch; margin: 5px 0 0; color: var(--text-2); font: 400 12px/1.5 var(--sans);
+}
+.bg4-settings-category-side {
+  flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 7px;
+}
+.bg4-settings-category-side > span {
+  color: var(--text-3); font: 500 10px var(--mono);
+}
+.bg4-settings-tools { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap }
+.bg4-settings-tools button {
+  min-height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--solid-1);
+  color: var(--text-2); cursor: pointer; font: 500 10px var(--sans);
+}
+.bg4-settings-tools button:hover { border-color: var(--accent); color: var(--text) }
+.bg4-settings-tools button.on { border-color: var(--accent); color: var(--accent) }
+.bg4-settings-tools button.reset:hover { border-color: var(--warn-line); color: var(--warn) }
+.bg4-settings-tools .save-state {
+  display: inline-flex; align-items: center; gap: 4px; color: var(--good); font: 500 10px var(--sans);
+}
+.bg4-settings-tools .save-state.bad { color: var(--bad) }
+.bg4-settings-tools .save-state .ti-loader-2 { animation: bg4-settings-spin .8s linear infinite }
+@keyframes bg4-settings-spin { to { transform: rotate(360deg) } }
 .bg4-settings-head {
   display: flex; align-items: center; gap: 8px;
   padding: 18px 0 8px;
@@ -17,21 +68,68 @@
 .bg4-settings-head .n { color: var(--text-dim, var(--text-3)) }
 
 .bg4-filterchip {
-  border: 1px solid var(--line); border-radius: 9999px; background: transparent;
-  color: var(--text-3); padding: 4px 12px; cursor: pointer;
-  font: 500 10px var(--mono); white-space: nowrap;
+  height: 34px; display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--solid-2);
+  color: var(--text-2); padding: 0 10px; cursor: pointer;
+  font: 500 11px var(--sans); white-space: nowrap;
 }
-.bg4-filterchip.on { border-color: var(--accent); color: var(--accent) }
+.bg4-filterchip span { color: var(--text-3); font: 500 10px var(--mono) }
+.bg4-filterchip.on { border-color: var(--accent); color: var(--text) }
+.bg4-filterchip.on .ti, .bg4-filterchip.on span { color: var(--accent) }
+
+.bg4-settings-legend {
+  margin-left: auto; display: flex; align-items: center; gap: 11px;
+  color: var(--text-3); font: 400 10px var(--sans); white-space: nowrap;
+}
+.bg4-settings-legend span { display: inline-flex; align-items: center; gap: 5px }
+.bg4-settings-legend i { width: 3px; height: 13px; border-radius: 2px; background: var(--line); display: inline-block }
+.bg4-settings-legend i.stored { background: var(--accent) }
+.bg4-settings-legend i.env { background: var(--info, #a9b6ff) }
+
+/* A task map, not one undifferentiated list. Section names are landmarks;
+   destinations remain quiet until selected. */
+.bg4-settings-split {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 228px minmax(0, 1fr);
+  border-radius: 0;
+}
+.bg4-settings-rail {
+  display: block; min-height: 0; overflow-y: auto; padding: 14px 10px 24px;
+  border-right: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-settings-navgroup + .bg4-settings-navgroup { margin-top: 17px }
+.bg4-settings-navlabel {
+  padding: 0 10px 5px; color: var(--text-3); font: 600 10px/1.3 var(--sans);
+}
+.bg4-settings-rail .bg4-settings-navgroup button {
+  position: relative; display: flex; align-items: center; gap: 9px; width: 100%;
+  min-height: 32px; padding: 6px 9px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--text-2); cursor: pointer;
+  text-align: left; font: 400 12px var(--sans);
+}
+.bg4-settings-rail .bg4-settings-navgroup button::before {
+  content: ""; position: absolute; left: -10px; top: 5px; bottom: 5px; width: 2px;
+  border-radius: 0 2px 2px 0; background: transparent;
+}
+.bg4-settings-rail .bg4-settings-navgroup button:hover { background: var(--solid-2); color: var(--text) }
+.bg4-settings-rail .bg4-settings-navgroup button.on { background: var(--solid-3); color: var(--text) }
+.bg4-settings-rail .bg4-settings-navgroup button.on::before { background: var(--accent) }
+.bg4-settings-rail .bg4-settings-navgroup button .ti { color: var(--text-3) }
+.bg4-settings-rail .bg4-settings-navgroup button.on .ti { color: var(--accent) }
+.bg4-settings-rail .l { flex: 1; min-width: 0 }
+.bg4-settings-rail .n { color: var(--text-3); font: 500 10px var(--mono) }
 
 /* ── the row ───────────────────────────────────────────────────────────────
    NO CARD. A border-left and 12px of padding is the entire chrome, which is
    what lets forty of these read as one list instead of forty objects. */
 .bg4-set {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 24px; align-items: start;
   border-left: 3px solid transparent;
-  padding: 10px 0 12px 12px;
+  padding: 15px 0 16px 14px;
   border-bottom: 1px solid var(--line-soft, var(--line));
 }
 .bg4-set:hover { background: rgba(255, 255, 255, .015) }
+.bg4-set.linked { background: var(--solid-2); box-shadow: inset 0 0 0 1px var(--accent) }
 
 /* PRECEDENCE, AS A STRIPE. Ember means this project decided; blue means the
    environment decided and you cannot; nothing means the default still holds.
@@ -42,18 +140,26 @@
 .bg4-set.default { border-left-color: transparent }
 .bg4-set.locked { opacity: .62 }
 
-.bg4-set .head { display: flex; align-items: center; gap: 8px; min-height: 28px }
+.bg4-set .copy { min-width: 0 }
+.bg4-set .head { display: flex; align-items: center; gap: 8px; min-height: 22px }
+.bg4-setting-link {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; margin-left: auto;
+  border-radius: 4px; color: var(--text-3); text-decoration: none;
+}
+.bg4-setting-link:hover, .bg4-setting-link:focus-visible { background: var(--solid-3); color: var(--accent) }
+.bg4-set mark {
+  border-radius: 2px; padding: 0 1px; background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: inherit;
+}
 .bg4-set .key {
   font: 400 12px var(--mono); color: var(--text);
   background: none; padding: 0;
 }
-.bg4-set .spacer { flex: 1 }
-/* THE CONTROL IS ON THE LABEL'S LINE. It used to be ~900px away, under a
-   paragraph, which is the whole reason this screen was hard to use. */
-.bg4-set .control { flex: none }
+.bg4-set .control { min-width: 0; display: flex; justify-content: flex-end; padding-top: 1px }
+.bg4-set .control > * { max-width: 100% }
 
 .bg4-set .help {
-  margin: 6px 0 0; max-width: 78ch;
+  margin: 6px 0 0; max-width: 70ch;
   font: 400 12px/1.55 var(--sans); color: var(--text-2);
 }
 .bg4-set .foot {
@@ -72,7 +178,7 @@
   font: 450 13px var(--sans); color: var(--text);
   overflow: hidden; text-overflow: ellipsis;
 }
-.bg4-set > .key {
+.bg4-set .copy > .key {
   display: block; margin: 1px 0 0; font: 400 10px var(--mono);
   color: var(--text-3); background: none; padding: 0;
 }
@@ -135,3 +241,56 @@
 .bg4-settings-rail button.empty { opacity: .38 }
 .bg4-settings-rail button.empty:hover { opacity: .7 }
 .bg4-settings-rail button.empty.on { opacity: 1 }
+
+.bg4-settings-resultgroup { margin-top: 22px }
+.bg4-settings-resultgroup > button {
+  width: 100%; display: flex; align-items: center; gap: 8px; padding: 0 0 8px;
+  border: 0; border-bottom: 1px solid var(--line); background: transparent;
+  color: var(--text-2); cursor: pointer; text-align: left; font: 600 12px var(--sans);
+}
+.bg4-settings-resultgroup > button:hover { color: var(--accent) }
+.bg4-settings-resultgroup > button span { margin-left: auto; color: var(--text-3); font: 500 10px var(--mono) }
+.bg4-settings-destinations {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px;
+  padding: 18px 0 2px;
+}
+.bg4-settings-destinations button {
+  display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px 12px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--solid-1);
+  color: var(--text-2); cursor: pointer; text-align: left;
+}
+.bg4-settings-destinations button:hover { border-color: var(--accent); color: var(--text) }
+.bg4-settings-destinations button > span { flex: 1; min-width: 0 }
+.bg4-settings-destinations b { display: block; color: var(--text); font: 600 12px var(--sans) }
+.bg4-settings-destinations small { display: block; margin-top: 2px; color: var(--text-3); font: 400 10px/1.35 var(--sans) }
+
+@media (max-width: 900px) {
+  .bg4-settings-bar { flex-wrap: wrap }
+  .bg4-settings-search { max-width: none }
+  .bg4-settings-legend { width: 100%; margin-left: 0 }
+  .bg4-settings-split { grid-template-columns: 196px minmax(0, 1fr) }
+  .bg4-settings-group, .bg4-settings-results { padding-inline: 20px }
+  .bg4-set { grid-template-columns: minmax(0, 1fr) 220px; gap: 18px }
+}
+
+@media (max-width: 720px) {
+  .bg4-settings-bar { padding: 9px 12px }
+  .bg4-settings-legend { overflow-x: auto }
+  .bg4-settings-split { display: flex; flex-direction: column }
+  .bg4-settings-rail {
+    flex: none; display: flex; gap: 4px; padding: 8px 10px; overflow-x: auto;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  .bg4-settings-navgroup { display: contents }
+  .bg4-settings-navlabel { display: none }
+  .bg4-settings-rail .bg4-settings-navgroup button { width: auto; flex: none; padding-inline: 10px }
+  .bg4-settings-rail .bg4-settings-navgroup button::before { display: none }
+  .bg4-settings-rail .n { display: none }
+  .bg4-settings-group, .bg4-settings-results { padding-inline: 14px }
+  .bg4-settings-category { min-height: 82px; padding-top: 18px; align-items: flex-start; flex-direction: column; gap: 10px }
+  .bg4-settings-category-side { width: 100%; align-items: flex-start }
+  .bg4-settings-category-side > span { display: none }
+  .bg4-settings-tools { justify-content: flex-start }
+  .bg4-set { grid-template-columns: 1fr; gap: 10px; padding-right: 2px }
+  .bg4-set .control { justify-content: flex-start }
+}

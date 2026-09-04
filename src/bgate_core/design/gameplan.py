@@ -299,18 +299,19 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
     common question after an overnight run — what got built, what broke, why
     did it stop — had no answer anywhere.
 
-    Everything here is read from the board and the ledger; nothing is inferred
-    and nothing is spent. ``blocked`` is the important field: an empty board
+    Everything here is read from the board; nothing is inferred and nothing is
+    spent. There is no money in it — this product keeps no ledger, and the only
+    figure worth quoting is the balance the provider reports for the user's own
+    key. ``blocked`` is the important field: an empty board
     with items still queued is the signature of a floor refusal, and naming it
     is the difference between "it is working" and "it stopped six hours ago".
     """
     from ..board import queue as _queue
-    from ..board import spend as _spend
 
     window = f"-{max(1, int(hours))} hour"
     conn = db.connect(root)
     moved = rows(conn.execute(
-        "SELECT id, seat, title, status, source, attempts, total_cost_usd, "
+        "SELECT id, seat, title, status, source, attempts, "
         "updated_at, result FROM work_item "
         "WHERE updated_at >= datetime('now', ?) ORDER BY updated_at DESC",
         (window,)))
@@ -343,16 +344,11 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
         if not blocked:
             blocked = ("work is queued and nothing is running — either the "
                        "dashboard is down (`bgate serve`), autopilot is off, "
-                       "or a budget ceiling is refusing every dispatch.")
+                       "or the concurrency cap is holding every dispatch.")
 
-    try:
-        money = _spend.totals(root)
-    except Exception:
-        money = {}
     return {
         "window_hours": int(hours),
-        "finished": [{"id": r["id"], "seat": r["seat"], "title": r["title"][:90],
-                      "cost_usd": round(float(r["total_cost_usd"] or 0), 3)}
+        "finished": [{"id": r["id"], "seat": r["seat"], "title": r["title"][:90]}
                      for r in done[:25]],
         "failed": [{"id": r["id"], "seat": r["seat"], "title": r["title"][:90],
                     "attempts": int(r["attempts"] or 0),
@@ -363,21 +359,6 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
                    "in_review": len(review), "still_queued": len(still_queued),
                    "running": len(running)},
         "blocked": blocked,
-        "spend": {"today_usd": money.get("today_usd"),
-                  "week_usd": money.get("week_usd"),
-                  "agent_runs": money.get("agent_runs"),
-                  # THE COMBINED FIGURE, FIRST. `today_usd` on its own silently
-                  # excluded 84 credits across 11 kie calls on the benchmark
-                  # board - invisible to every spend figure AND to the budget
-                  # ceilings. A total that omits a channel reads as complete,
-                  # which is worse than no total. spend.spend_line is the one
-                  # formatter, so no surface has to remember the footnote.
-                  "line": money.get("spend_line"),
-                  "today_line": money.get("today_spend_line"),
-                  "complete": money.get("complete", True),
-                  # Real charges with no dollar figure (unpriced kie credits).
-                  # NOT inside today_usd/week_usd — see spend.record_unpriced.
-                  "unaccounted": money.get("unaccounted")},
         # PREMISE REFUTATIONS, on the morning report. The most valuable thing
         # agents did in the benchmark and the one that died with the item.
         "premise_refuted": _refutations(root),

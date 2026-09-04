@@ -1,14 +1,5 @@
-/* Studio — visual editors built on the NodeCanvas engine:
- *   workflows : the workflow builder (WF)
- *   agent     : orchestration (queued tasks → seats → live agents)
- * Frontend only; wired to the existing endpoints. window.Studio is the dispatcher.
- *
- * Two flows were removed here. "Asset flow" duplicated the Assets library and
- * the art seat, which both do the same generate-and-review loop with the real
- * revision history behind it. "Game editor" could not edit anything — no save,
- * no write path — it read the Godot tree, screenshotted, and dispatched queue
- * items, all of which Playtests and Agents already do.
- */
+/* Studio — a direct generator graph built on NodeCanvas. It owns no seats,
+ * queue items, or agent sessions; orchestration remains on its own screen. */
 (function () {
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -53,7 +44,7 @@
      is where that work lives. The empty MODULES/BUILTIN maps they left behind,
      and the lazy loadScript() that could only ever iterate an empty map, are
      gone with them — a registered plugin supplies its own build(). */
-  const CORE = { workflows: { label: "Workflows", icon: "studio" } };
+  const CORE = { workflows: { label: "Generator graph", icon: "studio" } };
 
   const Studio = {
     _flow: null, _nc: null,

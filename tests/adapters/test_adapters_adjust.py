@@ -516,8 +516,24 @@ class TestCharacterWorkAvoidsTheStyleModel:
 
     def test_the_character_kinds_are_a_subset_of_the_keyed_kinds(self):
         """A kind routed as character work that the keyer does not recognise
-        would come back with an opaque background and no alpha at all."""
+        would come back with an opaque background and no alpha at all.
+
+        The one exception is named, not implied: the 3D plate keys itself
+        downstream with a swept tolerance (blender._key_plate), which is why
+        it is deliberately off KEYED_KINDS."""
         from bgate_adapters import krea
         from bgate_core.art import chroma
 
-        assert krea.CHARACTER_KINDS <= chroma.KEYED_KINDS
+        assert krea.CHARACTER_KINDS - krea.SELF_KEYED_KINDS <= chroma.KEYED_KINDS
+        assert krea.SELF_KEYED_KINDS <= krea.CHARACTER_KINDS
+        assert not (krea.SELF_KEYED_KINDS & chroma.KEYED_KINDS)
+
+    def test_the_3d_plate_call_is_routed_to_the_edit_model(self):
+        """blender.character() passes task_kind="character" — the single call
+        that decides what a whole 3D character looks like, conditioning on the
+        humanoid pose template. It was absent from CHARACTER_KINDS, so it fell
+        through to the STYLE model and discarded the pose reference it had
+        just been handed."""
+        from bgate_adapters import krea
+
+        assert krea.model_for("character") == krea.CHARACTER_MODEL

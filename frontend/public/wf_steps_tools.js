@@ -8,7 +8,7 @@
  * nothing at all. Two node types in the entire palette actually called
  * anything.
  *
- * bgate_core/wfnodes.py turned every MCP tool this product owns into a runnable
+ * bgate_core/wfnodes.py turned every connected generator/tool API into a runnable
  * node type. This file draws them — and it draws them from
  * GET /api/workflows/nodes, which is the SAME table the executor calls with.
  *
@@ -23,8 +23,8 @@
  * WHAT A CARD PROMISES
  * --------------------
  *   * PAID nodes are badged as paid, on the card, before you press anything.
- *     Nothing on this canvas fires a paid tool except a human pressing run on
- *     that node.
+ *     Nothing on this canvas fires a paid tool except a human running the graph
+ *     or that node.
  *   * A node that WRITES INTO THE GAME (Godot, Blender, scene surgery) says so,
  *     and the engine makes those take the line one at a time, because two of
  *     them at once is last-write-wins.
@@ -116,33 +116,7 @@
     if (!made.length && !files && out.text) {
       html += '<div class="wf-tool-out">' + esc(String(out.text).slice(0, 220)) + "</div>";
     }
-    if (!html) html = w.note("nothing run yet");
     return html;
-  }
-
-  function runRow(n) {
-    // The canvas node's own optimistic status FIRST: WF.runNode sets it the
-    // instant you click, while nodeStatus() reads the last poll. Trusting only
-    // the poll left the button live during the gap and a second click bounced
-    // off the engine with "already running".
-    var st = n.status || WF.nodeStatus(n.id);
-    var busy = st === "running" || st === "queued";
-    return '<div class="wf-act"><button class="nc-w wf-run1" data-wact="run" data-wval="'
-      + esc(n.id) + '"' + (busy ? " disabled" : "")
-      + ' title="run only this node">' + (busy ? esc(st) + "…" : "▶ run this node")
-      + "</button></div>";
-  }
-
-  function badges(def) {
-    var out = "";
-    if (def.paid) {
-      out += '<div class="wf-warn">PAID - this node calls a provider and the bill is real. '
-        + "Nothing fires it but you pressing run.</div>";
-    }
-    if (def.exclusive) {
-      out += w.note("writes into the game project - runs one at a time");
-    }
-    return out;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -185,9 +159,7 @@
       badge: function () { return def.paid ? "paid" : ""; },
       body: function (n) {
         return producedRow(n, def)
-          + shown.map(function (a) { return widget(n, a); }).join("")
-          + badges(def)
-          + runRow(n);
+          + shown.map(function (a) { return widget(n, a); }).join("");
       },
       config: function (n) {
         var html = '<div class="wf-insp-p">' + esc(def.summary || "") + "</div>"
@@ -195,8 +167,9 @@
           + "no seat, no queue item, no Claude session between the card and the tool.</div>";
         if (def.paid) {
           html += '<div class="wf-warn">This node spends money when it runs. It is reachable, '
-            + "and it only ever fires because a person pressed run on it.</div>";
+            + "and it only fires from the workflow Run action.</div>";
         }
+        if (def.exclusive) html += w.note("Writes into the game project and runs one at a time.");
         // EVERY argument, including the ones the card hides. The inspector is
         // where the long tail lives; a field that exists only in the payload is
         // a field the user cannot reach.
@@ -229,23 +202,13 @@
         var head = out.text
           ? '<div class="wf-tool-out">' + esc(String(out.text).slice(0, 200)) + "</div>"
           : "";
-        return head + (def.args || []).map(function (a) { return widget(n, a); }).join("")
-          + runRow(n);
+        return head + (def.args || []).map(function (a) { return widget(n, a); }).join("");
       },
       config: function (n) {
         return '<div class="wf-insp-p">' + esc(def.summary || "") + "</div>"
           + (def.args || []).map(function (a) { return widget(n, a); }).join("");
       },
-      onAction: function (n, action) { if (action === "run") WF.runNode(n.id); },
     });
-  }
-
-  /* One action path for every card this file registers. */
-  function attachRun(def) {
-    var step = WF.steps[def.type];
-    if (step && !step.onAction) {
-      step.onAction = function (n, action) { if (action === "run") WF.runNode(n.id); };
-    }
   }
 
   /* ---------------------------------------------------------------------- */
@@ -265,6 +228,10 @@
     var html = "";
     EXTRA_CATS.forEach(function (c) {
       var list = byCat[c.id] || [];
+      var query = String(WF._paletteQuery || "").trim().toLowerCase();
+      if (query) list = list.filter(function (s) {
+        return ((s.label || "") + " " + (s.type || "")).toLowerCase().indexOf(query) !== -1;
+      });
       if (!list.length) return;
       html += '<div class="wf-pal-cat">' + esc(c.label) + "</div>"
         + list.map(function (s) {
@@ -273,51 +240,15 @@
             + esc(s.glyph || "◇") + "</span> " + esc(s.label) + "</button>";
         }).join("");
     });
-    if (html) pal.insertAdjacentHTML("beforeend", html);
+    if (html) {
+      var empty = pal.querySelector(".empty");
+      if (empty) empty.remove();
+      pal.insertAdjacentHTML("beforeend", html);
+    }
+    if (!pal.querySelector(".wf-pi")) {
+      pal.innerHTML = '<div class="empty">' + (WF._paletteQuery ? "no matching nodes" : "no steps") + "</div>";
+    }
   };
-
-  /* ---------------------------------------------------------------------- */
-  /* the run gate                                                            */
-  /* ---------------------------------------------------------------------- */
-  /* wf.js decides "is there anything runnable in this graph" with
-   *   plan.nodes.some(n => n.seat || n.kind === "consistency" || n.kind === "generate")
-   * which predates the tool kind entirely, so a graph made only of tool nodes
-   * was refused with "no runnable step" before it ever reached the server.
-   *
-   * Rather than copying that method (a copy drifts), the step registry is
-   * presented in the OLDER vocabulary for the duration of the call: tool steps
-   * report kind "generate" while the plan is compiled, and are put back
-   * immediately. This is safe and not a lie the engine can act on — wf.js's own
-   * step contract says the server re-derives the kind from the type, and
-   * workflows.kind_for does exactly that from the same registry this palette was
-   * built from. A tool node cannot become a generate node by saying so.
-   */
-  function withLegacyKind(name) {
-    var orig = WF[name];
-    if (typeof orig !== "function") return;
-    WF[name] = function () {
-      var self = this, args = arguments, swapped = [];
-      Object.keys(self.steps).forEach(function (t) {
-        if (self.steps[t] && self.steps[t].kind === "tool") {
-          self.steps[t].kind = "generate";
-          swapped.push(t);
-        }
-      });
-      var restore = function () {
-        swapped.forEach(function (t) { if (self.steps[t]) self.steps[t].kind = "tool"; });
-      };
-      var out;
-      try { out = orig.apply(self, args); }
-      catch (e) { restore(); throw e; }
-      if (out && typeof out.then === "function") return out.then(
-        function (v) { restore(); return v; },
-        function (e) { restore(); throw e; });
-      restore();
-      return out;
-    };
-  }
-  withLegacyKind("_ensureRun");
-  withLegacyKind("run");
 
   /* ---------------------------------------------------------------------- */
   /* load the table                                                          */
@@ -339,7 +270,7 @@
           + "the model and control cards still work", true);
         return;
       }
-      (d.tools || []).forEach(function (def) { registerTool(def); attachRun(def); });
+      (d.tools || []).forEach(function (def) { registerTool(def); });
       (d.flow || []).forEach(function (def) { registerFlow(def); });
       // The builder may already be open: re-render the palette and the cards so
       // a saved graph's tool nodes stop rendering as the unknown-type fallback.

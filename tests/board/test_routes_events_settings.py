@@ -131,19 +131,14 @@ class TestSettingsApi:
         assert data["source"] == "env"
 
 
-class TestTheBudgetAliasStillWorks:
-    def test_the_old_route_writes_through_the_registry(self, client, root):
-        """`/api/spend/budget` predates the registry and something out there
-        still PATCHes it. One SQL row must not have two validators."""
-        got = client.patch("/api/spend/budget", json={"per_day_usd": 150})
-        assert got.status_code == 200
-        assert settings.get(root, "budget.per_day_usd") == 150
-        from bgate_core.board import spend
-        assert float(spend.budget(root)["per_day_usd"]) == 150
-
-    def test_it_refuses_the_same_nonsense_the_registry_refuses(self, client):
+class TestTheBudgetAliasIsGone:
+    def test_the_old_route_answers_404(self, client):
+        """`/api/spend/budget` wrote the per-item/per-day/per-project dollar
+        ceilings. There are no ceilings any more (db migration 0045), so the
+        route is gone — a 404 rather than a 200 that stores nothing."""
         assert client.patch("/api/spend/budget",
-                            json={"per_day_usd": "lots"}).status_code == 400
+                            json={"per_day_usd": 150}).status_code == 404
+        assert client.get("/api/spend").status_code == 404
 
 
 class TestConsoleAnswer:

@@ -47,8 +47,7 @@
   min-height: 0; overflow-y: auto;
 }
 .bgs-seatslb {
-  font: 500 10px var(--mono); letter-spacing: .18em;
-  text-transform: uppercase; color: var(--text-3); padding: 0 8px 10px;
+  font: 600 11px var(--sans); color: var(--text-2); padding: 0 8px 10px;
 }
 .bgs-seat {
   display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
@@ -135,8 +134,7 @@
 }
 .bgs-railhead.top { border-top: 1px solid var(--line) }
 .bgs-railhead .lb {
-  font: 500 10px var(--mono); letter-spacing: .18em;
-  text-transform: uppercase; color: var(--text-3);
+  font: 600 11px var(--sans); color: var(--text-2);
 }
 .bgs-railhead .hint, .bgs-railhead .n {
   margin-left: auto; font: 400 10px var(--mono); color: var(--text-3);
@@ -146,16 +144,10 @@
 /* ── the shared grammar ──────────────────────────────────────────────────── */
 .bgs-head { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px }
 .bgs-head:first-child { margin-top: 0 }
-/* THE LABEL AND ITS HINT ARE THE SAME SIZE AND STILL NOT THE SAME VOICE.
-   Both 10px mono; the label is 500, tracked .18em and upper-case, the hint is
-   400, untracked and a sentence. The design separated them by half a pixel
-   instead, which is a distinction the renderer cannot draw at this size — it
-   just blurs both. Weight, tracking and case are free and unambiguous. */
 .bgs-head .lb {
-  font: 500 10px var(--mono); letter-spacing: .18em;
-  text-transform: uppercase; color: var(--text-3);
+  font: 600 12px var(--sans); color: var(--text-2);
 }
-.bgs-head .hint { font: 400 10px var(--mono); color: var(--text-dim, var(--text-3)) }
+.bgs-head .hint { font: 400 11px var(--sans); color: var(--text-dim, var(--text-3)) }
 .bgs-head .sp { flex: 1 }
 
 .bgs-nothing {
@@ -232,10 +224,73 @@
   filter: brightness(1.08); color: var(--btn-fg, var(--accent-fg));
 }
 
+/* The seat's working surface: one brief goes in, live work comes back. Craft
+   reference panels remain tabs; this is the only default because it does the
+   thing a seat exists to do. */
+.bgs-desk {
+  display: grid; grid-template-columns: minmax(420px, 1.25fr) minmax(300px, .75fr);
+  min-height: 100%; background: var(--surface-2);
+}
+.bgs-brief { padding: clamp(24px, 4vw, 52px); border-right: 1px solid var(--line) }
+.bgs-brief-head {
+  display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px;
+  align-items: start; max-width: 760px; margin-bottom: 24px;
+}
+.bgs-brief-head h2 { margin: 0 0 6px; font: 550 20px/1.2 var(--sans); color: var(--text) }
+.bgs-brief-head p { margin: 0; max-width: 68ch; font: 400 12px/1.6 var(--sans); color: var(--text-2) }
+.bgs-brief-field { display: grid; gap: 6px; max-width: 760px; color: var(--text-2); font: 500 11px var(--sans) }
+.bgs-brief-field textarea {
+  display: block; width: 100%; max-width: 760px; min-height: 190px; box-sizing: border-box;
+  resize: vertical; padding: 16px 17px; border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--seat); border-radius: 5px; outline: 0;
+  background: var(--surface-3); color: var(--text); font: 400 13px/1.65 var(--sans);
+}
+.bgs-brief-field textarea:focus { border-color: var(--seat); box-shadow: 0 0 0 2px color-mix(in srgb,var(--seat) 14%,transparent) }
+.bgs-brief-field textarea::placeholder { color: var(--text-3) }
+.bgs-brief-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 760px; margin-top: 12px }
+.bgs-brief-pair textarea { min-height: 84px; padding: 10px 12px; border-left-width: 1px }
+.bgs-brief-tools {
+  display: flex; align-items: flex-end; gap: 8px; max-width: 760px; margin-top: 12px;
+}
+.bgs-brief-tools .sp { flex: 1 }
+.bgs-brief-tools label { display: grid; gap: 5px; font: 500 10px var(--mono); color: var(--text-3) }
+.bgs-brief-tools select,.bgs-brief-tools input {
+  min-width: 110px; padding: 6px 26px 6px 8px; border: 1px solid var(--line);
+  border-radius: 4px; background: var(--surface-3); color: var(--text); font: 500 11px var(--sans);
+}
+.bgs-brief-tools input { width: 72px; min-width: 0; padding-right: 8px }
+.bgs-brief-tools .bgs-btn.go { display: inline-flex; align-items: center; gap: 7px; --btn: var(--seat) }
+.bgs-scope { max-width: 760px; margin-top: 18px; border-top: 1px solid var(--line); padding-top: 11px }
+.bgs-scope summary { width: max-content; cursor: pointer; color: var(--text-3); font: 500 10px var(--mono) }
+.bgs-scope p { margin: 8px 0 0; color: var(--text-3); font: 500 10px/1.6 var(--mono); overflow-wrap: anywhere }
+.bgs-desk-disabled { max-width: 760px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--warn-line); color: var(--warn); font: 500 11px var(--mono) }
+
+.bgs-desk-work { min-width: 0; background: var(--surface-1); overflow-y: auto }
+.bgs-desk-title {
+  position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+  padding: 15px 16px 10px; background: var(--surface-1); color: var(--text-2);
+  font: 550 12px var(--sans); border-bottom: 1px solid var(--line);
+}
+.bgs-desk-title b { margin-left: auto; color: var(--text-3); font: 500 10px var(--mono) }
+.bgs-desk-title.recent { position: static; margin-top: 12px }
+.bgs-desk-list { padding: 0 14px }
+.bgs-desk-item {
+  display: grid; grid-template-columns: 7px minmax(0,1fr) auto auto; align-items: center;
+  gap: 9px; width: 100%; padding: 12px 2px; border: 0; border-bottom: 1px solid var(--line);
+  background: transparent; color: var(--text); text-align: left; cursor: pointer;
+}
+.bgs-desk-item:hover { background: var(--surface-2) }
+.bgs-desk-state { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim) }
+.bgs-desk-state.live { background: var(--seat); box-shadow: 0 0 0 3px color-mix(in srgb,var(--seat) 14%,transparent) }
+.bgs-desk-item .copy { min-width: 0; display: grid; gap: 4px }
+.bgs-desk-item .copy b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 12px var(--sans) }
+.bgs-desk-item .copy small,.bgs-desk-item .cost { color: var(--text-3); font: 500 9px var(--mono) }
+.bgs-desk-empty { padding: 18px 2px; color: var(--text-3); font: 400 12px/1.55 var(--sans) }
+
 /* ── cards, tables, rows ─────────────────────────────────────────────────── */
 .bgs-card {
-  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
-  padding: 12px 14px; margin-bottom: 10px;
+  border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent;
+  padding: 13px 2px 14px; margin-bottom: 0;
 }
 .bgs-card .h { display: flex; align-items: center; gap: 10px }
 .bgs-card .h .id { font: 500 10px var(--mono); color: var(--text-3) }
@@ -521,6 +576,30 @@
   .bgs-split, .bgs-split.left { grid-template-columns: 1fr; grid-auto-rows: min-content }
   .bgs-main { border-right: 0; border-bottom: 1px solid var(--line) }
   .bgs { grid-template-columns: 150px 1fr }
+  .bgs-desk { grid-template-columns: 1fr }
+  .bgs-brief { border-right: 0; border-bottom: 1px solid var(--line) }
+}
+
+@media (max-width: 760px) {
+  .bgs { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) }
+  .bgs-seats {
+    flex-direction: row; gap: 4px; padding: 7px 9px; overflow-x: auto;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  .bgs-seatslb, .bgs-seat .n { display: none }
+  .bgs-seat { width: auto; flex: none; padding: 6px 9px }
+  .bgs-topbar { height: auto; min-height: 42px; padding: 7px 10px; flex-wrap: wrap }
+  .bgs-tabs { order: 3; width: 100%; margin-left: 0; overflow-x: auto }
+  .bgs-tab { flex: 1 0 auto; justify-content: center }
+  .bgs-chipsrow { margin-left: auto }
+  .bgs-mission { padding-inline: 11px }
+  .bgs-main { padding-inline: 12px }
+  .bgs-two, .bgs-two.wide { grid-template-columns: 1fr }
+  .bgs-brief { padding: 20px 14px }
+  .bgs-brief-tools { align-items: stretch; flex-wrap: wrap }
+  .bgs-brief-tools .sp { display: none }
+  .bgs-brief-tools .bgs-btn { flex: 1 }
+  .bgs-brief-pair { grid-template-columns: 1fr }
 }
 
 /* The classic brainstorm workspace mounts here and owns every pixel inside it:

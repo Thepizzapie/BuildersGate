@@ -1,0 +1,1 @@
+import{r as o,j as c}from"./bgate-nav.js";function i({name:s,size:n=14}){const t=o.useRef(null);return o.useEffect(()=>{const e=t.current;if(!e)return;const r=window.BGIcon;r&&(!r.has||r.has(s))&&(e.innerHTML=r(s,{size:n}))},[s,n]),c.jsx("span",{className:"ic",ref:t,"aria-hidden":"true"})}export{i as I};

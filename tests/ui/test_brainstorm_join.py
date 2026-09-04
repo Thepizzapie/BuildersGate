@@ -443,8 +443,8 @@ class TestTheRoomTalks:
         again = [a for a in answers["asked"] if a["seat"] == "art"][-1]
         assert {"role": "assistant", "content": "mine"} in again["turns"]
 
-    def test_the_roster_reports_each_seat_and_what_it_spent(self, client, root,
-                                                            answers):
+    def test_the_roster_reports_each_seat_and_its_turns(self, client, root,
+                                                        answers):
         session = _new(client)
         _invite(client, session["id"], "art")
         for text in ("weather?", "and rain?"):
@@ -455,7 +455,6 @@ class TestTheRoomTalks:
         art = next(p for p in body["participants"] if p["seat"] == "art")
         assert art["state"] in _bs.PARTICIPANT_STATES
         assert art["turns"] == 2
-        assert art["spent_usd"] == pytest.approx(0.5)
         assert art["invited_at"]
         # The header chip's shape, per participant, so the roster draws one with
         # the code that draws the other.

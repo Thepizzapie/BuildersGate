@@ -465,6 +465,6 @@ def redaction_advice(root: str | os.PathLike[str]) -> dict:
         "message": ("" if on or not live else
                     "Chat is connected, so you are probably live — the path "
                     "filter is off, which means your home directory, username "
-                    "and hostname are on screen. Privacy → streamer mode turns "
+                      "and hostname are on screen. Privacy mode turns "
                     "it on."),
     }

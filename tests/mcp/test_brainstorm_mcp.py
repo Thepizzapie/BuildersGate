@@ -274,7 +274,7 @@ class TestATurnCannotDispatch:
         which reported `"mcp_servers":[]` and `"tools":[]`.
         """
         argv = _runners.RUNNERS["claude"].chat.build_args(
-            "claude", system="think with me", model="sonnet", max_usd=1.0)
+            "claude", system="think with me", model="sonnet")
         pairs = list(zip(argv, argv[1:]))
         assert "--strict-mcp-config" in argv
         assert "--mcp-config" not in argv

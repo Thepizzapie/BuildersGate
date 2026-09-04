@@ -1,363 +1,218 @@
-import { useMemo, useState } from "react";
-import {
-  Accordion, Badge, Button, Group, SegmentedControl, Table, Text, TextInput,
-} from "@mantine/core";
+import { useMemo, useState, type ReactNode } from "react";
+import { Badge, Button, Group, Table, TextInput } from "@mantine/core";
 import { useAppState, type AssetGroup } from "../../store";
-import {
-  askText, mutate, pollQueue, pollState, previewURL, seatColor, toast, vaultChip,
-} from "../../bridge";
-import { assetCategory, catOrder, groupStatus, groupThumb } from "./categorise";
+import { askText, mutate, pollQueue, pollState, previewURL, seatColor, toast, vaultChip } from "../../bridge";
+import { setUrlParams, urlParam } from "../../shell/urlState";
+import { Ti } from "../../shell/Ti";
 import { AssetDrawer } from "./AssetDrawer";
-
-/* The Assets deck.
- *
- * Three surfaces, and only two of them are React:
- *
- *   · the LIBRARY (#asset-lib-root) is still assetlib.js — a self-contained
- *     module with its own scan endpoint, its own injected style and its own
- *     view state. React owns the existence of that node and NOTHING inside it;
- *     the element is rendered with no children and never re-keyed, so the
- *     module's innerHTML survives every render here. Same contract as Icon.tsx.
- *   · the REVIEW QUEUE and the VAULT table are this file. They were ~250 lines
- *     of template strings in index.html with three hand-written signature
- *     caches to stop a 3s poll from destroying half-decoded <img>s, snapping
- *     open <details> folds shut, and losing text selections mid-drag. All three
- *     caches are gone: that is what a reconciler is for.
- *   · the GALLERY (#gallery) is still the shell's renderGallery.
- *
- * Data arrives on the shell's existing /api/state poll (see store.ts) — this
- * view does not fetch it a second time.
- */
+import { assetCategory, catOrder, groupStatus, groupThumb } from "./categorise";
+import "./assets.css";
 
 type Filter = "all" | "review" | "approved" | "rejected";
-
+type Mode = "review" | "library" | "integrity";
 const FILTERS: { id: Filter; label: string }[] = [
-  { id: "all", label: "All" },
-  { id: "review", label: "To review" },
-  { id: "approved", label: "Approved" },
-  { id: "rejected", label: "Rejected" },
+  { id: "all", label: "All" }, { id: "review", label: "To review" },
+  { id: "approved", label: "Approved" }, { id: "rejected", label: "Rejected" },
 ];
 
-/* What the vault thinks of one tracked file. A seat's lock outranks drift:
-   knowing WHO is holding it is what tells you whether the change is expected. */
 function VaultState({ a, modified, missing, pending }: {
   a: { path: string; lock_seat?: string | null };
   modified: Set<string>; missing: Set<string>; pending: Set<string>;
 }) {
-  if (a.lock_seat) {
-    // The seat's own colour, which is a project token and not a Mantine one.
-    const c = seatColor(a.lock_seat);
-    return (
-      <Badge variant="filled" style={{ background: c, color: "var(--accent-fg)" }}>
-        {a.lock_seat}
-      </Badge>
-    );
-  }
-  const drift = modified.has(a.path) ? "drift"
-    : missing.has(a.path) ? "missing"
-    : pending.has(a.path) ? "pending" : null;
-  return drift
-    ? <Badge variant="light" color="red">{drift}</Badge>
-    : <Badge variant="default">clean</Badge>;
+  if (a.lock_seat) return <Badge variant="filled" style={{ background: seatColor(a.lock_seat), color: "var(--accent-fg)" }}>{a.lock_seat}</Badge>;
+  const drift = modified.has(a.path) ? "drift" : missing.has(a.path) ? "missing" : pending.has(a.path) ? "pending" : null;
+  return drift ? <Badge variant="light" color="red">{drift}</Badge> : <Badge variant="default">clean</Badge>;
 }
 
 export default function Assets() {
   const { asset_groups: groups, assets, verify, canon } = useAppState();
+  const [mode, setMode] = useState<Mode>("review");
   const [filter, setFilter] = useState<Filter>("all");
+  const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
-  const [drawer, setDrawer] = useState<string | null>(null);
+  const [drawer, setDrawer] = useState<string | null>(() => urlParam("asset") || null);
   const [auditing, setAuditing] = useState(false);
 
   const counts = useMemo(() => {
-    const c = { all: groups.length, approved: 0, review: 0, rejected: 0 };
-    groups.forEach((g) => { c[groupStatus(g)]++; });
-    return c;
+    const value = { all: groups.length, approved: 0, review: 0, rejected: 0 };
+    groups.forEach((group) => { value[groupStatus(group)]++; });
+    return value;
   }, [groups]);
 
-  const buckets = useMemo(() => {
-    const q = search.toLowerCase().trim();
-    let out = groups;
-    if (filter !== "all") out = out.filter((g) => groupStatus(g) === filter);
-    if (q) out = out.filter((g) => g.logical_name.toLowerCase().includes(q));
-    const by: Record<string, AssetGroup[]> = {};
-    out.forEach((g) => {
-      (by[assetCategory(g.logical_name, canon)] ||= []).push(g);
+  const categories = useMemo(() => {
+    const found: Record<string, number> = {};
+    groups.forEach((group) => {
+      const name = assetCategory(group.logical_name, canon);
+      found[name] = (found[name] || 0) + 1;
     });
-    return catOrder(Object.keys(by)).map((cat) => [cat, by[cat]] as const);
-  }, [groups, filter, search, canon]);
+    return catOrder(Object.keys(found)).map((name) => ({ name, count: found[name] }));
+  }, [groups, canon]);
 
-  // The drawer follows the data: an asset that disappears from the poll closes
-  // it rather than leaving a panel describing something that is gone.
-  const open = drawer ? groups.find((g) => g.logical_name === drawer) || null : null;
+  const buckets = useMemo(() => {
+    const needle = search.toLowerCase().trim();
+    let shown = groups;
+    if (filter !== "all") shown = shown.filter((group) => groupStatus(group) === filter);
+    if (needle) shown = shown.filter((group) => group.logical_name.toLowerCase().includes(needle));
+    const byCategory: Record<string, AssetGroup[]> = {};
+    shown.forEach((group) => { (byCategory[assetCategory(group.logical_name, canon)] ||= []).push(group); });
+    return catOrder(Object.keys(byCategory)).filter((name) => category === "all" || category === name)
+      .map((name) => [name, byCategory[name]] as const);
+  }, [groups, filter, category, search, canon]);
 
-  /* Both of these used to collapse cancel into "" with `|| ""`, so Escape still
-     submitted — a blank-reason rejection persisted as precedent, and a paid
-     regeneration queued off a dialog the operator had backed out of. */
+  const open = drawer ? groups.find((group) => group.logical_name === drawer) || null : null;
+  const visibleCount = buckets.reduce((total, [, list]) => total + list.length, 0);
+
   async function review(id: number, status: string) {
     let note = "";
     if (status === "rejected") {
-      const said = await askText({
-        title: "Reject this revision",
-        label: "Reason for rejection (becomes precedent)",
-        placeholder: "what is off-model, and against which reference",
-        ok: "reject",
-      });
+      const said = await askText({ title: "Reject this revision", label: "Reason for rejection (becomes precedent)",
+        placeholder: "What is off-model, and against which reference?", ok: "Reject" });
       if (said == null) return;
       note = said;
     }
-    const r = await mutate(`/api/artifacts/${id}/review`, {
-      body: { status, note }, ok: `revision ${id} → ${status}`,
-    });
-    if (r.ok) pollState();
+    const result = await mutate(`/api/artifacts/${id}/review`, { body: { status, note }, ok: `revision ${id} → ${status}` });
+    if (result.ok) pollState();
   }
 
   async function regenerate(id: number) {
-    const reason = await askText({
-      title: "Regenerate this revision",
-      body: "This queues a paid image generation.",
-      label: "What should the next revision improve?",
-      ok: "queue regeneration",
-    });
+    const reason = await askText({ title: "Regenerate this revision", body: "This queues a paid image generation.",
+      label: "What should the next revision improve?", ok: "Queue regeneration" });
     if (reason == null) return;
-    const r = await mutate(`/api/artifacts/${id}/regenerate`, {
-      body: { reason }, ok: "regeneration queued",
-    });
-    if (r.ok) { pollState(); pollQueue(); }
+    const result = await mutate(`/api/artifacts/${id}/regenerate`, { body: { reason }, ok: "regeneration queued" });
+    if (result.ok) { pollState(); pollQueue(); }
   }
 
-  /* THE AUDIT REPORTED ITS OWN SUCCESS AS FAILURE, and did so on exactly the
-     projects that need it. It went through mutate(), which treats `ok:false` in
-     a payload as a refused request — but this endpoint's `ok` is the VAULT's
-     verdict ("nothing has drifted"), not the request's. Any project with a
-     single drifted file therefore got "audit failed" in the status bar, and
-     pollState() was never reached, so the count never refreshed. Measured: 196
-     drifted files, audit completed in under 120ms, button said "audit failed".
-     So this talks to the endpoint directly and keeps the two meanings of "ok"
-     apart: HTTP status is whether the audit RAN, the payload is what it FOUND. */
   async function audit() {
-    setAuditing(true);
-    vaultChip("hashing…");
+    setAuditing(true); vaultChip("hashing…");
     let payload: { counts?: Record<string, number> } | null = null;
     let failed = "";
     try {
-      const r = await fetch("/api/assets/verify", { method: "POST" });
-      if (!r.ok) failed = `the integrity audit could not run · ${r.status}`;
-      else payload = await r.json();
-    } catch {
-      failed = "backend unreachable - is the dashboard still running?";
-    }
+      const response = await fetch("/api/assets/verify", { method: "POST" });
+      if (!response.ok) failed = `the integrity audit could not run · ${response.status}`;
+      else payload = await response.json();
+    } catch { failed = "backend unreachable — is the dashboard still running?"; }
     setAuditing(false);
     if (failed) { vaultChip("audit failed"); toast(failed); return; }
-    const c = payload?.counts || {};
-    const off = (c.modified || 0) + (c.missing || 0) + (c.pending || 0);
-    toast(off
-      ? `${off} tracked file(s) no longer match their record - ${c.modified || 0} `
-        + `changed, ${c.missing || 0} missing, ${c.pending || 0} never hashed`
-      : "integrity audit clean - every tracked file matches its record",
-      off ? "" : "ok");
+    const next = payload?.counts || {};
+    const off = (next.modified || 0) + (next.missing || 0) + (next.pending || 0);
+    toast(off ? `${off} tracked file(s) need attention — ${next.modified || 0} changed, ${next.missing || 0} missing, ${next.pending || 0} pending`
+      : "integrity audit clean — every tracked file matches its record", off ? "" : "ok");
     pollState();
   }
 
   const vc = verify.counts || {};
   const drift = (vc.modified || 0) + (vc.missing || 0) + (vc.pending || 0);
-  const auditTitle = drift
-    ? `${drift} tracked file(s) no longer match the hash on record (${vc.modified || 0} `
-      + `changed, ${vc.missing || 0} missing, ${vc.pending || 0} never hashed). This `
-      + "re-hashes every tracked binary and reports what it finds - it reads and "
-      + "reports, it does not touch your files."
-    : "Every tracked file matches its recorded hash. Re-hashes them all and "
-      + "reports - it reads and reports, it does not touch your files.";
-
-  const modified = new Set((verify.modified || []).map((m) => m.path));
+  const modified = new Set((verify.modified || []).map((entry) => entry.path));
   const missing = new Set(verify.missing || []);
   const pending = new Set(verify.untracked_hash || []);
+  const closeInspector = () => { setDrawer(null); setUrlParams({ asset: null }); };
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    if (next === "library") requestAnimationFrame(() => window.AssetLib?.activate?.());
+  };
 
-  return (
-    <>
-      {/* WHAT WILL THIS BUTTON DO. "run integrity audit" carried no title, no
-          description and no relation to the "vault N to reconcile" badge in the
-          status bar that it is the only control for — the owner's words were
-          "no idea what these do". A title attribute is not the fix on its own:
-          hover is a thing you do to a control you have already decided to risk
-          pressing. So the actions are split by what they touch (open an editor
-          vs go and do work), the work ones say their effect in the sentence
-          below them, and the audit is named after the number it clears and
-          carries that number on its face. */}
-      <div className="view-heading">
-        <div><span className="eyebrow">Library</span><h2>Assets</h2></div>
-        <div className="act-cluster">
-          <Group gap="xs" wrap="nowrap">
-            <span className="act-lab">open</span>
-            <Button variant="default" size="xs" onClick={() => window.SpriteEdit?.pick()}
-                    title="Pick a sprite sheet and open it in the pixel and rig editor">
-              sprite editor
-            </Button>
-            <Button variant="default" size="xs" onClick={() => window.AudioLab?.pick()}
-                    title="Pick a sound or track and open it in the audio lab">
-              audio lab
-            </Button>
-            <Button variant="default" size="xs" onClick={() => window.ModelEdit?.pick()}
-                    title="Pick a 3D model and open it in the viewer">
-              3D viewer
-            </Button>
-          </Group>
-          <Group gap="xs" wrap="nowrap" mt="xs">
-            <span className="act-lab">check</span>
-            {/* rescan LIVES HERE, not in the filter rail below. It walks the
-                whole project off disk, and as a pill among fifteen family
-                filters it was the same shape and colour as `tiles` — nothing
-                said it would go and do something. */}
-            <Button variant="default" size="xs" onClick={() => window.AssetLib?.refresh()}
-                    title="Walk the project off disk again and rebuild the library below. Reads only.">
-              rescan library
-            </Button>
-            {/* The count rides on the button's face: it is named after the badge
-                in the status bar, and a button named after a number that does
-                not carry it is still a button nobody connects to the badge. */}
-            <Button variant="default" size="xs" onClick={audit} loading={auditing}
-                    title={auditTitle}
-                    rightSection={drift > 0
-                      ? <Badge size="sm" variant="filled">{drift}</Badge>
-                      : undefined}>
-              reconcile vault
-            </Button>
-          </Group>
-          <Text component="p" size="xs" c="dimmed" className="act-note">
-            <b>rescan library</b> re-reads the project from disk.{" "}
-            <b>reconcile vault</b> re-hashes tracked files and reports what drifted -
-            it is what clears the vault count in the status bar. Neither one writes
-            to your game.
-          </Text>
-        </div>
-      </div>
+  return <div className="asset-desk">
+    <header className="asset-desk-head">
+      <div className="asset-desk-title"><h2>Assets</h2><span>{groups.length} production assets</span>
+        {counts.review > 0 && <b>{counts.review} need review</b>}</div>
+      <Group gap={6} wrap="nowrap" className="asset-desk-actions">
+        <Button variant="default" size="compact-xs" leftSection={<Ti name="photo" size={13} />} onClick={() => window.SpriteEdit?.pick()}>Sprite editor</Button>
+        <Button variant="default" size="compact-xs" leftSection={<Ti name="wave-sine" size={13} />} onClick={() => window.AudioLab?.pick()}>Audio lab</Button>
+        <Button variant="default" size="compact-xs" leftSection={<Ti name="box" size={13} />} onClick={() => window.ModelEdit?.pick()}>3D viewer</Button>
+      </Group>
+    </header>
 
-      {/* assetlib.js writes here, and REACT RENDERS IT EMPTY ON PURPOSE. A
-          placeholder child in this JSX is a child React believes it owns: every
-          poll reconciles it, and the moment anything about it changes React
-          restores its own copy over the library the module had just drawn. The
-          module prints its own "reading the library…" anyway. */}
+    <nav className="asset-modes" aria-label="Asset workspace">
+      <ModeButton active={mode === "review"} icon="checks" label="Review" count={counts.review} onClick={() => switchMode("review")} />
+      <ModeButton active={mode === "library"} icon="library" label="Library" count={groups.length} onClick={() => switchMode("library")} />
+      <ModeButton active={mode === "integrity"} icon="shield-check" label="Integrity" count={drift} warn={drift > 0} onClick={() => switchMode("integrity")} />
+    </nav>
+
+    <section className="asset-mode asset-mode-library" hidden={mode !== "library"}>
+      <div className="asset-mode-bar"><div><b>Project library</b><span>Files discovered across the current game project.</span></div>
+        <Button variant="default" size="compact-xs" leftSection={<Ti name="refresh" size={13} />} onClick={() => window.AssetLib?.refresh()}>Rescan project</Button></div>
       <div id="asset-lib-root" />
+    </section>
 
-      {/* AN ACCORDION, NOT TWO <details>. Both panels are long, both are
-          optional, and a <details> pair gives no indication that they are the
-          same kind of thing — the chevron, the transition and the keyboard
-          handling all had to be taken on faith from app.css. multiple=true
-          keeps the old behaviour that either can be open on its own. */}
-      <Accordion multiple variant="separated" mt="md" chevronPosition="left">
-        <Accordion.Item value="review">
-          <Accordion.Control>
-            <Group gap="sm">
-              Review queue · generated candidates by logical name
-              {counts.review > 0 && <Badge variant="light" size="sm">{counts.review} to review</Badge>}
-            </Group>
-          </Accordion.Control>
-          <Accordion.Panel>
-        <div className="asset-toolbar">
-          <TextInput placeholder="Search assets…" value={search}
-                     onChange={(e) => setSearch(e.currentTarget.value)}
-                     aria-label="Search assets" style={{ flex: "1 1 240px" }} />
-          {/* A SEGMENTED CONTROL, NOT FOUR BUTTONS. These four are one exclusive
-              choice and were four independent <button>s carrying an .active
-              class — nothing in the markup said only one could be on, so no
-              screen reader could say it either. Mantine's is a radiogroup with
-              roving focus and arrow-key movement for free. */}
-          <SegmentedControl value={filter} onChange={(v) => setFilter(v as Filter)}
-                            data={FILTERS.map((f) => ({
-                              value: f.id,
-                              label: (
-                                <Group gap={6} wrap="nowrap" justify="center">
-                                  {f.label}
-                                  <Badge size="xs" variant="light">{counts[f.id]}</Badge>
-                                </Group>
-                              ),
-                            }))} />
-        </div>
+    {mode === "review" && <section className="asset-review-desk">
+      <aside className="asset-filter-rail" aria-label="Review filters">
+        <FilterSection label="Status">{FILTERS.map((item) => <FilterButton key={item.id} active={filter === item.id}
+          label={item.label} count={counts[item.id]} dot={item.id} onClick={() => setFilter(item.id)} />)}</FilterSection>
+        <FilterSection label="Type"><FilterButton active={category === "all"} label="Everything" count={groups.length} onClick={() => setCategory("all")} />
+          {categories.map((item) => <FilterButton key={item.name} active={category === item.name} label={item.name}
+            count={item.count} onClick={() => setCategory(item.name)} />)}</FilterSection>
+      </aside>
+      <main className="asset-review-main">
+        <div className="asset-review-bar"><TextInput placeholder="Search production assets" value={search}
+          leftSection={<Ti name="search" size={14} />} onChange={(event) => setSearch(event.currentTarget.value)} aria-label="Search production assets" />
+          <span>{visibleCount} shown</span></div>
         <div className="asset-scroll">
-          {!buckets.length && <div className="empty">no assets match this filter</div>}
-          {buckets.map(([cat, list]) => (
-            <div key={cat} className="asset-section">
-              <div className="asset-section-head">{cat} <span className="n">{list.length}</span></div>
-              <div className="asset-grid">
-                {list.map((g) => {
-                  const st = groupStatus(g);
-                  const thumb = groupThumb(g);
-                  const nCand = g.candidates?.length || 0;
-                  const nRev = g.revisions?.length || 0;
-                  return (
-                    <div key={g.logical_name}
-                         className={`asset-tile ${st}${drawer === g.logical_name ? " sel" : ""}`}
-                         onClick={() => setDrawer(g.logical_name)}>
-                      {nCand > 0 && <span className="asset-badge">{nCand} new</span>}
-                      <div className="asset-thumb">
-                        {thumb
-                          ? <img src={previewURL(thumb)} alt={g.logical_name} loading="lazy" />
-                          : <span className="none">{g.revisions?.[0]?.kind || "asset"}</span>}
-                      </div>
-                      <div className="asset-cap">
-                        <div className="asset-name" title={g.logical_name}>{g.logical_name}</div>
-                        <div className="asset-sub">
-                          <span className={`sdot ${st}`} />
-                          {st === "review" ? "needs review" : st} · {nRev} rev{nRev === 1 ? "" : "s"}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+          {!buckets.length && <div className="asset-empty"><Ti name="photo-off" size={22} /><b>No assets match</b>
+            <span>Clear a filter or rescan the project library.</span></div>}
+          {buckets.map(([name, list]) => <AssetSection key={name} name={name} groups={list} selected={drawer}
+            onSelect={(logicalName) => { setDrawer(logicalName); setUrlParams({ asset: logicalName }); }} />)}
         </div>
-          </Accordion.Panel>
-        </Accordion.Item>
+      </main>
+      {open ? <AssetDrawer group={open} inline onClose={closeInspector} onReview={review} onRegenerate={regenerate}
+        onOpenSprite={(rel) => window.SpriteEdit?.open(rel)} onOpenModel={(rel) => window.ModelEdit?.open(rel)} />
+      : <aside className="asset-inspector asset-inspector-empty"><Ti name="versions" size={26} /><b>Select an asset</b>
+          <span>Compare revisions, inspect generation context, and approve the version that belongs in the game.</span></aside>}
+    </section>}
 
-        <Accordion.Item value="vault">
-          <Accordion.Control>
-            <Group gap="sm">
-              Tracked binaries · integrity
-              <Badge variant="default" size="sm">{assets.length}</Badge>
-              {drift > 0 && <Badge variant="light" color="red" size="sm">{drift} drifted</Badge>}
-            </Group>
-          </Accordion.Control>
-          <Accordion.Panel>
-        <div className="vault-scroll">
-          {/* A REAL <thead>. This was a <tr> of <th> inside the table body, so
-              the header scrolled away with the rows and no assistive technology
-              could associate a cell with its column. */}
-          <Table stickyHeader>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>path</Table.Th><Table.Th>kind</Table.Th>
-                <Table.Th>size</Table.Th><Table.Th>state</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {assets.map((a) => (
-                <Table.Tr key={a.path}>
-                  <Table.Td className="path" title={a.path}>{a.path}</Table.Td>
-                  <Table.Td>{a.kind}</Table.Td>
-                  <Table.Td>{a.bytes ? (a.bytes / 1024).toFixed(1) + "k" : "-"}</Table.Td>
-                  <Table.Td><VaultState a={a} modified={modified} missing={missing} pending={pending} /></Table.Td>
-                </Table.Tr>
-              ))}
-              {!assets.length && (
-                <Table.Tr><Table.Td colSpan={4} style={{ color: "var(--text-3)" }}>
-                  nothing tracked yet - asset_track / asset_lock
-                </Table.Td></Table.Tr>
-              )}
-            </Table.Tbody>
-          </Table>
-        </div>
-          </Accordion.Panel>
-        </Accordion.Item>
-      </Accordion>
+    {mode === "integrity" && <section className="asset-integrity">
+      <div className="asset-mode-bar"><div><b>{drift ? `${drift} files need attention` : "Every tracked file matches"}</b>
+        <span>Compare project files with the hashes recorded by the vault.</span></div>
+        <Button variant={drift ? "filled" : "default"} size="compact-sm" onClick={audit} loading={auditing}
+          leftSection={<Ti name="shield-search" size={14} />}>Run integrity audit</Button></div>
+      <div className="asset-integrity-summary"><span><b>{assets.length}</b> tracked</span><span><b>{vc.modified || 0}</b> changed</span>
+        <span><b>{vc.missing || 0}</b> missing</span><span><b>{vc.pending || 0}</b> pending</span></div>
+      <div className="vault-scroll"><Table stickyHeader highlightOnHover>
+        <Table.Thead><Table.Tr><Table.Th>Path</Table.Th><Table.Th>Kind</Table.Th><Table.Th>Size</Table.Th><Table.Th>State</Table.Th></Table.Tr></Table.Thead>
+        <Table.Tbody>{assets.map((asset) => <Table.Tr key={asset.path}><Table.Td className="path" title={asset.path}>{asset.path}</Table.Td>
+          <Table.Td>{asset.kind}</Table.Td><Table.Td>{asset.bytes ? `${(asset.bytes / 1024).toFixed(1)}k` : "—"}</Table.Td>
+          <Table.Td><VaultState a={asset} modified={modified} missing={missing} pending={pending} /></Table.Td></Table.Tr>)}
+          {!assets.length && <Table.Tr><Table.Td colSpan={4}>No files are tracked yet.</Table.Td></Table.Tr>}
+        </Table.Tbody>
+      </Table></div>
+    </section>}
+    <div className="gallery" id="gallery" hidden />
+  </div>;
+}
 
-      {/* The shell's renderGallery writes here. */}
-      <div className="gallery" id="gallery" hidden />
+function ModeButton({ active, icon, label, count, warn, onClick }: {
+  active: boolean; icon: string; label: string; count: number; warn?: boolean; onClick: () => void;
+}) {
+  return <button className={active ? "on" : ""} onClick={onClick}><Ti name={icon} size={15} />
+    <span>{label}</span><b className={warn ? "warn" : ""}>{count}</b></button>;
+}
 
-      <AssetDrawer group={open} onClose={() => setDrawer(null)}
-                   onReview={review} onRegenerate={regenerate}
-                   onOpenSprite={(rel) => window.SpriteEdit?.open(rel)}
-                   onOpenModel={(rel) => window.ModelEdit?.open(rel)} />
-    </>
-  );
+function FilterSection({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="asset-rail-section"><span>{label}</span>{children}</div>;
+}
+
+function FilterButton({ active, label, count, dot, onClick }: {
+  active: boolean; label: string; count: number; dot?: string; onClick: () => void;
+}) {
+  return <button className={active ? "on" : ""} onClick={onClick}>
+    {dot && <span className={`sdot ${dot === "all" ? "neutral" : dot}`} />}<span>{label}</span><b>{count}</b></button>;
+}
+
+function AssetSection({ name, groups, selected, onSelect }: {
+  name: string; groups: AssetGroup[]; selected: string | null; onSelect: (name: string) => void;
+}) {
+  return <div className="asset-section"><div className="asset-section-head">{name}<span className="n">{groups.length}</span></div>
+    <div className="asset-grid">{groups.map((group) => {
+      const status = groupStatus(group); const thumb = groupThumb(group);
+      const candidates = group.candidates?.length || 0; const revisions = group.revisions?.length || 0;
+      return <button key={group.logical_name} type="button" className={`asset-tile ${status}${selected === group.logical_name ? " sel" : ""}`}
+        onClick={() => onSelect(group.logical_name)}>
+        {candidates > 0 && <span className="asset-badge">{candidates} new</span>}
+        <div className="asset-thumb">{thumb ? <img src={previewURL(thumb)} alt="" loading="lazy" />
+          : <span className="none">{group.revisions?.[0]?.kind || "asset"}</span>}</div>
+        <div className="asset-cap"><div className="asset-name" title={group.logical_name}>{group.logical_name}</div>
+          <div className="asset-sub"><span className={`sdot ${status}`} />{status === "review" ? "needs review" : status}
+            <span>{revisions} rev{revisions === 1 ? "" : "s"}</span></div></div>
+      </button>;
+    })}</div>
+  </div>;
 }

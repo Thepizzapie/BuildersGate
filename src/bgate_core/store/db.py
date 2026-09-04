@@ -308,6 +308,56 @@ def _work_item_drop_scope_tier(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _drop_money_ledger(conn: sqlite3.Connection) -> None:
+    """0045 — tear out the books this product had no business keeping.
+
+    `spend_event` summed every paid call, `spend_budget` carried
+    per-item/per-day/per-project dollar ceilings, and `spend_hold` reserved
+    money before a provider was called so a ceiling could refuse work mid-run.
+    Wrong at the concept, not in the arithmetic: the only budget that exists is
+    the balance on the user's own provider account, and that is the provider's
+    number to report (`provider_status`, `kie_status`), not a total this
+    database invents by multiplying guessed unit prices. Every dollar figure it
+    produced matched no statement anywhere, and the ceilings refused real work
+    on behalf of imaginary spend.
+
+    Dropped rather than left dark — a dead ledger is a number someone prints
+    again. The two limits that were never about money move to `run_limits` and
+    stay: a run that never ends and a fan-out with no cap are real failures
+    that a wall clock and a process count stop.
+
+    Written as a callable because it is re-runnable by construction: the
+    carry-over reads `spend_budget` only if that table is still there.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS run_limits (
+            id             INTEGER PRIMARY KEY CHECK (id = 1),
+            max_runtime_s  INTEGER NOT NULL DEFAULT 1800,
+            max_concurrent INTEGER NOT NULL DEFAULT 4,
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    carried = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'spend_budget'").fetchone()
+    if carried:
+        conn.execute(
+            "INSERT OR IGNORE INTO run_limits (id, max_runtime_s, max_concurrent) "
+            "SELECT 1, max_runtime_s, max_concurrent FROM spend_budget WHERE id = 1")
+    conn.execute("INSERT OR IGNORE INTO run_limits (id) VALUES (1)")
+    for table in ("spend_hold", "spend_event", "spend_budget"):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    # The per-participant copy of the same idea. DROP COLUMN needs SQLite 3.35
+    # (2021) and this must not be the thing that stops a project opening on an
+    # older build, so a refusal leaves the column sitting there unwritten and
+    # unread rather than failing the migration.
+    try:
+        conn.execute("ALTER TABLE brainstorm_participant DROP COLUMN spent_usd")
+    except Exception:                                            # noqa: BLE001
+        pass
+    conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Schema. Forward-only: append, never rewrite.
 #
@@ -2154,6 +2204,9 @@ _MIGRATIONS: list = [
     CREATE INDEX idx_agent_runs_item ON agent_runs(item_id, started_at);
     CREATE INDEX idx_agent_runs_open ON agent_runs(ended_at, started_at);
     """,
+
+    # 0045 — THE MONEY LEDGER IS GONE. See _drop_money_ledger.
+    _drop_money_ledger,
 ]
 
 

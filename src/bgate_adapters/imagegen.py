@@ -7,7 +7,7 @@ An image model cannot hold a character rig steady across twelve poses; Blender
 cannot paint like a splash screen. Use each for what it is.
 
 The key comes from OPENAI_API_KEY (the project's .env is loaded by the server).
-It is read at call time and never appears in results, logs, or the ledger.
+It is read at call time and never appears in results or logs.
 """
 from __future__ import annotations
 
@@ -144,22 +144,6 @@ def cost_meta(result: dict) -> dict:
             "usd": (result or {}).get("usd")}
 
 
-def _account(result: dict, root: Any, logical_name: str,
-             work_item_id: Optional[int], detail: str) -> None:
-    """Write the estimated spend to the ledger. Best-effort by construction:
-    losing a ledger row must never lose the image that was paid for."""
-    if not root or not result.get("ok"):
-        return
-    try:
-        from bgate_core.board import spend
-
-        spend.record(root, float(result.get("usd") or 0.0),
-                     kind="image", work_item_id=work_item_id,
-                     logical_name=logical_name or "", detail=detail)
-    except Exception:
-        pass
-
-
 def _model_for(transparent: bool) -> str:
     """BGATE_IMAGE_MODEL forces one model for everything; otherwise BOTH modes
     route to gpt-image-1 (the 2026-07-20 ban above — this used to send opaque
@@ -242,8 +226,6 @@ def _reject_multi_pose(prompt: str, allow_multi: bool) -> dict | None:
 def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
              quality: str = "medium", transparent: bool = False,
              allow_multi: bool = False, timeout: float = 300.0,
-             root: Any = None, logical_name: str = "",
-             work_item_id: Optional[int] = None,
              ref_paths: Sequence[str] = (), task_kind: str = "",
              tileable: bool = False) -> dict:
     """Generate one image to out_path. Returns {ok, path, bytes, ...} or an error.
@@ -270,9 +252,10 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
     provider's own mode and can live with whatever arrives.
 
     Every result carries ``seconds`` (wall clock the call actually took) and
-    ``usd`` (from IMAGE_PRICE_USD — the one price table). Pass ``root``
-    to also append the spend to the project ledger, keyed by ``logical_name`` so
-    the art lab can show a running total per asset.
+    ``usd`` (from IMAGE_PRICE_USD — the one price table). That figure is a
+    per-call estimate for the caller to show, and nothing sums it: this product
+    keeps no ledger and holds no budget. What a run has actually cost is a
+    question for the provider account, not for us.
     """
     size = size_for(size, task_kind=task_kind)
     if size not in SIZES:
@@ -282,8 +265,7 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
     if ref_paths:
         return edit(prompt, [str(p) for p in ref_paths], out_path, size=size,
                     quality=quality, transparent=transparent,
-                    allow_multi=allow_multi, timeout=timeout, root=root,
-                    logical_name=logical_name, work_item_id=work_item_id,
+                    allow_multi=allow_multi, timeout=timeout,
                     task_kind=task_kind, tileable=tileable)
     rejected = _reject_multi_pose(prompt, allow_multi)
     if rejected:
@@ -320,16 +302,13 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
     saved = _save(result, out_path, model, size, quality, transparent,
                   seconds=round(time.monotonic() - started, 2))
     _tile(saved, tileable)
-    _account(saved, root, logical_name or Path(out_path).stem, work_item_id,
-             f"generate {size} {quality}" + (" transparent" if transparent else ""))
     return saved
 
 
 def _tile(result: dict, tileable: bool) -> None:
     """Run the mirrored pass over a finished file and record what it did.
 
-    Best-effort in the same sense the ledger is: the generation has already been
-    paid for, and a post-pass that could not run must not turn a good image into
+    Best-effort: the generation has already been paid for, and a post-pass that could not run must not turn a good image into
     an error. The result carries the note so a human can see which files are
     only tiling because they were mirrored.
     """
@@ -341,8 +320,7 @@ def _tile(result: dict, tileable: bool) -> None:
 def edit(prompt: str, ref_paths: list[str], out_path: str, *,
          size: str = "1024x1024", quality: str = "medium",
          transparent: bool = False, allow_multi: bool = False,
-         timeout: float = 300.0, root: Any = None, logical_name: str = "",
-         work_item_id: Optional[int] = None, task_kind: str = "",
+         timeout: float = 300.0, task_kind: str = "",
          tileable: bool = False) -> dict:
     """Generate an image CONDITIONED ON reference image(s) — the consistency
     primitive. A fresh generation invents a new character every time; an edit
@@ -413,8 +391,6 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
     saved = _save(result, out_path, model, size, quality, transparent,
                   seconds=round(time.monotonic() - started, 2))
     _tile(saved, tileable)
-    _account(saved, root, logical_name or Path(out_path).stem, work_item_id,
-             f"edit {size} {quality} ({len(ref_paths)} ref)")
     return saved
 
 

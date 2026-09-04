@@ -60,9 +60,11 @@ separate chains.
 Turning a queued item into a running agent. The dashboard spawns a `claude`
 process with `BGATE_SEAT`, `BGATE_ROOT`, `BGATE_WORK_ITEM` and
 `BGATE_ACTOR=agent:item-<id>`, on a captured git base commit so its edits read
-as a diff. Before any process exists it re-checks the concurrency cap, the spend
-ceilings, the chain predecessor, and whether your tree is dirty
-(`src/bgate_ui/agents/dispatch.py`). Filing is free; dispatching spends money.
+as a diff. Before any process exists it re-checks the concurrency cap, the chain
+predecessor, and whether your tree is dirty
+(`src/bgate_ui/agents/dispatch.py`). Filing is free; dispatching spends money —
+and nothing here caps that, because Builders Gate keeps no ledger and the only
+budget that exists is the balance on your own provider account.
 
 **The approval gate**
 Who signs off before an agent's work counts as `done`, in three modes
@@ -84,7 +86,7 @@ overriding.
 ## Events and notifications
 
 **The event log**
-Every status transition, gate change, spend refusal and question, as rows in the
+Every status transition, gate change, refusal and question, as rows in the
 `event` table (`src/bgate_core/store/events.py`). Subscribers read forward from a
 **cursor**, a row id kept per consumer, so a dashboard that was off for an hour
 resumes where it stopped. Delivery is at-least-once, so every reaction carries a
@@ -114,7 +116,7 @@ narrate a chain advancing, or debrief the director. `decide(events, settings,
 board)` is a pure function returning actions and touching nothing.
 
 The **director debrief** files a `source='completion'` item carrying the
-harness-observed file list, chain context, gate mode and remaining budget. Its
+harness-observed file list, chain context and gate mode. Its
 only legal moves are: dispatch the follow-up, `ask_human`, or close it out. It
 is off by default, one per chain, rate-capped, skipped past `max_age_min`, and
 never fires for `qa-gate`, `completion` or `chat` work. It dispatches with
@@ -143,7 +145,7 @@ a queued row is a row somebody has to dispatch in order to read.
 
 **Settings**
 One registry (`src/bgate_core/store/settings.py`) describing where each switch already
-lives: a workspace doc, the `spend_budget` row, a module default. Storage did
+lives: a workspace doc, the `run_limits` row, a module default. Storage did
 not move. What the registry adds is one validator and one precedence rule,
 **env > project stored > default**, with the API reporting which layer won.
 

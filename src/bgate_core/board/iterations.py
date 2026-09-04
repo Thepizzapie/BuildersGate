@@ -279,8 +279,8 @@ def complete_from_playtest(root: str | os.PathLike[str], iteration_id: int,
 # answers "is this a different build" and nothing else. The question the
 # timeline exists to answer is whether the last round of work MOVED anything,
 # and the data to answer it now exists: playtest_item statuses (what was found
-# and what was accepted), work_item.attempts (what had to be redone), qa_bot_run
-# (whether the automated checks agree), spend_event (what it cost).
+# and what was accepted), work_item.attempts (what had to be redone) and
+# qa_bot_run (whether the automated checks agree).
 # ---------------------------------------------------------------------------
 def _metrics(conn, row) -> dict:
     """Raw, comparable numbers for one iteration. No judgement here."""
@@ -313,10 +313,6 @@ def _metrics(conn, row) -> dict:
             (start, end)):
         qa[bot["verdict"]] = int(bot["n"])
 
-    spend = float(conn.execute(
-        "SELECT COALESCE(SUM(usd), 0) FROM spend_event "
-        "WHERE created_at >= ? AND created_at <= ?", (start, end)).fetchone()[0])
-
     work = {"done": 0, "failed": 0, "cancelled": 0}
     rework = 0
     for item in conn.execute(
@@ -346,14 +342,13 @@ def _metrics(conn, row) -> dict:
         "qa": qa,
         "qa_pass_rate": round(qa["pass"] / qa_total, 3) if qa_total else None,
         "checks_status": checks.get("status", "not_captured"),
-        "spend_usd": round(spend, 4),
         "work": work,
         "rework_rounds": rework,
     }
 
 
 _BETTER = ("feedback_resolved", "qa_pass_rate")
-_WORSE = ("open_problems", "rework_rounds", "spend_usd")
+_WORSE = ("open_problems", "rework_rounds")
 
 
 def progress(root: str | os.PathLike[str], iteration_id: int) -> dict:
@@ -414,9 +409,6 @@ def progress(root: str | os.PathLike[str], iteration_id: int) -> dict:
     if deltas.get("rework_rounds", 0) > 0:
         reasons.append(f"{deltas['rework_rounds']:+.0f} rework rounds "
                        "(items sent back to be redone)")
-    if current["spend_usd"]:
-        reasons.append(f"cost ${current['spend_usd']:.2f} "
-                       f"({deltas.get('spend_usd', 0):+.2f} vs previous)")
 
     if not deltas or (current["problems_reported"] == 0
                       and previous["problems_reported"] == 0

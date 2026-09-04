@@ -2,9 +2,8 @@
 
 WHAT THIS REPLACES AND WHY. A console message used to become a work item
 dispatched to a fresh seat-worker process: a switchboard prompt ("answer and
-route, ten tool calls is a bug"), the director seat's lanes, a per-item cost
-ceiling, and — because every message was a new process — no memory of the
-message before it. The human's verdict on that, verbatim enough: it deflects,
+route, ten tool calls is a bug"), the director seat's lanes, and — because
+every message was a new process — no memory of the message before it. The human's verdict on that, verbatim enough: it deflects,
 it cannot investigate, and they end up opening a terminal and running `claude`
 in the project to get a director that works. This module is that terminal
 session, wired behind the console.
@@ -35,11 +34,10 @@ So the design is stated by what it is equal to: what you get by running
     escalates a stuck item to the director as a real row it must settle.
     ``submit`` is that path.
 
-WHAT BOUNDS IT, since the per-item ceilings deliberately do not apply: the
-CLI's own --max-budget-usd per process, a session ceiling across respawns
-(console.max_usd — a refusal is delivered as the REPLY, not as a failure), a
-turn timeout generous enough for real investigation, and the kill switch
-(dispatch.kill_all reaches this module the same way it reaches brainsession).
+WHAT BOUNDS IT: a turn timeout generous enough for real investigation, and the
+kill switch (dispatch.kill_all reaches this module the same way it reaches
+brainsession). No money ceiling — this product does not meter spend, and the
+one budget that exists is the balance on the user's own provider account.
 
 brainsession deliberately never imports dispatch so the read-only room cannot
 drift into holding the dispatcher. This module has no such rule — it IS the
@@ -59,7 +57,6 @@ from pathlib import Path
 from bgate_core.board import activity as _activity
 from bgate_core.board import queue as _queue
 from bgate_core.store import settings as _settings
-from bgate_core.board import spend as _spend
 from bgate_ui.agents import runners as _runners
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -287,11 +284,13 @@ def history(root, after: int = 0) -> dict:
     live = status(root)
     return {"messages": msgs[-CHAT_LIMIT:],
             "running": bool(live.get("running")),
+            # Why a running turn is producing nothing, when it is not the model
+            # thinking: an overloaded API being retried, or a refused usage
+            # window. Empty when the turn is simply working.
+            "waiting": str(live.get("waiting") or ""),
             "live": bool(live.get("live")),
             "session_id": live.get("cli_session_id") or "",
-            "spent_usd": live.get("spent_usd") or 0.0,
-            "model": _model_for(root),
-            "ceiling_usd": _ceiling(root)}
+            "model": _model_for(root)}
 
 
 def send(root, text: str) -> dict:
@@ -367,13 +366,6 @@ def _model_for(root) -> str:
                or "").strip() or FALLBACK_MODEL
 
 
-def _ceiling(root) -> float:
-    try:
-        return max(0.0, float(_setting(root, "console.max_usd", 15.0)))
-    except (TypeError, ValueError):
-        return 15.0
-
-
 def _kill_tree(pid: int) -> None:
     """Kill the CLI and its children (the MCP server it spawned).
 
@@ -429,7 +421,7 @@ def _spawn(root, resume: str = "") -> dict:
     handle.flush()
     args = _runners._claude_director_args(
         exe, system=system_prompt(root), model=_model_for(root),
-        max_usd=_ceiling(root), resume=resume)
+        resume=resume)
     try:
         proc = subprocess.Popen(
             args, cwd=str(root), env=_environ(root),
@@ -441,9 +433,10 @@ def _spawn(root, resume: str = "") -> dict:
         raise Unavailable(f"could not start claude: {exc}") from exc
     entry = {"proc": proc, "handle": handle, "stdin": proc.stdin,
              "log": str(path), "scan_pos": handle.tell(), "rem": b"",
-             "spent_usd": 0.0, "turns": 0, "ok_turns": 0,
+             "turns": 0, "ok_turns": 0,
              "cli_session_id": str(resume or ""), "resumed": bool(resume),
              "current_item": 0, "busy": False, "record": "", "says": [],
+             "waiting": "",
              "started_at": time.monotonic(), "last_at": time.monotonic(),
              "turn_lock": threading.Lock()}
     with _lock:
@@ -508,14 +501,15 @@ def status(root) -> dict:
             return {"live": False, "running": False, "current_item": 0,
                     "thinking": "",
                     "cli_session_id": str(note.get("cli_session_id") or ""),
-                    "spent_usd": 0.0, "turns": 0}
+                    "turns": 0}
         says = list(entry.get("says") or [])
+        waiting = str(entry.get("rate_limited") or entry.get("waiting") or "")
         return {"live": entry["proc"].poll() is None,
                 "running": bool(entry.get("busy")),
                 "current_item": int(entry.get("current_item") or 0),
-                "thinking": (says[-1][:400] if says else ""),
+                "thinking": (says[-1][:400] if says else waiting[:400]),
+                "waiting": waiting[:400],
                 "cli_session_id": str(entry.get("cli_session_id") or ""),
-                "spent_usd": round(float(entry.get("spent_usd") or 0.0), 4),
                 "turns": int(entry.get("turns") or 0)}
 
 
@@ -607,6 +601,17 @@ def _collect(entry: dict, deadline: float) -> dict:
             kind = str(ev.get("type") or "")
             if kind == "system" and ev.get("subtype") == "init":
                 entry["cli_session_id"] = str(ev.get("session_id") or "")
+            elif kind == "system" and ev.get("subtype") == "api_retry":
+                # AN OVERLOADED API IS NOT A HANG EITHER. Observed live: ten
+                # retries against 529 `overloaded`, backing off to 33s each,
+                # while the pane showed "working…" and nothing else. The CLI
+                # may still land the turn, so this is recorded (and shown as
+                # the live line) rather than raised.
+                entry["waiting"] = (
+                    f"the API is {ev.get('error') or 'unavailable'} "
+                    f"({ev.get('error_status') or '?'}) — retrying, attempt "
+                    f"{ev.get('attempt') or '?'} of "
+                    f"{ev.get('max_retries') or '?'}")
             elif kind == "rate_limit_event":
                 # A refused usage window must not read as a hang — see
                 # brainsession._collect, where this was observed live.
@@ -623,6 +628,7 @@ def _collect(entry: dict, deadline: float) -> dict:
                     if block.get("type") == "text":
                         text = str(block.get("text") or "")
                         if text.strip():
+                            entry["waiting"] = ""
                             entry["says"].append(text)
                             del entry["says"][:-12]
                             if entry.get("record"):
@@ -657,7 +663,7 @@ def _collect(entry: dict, deadline: float) -> dict:
                     "error": f"the director session exited ({code}) without "
                              "answering"}
         if time.monotonic() >= deadline:
-            limited = entry.get("rate_limited")
+            limited = entry.get("rate_limited") or entry.get("waiting")
             return {"ok": False, "dead": True,
                     "error": (f"no answer — {limited}. Try again once the "
                               "window resets." if limited else
@@ -720,9 +726,8 @@ def _turn(root, prompt: str, reseed_context: str, settle,
           *, item_id: int = 0, record: bool = False) -> None:
     """One turn through the session. ``settle(text, failed)`` is what to do
     with the answer — post it to the chat, or close a work item with it."""
-    ceiling = _ceiling(root)
     # A loop, not a single re-check: this thread may wait on the turn lock
-    # while the previous turn kills the process (timeout, budget stop). The
+    # while the previous turn kills the process (a timeout). The
     # lock and the process belong to ONE entry — carrying a fresh entry under
     # a dead entry's lock would let two turns interleave on the fresh pipe.
     for _attempt in range(3):
@@ -731,27 +736,11 @@ def _turn(root, prompt: str, reseed_context: str, settle,
             if entry["proc"].poll() is not None:
                 _reap(_pkey(root), entry)
                 continue  # died while this turn waited; take a fresh one
-            spent = float(entry.get("spent_usd") or 0.0)
-            if ceiling and spent >= ceiling:
-                # Delivered as the REPLY, not as a failure: "I am out of
-                # budget" is an answer the human can act on, and a failed chat
-                # turn reads as the product breaking.
-                msg = (f"This session has spent ${spent:.2f} of its "
-                       f"${ceiling:.2f} ceiling (console.max_usd). Raise it "
-                       "in Settings, or start a new session.")
-                settle(msg, False)
-                if record:
-                    # The chat settle posts only FAILURES, on the theory that
-                    # a successful turn already streamed — but this branch
-                    # returns before anything streams, so without this line
-                    # the ceiling answer vanished: user line rendered, no
-                    # reply, no error, no running indicator, forever.
-                    _post(root, "assistant", msg)
-                return
             entry["current_item"] = int(item_id)
             entry["busy"] = True
             entry["record"] = str(root) if record else ""
             entry["says"] = []
+            entry["waiting"] = ""
             got, cost = _deliver(root, entry, prompt)
             if _resume_failed(entry, got):
                 # The conversation the sidecar pointed at is gone. Restart
@@ -801,15 +790,7 @@ def _deliver(root, entry: dict, prompt: str) -> tuple[dict, float]:
     entry["last_at"] = time.monotonic()
     cost = float(got.get("cost") or 0.0)
     if cost or got.get("tokens"):
-        entry["spent_usd"] = float(entry["spent_usd"]) + cost
         entry["turns"] = int(entry["turns"]) + 1
-        try:
-            _spend.record(root, cost, kind="agent",
-                          model=str(got.get("model") or ""),
-                          tokens=got.get("tokens") or {}, seat="director",
-                          detail="console director turn")
-        except Exception:
-            pass  # the ledger must not break the reply
     if got.get("ok"):
         entry["ok_turns"] = int(entry.get("ok_turns") or 0) + 1
         _write_sidecar(root, {

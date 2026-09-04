@@ -67,7 +67,7 @@ const FACED = new Set(["director", "narrative", "gameplay", "tech",
  * WHAT THE BACKEND CANNOT DO YET, AND IS THEREFORE NOT DRAWN AS IF IT COULD.
  * bgate_core/brainstorm.py has one seat per session (director | narrative), a
  * message role of exactly "user" | "assistant", and no participant table. So:
- * there are no invited seats to list, no per-seat spend, and no seat on a
+ * there are no invited seats to list, and no seat on a
  * message. The roster shows the two participants that DO exist and says what
  * would fill the rest; the invite chips are drawn from the project's real seat
  * table and are disabled with the reason on screen. A promote control that
@@ -88,7 +88,7 @@ type Deploy = {
 };
 type Thinker = {
   available?: boolean; label?: string; model?: string; runner?: string;
-  live?: boolean; turns?: number; spent_usd?: number; max_usd?: number;
+  live?: boolean; turns?: number;
   readonly?: boolean; readonly_by?: string;
   tools?: string[]; mcp_servers?: string[];
 };
@@ -113,10 +113,10 @@ declare global {
 }
 
 type RoomRow = {
-  /** Seats presently in the room, and what the room has cost — aggregates that
-   *  ride on the listing so the rail can draw both without a read per row. See
+  /** Seats presently in the room — an aggregate that rides on the listing so
+   *  the rail can draw it without a read per row. See
    *  brainstorm.list_sessions. */
-  guests?: string[]; spent_usd?: number;
+  guests?: string[];
   id: number; seat?: string; title?: string; status?: string;
   /* THE INDEX AND THE SESSION DISAGREE ON PURPOSE. /api/brainstorm returns a
      message COUNT (the index never carries the transcript); /api/brainstorm/:id
@@ -147,7 +147,7 @@ type Scene = {
  * like the seat had left. */
 type Participant = {
   id: number; seat: string; state: "invited" | "live" | "left"; live?: boolean;
-  invited_by?: string; invited_at?: string; turns?: number; spent_usd?: number;
+  invited_by?: string; invited_at?: string; turns?: number;
   thinker?: Thinker;
 };
 
@@ -275,6 +275,7 @@ export function Room({ seat }: { seat?: string } = {}) {
   /* Who the next message is addressed to, or null for the room. */
   const [asked, setAsked] = useState<string | null>(null);
   const [padOpen, setPadOpen] = useState(false);
+  const [roomsOpen, setRoomsOpen] = useState(false);
   /* THE ROSTER, WHEN THE GRID CANNOT AFFORD A THIRD COLUMN.
      It used to be `display: none` under 1240px, which is not "responsive" — it
      is the panel that says who is in the room, what they have cost and how to
@@ -351,6 +352,7 @@ export function Room({ seat }: { seat?: string } = {}) {
 
   const open = useCallback(async (id: number) => {
     setPlan(null);          // a plan belongs to the conversation that made it
+    setRoomsOpen(false);
     await refresh(id, true);
   }, [refresh]);
 
@@ -697,11 +699,6 @@ export function Room({ seat }: { seat?: string } = {}) {
     if (last.text) voice.speak(last.text);
   }, [msgs, voice]);
   const th = session.thinker || {};
-  /* The room's own spend: every participant that ever answered, including the
-     ones that have left. `thinker.spent_usd` is the owner's partner, which has
-     no participant row of its own. */
-  const spent = (session.participants || [])
-    .reduce((n, p) => n + (p.spent_usd || 0), 0) + (th.spent_usd || 0);
   const items = plan?.items || [];
   /* Message id -> the seat it was promoted for. A set of ids was enough to grey
      the control out; the seat is what says which lane the item landed in, and
@@ -786,7 +783,13 @@ export function Room({ seat }: { seat?: string } = {}) {
 
   return (
     <div className="bg4-room" ref={host}>
-      <aside className="bg4-rooms">
+      {(roomsOpen || rosterOpen) && (
+        <button type="button" className="bg4-roomshade" aria-label="Close side panel"
+                onClick={() => { setRoomsOpen(false); setRosterOpen(false); }} />
+      )}
+      <aside className={roomsOpen ? "bg4-rooms open" : "bg4-rooms"}>
+        <button className="bg4-roomsclose" onClick={() => setRoomsOpen(false)}
+                title="Close rooms" aria-label="Close rooms">×</button>
         <div className="bg4-rooms-head">
           <span>Rooms</span>
           <Menu position="bottom-start" shadow="md" width={180}>
@@ -848,7 +851,6 @@ export function Room({ seat }: { seat?: string } = {}) {
                 <span className="m">
                   <i style={{ background: dot }} />
                   {r.seat || "director"} · {r.messages ?? 0} turns
-                  {r.spent_usd ? ` · $${r.spent_usd.toFixed(2)}` : ""}
                   {r.updated_at ? ` · ${ago(r.updated_at)}` : ""}
                 </span>
               </button>
@@ -861,17 +863,19 @@ export function Room({ seat }: { seat?: string } = {}) {
           )}
         </Stack>
         <div className="bg4-rooms-foot">
-          {/* THE RUNNER, AND NOT THE PRICE. The cap was the only number in this
-              column and it was the one nobody was asking for — the owner's call:
-              a thinking room should not open with a budget line. The cap is
-              still enforced server-side; it is just not what the room greets
-              you with. */}
+          {/* THE RUNNER, AND NOT THE PRICE. The one number this column ever
+              carried was the one nobody was asking for — the owner's call: a
+              thinking room should not open with a money line. */}
           {th.label || [th.runner, th.model].filter(Boolean).join(" · ") || "runner not reported"}
         </div>
       </aside>
 
       <section className="bg4-roomtalk">
         <header className="bg4-roomhead">
+          <button className="bg4-roomsbtn" onClick={() => setRoomsOpen(true)}
+                  title="Choose a room" aria-label="Choose a room">
+            <Ti name="menu-2" size={14} />
+          </button>
           <Ti name="users-group" size={16} color={SEAT_COLOR[session.seat || "director"]} />
           <div>
             <div className="t">{session.title || "the room"}</div>
@@ -881,13 +885,6 @@ export function Room({ seat }: { seat?: string } = {}) {
                   room read "3 turns" in the header and "20 turns" in the list
                   beside it. The transcript is the thing both are describing. */}
               {msgs.length} turns
-              {/* WHAT THE ROOM HAS COST, beside what it has said, because those
-                  are the two facts that decide whether to keep going. Summed
-                  from the participant rows — a seat that LEFT keeps its spend,
-                  so a room cannot become cheaper by tidying the roster. Absent
-                  until something has been spent rather than drawn as $0.00,
-                  which reads as a measurement of a room nobody has run. */}
-              {spent > 0 && <> · ${spent.toFixed(2)}</>}
             </div>
           </div>
           {/* THE PROMISE, ON THE FACE OF THE ROOM — read from the field that
@@ -1294,24 +1291,14 @@ export function Room({ seat }: { seat?: string } = {}) {
                 : th.readonly ? "read-only argv" : "tool set unobserved"}
             </div>
           </div>
-          {/* Parity with the guest rows below: the room total already sums
-              this in, so leaving it off the partner's own row was the one
-              inconsistency in an otherwise per-seat ledger. */}
-          {!!th.spent_usd && (
-            <span className="spend" title="the partner has spent this much answering in this room">
-              ${th.spent_usd.toFixed(2)}
-            </span>
-          )}
         </div>
 
         {/* THE GUESTS. Each one is a real spawned CLI with the room's own
-            read-only argv, so each one carries its own turn count and its own
-            spend — which is the whole reason the design put a number on a
-            participant row rather than one number on the room. Turns and
-            spend sit in their own stat column now rather than tacked onto the
-            end of the runtime sentence — four rows all ending "...· N turns"
-            read as one repeated sentence; four numbers stacked on the right
-            read as a column you can compare down at a glance. */}
+            read-only argv, so each one carries its own turn count. Turns sit
+            in their own stat column rather than tacked onto the end of the
+            runtime sentence — four rows all ending "...· N turns" read as one
+            repeated sentence; four numbers stacked on the right read as a
+            column you can compare down at a glance. */}
         {guests.map((p) => (
           <div className="bg4-part" key={p.seat}>
             {FACED.has(p.seat)
@@ -1344,18 +1331,6 @@ export function Room({ seat }: { seat?: string } = {}) {
             <div className="stats">
               {!!p.turns && (
                 <span className="turns">{p.turns} turn{p.turns === 1 ? "" : "s"}</span>
-              )}
-              {/* EACH REPLY COSTS, AND THE COST IS PER SEAT. Every guest is
-                  its own spawned CLI, so one number on the room would hide
-                  which invitation is the expensive one — which is the only
-                  version of this number anybody can act on. Drawn only once
-                  something has been spent: "$0.00" beside a seat that has not
-                  answered yet reads as a measurement rather than as an
-                  absence. */}
-              {!!p.spent_usd && (
-                <span className="spend" title={`${p.seat} has spent this much answering in this room`}>
-                  ${p.spent_usd.toFixed(2)}
-                </span>
               )}
             </div>
             <button className="x" title={`${p.seat} leaves the room`}

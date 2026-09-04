@@ -139,24 +139,24 @@ def test_resume_failed_rule():
 
 def test_director_argv_shape():
     args = runners._claude_director_args(
-        "claude", system="SYS", model="opus", max_usd=15.0, resume="sess-9")
+        "claude", system="SYS", model="opus", resume="sess-9")
     # Full capability: the dispatch tool set plus the MCP server.
     for tool in ("Read", "Edit", "Write", "Glob", "Grep", "Bash",
                  "mcp__builders-gate"):
         assert tool in args
-    # Appended framing, not a replaced prompt; a resumed conversation; a budget.
+    # Appended framing, not a replaced prompt, and a resumed conversation.
     assert "--append-system-prompt" in args and "--system-prompt" not in args
     assert args[args.index("--resume") + 1] == "sess-9"
-    assert "--max-budget-usd" in args
     assert "--max-turns" not in args
+    # No money ceiling anywhere: this product does not meter spend.
+    assert "--max-budget-usd" not in args
     bare = runners._claude_director_args(
-        "claude", system="SYS", model="", max_usd=0.0, resume="")
-    assert "--resume" not in bare and "--max-budget-usd" not in bare
+        "claude", system="SYS", model="", resume="")
+    assert "--resume" not in bare
 
 
 def test_console_settings_defaults(root):
     assert settings.get(root, "console.model") == "opus"
-    assert settings.get(root, "console.max_usd") == 15.0
 
 
 def test_registry_write_does_not_wipe_on_bad_read(root, monkeypatch):
@@ -169,7 +169,7 @@ def test_registry_write_does_not_wipe_on_bad_read(root, monkeypatch):
 
     monkeypatch.setattr(settings._ws, "get", bad_get)
     with pytest.raises(Exception):
-        settings.set(root, "console.max_usd", 9.0)
+        settings.set(root, "console.model", "sonnet")
     monkeypatch.setattr(settings._ws, "get", real_get)
     assert settings.get(root, "qa.max_rounds") == 5
 
@@ -226,17 +226,6 @@ def test_missing_cli_says_so_in_the_chat(root, monkeypatch):
     assert "claude CLI not found" in msgs[-1]["text"]
 
 
-def test_budget_refusal_is_a_reply_not_a_failure(root, fake_claude):
-    _chat(root, "one")
-    with directorsession._lock:
-        directorsession._live[directorsession._pkey(root)]["spent_usd"] = 99.0
-    item_id = _escalation(root, "two")
-    directorsession._run_item_turn(str(root), item_id, "two", "")
-    item = queue.get(root, item_id)
-    assert item["status"] in ("done", "review")
-    assert "ceiling" in item["result"]
-
-
 def test_status_reports_idle_session(root, fake_claude):
     _chat(root, "hello")
     live = directorsession.status(str(root))
@@ -244,7 +233,6 @@ def test_status_reports_idle_session(root, fake_claude):
     assert live["running"] is False
     assert live["current_item"] == 0
     assert live["cli_session_id"] == "fake-session-1"
-    assert live["spent_usd"] > 0
 
 
 def test_stop_and_clear_semantics(root, fake_claude):
@@ -276,3 +264,47 @@ def test_tool_calls_are_recorded_as_their_own_lines(root):
     assert [m["role"] for m in msgs] == ["user", "tool"]
     assert msgs[-1]["tool"] == "Read"
     assert msgs[-1]["text"] == "game/scenes/hub.tscn"
+
+
+def test_an_overloaded_api_is_named_rather_than_shown_as_working(monkeypatch):
+    """A 529 being retried must not read as a silent hang.
+
+    Measured live: ten retries against `overloaded`, backing off to 33s each,
+    while the pane showed "working…" and nothing else for minutes.
+    """
+    events = [
+        {"type": "system", "subtype": "api_retry", "attempt": 3,
+         "max_retries": 10, "error_status": 529, "error": "overloaded"},
+        {"type": "result", "subtype": "success", "result": "landed",
+         "total_cost_usd": 0.0},
+    ]
+
+    class _Proc:
+        def poll(self):
+            return None
+
+    entry = {"proc": _Proc(), "says": [], "waiting": "", "record": ""}
+    monkeypatch.setattr(directorsession, "_read_events",
+                        lambda _e: [events.pop(0)] if events else [])
+    got = directorsession._collect(entry, time.monotonic() + 5)
+    assert got["ok"] is True
+    assert "overloaded" in entry["waiting"]
+    assert "529" in entry["waiting"]
+    assert "3 of 10" in entry["waiting"]
+
+
+def test_a_turn_that_times_out_while_retrying_says_the_api_was_overloaded(
+        monkeypatch):
+    events = [{"type": "system", "subtype": "api_retry", "attempt": 1,
+               "max_retries": 10, "error_status": 529, "error": "overloaded"}]
+
+    class _Proc:
+        def poll(self):
+            return None
+
+    entry = {"proc": _Proc(), "says": [], "waiting": "", "record": ""}
+    monkeypatch.setattr(directorsession, "_read_events",
+                        lambda _e: [events.pop(0)] if events else [])
+    got = directorsession._collect(entry, time.monotonic() - 1)
+    assert got["ok"] is False
+    assert "overloaded" in got["error"]

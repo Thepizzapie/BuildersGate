@@ -694,18 +694,17 @@ class TestIterationProgress:
         assert got["verdict"] == "unknown"
         assert any("nothing measured" in r for r in got["reasons"])
 
-    def test_spend_and_rework_ride_along(self, root):
+    def test_rework_rides_along(self, root):
+        """Rework is a comparable number. Spend is not one this product has:
+        the ledger it used to read is gone (db migration 0045)."""
         iteration_id = int(iterations.create(root, "costly")["id"])
         item = queue.add(root, "art", "expensive thing")
         queue.set_status(root, item["id"], "done")
         queue.reopen(root, item["id"], "not good enough")
         queue.set_status(root, item["id"], "done", result="round two")
-        with db.tx(root) as conn:
-            conn.execute("INSERT INTO spend_event (kind, work_item_id, usd) "
-                         "VALUES ('agent', ?, 4.25)", (item["id"],))
         got = iterations.progress(root, iteration_id)
-        assert got["spend_usd"] == 4.25
         assert got["rework_rounds"] >= 1
+        assert "spend_usd" not in got
 
     def test_get_carries_the_verdict(self, root):
         iteration_id = int(iterations.create(root, "carried")["id"])

@@ -1,7 +1,7 @@
 """One settings surface: read every switch, write any of them, one validator.
 
 Four features each added their switch in a different mechanism — a column on
-``spend_budget``, a workspace doc, an env var read inline, a module constant — so
+``run_limits``, a workspace doc, an env var read inline, a module constant — so
 nothing listed them and nothing said which one the environment was overriding.
 ``bgate_core.store.settings`` is the registry that describes them where they already
 live; this router is the only thing between it and a browser.
@@ -25,10 +25,9 @@ every value is checked before the first write lands. Writes are still one store
 at a time — three stores with no shared transaction is the cost of not moving the
 storage — so a failure mid-write reports exactly which keys did land.
 
-WRITING IS A HUMAN ACTION. These are the ceilings and gates that bound agents:
-budget, concurrency, who signs off, whether failures reopen themselves. An agent
-that can PATCH this can widen the leash it is on, which is the same reason
-``/api/spend/budget`` has always required a human.
+WRITING IS A HUMAN ACTION. These are the limits and gates that bound agents:
+runtime, concurrency, who signs off, whether failures reopen themselves. An
+agent that can PATCH this can widen the leash it is on.
 """
 from __future__ import annotations
 
@@ -56,8 +55,8 @@ router = APIRouter()
 def apply_changes(project, changes: dict, actor: str = "") -> list[dict]:
     """Validate every change, then store them; report what each one did.
 
-    Shared with the ``/api/spend/budget`` alias so that one SQL row has exactly
-    one validation path. ``changes`` is ``{registry key: value}``. Returns a row
+    One validation path for every store. ``changes`` is ``{registry key:
+    value}``. Returns a row
     per key: ``{key, previous, stored, value, source, env_override}`` — ``stored``
     is what went to the store and ``value`` is what is now EFFECTIVE, which differ
     whenever an env var is winning, and a UI that conflated them would show a save

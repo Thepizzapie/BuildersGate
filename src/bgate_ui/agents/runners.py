@@ -381,8 +381,7 @@ CLAUDE_READONLY_BY = (
 
 
 def _claude_chat_args(exe: str, *, system: str, model: Optional[str],
-                      max_usd: float = 0.0, mcp_config: str = "",
-                      resume: str = "") -> list[str]:
+                      mcp_config: str = "", resume: str = "") -> list[str]:
     """A Claude Code session that can THINK and cannot TOUCH THE PROJECT.
 
     Same CLI and the same stream-json channel as a dispatched agent — one
@@ -410,10 +409,6 @@ def _claude_chat_args(exe: str, *, system: str, model: Optional[str],
     pruned session store, a moved machine, a version bump — so the caller must
     treat a resumed spawn as provisional and fall back to a fresh one; see
     brainsession._collect, which detects it, and ask(), which retries once.
-
-    --max-budget-usd is the CLI's OWN ceiling and is the only one that can bite
-    between result boundaries. The dashboard tracks cumulative session spend as
-    well, but that number dies with the process and this one does not.
     """
     return [exe, "-p",
             "--input-format", "stream-json", "--output-format", "stream-json",
@@ -423,12 +418,11 @@ def _claude_chat_args(exe: str, *, system: str, model: Optional[str],
            if mcp_config else []) \
         + (["--resume", resume] if resume else []) \
         + ["--system-prompt", system] \
-        + (["--model", model] if model else []) \
-        + (["--max-budget-usd", f"{max_usd:.2f}"] if max_usd > 0 else [])
+        + (["--model", model] if model else [])
 
 
 def _claude_director_args(exe: str, *, system: str, model: Optional[str],
-                          max_usd: float = 0.0, resume: str = "") -> list[str]:
+                          resume: str = "") -> list[str]:
     """The director console's session: a FULL Claude Code session, held open.
 
     The third argv shape, and the one the console chat was missing. The other
@@ -448,9 +442,8 @@ def _claude_director_args(exe: str, *, system: str, model: Optional[str],
     replacing it.
 
     No --max-turns. The dispatch shape carries one because a work item is a
-    bounded errand; a conversation is not, and the ceiling that fits it is the
-    budget one (--max-budget-usd, the CLI's own, plus the session ceiling the
-    caller tracks across respawns).
+    bounded errand; a conversation is not. Nothing bounds this one but the
+    human closing it — there is no money ceiling anywhere in this product.
     """
     return [exe, "-p", "--permission-mode", "acceptEdits",
             "--input-format", "stream-json", "--output-format", "stream-json",
@@ -459,8 +452,7 @@ def _claude_director_args(exe: str, *, system: str, model: Optional[str],
             "Glob", "Grep", "Bash"] \
         + (["--resume", resume] if resume else []) \
         + ["--append-system-prompt", system] \
-        + (["--model", model] if model else []) \
-        + (["--max-budget-usd", f"{max_usd:.2f}"] if max_usd > 0 else [])
+        + (["--model", model] if model else [])
 
 
 # `find` is late-bound through this module's own globals rather than holding the
@@ -493,14 +485,14 @@ RUNNERS: dict[str, Runner] = {
         #                and closes it. brainsession already handles that: it
         #                re-seeds a fresh process with the transcript per turn
         #                rather than pretending the conversation persisted.
-        #   cost_tracked False for codex — it reports tokens and no price, so a
-        #                brainstorm on it spends against the ledger's blind
-        #                spot and the payload says so.
+        #   cost_tracked False for codex — it reports tokens and no price, so
+        #                a run on it never says what it cost and the payload
+        #                says so.
         #   readonly_by the sentence a human is shown when they ask why they
         #                should believe the room writes nothing.
         note="Generates images natively. No live steering, and it reports "
-             "tokens rather than dollars — the per-run cost ceiling cannot "
-             "bite, so runs on it are marked cost-not-tracked."),
+             "tokens rather than dollars, so runs on it are marked "
+             "cost-not-tracked."),
 }
 
 DEFAULT_RUNNER = "claude"
