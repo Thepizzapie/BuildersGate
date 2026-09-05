@@ -366,8 +366,10 @@ def lab_save(payload: dict) -> dict:
         # write target is contained by construction, not by inference.
         project_root, target = _audio(redirected_from[:-len(".mp3")] + ".ogg",
                                       must_exist=False)
-        if payload.get("mtime") is not None and not target.exists():
-            payload = {**payload, "mtime": None}
+        # The client's mtime belongs to the mp3 it opened, never to the ogg
+        # beside it: drop it, so an existing ogg is a plain "already exists -
+        # pass overwrite" the editor already knows how to ask about.
+        payload = {**payload, "mtime": None}
     if target.suffix.lower() not in audiolab.WRITABLE:
         raise api.ApiError(415, f"cannot write {target.suffix} — "
                                 f"writable: {sorted(audiolab.WRITABLE)}",
