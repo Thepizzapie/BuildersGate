@@ -702,6 +702,10 @@ def _owner_item(owner: str) -> int:
 @router.get("/api/console/state")
 def console_state(steps: bool = True) -> dict:
     r = root()
+    # The dashboard can acquire its project after process startup (project
+    # picker / `bgate use`).  In that case the lifespan hook had no root to
+    # register, so keep the per-project pump attached from the state poll.
+    _autodeploy.start(r)
     conn = db.connect(r)
 
     agents = _dispatch.status(str(r))
@@ -1023,7 +1027,9 @@ def console_killswitch(payload: dict | None = None) -> dict:
 
 @router.get("/api/console/autopilot")
 def autopilot_get() -> dict:
-    return _autodeploy.state(root())
+    r = root()
+    _autodeploy.start(r)
+    return _autodeploy.state(r)
 
 
 @router.post("/api/console/autopilot")
@@ -1035,6 +1041,7 @@ def autopilot_set(payload: dict) -> dict:
     state = _autodeploy.set_enabled(r, on)
     tick = {"dispatched": [], "refused": []}
     if on:
+        _autodeploy.start(r)
         # Immediate, so the switch does something visible now instead of up to
         # one poll interval later. Failure here is not the toggle's failure.
         try:

@@ -44,6 +44,8 @@ export function DirectorChat({ active, onSent }: {
   const [approvals, setApprovals] = useState<DirectorApproval[]>([]);
   const [approvalBusy, setApprovalBusy] = useState("");
   const [bridgeBusy, setBridgeBusy] = useState(false);
+  const runnerLabel = runners.find((row) => row.value === runner)?.label || runner;
+  const modelLabel = (models[runner] || []).find((row) => row.value === model)?.label || model;
   const seen = useRef(0);
   const feed = useRef<HTMLDivElement>(null);
   const wasRunning = useRef(false);
@@ -186,7 +188,21 @@ export function DirectorChat({ active, onSent }: {
       </ScrollArea>
 
       <div className="bg4-composer">
-        <div className="bg4-director-strip">
+        <details className="bg4-director-config">
+          <summary>
+            <span className="bg4-config-label">
+              <Ti name="adjustments-horizontal" size={14} />
+              <span>Session setup</span>
+            </span>
+            <span className="bg4-config-summary"
+                  aria-label={`${runnerLabel}, ${modelLabel}, ${dispatchMode} dispatch`}>
+              <span>{runnerLabel}</span><i />
+              <span>{modelLabel}</span><i />
+              <span>{dispatchMode}</span>
+            </span>
+            <Ti name="chevron-down" size={14} className="bg4-config-chevron" />
+          </summary>
+          <div className="bg4-director-strip">
           <Group gap={6} wrap="nowrap" className="bg4-director-pickers">
             <Select aria-label="Director coding tool" size="xs" allowDeselect={false}
                     value={runner} disabled={running || sending}
@@ -240,8 +256,9 @@ export function DirectorChat({ active, onSent }: {
             </Button>
           </div>
         )}
-        <Group gap="xs" align="flex-end" wrap="nowrap">
-          <div style={{ flex: 1, minWidth: 0 }}>
+        </details>
+        <div className="bg4-promptbox">
+          <div className="bg4-promptfield">
             <Textarea autosize minRows={1} maxRows={10} variant="unstyled"
                       value={text} onChange={(e) => setText(e.currentTarget.value)}
                       placeholder="ask the director, or say what to build"
@@ -252,10 +269,14 @@ export function DirectorChat({ active, onSent }: {
                         }
                       }} />
           </div>
-          <Button variant="default" size="compact-xs" onClick={fresh}>new</Button>
-          <Button size="xs" onClick={send} loading={sending}
-                  disabled={!text.trim()}>send</Button>
-        </Group>
+          <div className="bg4-prompt-actions">
+            <Button variant="subtle" size="compact-xs" onClick={fresh}
+                    leftSection={<Ti name="plus" size={13} />}>New</Button>
+            <Button size="compact-sm" onClick={send} loading={sending}
+                    disabled={!text.trim()}
+                    rightSection={<Ti name="arrow-up" size={13} />}>Send</Button>
+          </div>
+        </div>
       </div>
     </div>
   );

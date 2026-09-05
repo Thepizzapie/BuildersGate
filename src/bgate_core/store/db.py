@@ -358,6 +358,53 @@ def _drop_money_ledger(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _work_item_add_integrating_status(conn: sqlite3.Connection) -> None:
+    """0046 — add the Chaos handoff state to work_item's status CHECK."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_item'"
+    ).fetchone()
+    create_sql = str(row[0] if row else "")
+    if "'integrating'" in create_sql:
+        return
+    old = "('queued','dispatched','review','done',"
+    new = "('queued','dispatched','integrating','review','done',"
+    rebuilt_sql = create_sql.replace(old, new, 1)
+    if rebuilt_sql == create_sql:
+        raise RuntimeError("work_item status CHECK has an unknown shape")
+
+    columns = [str(r[1]) for r in conn.execute("PRAGMA table_info(work_item)")]
+    quoted = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+    indexes = [str(r[0]) for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+        "AND tbl_name = 'work_item' AND sql IS NOT NULL")]
+
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("ALTER TABLE work_item RENAME TO work_item_old")
+        conn.execute(rebuilt_sql)
+        conn.execute(f"INSERT INTO work_item ({quoted}) SELECT {quoted} FROM work_item_old")
+        moved = conn.execute("SELECT COUNT(*) FROM work_item").fetchone()[0]
+        had = conn.execute("SELECT COUNT(*) FROM work_item_old").fetchone()[0]
+        if moved != had:
+            raise RuntimeError(f"work_item rebuild moved {moved} of {had} rows")
+        conn.execute("DROP TABLE work_item_old")
+        for sql in indexes:
+            conn.execute(sql)
+        conn.commit()
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise RuntimeError(f"work_item rebuild broke {len(broken)} references")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 # ---------------------------------------------------------------------------
 # Schema. Forward-only: append, never rewrite.
 #
@@ -2207,6 +2254,9 @@ _MIGRATIONS: list = [
 
     # 0045 — THE MONEY LEDGER IS GONE. See _drop_money_ledger.
     _drop_money_ledger,
+
+    # 0046 - Chaos completion parks the branch here until Director merge.
+    _work_item_add_integrating_status,
 ]
 
 

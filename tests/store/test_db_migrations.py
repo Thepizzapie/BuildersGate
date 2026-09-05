@@ -87,6 +87,19 @@ class TestUnrecordedMigration:
         assert _version(path) == len(db._MIGRATIONS)
 
 
+def test_work_item_schema_accepts_chaos_integration_state(tmp_path):
+    project.init(tmp_path, "Chaos", pitch="branches wait for Director merge")
+    conn = db.connect(tmp_path)
+    conn.execute(
+        "INSERT INTO work_item (seat, title, status) VALUES (?, ?, ?)",
+        ("art", "deliver models", "integrating"),
+    )
+    conn.commit()
+    assert conn.execute(
+        "SELECT status FROM work_item WHERE title = ?", ("deliver models",)
+    ).fetchone()[0] == "integrating"
+
+
 class TestStepAtomicity:
     def test_a_step_that_fails_partway_leaves_nothing_behind(self, tmp_path,
                                                              monkeypatch):

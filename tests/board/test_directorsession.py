@@ -148,6 +148,14 @@ def test_director_argv_shape():
     assert "--append-system-prompt" in args and "--system-prompt" not in args
     assert args[args.index("--resume") + 1] == "sess-9"
     assert "--max-turns" not in args
+    # With a file, the prompt leaves the command line: the framing plus the
+    # seat table is over cmd.exe's 8,191-char limit on Windows, and the
+    # session died at spawn with "The command line is too long".
+    filed = runners._claude_director_args(
+        "claude", system="SYS", model="opus", system_file="C:/x/sys.md")
+    assert "--append-system-prompt-file" in filed
+    assert filed[filed.index("--append-system-prompt-file") + 1] == "C:/x/sys.md"
+    assert "--append-system-prompt" not in filed and "SYS" not in filed
     # No money ceiling anywhere: this product does not meter spend.
     assert "--max-budget-usd" not in args
     bare = runners._claude_director_args(
@@ -207,14 +215,18 @@ def test_codex_approval_response_is_bounded_to_the_pending_request(root, monkeyp
         directorsession.decide_approval(root, "7", "accept")
 
 
-def test_codex_auto_approval_is_limited_to_builders_gate_mcp(root):
+def test_codex_auto_approval_stays_inside_the_project_and_bgate(root):
     settings.set(root, "dispatch.codex_auto_approve", True)
-    assert directorsession._auto_approve_mcp(root, {
+    assert directorsession._auto_approve(root, {
         "kind": "mcp", "server": runners.MCP_SERVER_NAME})
-    assert not directorsession._auto_approve_mcp(root, {
+    assert not directorsession._auto_approve(root, {
         "kind": "mcp", "server": "external"})
-    assert not directorsession._auto_approve_mcp(root, {
-        "kind": "command", "server": runners.MCP_SERVER_NAME})
+    assert directorsession._auto_approve(root, {
+        "kind": "command", "cwd": str(root)})
+    assert not directorsession._auto_approve(root, {
+        "kind": "command", "cwd": str(root.parent / "other")})
+    assert not directorsession._auto_approve(root, {
+        "kind": "permissions", "cwd": str(root)})
 
 
 def test_runner_and_model_switch_keep_native_sessions(root, monkeypatch):

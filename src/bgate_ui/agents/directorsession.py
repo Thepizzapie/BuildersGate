@@ -399,11 +399,23 @@ def _approval_result(row: dict, decision: str) -> dict:
     return {"action": decision, "content": None, "_meta": None}
 
 
-def _auto_approve_mcp(root, approval: dict) -> bool:
-    return bool(
-        approval.get("kind") == "mcp"
-        and str(approval.get("server") or "") == _runners.MCP_SERVER_NAME
-        and _setting(root, "dispatch.codex_auto_approve", False))
+def _auto_approve(root, approval: dict) -> bool:
+    """Auto-review only the surfaces already bounded by this orchestration."""
+    if not _setting(root, "dispatch.codex_auto_approve", False):
+        return False
+    kind = approval.get("kind")
+    if kind == "mcp":
+        return str(approval.get("server") or "") == _runners.MCP_SERVER_NAME
+    if kind != "command":
+        return False
+    cwd = str(approval.get("cwd") or "").strip()
+    if not cwd:
+        return True
+    try:
+        Path(cwd).resolve().relative_to(Path(root).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def send(root, text: str) -> dict:
@@ -745,9 +757,18 @@ def _spawn(root, resume: str = "") -> dict:
                               "resumed": bool(resume),
                               "ts": time.time()}) + "\n").encode("utf-8"))
     handle.flush()
-    args = _runners._claude_director_args(
-        exe, system=system_prompt(root), model=_model_for(root),
-        resume=resume)
+    # To a FILE, beside the log: the framing plus the seat table is past
+    # cmd.exe's argv limit on Windows (see _claude_director_args).
+    system = system_prompt(root)
+    system_file = _home(root) / "director-system.md"
+    try:
+        system_file.write_text(system, encoding="utf-8")
+        args = _runners._claude_director_args(
+            exe, system=system, model=_model_for(root),
+            resume=resume, system_file=str(system_file))
+    except OSError:
+        args = _runners._claude_director_args(
+            exe, system=system, model=_model_for(root), resume=resume)
     try:
         proc = subprocess.Popen(
             args, cwd=str(root), env=_environ(root),
@@ -1103,7 +1124,7 @@ def _codex_reader(entry: dict) -> None:
                 "available_decisions": decisions,
                 "_rpc_id": ev["id"], "_params": params,
             }
-            if _auto_approve_mcp(entry["root"], approval):
+            if _auto_approve(entry["root"], approval):
                 _codex_write(entry, {"id": ev["id"],
                                      "result": _approval_result(approval, "accept")})
                 continue

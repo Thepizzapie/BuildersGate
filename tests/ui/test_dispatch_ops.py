@@ -215,6 +215,34 @@ class TestConcurrencyCap:
 
 
 class TestWatchdog:
+    @pytest.mark.parametrize("status,should_kill", [
+        ("dispatched", False), ("done", True), ("failed", True),
+    ])
+    def test_codex_prompt_eof_is_not_completion(self, root, monkeypatch,
+                                               status, should_kill):
+        item = queue.add(root, "art", "Codex EOF regression")
+        queue.set_status(root, item["id"], status)
+        entry = self._entry("unused", runner="codex", started_at=0,
+                            max_runtime_s=1800)
+        dispatch._live[item["id"]] = entry
+        clock = [0]
+        killed = []
+
+        def tick(_):
+            clock[0] += 100
+            if clock[0] > 300:
+                dispatch._live.pop(item["id"], None)
+
+        monkeypatch.setattr(dispatch.time, "sleep", tick)
+        monkeypatch.setattr(dispatch.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(dispatch, "_last_output_age_s", lambda *a: 0)
+        monkeypatch.setattr(dispatch, "_kill_tree", killed.append)
+        monkeypatch.setattr(dispatch._assets, "heartbeat", lambda *a: None)
+        dispatch._watch_completion(str(root), item["id"], exit_grace_s=90)
+        assert bool(killed) is should_kill
+        if not should_kill:
+            assert "eof_at" not in entry
+
     def _entry(self, log, **over):
         entry = {"proc": FakeProc(pid=777), "log": str(log),
                  "started_at": time.monotonic(), "run_start_pos": 0,

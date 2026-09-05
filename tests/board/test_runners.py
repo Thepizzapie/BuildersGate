@@ -103,6 +103,7 @@ def test_codex_always_gets_the_mcp_server_and_the_real_directory():
     assert "bgate_mcp.server" in argv
     # The sandbox is kept; --cd is what makes it write to the real tree.
     assert "--sandbox workspace-write" in argv and "--cd C:/game" in argv
+    assert "--ignore-user-config" in argv
     # Never: it is what makes a non-repo write into a shadow copy silently.
     assert "--skip-git-repo-check" not in argv
 
@@ -192,6 +193,15 @@ class TestModelRouting:
             "codex", permission_mode="acceptEdits", model=None,
             cwd="C:/game", native_images=False, auto_approve=True)
         assert "--approve-for-me" in argv
+        assert "--sandbox" not in argv
+
+    def test_codex_forwards_the_dispatch_identity_to_its_mcp_server(self):
+        argv = " ".join(runners.get("codex").build_args(
+            "codex", permission_mode="acceptEdits", model=None,
+            cwd="C:/game", native_images=False,
+            mcp_env_vars=("BGATE_ROOT", "BGATE_SEAT")))
+        assert "mcp_servers.builders-gate.env_vars=" in argv
+        assert "BGATE_ROOT" in argv and "BGATE_SEAT" in argv
 
     def test_a_blank_general_model_inherits_the_cli_default(self, root):
         """None, not a guessed name: pinning a model this machine may not have

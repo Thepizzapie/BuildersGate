@@ -545,7 +545,8 @@ def _prompt_template(seat: str) -> str:
     return "".join(base.values())
 
 
-def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
+def _prompt_for(root: str, item: dict, native_images: bool = False,
+                worktree: str = "") -> str:
     from bgate_core.board.seats import SEAT_IDENTITY
 
     seat = str(item["seat"])
@@ -559,6 +560,13 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         "source": item["source"],
         "title": item["title"],
         "brief": item["brief"],
+        "project_paths": (
+            f"MCP project_dir: {root}\n"
+            + (f"Editable worktree: {worktree}\nUse the MCP project_dir above "
+               "for shared board, brief, locks, references, and settings. "
+               "Write project files and tool output paths inside the editable "
+               "worktree." if worktree else
+               "Use that exact project_dir on every Builders Gate tool call.")),
         "seat_rule_block": (seat_rule + "\n\n") if seat_rule else "",
         "policy_block": (policy + "\n\n") if policy else "",
         "verify_rule": _verify_rule(root),
@@ -1020,6 +1028,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     args = runner.build_args(exe, permission_mode=permission_mode,
                              model=model, cwd=cwd, native_images=native_images,
                              max_turns=_max_turns(root),
+                             mcp_env_vars=env.keys(),
                              auto_approve=(runner.name == "codex" and bool(
                                  _settings.get(root, "dispatch.codex_auto_approve"))))
 
@@ -1048,7 +1057,8 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # _live entry, put the item back to 'queued', and the orphan sat on its
     # stdin until the pid sweep found it. Everything that can fail without a
     # process is done while there is no process to strand.
-    prompt = _prompt_for(root, item, native_images=native_images)
+    prompt = _prompt_for(root, item, native_images=native_images,
+                         worktree=worktree)
     try:
         log_handle = open(log_path, "ab")
     except OSError:
@@ -1511,6 +1521,18 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
             except LookupError:
                 return
             continue
+        # Codex consumes its prompt through stdin and closes it before doing
+        # any work. That EOF is not completion: only arm the exit grace once
+        # its queue item has actually finished.
+        if entry.get("runner") == "codex" and not entry.get("stop_reason"):
+            try:
+                if _queue.get(root, item_id)["status"] not in (
+                        "done", "failed", "cancelled", "review", "integrating"):
+                    continue
+                if _open_claims(root, item_id):
+                    continue
+            except LookupError:
+                return
         # stdin closed: give the process the grace period, then kill its
         # whole tree (the agent's own MCP-server children orphan too).
         # setdefault matters: another path (stop, a manual sweep) may close
