@@ -352,7 +352,11 @@ def lab_save(payload: dict) -> dict:
         # Ogg the engine wants, the take stays as it was, and the reply says
         # where it went so the editor can reopen it.
         redirected_from = target.relative_to(project_root).as_posix()
-        target = target.with_suffix(".ogg")
+        # Back through the same gate as the original: the redirected path is
+        # re-resolved and re-checked against the project root, so the final
+        # write target is contained by construction, not by inference.
+        project_root, target = _audio(redirected_from[:-len(".mp3")] + ".ogg",
+                                      must_exist=False)
         if payload.get("mtime") is not None and not target.exists():
             payload = {**payload, "mtime": None}
     if target.suffix.lower() not in audiolab.WRITABLE:
