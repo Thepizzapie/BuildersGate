@@ -130,6 +130,7 @@ NOT_TOOLS = {
     "bg_stats", "bg_taper", "bg_unwrap",
     # the surface kit (_blender_surface_kit), same namespace
     "bg_fuse", "bg_shade", "bg_lathe", "bg_loft", "bg_material", "bg_surface_help",
+    "bg_tree", "bg_scatter", "bg_leaf_material",
     # parameters and result keys
     "anchor_views", "artifact_id", "audio_track", "cast_refs", "decal_on",
     "dry_run",

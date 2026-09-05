@@ -469,6 +469,248 @@ def bg_material(name, preset, colour=None, scale=1.0, roughness=None, wear=0.0,
     return mat
 
 
+# ---------------------------------------------------------------------------
+# Trees and scatter. A tree is a recursive set of tapered curves swept into
+# one mesh, never a stack of prisms; leaves are alpha-clipped cards placed at
+# the tips. Deterministic per seed.
+
+def bg_leaf_material(name, image_path, colour=None):
+    """An alpha-clipped leaf card material from a PNG with alpha. MASK is read
+    by the exporter off the alpha socket's graph (Alpha -> GREATER_THAN), so
+    that is how it is wired; the card shows both sides."""
+    mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    mat.use_nodes = True
+    tree = mat.node_tree
+    tree.nodes.clear()
+    out = _bg_node(tree, "ShaderNodeOutputMaterial", location=(500, 0))
+    bsdf = _bg_node(tree, "ShaderNodeBsdfPrincipled", location=(200, 0))
+    tree.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    _bg_set(bsdf, "Roughness", 0.6)
+    _bg_set(bsdf, "Specular IOR Level", 0.3)
+    tex = _bg_node(tree, "ShaderNodeTexImage", location=(-300, 0))
+    tex.image = bpy.data.images.load(image_path)
+    if colour is not None:
+        tint = _bg_node(tree, "ShaderNodeMixRGB", location=(-50, 100), blend_type="MULTIPLY")
+        _bg_set(tint, "Fac", 1.0)
+        tree.links.new(tex.outputs["Color"], tint.inputs["Color1"])
+        tint.inputs["Color2"].default_value = _bg_rgb(colour)
+        tree.links.new(tint.outputs["Color"], bsdf.inputs["Base Color"])
+    else:
+        tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    clip = _bg_node(tree, "ShaderNodeMath", location=(-50, -200), operation="GREATER_THAN")
+    clip.inputs[1].default_value = 0.5
+    tree.links.new(tex.outputs["Alpha"], clip.inputs[0])
+    tree.links.new(clip.outputs["Value"], bsdf.inputs["Alpha"])
+    mat.use_backface_culling = False
+    try:
+        mat.blend_method = "CLIP"
+    except Exception:
+        pass
+    mat["bgate_preset"] = "leaf_card"
+    return mat
+
+
+def bg_tree(name="Tree", seed=1, height=6.0, trunk_radius=0.22, levels=3, branches=(4, 3, 2),
+            length_ratio=0.62, radius_ratio=0.55, spread_deg=45.0, up_pull=0.35, lean_deg=6.0,
+            segments=8, taper=0.35, bark=None, leaves=True, leaf_image=None, leaf_size=0.35,
+            leaves_per_tip=6, leaf_colour=None, target_tris=0, fuse=True):
+    """A tree as ONE swept surface plus one leaf-card mesh.
+
+    Recursive tapered branches (curve splines with per-point radius, bevelled
+    and converted), joined and welded into a single trunk mesh. Leaves are
+    alpha-clipped quads at the tips of the last level, in one mesh named
+    `<name>_Leaves`. Deterministic per `seed`. Returns (trunk_obj, leaves_obj).
+    """
+    import random as _random
+    rng = _random.Random(int(seed))
+    lengths = [float(height)]
+    radii = [float(trunk_radius)]
+    for _ in range(1, int(levels)):
+        lengths.append(lengths[-1] * float(length_ratio))
+        radii.append(radii[-1] * float(radius_ratio))
+    tips = []          # (position, direction) of terminal segments
+    splines = []       # each: list of (Vector, radius)
+
+    def grow(origin, direction, level):
+        L = lengths[level]
+        R = radii[level]
+        steps = 6
+        pts = []
+        pos = _V(origin)
+        d = _V(direction).normalized()
+        for i in range(steps + 1):
+            t = i / steps
+            r = R * (1.0 - (1.0 - float(taper)) * t)
+            pts.append((pos.copy(), max(r, 0.004)))
+            if i < steps:
+                # Wander a little, pull toward up, keep length.
+                jitter = _V((rng.uniform(-1, 1), rng.uniform(-1, 1), rng.uniform(-0.3, 0.6))) * 0.18
+                d = (d + jitter + _V((0, 0, float(up_pull))) * (0.15 if level else 0.05)).normalized()
+                pos = pos + d * (L / steps)
+        splines.append(pts)
+        if level + 1 < int(levels):
+            count = int(branches[min(level, len(branches) - 1)])
+            for k in range(count):
+                t = rng.uniform(0.45 if level == 0 else 0.3, 1.0)
+                idx = min(int(t * steps), steps - 1)
+                base = pts[idx][0].lerp(pts[idx + 1][0], t * steps - idx)
+                parent_dir = (pts[idx + 1][0] - pts[idx][0]).normalized()
+                # Spread around the parent by a random azimuth and the spread angle.
+                az = rng.uniform(0, 2 * _math.pi) if count > 1 else rng.uniform(0, 2 * _math.pi)
+                side = parent_dir.cross(_V((0, 0, 1)))
+                if side.length < 1e-4:
+                    side = _V((1, 0, 0))
+                side = side.normalized().rotated(_math.radians(0.0), parent_dir) if False else side.normalized()
+                perp = side.rotated(parent_dir, az) if hasattr(side, "rotated") else side
+                from mathutils import Quaternion as _Q
+                perp = _Q(parent_dir, az) @ side
+                ang = _math.radians(float(spread_deg) * rng.uniform(0.7, 1.15))
+                child = (parent_dir * _math.cos(ang) + perp * _math.sin(ang)).normalized()
+                grow(base, child, level + 1)
+        else:
+            tips.append((pts[-1][0], d))
+
+    lean = _math.radians(float(lean_deg))
+    az0 = rng.uniform(0, 2 * _math.pi)
+    grow(_V((0, 0, 0)), _V((_math.sin(lean) * _math.cos(az0), _math.sin(lean) * _math.sin(az0), _math.cos(lean))), 0)
+
+    curve = bpy.data.curves.new(name + "Curve", "CURVE")
+    curve.dimensions = "3D"
+    curve.bevel_depth = 1.0
+    curve.bevel_resolution = max(1, int(segments) // 4)
+    curve.use_fill_caps = True
+    for pts in splines:
+        sp = curve.splines.new("POLY")
+        sp.points.add(len(pts) - 1)
+        for p, (co, r) in zip(sp.points, pts):
+            p.co = (co.x, co.y, co.z, 1.0)
+            p.radius = r
+    cobj = bpy.data.objects.new(name + "Curve", curve)
+    bpy.context.scene.collection.objects.link(cobj)
+    _bg_active(cobj)
+    bpy.ops.object.convert(target="MESH")
+    trunk = bpy.context.active_object
+    trunk.name = name
+    bg_clean(trunk, merge=0.002)
+    if bark is not None:
+        trunk.data.materials.append(bark)
+    if fuse:
+        # Each branch was its own swept tube meeting the parent's surface;
+        # the voxel union makes them ONE shell - the whole point of a tree
+        # that is not prisms pushed through a trunk.
+        trunk = bg_fuse([trunk], name, smooth=2, target_tris=int(target_tris or 0), angle=50.0)
+    elif target_tris and target_tris > 0:
+        trunk.data.calc_loop_triangles()
+        have = len(trunk.data.loop_triangles)
+        if have > target_tris:
+            mod = trunk.modifiers.new("BGateDecimate", "DECIMATE")
+            mod.ratio = max(0.02, float(target_tris) / float(have))
+            _bg_apply_mod(trunk, mod)
+    if not fuse:
+        _bg_smooth_by_angle(trunk, 50.0)
+        bg_unwrap(trunk)
+    leaves_obj = None
+    if leaves and tips:
+        bm = _bmesh.new()
+        uv = bm.loops.layers.uv.new("UVMap")
+        half = float(leaf_size) * 0.5
+        for tip, d in tips:
+            for _ in range(int(leaves_per_tip)):
+                # A card per leaf, randomly rotated, hung a little below the tip.
+                off = _V((rng.uniform(-1, 1), rng.uniform(-1, 1), rng.uniform(-0.6, 0.3))) * float(leaf_size) * 0.8
+                centre = tip + off
+                yaw = rng.uniform(0, 2 * _math.pi)
+                pitch = rng.uniform(-0.9, 0.3)
+                from mathutils import Euler as _E
+                rot = _E((pitch, 0.0, yaw), "XYZ").to_matrix()
+                sz = half * rng.uniform(0.7, 1.3)
+                corners = [rot @ _V((-sz, 0, 0)), rot @ _V((sz, 0, 0)), rot @ _V((sz, 0, 2 * sz)), rot @ _V((-sz, 0, 2 * sz))]
+                verts = [bm.verts.new(centre + c) for c in corners]
+                try:
+                    f = bm.faces.new(verts)
+                except ValueError:
+                    continue
+                for loop, (u, v) in zip(f.loops, ((0, 0), (1, 0), (1, 1), (0, 1))):
+                    loop[uv].uv = (u, v)
+        lmesh = bpy.data.meshes.new(name + "_Leaves")
+        bm.to_mesh(lmesh); bm.free()
+        leaves_obj = bpy.data.objects.new(name + "_Leaves", lmesh)
+        bpy.context.scene.collection.objects.link(leaves_obj)
+        if leaf_image:
+            leaves_obj.data.materials.append(bg_leaf_material(name + "_LeafMat", leaf_image, leaf_colour))
+        else:
+            leaves_obj.data.materials.append(bg_material(name + "_LeafMat", "plastic", leaf_colour or "#5f8a3c"))
+    return trunk, leaves_obj
+
+
+def bg_scatter(target, item, count=200, seed=1, scale=(0.8, 1.25), align=True, up_only=True,
+               name=None, sink=0.0):
+    """Scatter copies of `item` (a mesh object) over `target`'s faces, area-
+    weighted, as ONE mesh. `align` rotates each copy to the face normal;
+    `up_only` skips faces pointing down; `sink` drops each copy into the
+    surface by that many metres. Deterministic per `seed`."""
+    import random as _random
+    rng = _random.Random(int(seed))
+    bpy.context.view_layer.update()
+    mw = target.matrix_world
+    faces = [(p, (mw.to_3x3() @ p.normal).normalized(), p.area * (mw.to_3x3().determinant() ** (2.0 / 3.0)))
+             for p in target.data.polygons]
+    if up_only:
+        faces = [f for f in faces if f[1].z > 0.2]
+    if not faces:
+        return None
+    total = sum(f[2] for f in faces)
+    bm = _bmesh.new()
+    src = _bmesh.new()
+    src.from_mesh(item.data)
+    uv_src = src.loops.layers.uv.active
+    uv_dst = bm.loops.layers.uv.new("UVMap")
+    import mathutils as _mu
+    for _ in range(int(count)):
+        pick = rng.uniform(0, total)
+        acc = 0.0
+        face = faces[-1]
+        for f in faces:
+            acc += f[2]
+            if acc >= pick:
+                face = f
+                break
+        poly, normal, _area = face
+        vs = [mw @ target.data.vertices[i].co for i in poly.vertices]
+        # Uniform point in a random triangle fan of the polygon.
+        a, b, c = vs[0], vs[rng.randrange(1, len(vs) - 1) if len(vs) > 2 else 1], vs[-1] if len(vs) > 2 else vs[1]
+        r1, r2 = rng.random(), rng.random()
+        if r1 + r2 > 1:
+            r1, r2 = 1 - r1, 1 - r2
+        p = a + (b - a) * r1 + (c - a) * r2 - normal * float(sink)
+        s = rng.uniform(float(scale[0]), float(scale[1]))
+        rot = _mu.Matrix.Rotation(rng.uniform(0, 2 * _math.pi), 3, "Z")
+        if align:
+            rot = normal.to_track_quat("Z", "Y").to_matrix() @ rot
+        xf = _mu.Matrix.Translation(p) @ (rot @ _mu.Matrix.Scale(s, 3)).to_4x4()
+        vmap = {}
+        for v in src.verts:
+            vmap[v.index] = bm.verts.new(xf @ v.co)
+        for f in src.faces:
+            try:
+                nf = bm.faces.new([vmap[v.index] for v in f.verts])
+            except ValueError:
+                continue
+            nf.material_index = f.material_index
+            if uv_src is not None:
+                for lo, ld in zip(f.loops, nf.loops):
+                    ld[uv_dst].uv = lo[uv_src].uv
+    src.free()
+    mesh = bpy.data.meshes.new((name or (item.name + "_Scatter")))
+    bm.to_mesh(mesh); bm.free()
+    obj = bpy.data.objects.new(name or (item.name + "_Scatter"), mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    for m in item.data.materials:
+        obj.data.materials.append(m)
+    _bg_smooth_by_angle(obj, 45.0)
+    return obj
+
+
 def bg_surface_help():
     print(BG_SURFACE_EXAMPLE)
     return BG_SURFACE_EXAMPLE

@@ -579,3 +579,272 @@ def decals(model, out_path, decals: list, *, timeout: int = 300) -> dict:
             raise ValueError(f"decal {i}: position must be [x, y, z]")
     rows = [{**d, "image": str(Path(d["image"]).resolve())} for d in decals]
     return _run(_DECAL, {"model": str(src.resolve()), "decals": rows}, out_path, timeout)
+
+
+# ---------------------------------------------------------------------------
+# Trees, scatter, and the look audit.
+
+_TREE = r'''
+import json
+P = json.loads(r"""__PAYLOAD__""")
+''' + _DUMP + r'''
+bg_wipe()
+bark = bg_material(P["name"] + "_Bark", "bark", P.get("bark_colour") or "#6b5a45", scale=float(P.get("bark_scale") or 1.0))
+trunk, leaves = bg_tree(name=P["name"], seed=int(P.get("seed") or 1), height=float(P.get("height") or 6.0),
+                        trunk_radius=float(P.get("trunk_radius") or 0.22), levels=int(P.get("levels") or 3),
+                        branches=tuple(P.get("branches") or (4, 3, 2)),
+                        length_ratio=float(P.get("length_ratio") or 0.62),
+                        radius_ratio=float(P.get("radius_ratio") or 0.55),
+                        spread_deg=float(P.get("spread_deg") or 45.0), up_pull=float(P.get("up_pull") or 0.35),
+                        lean_deg=float(P.get("lean_deg") or 6.0), segments=int(P.get("segments") or 8),
+                        taper=float(P.get("taper") or 0.35), bark=bark, leaves=bool(P.get("leaves", True)),
+                        leaf_image=P.get("leaf_image") or None, leaf_size=float(P.get("leaf_size") or 0.35),
+                        leaves_per_tip=int(P.get("leaves_per_tip") or 6), leaf_colour=P.get("leaf_colour"),
+                        target_tris=int(P.get("target_tris") or 0), fuse=bool(P.get("fuse", True)))
+trunk.data.calc_loop_triangles()
+row = {"ok": True, "trunk": trunk.name, "trunk_tris": len(trunk.data.loop_triangles),
+       "dims": list(bg_bounds(trunk)["dims"]), "leaves": None, "leaf_cards": 0}
+if leaves is not None:
+    leaves.data.calc_loop_triangles()
+    row["leaves"] = leaves.name
+    row["leaf_cards"] = len(leaves.data.polygons)
+    row["leaf_tris"] = len(leaves.data.loop_triangles)
+_dump(row)
+'''
+
+_SCATTER = _LOAD + r'''
+by_name = {o.name: o for o in MESHES}
+by_name.update({o.data.name: o for o in MESHES})
+target = by_name.get(P["target"])
+item = by_name.get(P["item"])
+if target is None or item is None:
+    _report({"ok": False, "error": "target %r or item %r not found; meshes: %s" % (P["target"], P["item"], sorted(by_name))})
+else:
+    obj = bg_scatter(target, item, count=int(P.get("count") or 200), seed=int(P.get("seed") or 1),
+                     scale=tuple(P.get("scale") or (0.8, 1.25)), align=bool(P.get("align", True)),
+                     up_only=bool(P.get("up_only", True)), name=P.get("name") or None,
+                     sink=float(P.get("sink") or 0.0))
+    if P.get("remove_item", True):
+        bpy.data.objects.remove(item, do_unlink=True)
+    if obj is None:
+        _report({"ok": False, "error": "no face of %s points up enough to scatter on" % P["target"]})
+    else:
+        obj.data.calc_loop_triangles()
+        _report({"ok": True, "scatter": obj.name, "copies": int(P.get("count") or 200),
+                 "tris": len(obj.data.loop_triangles)})
+'''
+
+# What makes a model read as "shapes tacked together", measured. Every number
+# is world-space and per object; the verdict names the rule it tripped.
+_LOOK = _LOAD + r'''
+import math
+from mathutils import Vector
+rows = []
+findings = []
+bpy.context.view_layer.update()
+boxes = {}
+for o in MESHES:
+    boxes[o.name] = bg_bounds(o)
+scene_dims = None
+for o in MESHES:
+    b = boxes[o.name]
+    scene_dims = b["dims"] if scene_dims is None else tuple(max(a, c) for a, c in zip(scene_dims, b["dims"]))
+size = max(scene_dims or (1.0,)) or 1.0
+for o in MESHES:
+    me = o.data
+    me.calc_loop_triangles()
+    tris = len(me.loop_triangles)
+    # Shells: connected components of the mesh.
+    import bmesh
+    bm = bmesh.new(); bm.from_mesh(me)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0005)
+    bm.verts.ensure_lookup_table()
+    seen = set(); shells = 0
+    for v in bm.verts:
+        if v.index in seen:
+            continue
+        shells += 1
+        stack = [v]
+        while stack:
+            cur = stack.pop()
+            if cur.index in seen:
+                continue
+            seen.add(cur.index)
+            for e in cur.link_edges:
+                other = e.other_vert(cur)
+                if other.index not in seen:
+                    stack.append(other)
+    # Hard edges: dihedral angle over 30 deg. Loose edges (one face) count as
+    # split seams - a glb round trip leaves a flat box with 12 loose tris.
+    hard = 0; measured = 0; loose = 0
+    for e in bm.edges:
+        if len(e.link_faces) == 2:
+            measured += 1
+            if e.calc_face_angle(0.0) > math.radians(30.0):
+                hard += 1
+        elif len(e.link_faces) == 1:
+            loose += 1
+    bm.free()
+    mats = [m for m in me.materials if m is not None]
+    textured = 0
+    for m in mats:
+        if m.use_nodes and any(n.type == "TEX_IMAGE" and n.image for n in m.node_tree.nodes):
+            textured += 1
+    smooth_faces = sum(1 for p in me.polygons if p.use_smooth)
+    row = {"name": o.name, "tris": tris, "shells": shells, "hard_edges": hard, "edges": measured,
+           "boundary_edges": loose, "materials": len(mats), "textured_materials": textured,
+           "uv": len(me.uv_layers), "smooth_faces": smooth_faces, "faces": len(me.polygons),
+           "dims": list(boxes[o.name]["dims"])}
+    rows.append(row)
+    big = max(boxes[o.name]["dims"]) >= 0.05 * size
+    # A sheet of cards (leaves, scatter) is many shells BY DESIGN: every shell
+    # is one or two faces. That is not parts pushed through each other.
+    cards = shells > 1 and len(me.polygons) / max(shells, 1) <= 2.0
+    row["card_sheet"] = cards
+    if shells > 1 and big and not cards:
+        findings.append({"code": "tacked_shells", "node": o.name, "level": "warning",
+                         "detail": "%d disconnected shells in one object - parts pushed through each other instead of fused (blender_fuse)" % shells})
+    if measured and hard / measured > 0.6 and tris < 5000 and big and not cards:
+        findings.append({"code": "faceted", "node": o.name, "level": "warning",
+                         "detail": "%d of %d edges are hard (>30 deg) and no bevel softens them (blender_shade)" % (hard, measured)})
+    if loose > measured and tris > 20 and not cards:
+        findings.append({"code": "split_vertices", "node": o.name, "level": "info",
+                         "detail": "%d boundary edges vs %d shared - vertices split on every hard edge (a glb round trip); weld before shading" % (loose, measured)})
+    if mats and textured == 0 and big:
+        findings.append({"code": "untextured", "node": o.name, "level": "warning",
+                         "detail": "%d material(s), none with an image map - flat colours read as plastic (blender_material + blender_bake)" % len(mats)})
+    if not mats and big:
+        findings.append({"code": "no_material", "node": o.name, "level": "warning", "detail": "no material at all"})
+    if not me.uv_layers and big:
+        findings.append({"code": "no_uv", "node": o.name, "level": "warning", "detail": "no UV layer - cannot take a texture"})
+    if tris > int(P.get("tri_budget") or 20000) and big:
+        findings.append({"code": "over_budget", "node": o.name, "level": "warning",
+                         "detail": "%d triangles against a %d budget - decimate or lathe/loft instead of dense primitives" % (tris, int(P.get("tri_budget") or 20000))})
+# Floating parts: an object whose bounds touch no other object's bounds
+# (within 2% of the scene size) is attached to nothing.
+if len(MESHES) > 1:
+    tol = 0.01 * size
+    for o in MESHES:
+        a = boxes[o.name]
+        # A PART is what can float: not a whole asset sharing the file with
+        # another (a tree beside a car), not a sheet (a decal 3 mm off the
+        # paint is attached by construction).
+        if max(a["dims"]) < 0.02 * size or max(a["dims"]) > 0.3 * size or min(a["dims"]) < 0.01 * size:
+            continue
+        touching = False
+        for p in MESHES:
+            if p is o:
+                continue
+            b = boxes[p.name]
+            gap = max(max(a["min"][i] - b["max"][i], b["min"][i] - a["max"][i]) for i in range(3))
+            if gap <= tol:
+                touching = True
+                break
+        if not touching:
+            findings.append({"code": "floating_part", "node": o.name, "level": "warning",
+                             "detail": "touches no other part (nearest gap over %.3f m) - a headlight in front of the fender, a wheel off the axle" % tol})
+total_tris = sum(r["tris"] for r in rows)
+_report({"ok": not [f for f in findings if f["level"] == "warning"], "parts": rows, "findings": findings,
+         "total_tris": total_tris, "scene_size_m": size})
+'''
+
+
+def leaf_card_image(path, *, size_px: int = 256, colour=(96, 140, 60), vein=(70, 105, 42),
+                    edge=(60, 92, 38)) -> str:
+    """A leaf silhouette with alpha: a pointed ellipse, a mid-vein, darker
+    edge. Enough for a card; generate a painted one with image_generate for
+    a hero tree."""
+    from PIL import Image, ImageDraw, ImageFilter
+    w = h = int(size_px)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    # Pointed leaf: two arcs meeting at the tip and the base.
+    pts = []
+    for i in range(0, 101):
+        t = i / 100.0
+        y = h * (0.05 + 0.9 * t)
+        half = (w * 0.36) * (4 * t * (1 - t)) ** 0.8
+        pts.append((w / 2 - half, y))
+    for i in range(100, -1, -1):
+        t = i / 100.0
+        y = h * (0.05 + 0.9 * t)
+        half = (w * 0.36) * (4 * t * (1 - t)) ** 0.8
+        pts.append((w / 2 + half, y))
+    draw.polygon(pts, fill=(*edge, 255))
+    inner = [(w / 2 + (x - w / 2) * 0.88, y) for x, y in pts]
+    draw.polygon(inner, fill=(*colour, 255))
+    draw.line([(w / 2, h * 0.08), (w / 2, h * 0.94)], fill=(*vein, 255), width=max(2, w // 64))
+    for k in range(1, 6):
+        y = h * (0.15 + 0.13 * k)
+        draw.line([(w / 2, y), (w / 2 + w * 0.22, y - h * 0.08)], fill=(*vein, 200), width=max(1, w // 128))
+        draw.line([(w / 2, y), (w / 2 - w * 0.22, y - h * 0.08)], fill=(*vein, 200), width=max(1, w // 128))
+    img = img.filter(ImageFilter.SMOOTH)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    img.save(path)
+    return str(path)
+
+
+def tree(out_path, *, name: str = "Tree", seed: int = 1, height: float = 6.0, trunk_radius: float = 0.22,
+         levels: int = 3, branches=(4, 3, 2), length_ratio: float = 0.62, radius_ratio: float = 0.55,
+         spread_deg: float = 45.0, up_pull: float = 0.35, lean_deg: float = 6.0, segments: int = 8,
+         taper: float = 0.35, bark_colour: str = "#6b5a45", leaves: bool = True, leaf_image=None,
+         leaf_size: float = 0.35, leaves_per_tip: int = 6, leaf_colour=None, target_tris: int = 0,
+         fuse: bool = True, timeout: int = 600) -> dict:
+    """A tree as one swept trunk mesh plus one leaf-card mesh. Deterministic per seed.
+    fuse=True voxel-unions the branches into one shell (bg_fuse)."""
+    if int(levels) < 1 or int(levels) > 5:
+        raise ValueError("levels must be 1..5")
+    if leaf_image is None and leaves:
+        leaf_image = leaf_card_image(Path(out_path).with_name(f"{Path(out_path).stem}_leaf.png"))
+    elif leaf_image and not Path(leaf_image).is_file():
+        raise FileNotFoundError(f"no leaf image at {leaf_image}")
+    payload = {"name": name, "seed": int(seed), "height": float(height), "trunk_radius": float(trunk_radius),
+               "levels": int(levels), "branches": list(branches), "length_ratio": float(length_ratio),
+               "radius_ratio": float(radius_ratio), "spread_deg": float(spread_deg), "up_pull": float(up_pull),
+               "lean_deg": float(lean_deg), "segments": int(segments), "taper": float(taper),
+               "bark_colour": bark_colour, "leaves": bool(leaves),
+               "leaf_image": str(Path(leaf_image).resolve()) if leaf_image else None,
+               "leaf_size": float(leaf_size), "leaves_per_tip": int(leaves_per_tip),
+               "leaf_colour": leaf_colour, "target_tris": int(target_tris), "fuse": bool(fuse)}
+    return _run(_TREE, payload, out_path, timeout)
+
+
+def scatter(model, out_path, *, target: str, item: str, count: int = 200, seed: int = 1,
+            scale=(0.8, 1.25), align: bool = True, up_only: bool = True, name: str = "",
+            sink: float = 0.0, remove_item: bool = True, timeout: int = 600) -> dict:
+    """Scatter copies of one mesh over another's faces, area-weighted, as one mesh."""
+    src = _model(model)
+    if int(count) < 1 or int(count) > 20000:
+        raise ValueError("count must be 1..20000")
+    return _run(_SCATTER, {"model": str(src.resolve()), "target": target, "item": item, "count": int(count),
+                           "seed": int(seed), "scale": [float(scale[0]), float(scale[1])], "align": bool(align),
+                           "up_only": bool(up_only), "name": name, "sink": float(sink),
+                           "remove_item": bool(remove_item)}, out_path, timeout)
+
+
+def look_audit(model, *, tri_budget: int = 20000, timeout: int = 300) -> dict:
+    """Measure what makes a model read as tacked together; no export."""
+    import tempfile
+    src = _model(model)
+    with tempfile.TemporaryDirectory(prefix="bgate_look_") as tmp:
+        report_path = Path(tmp) / "report.json"
+        payload = {"model": str(src.resolve()), "tri_budget": int(tri_budget),
+                   "report_path": str(report_path).replace("\\", "/")}
+        result = _blender.run_script(_LOOK.replace("__PAYLOAD__", json.dumps(payload)), timeout=timeout,
+                                     record=False)
+        report: dict = {}
+        if report_path.is_file():
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+            except ValueError:
+                report = {}
+    if not result.get("ok") or not report:
+        return {"ok": False, "error": result.get("error") or "the look audit wrote no report",
+                "traceback": str(result.get("traceback") or "")[-800:], "model": str(src)}
+    findings = report.get("findings") or []
+    return {"ok": bool(report.get("ok")), "model": str(src), "parts": report.get("parts") or [],
+            "findings": findings,
+            "warnings": [f for f in findings if f["level"] == "warning"],
+            "info": [f for f in findings if f["level"] == "info"],
+            "total_tris": report.get("total_tris"), "scene_size_m": report.get("scene_size_m"),
+            "seconds": result.get("seconds")}

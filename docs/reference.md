@@ -669,7 +669,7 @@ the causal history.
 | Godot | `godot_*`, `evidence_check_ui` | Run, test, scaffold, import, deliver, screenshot, inspect, retarget |
 | Scene | `scene_*`, `level_plan`, `level_generate`, `blockout_generate`, `track_generate` | Node surgery and level layout (2D tiles, 3D rooms, circuits) |
 | 3D gates | `godot_scene_audit`, `godot_export_verify` | Boot scene, shared sub_resources, support, headroom, colliders; editor-vs-pck diff |
-| 3D surfaces | `blender_fuse`, `blender_shade`, `blender_lathe`, `blender_loft`, `blender_material`, `blender_bake`, `blender_decal` | Continuous forms instead of tacked shells; material presets baked to real maps; conformed decals |
+| 3D surfaces | `blender_fuse`, `blender_shade`, `blender_lathe`, `blender_loft`, `blender_material`, `blender_bake`, `blender_decal`, `blender_tree`, `blender_scatter`, `blender_look_audit` | Continuous forms instead of tacked shells; material presets baked to real maps; conformed decals; trees and scatter; the tacked-together audit |
 | Images | `image_*`, `sprite_*`, `item_*`, `vfx_animate`, `ref_*`, `profile_*`, `consistency_check`, `art_qa_verdict`, `art_tournament_*` | Generation, sprite sheets, items, references, consistency, art review |
 | Cutout | `cutout_*` | 2D part-on-skeleton characters |
 | Audio | `voice_*`, `sfx_*`, `music_*`, `dialogue_*` | Speech, sound effects, music generation and selection, dialogue trees |

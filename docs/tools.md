@@ -1101,6 +1101,41 @@ panel-gap line), a target object, a position and normal, and a size; the
 sheet is subdivided and shrink-wrapped onto the target with a small lift.
 ```
 
+## blender_tree
+
+```text
+A tree that is ONE swept, tapered surface plus one mesh of alpha-clipped
+leaf cards at the tips - not a stack of prisms with triangles for leaves.
+Recursive branches as bevelled curves, welded and voxel-fused into one
+shell (fuse=True), bark preset applied (bake it with blender_bake), a leaf
+card PNG generated beside the glb unless leaf_image is given (paint one
+with image_generate for a hero tree). Deterministic per seed: same species,
+new seed, new tree.
+```
+
+## blender_scatter
+
+```text
+Scatter copies of one mesh over another's faces, area-weighted, as ONE
+mesh with the item's materials: grass over ground, pebbles on a path, more
+leaf cards along a branch. align rotates to the face normal, up_only skips
+undersides, sink drops each copy into the surface. Deterministic per seed.
+```
+
+## blender_look_audit
+
+```text
+Measure what makes a model read as SHAPES TACKED TOGETHER before a human
+says so: disconnected shells inside one object (tacked_shells), hard
+unbevelled edges (faceted), vertices split on every edge from a glb round
+trip (split_vertices), materials with no image map (untextured), no UVs,
+parts touching nothing (floating_part), objects over the triangle budget.
+Counts are taken on a welded copy; a sheet of cards (leaves, scatter) is
+not tacked parts; a whole asset beside another is not a floating part. ok
+is false on any warning and each finding names the tool that fixes it.
+Numbers judge form, not taste - render a turnaround and LOOK as well.
+```
+
 ## blender_texture
 
 ```text

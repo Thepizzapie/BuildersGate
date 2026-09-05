@@ -1557,3 +1557,77 @@ def blender_decal(model: Annotated[str, Field(description='The .glb/.gltf/.blend
     result = _surface.decals(model, out_path, rows, timeout=timeout)
     return _surface_result(result, out_path, "blender_decal", model=str(model),
                            placed=[p.get("name") for p in result.get("placed") or []])
+
+
+@_tool
+def blender_tree(out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project. A leaf card PNG lands beside it unless leaf_image is given.')],
+                 name: Annotated[str, Field(description='Object name; leaves are <name>_Leaves. Default Tree.')] = "Tree",
+                 seed: Annotated[int, Field(description='Deterministic seed; change it for a different tree of the same species.')] = 1,
+                 height: Annotated[float, Field(description='Trunk length in metres. Default 6.')] = 6.0,
+                 trunk_radius: Annotated[float, Field(description='Trunk radius at the base in metres. Default 0.22.')] = 0.22,
+                 levels: Annotated[int, Field(description='Branching levels 1..5. Default 3.')] = 3,
+                 branches: Annotated[Optional[list[int]], Field(description='Children per branch at each level, e.g. [4, 3, 2].')] = None,
+                 spread_deg: Annotated[float, Field(description='Angle children leave their parent at. Default 45.')] = 45.0,
+                 length_ratio: Annotated[float, Field(description='Child length / parent length. Default 0.62.')] = 0.62,
+                 lean_deg: Annotated[float, Field(description='Trunk lean. Default 6.')] = 6.0,
+                 bark_colour: Annotated[str, Field(description='Hex colour for the bark preset. Default #6b5a45.')] = "#6b5a45",
+                 leaves: Annotated[bool, Field(description='Add leaf cards at the tips. Default True.')] = True,
+                 leaf_image: Annotated[str, Field(description='PNG with alpha for the leaf card; empty generates a plain leaf. Use image_generate for a painted one.')] = "",
+                 leaf_size: Annotated[float, Field(description='Leaf card size in metres. Default 0.35.')] = 0.35,
+                 leaves_per_tip: Annotated[int, Field(description='Cards per branch tip. Default 6.')] = 6,
+                 leaf_colour: Annotated[str, Field(description='Hex tint multiplied into the leaf card; empty keeps the image.')] = "",
+                 target_tris: Annotated[int, Field(description='Decimate the trunk to this many triangles; 0 keeps it.')] = 0,
+                 fuse: Annotated[bool, Field(description='Voxel-union the branches into one shell (blender_fuse). Default True.')] = True,
+                 timeout: int = 600) -> dict:
+    """A tree that is ONE swept, tapered surface (recursive branches as
+    bevelled curves, welded) plus one mesh of alpha-clipped leaf cards at the
+    tips - not a stack of prisms with triangles for leaves. Bark preset
+    applied; bake it with blender_bake. Same species, new seed = new tree.
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.tree(out_path, name=name, seed=seed, height=height, trunk_radius=trunk_radius,
+                           levels=levels, branches=tuple(branches or (4, 3, 2)), length_ratio=length_ratio,
+                           spread_deg=spread_deg, lean_deg=lean_deg, bark_colour=bark_colour, leaves=leaves,
+                           leaf_image=leaf_image or None, leaf_size=leaf_size, leaves_per_tip=leaves_per_tip,
+                           leaf_colour=leaf_colour or None, target_tris=target_tris, fuse=fuse, timeout=timeout)
+    return _surface_result(result, out_path, "blender_tree", seed=seed, levels=levels,
+                           trunk_tris=result.get("trunk_tris"), leaf_cards=result.get("leaf_cards"))
+
+
+@_tool
+def blender_scatter(model: Annotated[str, Field(description='The .glb/.gltf/.blend holding both the surface and the item.')],
+                    out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                    target: Annotated[str, Field(description='Object to scatter over (the ground, a branch, a roof).')],
+                    item: Annotated[str, Field(description='Object to copy (a grass tuft, a pebble, a leaf card).')],
+                    count: Annotated[int, Field(description='Copies. Default 200.')] = 200,
+                    seed: Annotated[int, Field(description='Deterministic seed. Default 1.')] = 1,
+                    scale: Annotated[Optional[list[float]], Field(description='[min, max] scale per copy. Default [0.8, 1.25].')] = None,
+                    align: Annotated[bool, Field(description='Rotate each copy to the face normal. Default True.')] = True,
+                    up_only: Annotated[bool, Field(description='Skip faces pointing down. Default True.')] = True,
+                    sink: Annotated[float, Field(description='Drop each copy into the surface by this many metres. Default 0.')] = 0.0,
+                    timeout: int = 600) -> dict:
+    """Scatter copies of one mesh over another's faces, area-weighted, as ONE
+    mesh with the item's materials: grass over ground, pebbles on a path,
+    extra leaf cards along a branch. Deterministic per seed.
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.scatter(model, out_path, target=target, item=item, count=count, seed=seed,
+                              scale=tuple(scale or (0.8, 1.25)), align=align, up_only=up_only, sink=sink,
+                              timeout=timeout)
+    return _surface_result(result, out_path, "blender_scatter", target=target, item=item, count=count)
+
+
+@_tool
+def blender_look_audit(model: Annotated[str, Field(description='The .glb/.gltf/.blend to judge.')],
+                       tri_budget: Annotated[int, Field(description='Triangles per object above which over_budget fires. Default 20000.')] = 20000,
+                       timeout: int = 300) -> dict:
+    """Measure what makes a model read as SHAPES TACKED TOGETHER, before a
+    human has to say so: disconnected shells inside one object (tacked_shells),
+    hard unbevelled edges (faceted), vertices split on every edge from a glb
+    round trip (split_vertices), materials with no image map (untextured),
+    no UVs, parts touching nothing (floating_part - a headlight in front of
+    the fender), and objects over the triangle budget. `ok` is false on any
+    warning; each finding names the tool that fixes it. Numbers judge form,
+    not taste - render a turnaround and LOOK as well.
+    """
+    return _surface.look_audit(model, tri_budget=tri_budget, timeout=timeout)
