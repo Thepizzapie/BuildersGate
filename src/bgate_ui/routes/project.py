@@ -174,7 +174,11 @@ def project_create(request: Request, payload: dict) -> dict:
         from bgate_core.board import seats as _seats
         lanes = _seats.apply_layout(root)
     except Exception as exc:
-        lanes = {"changed": False, "why": f"could not set lanes: {exc}"}
+        # The exception text goes to the activity log, not the HTTP reply:
+        # a raw exception string is the kind of internal detail a response
+        # must not carry (CodeQL py/stack-trace-exposure).
+        _activity.log(root, "project", f"could not set lanes: {exc}", seat="director")
+        lanes = {"changed": False, "why": "could not set lanes; see the activity log"}
     if not repository["available"]:
         _activity.log(root, "project",
                       f"could not initialise Git ({repository['reason']})",
