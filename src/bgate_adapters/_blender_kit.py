@@ -745,6 +745,8 @@ from ._blender_base import BASE as _BASE
 from ._blender_base import BASE_EXAMPLE as _BASE_EXAMPLE
 from ._blender_surface_kit import SURFACE as _SURFACE
 from ._blender_surface_kit import SURFACE_EXAMPLE as _SURFACE_EXAMPLE
+from ._blender_form_kit import FORM as _FORM
+from ._blender_form_kit import FORM_EXAMPLE as _FORM_EXAMPLE
 
 # The examples ship INSIDE the kit as `BG_EXAMPLE` / `BG_BASE_EXAMPLE`, because
 # the agent that most needs them is already inside Blender with only this
@@ -754,7 +756,11 @@ KIT = (_HELPERS
        # The surface half: fuse, shade, lathe, loft, material presets. After
        # the helpers it is written against; before the examples that use it.
        + _SURFACE
+       # The form half: hull, skin, blob, sweep, round, rock - the smooth shape
+       # built first. Uses bg_fuse/_bg_decimate_to, so after the surface kit.
+       + _FORM
        + '\n\nBG_EXAMPLE = r"""' + EXAMPLE + '"""\n'
        + '\n\nBG_BASE_EXAMPLE = r"""' + _BASE_EXAMPLE + '"""\n'
        + '\n\nBG_SURFACE_EXAMPLE = r"""' + _SURFACE_EXAMPLE + '"""\n'
+       + '\n\nBG_FORM_EXAMPLE = r"""' + _FORM_EXAMPLE + '"""\n'
        + "# --- end kit ---------------------------------------------------------------\n")

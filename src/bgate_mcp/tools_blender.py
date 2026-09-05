@@ -163,6 +163,17 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
       bg_lathe(name, [(r, z), ...])  revolve a profile: tyre, rim, bottle, column
       bg_loft(name, sections, ...)   skin cross-sections: a car body, a hull
       bg_surface_help()              PRINTS the worked wheel + fused tree
+      bg_hull(name, side, top)       A BODY FROM ITS SILHOUETTES - side outline x
+                                     top outline -> ONE rounded shell. Start a
+                                     car, boat, plane, fish HERE, not with boxes.
+      bg_skin(name, joints, links)   A BODY FROM A STICK FIGURE - joints with
+                                     radii -> one organic shell. Creatures.
+      bg_blob(name, balls)           merging blobs (metaballs): boulders, canopy
+      bg_sweep(name, points, radii)  a tapering tube along a path: pipes, horns
+      bg_round(obj, levels, crease_angle=)  subdivision that keeps named edges
+      bg_rock(name, size, seed)      a seeded boulder that sits on the ground
+      bg_form_help()                 PRINTS the worked coupe-from-two-outlines,
+                                     quadruped and rock
       bg_bone_chain(name, bones)     an armature with NAMED bones. Entries are
                                      (name, head, tail, parent=None, roll_deg=0);
                                      order does not matter, parents are wired in
@@ -1631,3 +1642,125 @@ def blender_look_audit(model: Annotated[str, Field(description='The .glb/.gltf/.
     not taste - render a turnaround and LOOK as well.
     """
     return _surface.look_audit(model, tri_budget=tri_budget, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# The form tools: the smooth shape built FIRST. Measured on Meridian's coupe,
+# repairing a box-built car (fuse, bevel, bake) made a lump with disc wheels;
+# the blocky look is decided by the vocabulary of the first script. These give
+# an agent silhouettes, stick figures, blobs and sweeps as one-call .glbs.
+# ---------------------------------------------------------------------------
+from bgate_adapters import form as _form  # noqa: E402
+
+
+@_tool
+def blender_hull(side: Annotated[list, Field(description='Side-view outline, closed, [[x, z], ...] in metres: nose, hood, roof, boot, floor - as a person sketches a car, boat, plane or fish.')],
+                 top: Annotated[list, Field(description='Top-view outline [[x, y], ...]. Give the +y half only and it is mirrored.')],
+                 out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 front: Annotated[Optional[list], Field(description='Optional front-view outline [[y, z], ...] (half mirrored) to shape the cross-section.')] = None,
+                 name: Annotated[str, Field(description='Object name. Default Hull.')] = "Hull",
+                 round: Annotated[int, Field(description='0 keeps the hard silhouette edges, 1 light chamfer, 2 a production car, 4 a bar of soap. Default 2.')] = 2,
+                 target_tris: Annotated[int, Field(description='Decimate the rounded shell to this many triangles; 0 keeps the remesh count. Default 16000.')] = 16000,
+                 bevel: Annotated[float, Field(description='With round=0: bevel width in metres on the silhouette edges.')] = 0.0,
+                 preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 timeout: int = 600) -> dict:
+    """A body from its SILHOUETTES: the side outline intersected with the top
+    outline (and a front outline if given) is ONE shell, rounded as much as
+    asked - the way a car, boat, plane, fish or spaceship is drawn. Two
+    polygons replace the stack of boxes that reads as boxes. Wheels: a
+    blender_lathe tyre each; glass and lamps: blender_decal or their own
+    lathe/loft parts with glass/emissive presets.
+    """
+    _contained_path(out_path, "out_path")
+    result = _form.hull(side, top, out_path, front=front, name=name, round=round, target_tris=target_tris,
+                        bevel=bevel, preset=preset, colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_hull", round=round, tris=result.get("tris"))
+
+
+@_tool
+def blender_skin(joints: Annotated[list, Field(description='[[x, y, z, radius], ...] in metres - the joints of a stick figure. Joint 0 is the root (chest or hips).')],
+                 links: Annotated[list, Field(description='[[i, j], ...] index pairs joining joints: spine, neck, each leg, tail.')],
+                 out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 name: Annotated[str, Field(description='Object name. Default Skin.')] = "Skin",
+                 subsurf: Annotated[int, Field(description='Subdivision levels rounding the tubes. Default 2.')] = 2,
+                 mirror_x: Annotated[bool, Field(description='Build the +x half and mirror it. Default False.')] = False,
+                 preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 timeout: int = 600) -> dict:
+    """A body from a STICK FIGURE: joints with radii, links between them, wrapped
+    in one smooth organic shell where a leg grows out of the hip instead of
+    poking into it. A creature, a character block-in, a hand, a root ball, a
+    coral. Twelve joints are a quadruped. Rig it with blender_rig afterwards.
+    """
+    _contained_path(out_path, "out_path")
+    result = _form.skin(joints, links, out_path, name=name, subsurf=subsurf, mirror_x=mirror_x,
+                        preset=preset, colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_skin", joints=len(joints or []), tris=result.get("tris"))
+
+
+@_tool
+def blender_blob(balls: Annotated[list, Field(description='[[x, y, z, radius], ...] in metres; a negative radius carves; [x, y, z, r, sx, sy, sz] is an ellipsoid stretched by those factors.')],
+                 out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 name: Annotated[str, Field(description='Object name. Default Blob.')] = "Blob",
+                 resolution: Annotated[float, Field(description='Mesh cell in metres; smaller is finer and slower. Default 0.06.')] = 0.06,
+                 threshold: Annotated[float, Field(description='Metaball threshold: lower merges neighbours more. Default 0.6.')] = 0.6,
+                 target_tris: Annotated[int, Field(description='Decimate to this many triangles; 0 keeps the count.')] = 0,
+                 preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 timeout: int = 600) -> dict:
+    """A body from BLOBS that merge: metaballs unioned by construction, no
+    seams, no shells - a boulder from five, a tree canopy from twenty, a slime,
+    a belly, a cloud, a bush. Where two shapes would be pushed through each
+    other, put two balls.
+    """
+    _contained_path(out_path, "out_path")
+    result = _form.blob(balls, out_path, name=name, resolution=resolution, threshold=threshold,
+                        target_tris=target_tris, preset=preset, colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_blob", balls=len(balls or []), tris=result.get("tris"))
+
+
+@_tool
+def blender_sweep(points: Annotated[list, Field(description='[[x, y, z], ...] the path, in metres.')],
+                  radii: Annotated[list, Field(description='One radius per point (a tapering horn), or a single-element list for a constant pipe.')],
+                  out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                  name: Annotated[str, Field(description='Object name. Default Sweep.')] = "Sweep",
+                  segments: Annotated[int, Field(description='Segments around the tube. Default 12.')] = 12,
+                  smooth_path: Annotated[bool, Field(description='Run a smooth curve through the points (True) or straight runs between them (False). Default True.')] = True,
+                  caps: Annotated[bool, Field(description='Close the ends. Default True.')] = True,
+                  preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                  colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                  timeout: int = 300) -> dict:
+    """A tube along a path with a radius per point: pipes, cables, horns,
+    tails, roots, railings, tentacles, a tree limb. One sweep replaces the
+    chain of cylinders that shows its joints.
+    """
+    _contained_path(out_path, "out_path")
+    rs = list(radii or [])
+    if len(rs) == 1:
+        rs = rs * len(points or [])
+    result = _form.sweep(points, rs, out_path, name=name, segments=segments, caps=caps, smooth_path=smooth_path,
+                         preset=preset, colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_sweep", points=len(points or []), tris=result.get("tris"))
+
+
+@_tool
+def blender_rock(out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 name: Annotated[str, Field(description='Object name. Default Rock.')] = "Rock",
+                 size: Annotated[Optional[list[float]], Field(description='[x, y, z] metres. Default [1.0, 0.8, 0.6].')] = None,
+                 seed: Annotated[int, Field(description='Same seed, same rock. Default 1.')] = 1,
+                 detail: Annotated[int, Field(description='Sphere subdivisions: 3 pebble (320 tris), 4 rock (1280), 5 hero boulder (5120). Default 4.')] = 4,
+                 roughness: Annotated[float, Field(description='0-1 how far the noise pushes the surface. Default 0.3.')] = 0.3,
+                 facets: Annotated[float, Field(description='0-1 planar-decimates toward a chiselled low-poly look. Default 0.')] = 0.0,
+                 flat_bottom: Annotated[bool, Field(description='Slice the underside so it sits. Default True.')] = True,
+                 preset: Annotated[str, Field(description='Material preset; concrete reads as stone. Empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 timeout: int = 300) -> dict:
+    """A boulder: a sphere displaced by seeded noise, sat on the ground. Vary
+    the seed for a field of them (blender_scatter places pebbles).
+    """
+    _contained_path(out_path, "out_path")
+    result = _form.rock(out_path, name=name, size=tuple(size or (1.0, 0.8, 0.6)), seed=seed, detail=detail,
+                        roughness=roughness, facets=facets, flat_bottom=flat_bottom, preset=preset,
+                        colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_rock", seed=seed, tris=result.get("tris"))
