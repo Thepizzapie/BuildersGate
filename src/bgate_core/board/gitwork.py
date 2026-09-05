@@ -220,6 +220,25 @@ def dirty(root: str | os.PathLike[str]) -> dict:
             "means": MEANING_OF_DIRTY}
 
 
+def _identity_args(root: str | os.PathLike[str]) -> list[str]:
+    """A command-local author when the repository has none configured.
+
+    A machine with no user.name/user.email refuses every commit with "Please
+    tell me who you are" - the CI runner does, and so does a fresh box a
+    project was cloned onto. initialize() already carries this identity for
+    the first commit; the agent commits it makes afterwards died on the same
+    rule (Linux CI, chaos worktree tests). A configured identity is left
+    alone: the human's name stays on the human's machine's commits.
+    """
+    ok_name, name, _ = _run(root, ["config", "user.name"], timeout=10)
+    ok_mail, mail, _ = _run(root, ["config", "user.email"], timeout=10)
+    if ok_name and name.strip() and ok_mail and mail.strip():
+        return []
+    # BEFORE the subcommand: `git -c k=v commit` sets config; `git commit -c`
+    # means "reuse that commit's message" and refuses -m beside it.
+    return ["-c", "user.name=Builders Gate", "-c", "user.email=builders-gate@localhost"]
+
+
 def commit_paths(root: str | os.PathLike[str], paths: Sequence[str],
                  message: str) -> dict:
     """Commit EXACTLY these paths, leaving everything else uncommitted.
@@ -261,7 +280,8 @@ def commit_paths(root: str | os.PathLike[str], paths: Sequence[str],
     if not ok or not staged.strip():
         return {"ok": False, "reason": "nothing staged — no tracked change",
                 "committed": []}
-    ok, _out, err = _run(root, ["commit", "--no-verify", "-m", message])
+    ok, _out, err = _run(root, [*_identity_args(root), "commit", "--no-verify",
+                                "--no-gpg-sign", "-m", message])
     if not ok:
         return {"ok": False, "reason": f"git commit failed: {err}",
                 "committed": []}
@@ -753,7 +773,8 @@ def merge_worktree(root: str | os.PathLike[str], item_id: int) -> dict:
         return _merge_failed(root, item_id, {
                 "available": True, "integrated": False, "pending": True,
                 "reason": err or f"branch {branch} does not exist"})
-    ok, _out, err = _run(root, ["merge", "--no-ff", "--no-edit", branch], timeout=120)
+    ok, _out, err = _run(root, [*_identity_args(root), "merge", "--no-ff", "--no-edit",
+                                "--no-gpg-sign", branch], timeout=120)
     if not ok:
         _ok, conflicts, _why = _run(
             root, ["diff", "--name-only", "--diff-filter=U"], timeout=30)
