@@ -29,3 +29,12 @@ def test_the_director_and_the_ownership_rule_route_geometry_to_art():
     assert "goes to ART" in seats.DEFAULT_SEATS["director"]["mission"]
     assert "3D GEOMETRY IS ASSET GENERATION AND ASSET GENERATION IS ART" in seats.OWNERSHIP_RULE
     assert "Tech gets the CollisionShape3D" in seats.OWNERSHIP_RULE
+
+
+def test_the_cast_is_generated_and_a_primitives_only_bible_is_a_human_call():
+    d = seats.DEFAULT_SEATS["director"]["mission"]
+    assert "THE CAST IS GENERATED" in d and "ask_human before" in d
+    assert "a keyed provider is not an install" in d
+    w = seats.ART_3D_WORKFLOW
+    assert "NOT the cast" in w and "PRIMITIVES ONLY" in w and "ask_human" in w
+    assert "props, vehicles, terrain" not in w
