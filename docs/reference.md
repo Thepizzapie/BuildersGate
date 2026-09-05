@@ -669,6 +669,7 @@ the causal history.
 | Godot | `godot_*`, `evidence_check_ui` | Run, test, scaffold, import, deliver, screenshot, inspect, retarget |
 | Scene | `scene_*`, `level_plan`, `level_generate`, `blockout_generate`, `track_generate` | Node surgery and level layout (2D tiles, 3D rooms, circuits) |
 | 3D gates | `godot_scene_audit`, `godot_export_verify` | Boot scene, shared sub_resources, support, headroom, colliders; editor-vs-pck diff |
+| Live Blender | `blender_live_status`, `blender_live_run`, `blender_live_view`, `blender_live_export`, `blender_live_reset` | The same kit inside a Blender that stays open (Blender Lab MCP extension): persistent scene, the human's viewport, no relaunch |
 | 3D forms | `blender_hull`, `blender_skin`, `blender_blob`, `blender_sweep`, `blender_rock` | The smooth shape built FIRST: a body from its silhouettes, a creature from a stick figure, merged blobs, swept tubes, seeded boulders |
 | 3D surfaces | `blender_fuse`, `blender_shade`, `blender_lathe`, `blender_loft`, `blender_material`, `blender_bake`, `blender_decal`, `blender_tree`, `blender_scatter`, `blender_look_audit` | Continuous forms instead of tacked shells; material presets baked to real maps; conformed decals; trees and scatter; the tacked-together audit |
 | Images | `image_*`, `sprite_*`, `item_*`, `vfx_animate`, `ref_*`, `profile_*`, `consistency_check`, `art_qa_verdict`, `art_tournament_*` | Generation, sprite sheets, items, references, consistency, art review |

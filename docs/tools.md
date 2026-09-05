@@ -1088,6 +1088,43 @@ horns, tails, roots, railings, tentacles. smooth_path runs a curve through
 the points. One sweep replaces the chain of cylinders that shows its joints.
 ```
 
+## blender_live_status
+
+```text
+Is a live Blender listening (Blender Lab's MCP extension, 5.1+)? Its
+version, whether the kit is installed in it yet, the open .blend. Headless
+blender_run keeps working regardless; this is the interactive companion.
+```
+
+## blender_live_run
+
+```text
+Run a kit script in the LIVE Blender. Unlike blender_run the scene persists
+between calls: build the body, look at it (view=), fix the arch in the next
+call, export when it reads right. The kit installs itself into the session on
+the first call; the scene is never wiped implicitly (blender_live_reset).
+```
+
+## blender_live_view
+
+```text
+Capture the live 3D viewport - what the human sees - to a PNG, through the
+viewport render; the scene camera when no 3D view is open.
+```
+
+## blender_live_export
+
+```text
+Export the live scene as it stands to a game .glb (Y-up, modifiers applied),
+changing nothing in the scene to do it.
+```
+
+## blender_live_reset
+
+```text
+Empty the live scene (bg_wipe): the one destructive live call, its own tool.
+```
+
 ## blender_rock
 
 ```text

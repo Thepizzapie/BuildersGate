@@ -1764,3 +1764,76 @@ def blender_rock(out_path: Annotated[str, Field(description='Where the .glb is w
                         roughness=roughness, facets=facets, flat_bottom=flat_bottom, preset=preset,
                         colour=colour or None, timeout=timeout)
     return _surface_result(result, out_path, "blender_rock", seed=seed, tris=result.get("tris"))
+
+
+# ---------------------------------------------------------------------------
+# The LIVE Blender: the same kit, inside a Blender that stays open (Blender
+# Lab's MCP extension, 5.1+). The scene persists between calls, the viewport
+# the human is looking at is the one being built in, and nothing relaunches.
+# ---------------------------------------------------------------------------
+from bgate_adapters import blender_live as _live  # noqa: E402
+
+
+@_tool
+def blender_live_status(port: Annotated[int, Field(description='The MCP bridge port set in the extension preferences. Default 9876.')] = 9876) -> dict:
+    """Is a live Blender listening? Reports its version, whether the kit is
+    installed in it yet, and the open .blend. Not available means: open
+    Blender, enable the MCP extension, press 'Start MCP Bridge Server' in its
+    preferences (or tick Autostart). Headless blender_run keeps working
+    regardless - this is the interactive companion, not a replacement.
+    """
+    return _live.available(port=port)
+
+
+@_tool
+def blender_live_run(script: Annotated[str, Field(description='bpy script with the kit in scope (bg_hull, bg_skin, bg_lathe, bg_material...). Assign `result = {...}` to hand values back. The scene is NOT wiped for you.')],
+                     export_glb: Annotated[str, Field(description='Also export the live scene to this .glb (inside the project). Empty skips.')] = "",
+                     view: Annotated[str, Field(description='Also capture the live 3D viewport to this PNG (inside the project). Empty skips.')] = "",
+                     port: Annotated[int, Field(description='The MCP bridge port. Default 9876.')] = 9876,
+                     timeout: int = 300) -> dict:
+    """Run a kit script in the LIVE Blender. Unlike blender_run, the scene
+    persists between calls: build the body in one call, look at it (view=),
+    fix the wheel arch in the next, export when it reads right. Every kit
+    function is in scope without a prelude; the kit installs itself into the
+    session on the first call. Use blender_live_reset to empty the scene - it
+    is never emptied implicitly.
+    """
+    if export_glb:
+        _contained_path(export_glb, "export_glb")
+    if view:
+        _contained_path(view, "view")
+    result = _live.run(script, export_glb=export_glb or None, view=view or None, port=port, timeout=timeout)
+    if result.get("ok") and export_glb:
+        return _surface_result(result, export_glb, "blender_live_run", live=True)
+    return result
+
+
+@_tool
+def blender_live_view(out_path: Annotated[str, Field(description='PNG path inside the project.')],
+                      port: int = 9876) -> dict:
+    """Capture what the human sees in the live Blender's 3D viewport (through
+    the viewport render), so agent and human are looking at the same frame.
+    Falls back to the scene camera when Blender has no 3D view open.
+    """
+    _contained_path(out_path, "out_path")
+    return _live.view(out_path, port=port)
+
+
+@_tool
+def blender_live_export(out_path: Annotated[str, Field(description='.glb path inside the project.')],
+                        port: int = 9876) -> dict:
+    """Export the live scene as it stands to a game .glb (Y-up, modifiers
+    applied, materials with their constants). Nothing in the scene is changed
+    or deleted to do it.
+    """
+    _contained_path(out_path, "out_path")
+    result = _live.export_glb(out_path, port=port)
+    return _surface_result(result, out_path, "blender_live_export", live=True)
+
+
+@_tool
+def blender_live_reset(port: int = 9876) -> dict:
+    """Empty the live scene (bg_wipe) - the one destructive live call, so it
+    is a separate tool and never a side effect of running a script.
+    """
+    return _live.reset(port=port)
