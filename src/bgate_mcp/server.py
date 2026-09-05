@@ -1088,7 +1088,15 @@ def project_init(name: str, pitch: str = "", engine: str = "godot",
     on this one tool the directory is the thing being made, not looked up.
     """
     target = root or _root_hint() or os.getcwd()
-    return _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
+    made = _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
+    # Same as bgate init / adopt / the dashboard: lanes re-rooted at the
+    # layout that is actually there, not the <root>/game the defaults assume.
+    try:
+        from bgate_core.board import seats as _seats
+        made["lanes"] = _seats.apply_layout(target)
+    except Exception as exc:
+        made["lanes"] = {"changed": False, "why": f"could not set lanes: {exc}"}
+    return made
 
 
 @_tool
@@ -4991,6 +4999,63 @@ def godot_export_probe(pck: Annotated[str, Field(description='The exported .pck 
 
 
 
+# THE GATES THAT WERE HAND-WRITTEN INSIDE EVERY GAME AND NEVER IN THE HARNESS.
+# MEASURED (catnip-fiend 2026-08-24): the game booted into the scaffold demo
+# after full production; eight instances of one prop scene shared a resized
+# sub_resource and all took the last one's size; a book stood on the catnip and
+# a cabinet overhung the counter - every geometry gate measured the surface and
+# none the space above it; 130 assertions green throughout.
+@_tool
+def godot_scene_audit(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+                      scene: Annotated[str, Field(description='res:// path of the scene to audit. EMPTY audits the scene the game BOOTS into (run/main_scene), which is the one nobody else names.')] = "",
+                      player_height: Annotated[float, Field(description='Standing height of the player body in metres; sets the headroom ray and the height bars. Default 1.8.')] = 1.8,
+                      player_radius: Annotated[float, Field(description='Half-width of the player body; insets the headroom grid. Default 0.4.')] = 0.4,
+                      headroom: Annotated[Optional[float], Field(description='Clear height required above a landing surface. Default: player_height.')] = None,
+                      timeout: int = 180) -> dict:
+    """Audit a 3D scene for the defects that shipped green everywhere else.
+
+    STATIC: run/main_scene set and not the scaffold demo (BOOT_IS_SCAFFOLD);
+    a mesh/shape/material sub_resource shared by several nodes and assigned
+    into by a script (SHARED_SUBRESOURCE_MUTATED - every node gets the last
+    writer's value); an instanced scene whose script resizes its own embedded
+    sub_resources without resource_local_to_scene (INSTANCED_SUBRESOURCE_
+    MUTATED); a ConcavePolygonShape3D under a moving body (TRIMESH_ON_MOVING_
+    BODY). IN-ENGINE, world space, after two physics steps: every visible mesh
+    has a collider on its body (NO_COLLIDER) that matches its bounds
+    (COLLIDER_MISMATCH); every static/rigid body above the floor rests on
+    something within 3 cm (FLOATING / UNSUPPORTED); every landing surface
+    between 0.15 and 2.5 m up has `headroom` clear above a 5x5 grid of its top
+    (NO_HEADROOM / PARTIAL_HEADROOM). `ok` is false on any error-level finding.
+    Run it with scene="" once per project before any presentation gate.
+    """
+    from bgate_adapters import godot_audit as _audit
+    _contained_path(godot_project, "godot_project")
+    return _audit.audit(godot_project, scene or None, player_height=float(player_height),
+                        player_radius=float(player_radius), headroom=headroom, timeout=timeout)
+
+
+# EDITOR RUN != EXPORT, PROVED BY DIFF RATHER THAN BY A HUMAN NOTICING. MEASURED
+# (Corniche 2026-09-04): per-instance livery overrides resolved in every
+# screenshot and vanished in the pck; rails "shattered" on grades in the build.
+# godot_export_probe lets a script look; this looks for you.
+@_tool
+def godot_export_verify(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+                        pck: Annotated[str, Field(description='The exported .pck (or .zip); absolute or relative to the project. `godot --headless --path <project> --export-pack <preset> <out.pck>` makes one.')],
+                        scene: Annotated[str, Field(description='res:// scene to compare. EMPTY compares the boot scene.')] = "",
+                        timeout: int = 180) -> dict:
+    """Load one scene from the PROJECT and from the PCK and diff what the
+    engine built: node set, types, visibility, transforms, mesh and bounds,
+    materials per surface (albedo, texture, shader), collider class and size,
+    bone and animation counts, and every exported script variable - the
+    per-instance overrides a pck has been seen to drop. `ok` is false on any
+    difference; each diff names the node, the field, and both values. Run it
+    after every export whose evidence came from an editor run.
+    """
+    from bgate_adapters import godot_audit as _audit
+    _contained_path(godot_project, "godot_project")
+    return _audit.export_verify(godot_project, pck, scene or None, timeout=timeout)
+
+
 # A LEVEL-DESIGN TOOL FOR DRIVING GAMES. MEASURED (Corniche, 2026-09-04): with no
 # tool, the tech seat hand-wrote a 1,900-line generator over 12 hours and the
 # director rescued it five times (a folded closure, terrain through the road,
@@ -5047,6 +5112,94 @@ def track_generate(spec: Annotated[dict, Field(description='The circuit, as JSON
            "report": report, "spec_path": str(spec_path),
            "generator": str(tools_dir / "bgate_track_gen.gd"),
            "template_copied": copied,
+           "engine_errors": got.get("errors") or [],
+           "stdout_tail": (got.get("stdout") or "")[-3000:]}
+    if not out["ok"] and not report:
+        out["error"] = "the generator did not write a report - read stdout_tail/engine_errors"
+    return out
+
+
+# A LEVEL-DESIGN TOOL FOR 3D ROOMS. MEASURED (catnip-fiend 2026-08-24, Corniche
+# 2026-09-04): with no tool, every 3D layout was a hand-written generator - the
+# house needed a rewrite ("a tiny layout, sizing between layout, cat, human
+# and props all wrong"), the owner's navmesh had no room to path in after the
+# furniture landed, and three "cannot reach the target" bugs were each
+# something standing where the gate never measured. The generator emits the
+# graybox AND the numbers: walkable floor per room after props, door and
+# corridor widths against the agent, a real navmesh path from the spawn to
+# every room. A failing bar names the fix.
+@_tool
+def blockout_generate(spec: Annotated[Optional[dict], Field(description='The layout, as JSON: {out_scene, player:{height, radius}, wall_height, wall_thickness, ceiling, door_width, door_height, auto_doors, rooms:[{name, kind:"room"|"corridor", x, z, w, d, height, floor_y, ceiling, props:[{name, x, z, w, h, d, climbable}]}], doors:[{from, to | side:"n"|"s"|"e"|"w", width, height, at}], spawn:{room, x, z}, goals:[{name, room, x, z, radius}], navmesh:{agent_radius, agent_height, agent_max_climb, cell_size}, materials:{floor, corridor, wall, ceiling, prop, climbable} (res paths), environment:{sun_elevation_deg, sun_azimuth_deg}}. Metres; x/z is a room\'s minimum corner, w along +X, d along +Z; prop x/z are relative to the room. Omit when passing from_plan.')] = None,
+                      from_plan: Annotated[Optional[dict], Field(description='A level_plan result to convert instead of writing rooms by hand: rooms keep their cells scaled by cell_m, corridor paths become clipped corridor rectangles, every shared edge gets a door.')] = None,
+                      cell_m: Annotated[float, Field(description='Metres per plan cell when converting from_plan. Default 1.0.')] = 1.0,
+                      corridor_width: Annotated[int, Field(description='Corridor width in cells when converting from_plan. Default 2.')] = 2,
+                      out_scene: Annotated[str, Field(description='Where the scene lands when converting from_plan. Default res://scenes/blockout/blockout.tscn.')] = "res://scenes/blockout/blockout.tscn",
+                      godot_project: Optional[str] = None,
+                      refresh_template: bool = False,
+                      timeout: int = 300) -> dict:
+    """Generate a measured 3D graybox - rooms, corridors, doors, box props, a
+    baked navmesh - from a JSON spec or a level_plan result.
+
+    Emits a node-shaped scene: Rooms/<Room>/Floor (+Ceiling, +Props/<P>
+    resting ON the floor), Walls/Wall_NN (one wall per shared edge, doors cut
+    through it with a lintel), Doors/<A>__<B> markers, Nav (NavigationRegion3D
+    with the baked mesh), Markers/Spawn, Goals/<name> (Area3D volumes
+    traversal_prove drives to), Sun and WorldEnvironment. Then it MEASURES:
+    walkable m2 and coverage per room after props, door and corridor widths
+    against 2r + 2 cells (+0.2), room and door heights against the player, and
+    a NavigationServer path from the spawn to every room. `report.ok` is false
+    when a bar fails, with the fix named. Overlapping rooms are refused; make
+    one a corridor that ENDS at the other's wall. A navmesh cell_size other
+    than the project default is written to project.godot and reported. The
+    generator lands in <project>/scripts/tools/bgate_blockout_gen.gd
+    (editable; refresh_template=True overwrites it from the shipped copy).
+    """
+    import json as _json
+    import shutil as _sh
+    from pathlib import Path as _P
+
+    from bgate_core.level import blockout as _blockout
+    _contained_path(godot_project, "godot_project")
+    proj = _P(godot_project or _root())
+    if not (proj / "project.godot").is_file():
+        return {"ok": False, "error": f"{proj} holds no project.godot"}
+    if from_plan is not None:
+        if spec is not None:
+            return {"ok": False, "error": "pass spec OR from_plan, not both"}
+        try:
+            spec = _blockout.spec_from_plan(from_plan, cell_m=float(cell_m),
+                                            corridor_width=int(corridor_width),
+                                            out_scene=out_scene)
+        except (_blockout.BlockoutError, KeyError, TypeError) as exc:
+            return {"ok": False, "error": f"from_plan could not be converted: {exc}"}
+    if not isinstance(spec, dict):
+        return {"ok": False, "error": "spec must be a JSON object (or pass from_plan)"}
+    problems = _blockout.validate(spec)
+    if problems:
+        return {"ok": False, "error": "spec refused before the engine ran",
+                "problems": problems, "spec": spec}
+    tpl = _P(__file__).resolve().parent.parent / "templates" / "shared" / "tools"
+    tools_dir = proj / "scripts" / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    dst = tools_dir / "bgate_blockout_gen.gd"
+    copied = []
+    if refresh_template or not dst.is_file():
+        _sh.copy2(tpl / "bgate_blockout_gen.gd", dst)
+        copied.append(str(dst))
+    spec_path = proj / ".bgate_blockout_spec.json"
+    spec_path.write_text(_json.dumps(spec, indent=2), encoding="utf-8")
+    src = dst.read_text(encoding="utf-8")
+    got = _godot.run_script(src, project_dir=str(proj), timeout=timeout)
+    report_path = proj / ".bgate_out" / "blockout_report.json"
+    report: dict = {}
+    if report_path.is_file():
+        try:
+            report = _json.loads(report_path.read_text(encoding="utf-8"))
+        except ValueError:
+            report = {}
+    out = {"ok": bool(report.get("ok")) and bool(got.get("ok")),
+           "report": report, "spec": spec, "spec_path": str(spec_path),
+           "generator": str(dst), "template_copied": copied,
            "engine_errors": got.get("errors") or [],
            "stdout_tail": (got.get("stdout") or "")[-3000:]}
     if not out["ok"] and not report:
@@ -5329,7 +5482,7 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
                    force: bool = False, replace: bool = False) -> dict:
     """Create a runnable Godot project wired for playtesting.
 
-    kind: 2d (platformer slice) | 3d (first-person slice). dest defaults to
+    kind: 2d (platformer slice) | 3d (third-person slice + prop kit + vehicle demo). dest defaults to
     <project root>/game. The template ships the BGate telemetry autoload and a
     player whose feel tunables are exported AND emitted. A non-empty dest is
     refused unless force or replace, and they differ: force=True fills in WHAT
@@ -7128,6 +7281,65 @@ def queue_get(item_id: int) -> dict:
     return _q.get(_root(), int(item_id))
 
 
+@_tool
+def worktree_integrations() -> dict:
+    """Chaos-mode branches waiting for Director review and integration."""
+    from bgate_core.board import gitwork as _gitwork
+    from bgate_core.board import queue as _q
+
+    root = _root()
+    rows = []
+    for integration in _gitwork.integrations(root, pending=True):
+        try:
+            item = _q.get(root, int(integration["item_id"]))
+        except (LookupError, ValueError, TypeError):
+            item = {}
+        rows.append({**integration,
+                     "seat": item.get("seat") or "",
+                     "title": item.get("title") or "",
+                     "result": item.get("result") or ""})
+    return {"pending": rows, "count": len(rows)}
+
+
+@_tool
+def worktree_merge(item_id: int) -> dict:
+    """Merge one prepared Chaos worktree into the current working branch.
+
+    Read the item's diff and result first. A conflict is aborted before this
+    returns, leaving the working branch clean for diagnosis and a deliberate
+    retry after the branch is corrected.
+    """
+    from bgate_core.board import gitwork as _gitwork
+    from bgate_core.board import queue as _q
+
+    root = _root()
+    item = _q.get(root, int(item_id))
+    if _seat() not in ("", "director"):
+        return {"ok": False, "error": "only the Director may merge Chaos worktrees"}
+    if item.get("status") not in ("integrating", "done", "review"):
+        return {"ok": False, "error": f"item {int(item_id)} is "
+                f"{item.get('status')}, not finished"}
+    pending = _gitwork.integration(root, int(item_id))
+    if not pending.get("pending"):
+        return {"ok": False, "error": f"item {int(item_id)} has no pending "
+                "Chaos integration", "integration": pending}
+    result = _gitwork.merge_worktree(root, int(item_id))
+    if not result.get("integrated"):
+        if result.get("failed") and item.get("status") == "integrating":
+            _q.complete(root, int(item_id), failed=True,
+                        result="Chaos integration abandoned: "
+                               + str(result.get("reason") or "merge failed"))
+            result["item_status"] = "failed"
+        return {"ok": False, "error": result.get("reason") or "merge failed",
+                **result}
+    if item.get("status") == "integrating":
+        completed = _q.complete(root, int(item_id), result=item.get("result") or "")
+        result["item_status"] = completed.get("status")
+    _log("director", f"merged Chaos worktree for item {int(item_id)}",
+         ref=str(item_id))
+    return {"ok": True, **result}
+
+
 
 def _near_duplicate(_q, title: str, seat: str) -> Optional[dict]:
     """The open item whose title shares most of its words with `title`, if any.
@@ -7777,6 +7989,7 @@ def queue_claim_next() -> dict:
     Full notes: docs/tools.md#queue_claim_next
     """
     from bgate_core.board import queue as _q
+    from bgate_core.store import settings as _settings
     seat = _seat()
     origin = _work_item_id()
     if not seat or not origin:
@@ -7785,6 +7998,11 @@ def queue_claim_next() -> dict:
             "this session was not dispatched against a work item. File "
             "work with queue_add (it dispatches when `bgate serve` is up) "
             "instead of claiming it.")
+    if (os.environ.get("BGATE_DISPATCH_MODE") or
+            str(_settings.get(_root(), "dispatch.mode") or "structured")) == "chaos":
+        return {"empty": True, "seat": seat,
+                "note": "Chaos mode gives every task its own worktree; finish "
+                        "this item and let the scheduler start the next one."}
     item = _q.claim_next(_root(), seat, actor=f"agent:item-{int(origin)}")
     if item is None:
         return {"empty": True, "seat": seat,
@@ -7848,7 +8066,20 @@ def queue_complete(item_id: int, result: str, failed: bool = False,
     # board that no branch can ever act on - and an item nobody will reopen.
     if failed:
         result = _q.with_next_approach(result, next_approach)
-    closed = _q.complete(root, item_id, result=result, failed=failed)
+    if not failed:
+        try:
+            from bgate_core.store import settings as _settings
+            item = _q.get(root, int(item_id))
+            mode = (os.environ.get("BGATE_DISPATCH_MODE") or
+                    str(_settings.get(root, "dispatch.mode") or "structured"))
+            chaos = (mode == "chaos" and bool(item.get("worktree")))
+        except Exception:
+            chaos = False
+        closed = (_q.set_status(root, item_id, "integrating", result=result)
+                  if chaos else _q.complete(root, item_id, result=result,
+                                             failed=False))
+    else:
+        closed = _q.complete(root, item_id, result=result, failed=True)
     return {**closed, "premise_refuted": refutation} if refutation else closed
 
 

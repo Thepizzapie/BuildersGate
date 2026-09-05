@@ -3273,6 +3273,12 @@ window.AudioLab = (() => {
     S.meta = r.data; S.loop = r.data.loop || S.loop;
     S.dirty = false;
     S.savedAt = Date.now();
+    // An mp3 is a source, not a destination: the server wrote the edit beside
+    // it as .ogg and we are now editing THAT. Say so, or the user looks for
+    // their change in a file that did not change.
+    if (r.data.redirected_from){
+      say(`${r.data.redirected_from} is a source take - saved your edit as ${r.data.rel} beside it`, "ok");
+    }
     renderSheet(); paint();
     say(r.data.created
         ? `created ${r.data.rel}${r.data.needs_godot_import

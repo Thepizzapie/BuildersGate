@@ -1,0 +1,53 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/kit/vehicle.tscn" id="1_vehicle"]
+[ext_resource type="Script" path="res://scripts/chase_camera.gd" id="2_chase"]
+[ext_resource type="PackedScene" path="res://scenes/kit/ramp.tscn" id="3_ramp"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_ground"]
+size = Vector3(200, 1, 200)
+
+[sub_resource type="BoxMesh" id="BoxMesh_ground"]
+size = Vector3(200, 1, 200)
+
+[sub_resource type="StandardMaterial3D" id="Mat_road"]
+albedo_color = Color(0.3, 0.3, 0.32, 1)
+roughness = 1.0
+
+[sub_resource type="Environment" id="Environment_demo"]
+background_mode = 1
+background_color = Color(0.62, 0.7, 0.8, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.7, 0.72, 0.78, 1)
+ambient_light_energy = 0.8
+
+[node name="VehicleDemo" type="Node3D"]
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.7, -0.5, 0.5, 0, 0.7, 0.7, -0.7, -0.5, 0.5, 0, 8, 0)
+shadow_enabled = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_demo")
+
+[node name="Road" type="StaticBody3D" parent="."]
+collision_layer = 33
+
+[node name="Shape" type="CollisionShape3D" parent="Road"]
+shape = SubResource("BoxShape3D_ground")
+
+[node name="Mesh" type="MeshInstance3D" parent="Road"]
+mesh = SubResource("BoxMesh_ground")
+surface_material_override/0 = SubResource("Mat_road")
+
+[node name="Ramp" parent="." instance=ExtResource("3_ramp")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.05, -30)
+
+[node name="Vehicle" parent="." instance=ExtResource("1_vehicle")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 0)
+
+[node name="ChaseCamera" type="Camera3D" parent="." node_paths=PackedStringArray("target_path")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 7)
+current = true
+script = ExtResource("2_chase")
+target_path = NodePath("../Vehicle")

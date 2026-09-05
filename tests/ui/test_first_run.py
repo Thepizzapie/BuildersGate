@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bgate_cli import main as cli
+from bgate_core.board import gitwork
 from bgate_core.store import db, project
 from bgate_core.board import seats
 from bgate_ui.app import app
@@ -70,6 +71,19 @@ class TestWhereANewProjectLands:
         monkeypatch.chdir(empty)
         assert project_routes.default_parent() == empty
 
+    def test_an_active_projects_parent_is_used_for_the_next_game(
+            self, monkeypatch, tmp_path):
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        monkeypatch.setenv("BGATE_HOME", str(machine_home))
+        current = tmp_path / "builders-gate"
+        project.init(current, "Builders Gate")
+        monkeypatch.setenv("BGATE_ROOT", str(current))
+        monkeypatch.chdir(current)
+
+        assert project_routes.default_parent() == tmp_path
+        assert project_routes._target("Hot Cargo", "") == tmp_path / "hot-cargo"
+
     @pytest.mark.parametrize("var,leaf", [
         ("SystemRoot", "System32"),
         ("ProgramFiles", "SomeApp"),
@@ -110,12 +124,25 @@ class TestCreateOverHttp:
         assert made["files"] > 0
         assert (root / ".bgate" / "game.db").exists()
         assert (root / "project.godot").exists()
+        assert made["repository"]["available"] is True
+        assert gitwork.probe(root)["available"] is True
 
         # The same poll that reported nothing now reports the real project.
         state = client.get("/api/state").json()
         assert state["project"]["name"] == "Ember Run"
         assert state["root"] == str(root)
         assert len(state["seats"]) == len(seats.ROLES)
+        # And the machine-wide pointer agrees with the running server, so the
+        # SessionStart hook and `bgate use` name the same game the console does.
+        from bgate_core.store import project as _project
+        assert Path(_project.active_root()).resolve() == root.resolve()
+        assert str(root) in {str(Path(p)) for p in _project.known_projects().values()}
+        # And the seat lanes point at the scaffold's real layout (scenes/ and
+        # scripts/ at the root), not the <root>/game the defaults assume.
+        assert made["lanes"]["changed"] is True
+        art = seats.roles_for(root)["art"]["write_globs"]
+        assert "assets/**" in art and not any(g.startswith("game/") for g in art)
+        assert "scripts/**" in seats.roles_for(root)["gameplay"]["write_globs"]
 
     def test_3d_template_sets_the_dimension(self, client, monkeypatch):
         monkeypatch.delenv("BGATE_ROOT")

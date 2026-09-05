@@ -837,6 +837,19 @@ class TestSessionStart:
         monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: True)
         assert "UP" in session.build_context(str(root))
 
+    def test_autopilot_off_is_the_effective_value_not_the_raw_doc(self, root, monkeypatch):
+        """autopilot.on defaults ON and a fresh project has no doc, so reading
+        the doc told the director 'autopilot is OFF' on a dispatching board
+        while the console banner said on (Hot Cargo, 2026-09-04)."""
+        from bgate_ui.agents import autodeploy
+        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: True)
+        monkeypatch.setattr(session, "_board_root", lambda *a, **k: str(root))
+        assert "autopilot is OFF" not in session.build_context(str(root))
+        autodeploy.set_enabled(root, False)
+        assert "autopilot is OFF" in session.build_context(str(root))
+        autodeploy.set_enabled(root, True)
+        assert "autopilot is OFF" not in session.build_context(str(root))
+
     def test_surfaces_who_else_is_in_a_file(self, root, monkeypatch):
         """THE REGRESSION THIS EXISTS FOR. Two sessions, one module, one
         afternoon, no warning — because nothing ever told either of them that
@@ -998,6 +1011,10 @@ class TestSessionStart:
         monkeypatch.setattr(gitwork, "dirty",
                             lambda *a, **k: {"available": True, "dirty": True,
                                              "paths": ["game/scripts/a.gd"]})
+        # Switched OFF explicitly: the default is ON, and a project with no doc
+        # must not be reported as off (that misreport is its own test above).
+        from bgate_core.store import workspace
+        workspace.set(root, "director", "autopilot", {"on": False})
         text = session.build_context(str(root))
         assert "autopilot is OFF" in text
         assert "DIRTY" in text and "allow_dirty" in text

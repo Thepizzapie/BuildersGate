@@ -29,7 +29,7 @@ from ..store.util import rows
 # and under the builder's gate (bgate_core.board.gates) a human has not yet said yes.
 # It is deliberately NOT 'done' — a chain must not advance on unapproved work —
 # and deliberately not 'dispatched', which would claim an agent is still running.
-STATUSES = ("queued", "dispatched", "review", "done", "failed", "cancelled")
+STATUSES = ("queued", "dispatched", "integrating", "review", "done", "failed", "cancelled")
 
 # Statuses a dependent item is allowed to start on top of. 'review' is not one
 # of them: the whole point of the hold is that the next link waits.

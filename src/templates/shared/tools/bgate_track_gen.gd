@@ -22,7 +22,7 @@ extends SceneTree
 ##
 ## Re-running is idempotent: the same spec gives the same file.
 
-const Closure := preload("res://scripts/tools/bgate_track_closure.gd")
+const Closure := preload("bgate_track_closure.gd")  # relative: this file ships at res://tools/ (scaffold) and res://scripts/tools/ (track_generate)
 const SPEC_PATH := "res://.bgate_track_spec.json"
 const REPORT_PATH := "res://.bgate_out/track_report.json"
 

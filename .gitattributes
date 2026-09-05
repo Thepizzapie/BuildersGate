@@ -1,2 +1,19 @@
-frontend/** text=auto eol=lf
-src/bgate_ui/static/dist/** -text
+# The repository is LF. Without this, a Windows checkout with autocrlf=true
+# rewrites every touched file and git warns on each one.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.glb binary
+*.blend binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.exe binary
+*.db binary

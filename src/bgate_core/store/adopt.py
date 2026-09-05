@@ -402,6 +402,7 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
     base = Path(directory).expanduser().resolve()
     if not base.is_dir():
         raise NotADirectoryError(f"{base} is not a directory — nothing to adopt")
+    project.refuse_harness(base, "adopt a project")
 
     blocked = would_clobber(base)
     if blocked:

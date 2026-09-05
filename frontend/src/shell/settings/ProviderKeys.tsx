@@ -112,27 +112,20 @@ export function StorageNote({ data }: { data: ProvidersData }) {
   return (
     <>
       <p className="gen-note">
-        Keys are written to a <code>.env</code> file — never into the database,
-        the board, or this dashboard's own files — and take effect immediately,
-        with no restart. Nothing here ever reads a key back: a saved key shows
-        as a state and its last four characters, and that is all the server
-        will send.
+        Keys are stored in <code>.env</code> and apply immediately. Saved values
+        are never returned; only status and the last four characters are shown.
       </p>
       <p className="gen-note">
-        There are two places to put one. This game's own <code>.env</code> keeps
-        it to this project. Ticking <b>save for every project on this
-        machine</b> writes <code>{data.global_env || "~/.bgate/.env"}</code>{" "}
-        instead, which every project inherits and which is the only store that
-        exists when you are not in a project at all. A project's own key wins
-        over it, and a variable exported in your shell wins over both.
+        Project keys stay with this game. Global keys are stored in{" "}
+        <code>{data.global_env || "~/.bgate/.env"}</code> and apply to every
+        project. Environment variables override both.
       </p>
       {data.scratch_root && (
         <p className="gen-note">
           Generations made with no project open land in{" "}
           <code>{data.scratch_root}</code>
           {data.scratch_exists ? "" : " (created the first time something needs it)"}
-          {" "}— a real project, so they get the same artifact registry and
-          review queue as anything else.
+          {" "}and use the normal artifact review flow.
           {data.scratch_active && <b> This dashboard is looking at it right now.</b>}
         </p>
       )}

@@ -74,6 +74,41 @@ def _isolated_user_dir(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_background_dispatch(monkeypatch):
+    """No test starts the autopilot THREAD. Tests drive autodeploy.tick().
+
+    The state poll and the autopilot routes call autodeploy.start(root), which
+    spawns a daemon loop that dispatches REAL agents. Measured (2026-09-04):
+    a full run left pumps live on nineteen pytest temp roots, three of them
+    had launched the machine's real claude CLI with --max-turns 200 against a
+    tmp_path game and kept billing after pytest exited, and a queue id from
+    one test's root collided with the next test's ("item 2 already has a
+    live agent"). Only the THREAD is stubbed - not BGATE_AUTODEPLOY, which
+    also flips the effective setting off and would make every tick() a no-op.
+    A test that wants the real loop restores autodeploy._pump.start itself.
+    """
+    from bgate_ui.agents import autodeploy as _autodeploy
+    monkeypatch.setattr(_autodeploy._pump, "start", lambda root: True)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_agent_cli(monkeypatch):
+    """No test can launch the machine's REAL claude or codex.
+
+    dispatch resolves the CLI through runners.find_claude / find_codex, and
+    on a developer machine both are on PATH - so any test that dispatches
+    without standing up a fake (two in test_console.py did) started a real
+    agent with --max-turns 200 against its tmp_path game. Measured
+    2026-09-04: three such agents were still running and billing after the
+    run. Resolved to None here; a test that wants a CLI patches the same two
+    names to its fake, as the lifecycle and director tests already do.
+    """
+    from bgate_ui.agents import runners as _runners
+    monkeypatch.setattr(_runners, "find_claude", lambda: None)
+    monkeypatch.setattr(_runners, "find_codex", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_provider_keys(monkeypatch):
     """No test sees a real provider key, or another test's leaked one.
 

@@ -91,7 +91,8 @@ def find_codex() -> Optional[str]:
     return shutil.which("codex") or _npm_shim("codex")
 
 
-def mcp_overrides(server_name: str = MCP_SERVER_NAME) -> list[str]:
+def mcp_overrides(server_name: str = MCP_SERVER_NAME,
+                  env_vars=()) -> list[str]:
     """Register the Builders Gate MCP server for ONE invocation.
 
     `-c` overlays config.toml in memory, so this never edits the user's
@@ -116,10 +117,15 @@ def mcp_overrides(server_name: str = MCP_SERVER_NAME) -> list[str]:
     """
     from bgate_ui.agents.agentcli import MODULE_ARGS
     args = ",".join(f'"{a}"' for a in MODULE_ARGS)
-    return [
+    out = [
         "-c", f'mcp_servers.{server_name}.command={_toml_str(sys.executable)}',
         "-c", f'mcp_servers.{server_name}.args=[{args}]',
     ]
+    names = sorted({str(name) for name in env_vars if str(name).strip()})
+    if names:
+        values = ",".join(_toml_str(name) for name in names)
+        out += ["-c", f'mcp_servers.{server_name}.env_vars=[{values}]']
+    return out
 
 
 def claude_mcp_config(server_name: str = MCP_SERVER_NAME) -> list[str]:
@@ -206,7 +212,8 @@ class Runner:
 
 
 def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
-                 cwd: str, native_images: bool, max_turns: int = 0) -> list[str]:
+                 cwd: str, native_images: bool, max_turns: int = 0,
+                 auto_approve: bool = False, mcp_env_vars=()) -> list[str]:
     """The capability surface of a dispatched Claude run.
 
     IT REGISTERS THE MCP SERVER, which it did not do for as long as there were
@@ -244,7 +251,8 @@ def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
 
 
 def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
-                cwd: str, native_images: bool, max_turns: int = 0) -> list[str]:
+                cwd: str, native_images: bool, max_turns: int = 0,
+                auto_approve: bool = False, mcp_env_vars=()) -> list[str]:
     """`codex exec`, JSONL, sandboxed to the project directory.
 
     --sandbox workspace-write --cd <project> writes to the REAL tree. Verified
@@ -268,8 +276,18 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
     cost-not-tracked wherever they are shown, and unbounded turns are the same
     class of fact about the same runner.
     """
-    args = [exe, "exec", "--json", "--sandbox", "workspace-write", "--cd", cwd]
-    args += mcp_overrides()
+    # --approve-for-me already selects the workspace-write sandbox and Codex
+    # rejects using the two switches together.
+    # A dispatched seat is an isolated harness run, not the user's interactive
+    # Codex session. Loading the ambient config also loads personal MCP
+    # servers and hooks that are unrelated to the dispatched task.
+    # Codex keeps CODEX_HOME authentication when this flag is set, while the
+    # one MCP server the seat needs is injected immediately below.
+    args = [exe, "exec", "--json", "--ignore-user-config"]
+    args += (["--approve-for-me"] if auto_approve
+             else ["--sandbox", "workspace-write"])
+    args += ["--cd", cwd]
+    args += mcp_overrides(env_vars=mcp_env_vars)
     args += ["--enable" if native_images else "--disable", "image_generation"]
     if model:
         args += ["--model", model]
@@ -288,13 +306,21 @@ def _codex_director_args(exe: str, *, model: Optional[str], cwd: str,
     if not resume:
         return _codex_args(
             exe, permission_mode="acceptEdits", model=model, cwd=cwd,
-            native_images=True) + ["-"]
+            native_images=True, auto_approve=False) + ["-"]
     args = [exe, "exec", "resume", "--json"]
     args += mcp_overrides()
     args += ["--enable", "image_generation"]
     if model:
         args += ["--model", model]
     return args + [resume, "-"]
+
+
+def _codex_app_server_args(exe: str) -> list[str]:
+    """Codex director transport with interactive approvals over stdio."""
+    args = [exe, "app-server", "--stdio"]
+    args += mcp_overrides()
+    args += ["--enable", "image_generation"]
+    return args
 
 
 # THE FLAGS THAT MAKE A BRAINSTORM SESSION UNABLE TO WRITE.
@@ -443,7 +469,7 @@ def _claude_chat_args(exe: str, *, system: str, model: Optional[str],
 
 
 def _claude_director_args(exe: str, *, system: str, model: Optional[str],
-                          resume: str = "") -> list[str]:
+                          resume: str = "", system_file: str = "") -> list[str]:
     """The director console's session: a FULL Claude Code session, held open.
 
     The third argv shape, and the one the console chat was missing. The other
@@ -465,6 +491,14 @@ def _claude_director_args(exe: str, *, system: str, model: Optional[str],
     No --max-turns. The dispatch shape carries one because a work item is a
     bounded errand; a conversation is not. Nothing bounds this one but the
     human closing it — there is no money ceiling anywhere in this product.
+
+    THE PROMPT GOES IN A FILE WHEN THE CALLER HAS ONE. On Windows the CLI is
+    an npm .cmd shim, so the whole argv passes through cmd.exe's 8,191-char
+    limit; the director framing plus the seat table is over 9,000 chars, and
+    the session died at spawn with "The command line is too long" - reported
+    to the human as "the director session exited (1) without answering".
+    `system_file` is that prompt on disk, passed as --append-system-prompt-file
+    (Claude Code 2.1+); `system` inline remains for callers with no file.
     """
     return [exe, "-p", "--permission-mode", "acceptEdits",
             "--input-format", "stream-json", "--output-format", "stream-json",
@@ -472,7 +506,8 @@ def _claude_director_args(exe: str, *, system: str, model: Optional[str],
             "--allowedTools", f"mcp__{MCP_SERVER_NAME}", "Read", "Edit", "Write",
             "Glob", "Grep", "Bash"] \
         + (["--resume", resume] if resume else []) \
-        + ["--append-system-prompt", system] \
+        + (["--append-system-prompt-file", system_file] if system_file
+           else ["--append-system-prompt", system]) \
         + (["--model", model] if model else [])
 
 

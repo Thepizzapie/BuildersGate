@@ -702,6 +702,10 @@ def _owner_item(owner: str) -> int:
 @router.get("/api/console/state")
 def console_state(steps: bool = True) -> dict:
     r = root()
+    # The dashboard can acquire its project after process startup (project
+    # picker / `bgate use`).  In that case the lifespan hook had no root to
+    # register, so keep the per-project pump attached from the state poll.
+    _autodeploy.start(r)
     conn = db.connect(r)
 
     agents = _dispatch.status(str(r))
@@ -710,7 +714,8 @@ def console_state(steps: bool = True) -> dict:
 
     rows = conn.execute(
         "SELECT * FROM work_item ORDER BY CASE status WHEN 'dispatched' THEN 0 "
-        "WHEN 'review' THEN 1 WHEN 'queued' THEN 2 WHEN 'failed' THEN 3 "
+        "WHEN 'integrating' THEN 1 WHEN 'review' THEN 2 WHEN 'queued' THEN 3 "
+        "WHEN 'failed' THEN 4 "
         "ELSE 4 END, priority DESC, id DESC LIMIT ?", (BOARD,)).fetchall()
     items = [_card(row) for row in rows]
     seen = {it["id"] for it in items}
@@ -757,7 +762,8 @@ def console_state(steps: bool = True) -> dict:
 
     # Work in flight — what a gate is allowed to hang off.
     active = {int(row["id"]) for row in conn.execute(
-        "SELECT id FROM work_item WHERE status IN ('queued', 'dispatched')")}
+        "SELECT id FROM work_item WHERE status IN "
+        "('queued', 'dispatched', 'integrating')")}
     active |= live_ids
 
     _chain_state(conn, items)
@@ -808,6 +814,7 @@ def console_state(steps: bool = True) -> dict:
             "running": len(live_ids),
             "queued": counts.get("queued", 0),
             "dispatched": counts.get("dispatched", 0),
+            "integrating": counts.get("integrating", 0),
             "review": counts.get("review", 0),
             "done": counts.get("done", 0),
             "failed": counts.get("failed", 0),
@@ -1020,7 +1027,9 @@ def console_killswitch(payload: dict | None = None) -> dict:
 
 @router.get("/api/console/autopilot")
 def autopilot_get() -> dict:
-    return _autodeploy.state(root())
+    r = root()
+    _autodeploy.start(r)
+    return _autodeploy.state(r)
 
 
 @router.post("/api/console/autopilot")
@@ -1032,6 +1041,7 @@ def autopilot_set(payload: dict) -> dict:
     state = _autodeploy.set_enabled(r, on)
     tick = {"dispatched": [], "refused": []}
     if on:
+        _autodeploy.start(r)
         # Immediate, so the switch does something visible now instead of up to
         # one poll interval later. Failure here is not the toggle's failure.
         try:

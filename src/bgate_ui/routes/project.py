@@ -13,9 +13,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from bgate_core.board import activity as _activity
+from bgate_core.board import gitwork as _gitwork
 from bgate_core.store import modules as _modules
 from bgate_core.store import project as _project
 from bgate_core.store import scaffold as _scaffold
@@ -57,16 +58,26 @@ def _unsuitable(d: Path) -> bool:
                 pass
     if {"windows", "system32", "syswow64"} & parts:
         return True
+    if _project.harness_checkout(d) is not None:
+        return True
     return not os.access(d, os.W_OK)
 
 
 def default_parent() -> Path:
     """The directory a new project is created under.
 
-    The cwd when that is a real working directory, and ~/BuildersGate when it is
-    not. The fallback is created lazily by the scaffolder, not here — reading
-    the first-run form must not have side effects on disk.
+    Beside the active project when there is one, the cwd when that is a real
+    working directory, and ~/BuildersGate when it is not. A dashboard launched
+    from a project must never scaffold the next game inside the current game.
+    The fallback is created lazily by the scaffolder, not here — reading the
+    first-run form must not have side effects on disk.
     """
+    try:
+        active = _root().resolve()
+        if (active / ".bgate" / "game.db").is_file() and not _unsuitable(active.parent):
+            return active.parent
+    except (HTTPException, LookupError, OSError, RuntimeError):
+        pass
     cwd = Path.cwd()
     if not _unsuitable(cwd):
         return cwd
@@ -152,6 +163,26 @@ def project_create(request: Request, payload: dict) -> dict:
 
     project = _project.init(root, name, pitch=(payload.get("pitch") or "").strip(),
                             engine="godot", dimension=kind)
+    repository = _gitwork.initialize(root)
+    # LANES POINTED AT THE LAYOUT JUST LAID DOWN. The scaffold writes scenes/
+    # and scripts/ straight into <root>; the default seat table is written
+    # against <root>/game. bgate init and adopt already re-root the lanes;
+    # this path did not, so a dashboard-created project ran with lanes that
+    # matched nothing (best-game-ever, 2026-09-04: seat_config empty, every
+    # seat's writes out of lane, the routing hint naming nobody).
+    try:
+        from bgate_core.board import seats as _seats
+        lanes = _seats.apply_layout(root)
+    except Exception as exc:
+        # The exception text goes to the activity log, not the HTTP reply:
+        # a raw exception string is the kind of internal detail a response
+        # must not carry (CodeQL py/stack-trace-exposure).
+        _activity.log(root, "project", f"could not set lanes: {exc}", seat="director")
+        lanes = {"changed": False, "why": "could not set lanes; see the activity log"}
+    if not repository["available"]:
+        _activity.log(root, "project",
+                      f"could not initialise Git ({repository['reason']})",
+                      seat="director")
 
     # THE PROJECT'S MODULE CHOICE IS SEEDED, NOT ASKED. The first-run card
     # asked (a checklist between the template cards and Create) and the owner
@@ -181,12 +212,24 @@ def project_create(request: Request, payload: dict) -> dict:
     # directory below the cwd, which walking up will never find. Without this
     # the dashboard would create a project and then keep reporting none.
     os.environ["BGATE_ROOT"] = str(root)
+    # AND THE MACHINE-WIDE POINTER, so `bgate use`, the SessionStart hook and
+    # a director started from a terminal agree with the running server about
+    # which game this is. Without it the console served the new project while
+    # ~/.bgate/active.json still named the previous one.
+    try:
+        _project.register(root, name)
+        _project.set_active(root)
+    except Exception as exc:
+        _activity.log(root, "project", f"active pointer not updated ({exc})",
+                      seat="director")
 
     return api.ok({
         "root": str(root),
         "project": project,
         "kind": kind,
         "files": len(made["files"]),
+        "repository": repository,
+        "lanes": lanes,
         # The dashboard token is minted per project, and this page was served
         # before the project existed — the client has to reload to get one.
         "reload": True,

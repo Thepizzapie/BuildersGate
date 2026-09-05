@@ -652,12 +652,34 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-failure-actions .bg4-escalated { background: var(--info-soft); border: 1px solid var(--info-line); color: var(--info) }
 
 .bg4-composer {
-    flex: none; border-top: 1px solid var(--line); padding: 10px 12px;
-    background: var(--solid-1);
+    container-type: inline-size; flex: none; border-top: 1px solid var(--line);
+    padding: 8px 12px 10px; background: var(--solid-1);
   }
+  .bg4-director-config { margin-bottom: 8px }
+  .bg4-director-config > summary {
+    display: flex; align-items: center; min-height: 28px; gap: 10px;
+    padding: 0 6px; border-radius: 5px; color: var(--text-3); cursor: pointer;
+    list-style: none; user-select: none;
+  }
+  .bg4-director-config > summary::-webkit-details-marker { display: none }
+  .bg4-director-config > summary:hover { background: var(--surface-2); color: var(--text-2) }
+  .bg4-director-config > summary:focus-visible {
+    outline: 1px solid var(--accent); outline-offset: 2px;
+  }
+  .bg4-config-label { display: inline-flex; align-items: center; gap: 6px; flex: none; font: 550 10px var(--sans) }
+  .bg4-config-summary {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    font: 500 10px var(--mono); color: var(--text-2);
+  }
+  .bg4-config-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .bg4-config-summary i { width: 2px; height: 2px; border-radius: 50%; background: var(--text-3); flex: none }
+  .bg4-config-summary span:last-child { color: var(--accent); text-transform: capitalize }
+  .bg4-config-chevron { margin-left: auto; flex: none; transition: transform var(--dur-fast, .14s) var(--ease, ease) }
+  .bg4-director-config[open] .bg4-config-chevron { transform: rotate(180deg) }
   .bg4-director-strip {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding-bottom: 9px; margin-bottom: 8px; border-bottom: 1px solid var(--line);
+    padding: 8px 6px 10px; margin-top: 3px; border-top: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
   }
   .bg4-director-pickers { flex: none }
   .bg4-director-pickers .mantine-Select-root:first-child { width: 132px }
@@ -699,10 +721,35 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   .bg4-usage-bridge .mantine-Button-root {
     color: inherit; font: 600 9px var(--mono); letter-spacing: .03em;
   }
-  @media (max-width: 780px) {
+  .bg4-promptbox {
+    display: flex; align-items: flex-end; gap: 8px; min-height: 42px;
+    padding: 5px 6px 5px 12px; border: 1px solid var(--line-strong);
+    border-radius: 8px; background: var(--solid-2);
+    transition: border-color var(--dur-fast, .14s) var(--ease, ease), box-shadow var(--dur-fast, .14s) var(--ease, ease);
+  }
+  .bg4-promptbox:focus-within {
+    border-color: color-mix(in srgb, var(--accent) 58%, var(--line-strong));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 9%, transparent);
+  }
+  .bg4-promptfield { flex: 1; min-width: 0; padding: 3px 0 }
+  .bg4-promptfield .mantine-Textarea-input { line-height: 1.45 }
+  .bg4-prompt-actions { display: flex; align-items: center; gap: 4px; flex: none }
+  .bg4-prompt-actions .mantine-Button-root:first-child { color: var(--text-3) }
+  @container (max-width: 720px) {
     .bg4-director-strip { align-items: stretch; flex-direction: column }
-    .bg4-director-pickers .mantine-Select-root { width: 50% !important }
+    .bg4-director-pickers { display: grid; grid-template-columns: 1fr 1.25fr 1fr; width: 100% }
+    .bg4-director-pickers .mantine-Select-root { width: auto !important; min-width: 0 }
     .bg4-director-usage { max-width: none }
+  }
+  @container (max-width: 500px) {
+    .bg4-config-label > span { display: none }
+    .bg4-config-summary { gap: 5px }
+    .bg4-config-summary span:nth-of-type(2) { max-width: 14ch }
+    .bg4-director-pickers { grid-template-columns: 1fr }
+    .bg4-promptbox { display: grid; grid-template-columns: minmax(0, 1fr) auto }
+    .bg4-prompt-actions .mantine-Button-label { font-size: 0 }
+    .bg4-prompt-actions .mantine-Button-section { margin: 0 }
+    .bg4-prompt-actions .mantine-Button-root { width: 30px; padding-inline: 0 }
   }
 
 .bg4-msg { padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; max-width: 900px }
@@ -721,6 +768,15 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-msg.dir.live { border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
 .bg4-msg.dir.bad { border-color: color-mix(in srgb, var(--bad) 45%, transparent) }
 .bg4-msg.dir.live .txt, .bg4-msg.dir .txt.thinking { color: var(--text-2) }
+.bg4-codex-approval {
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--solid-2));
+  border-radius: 6px; margin: 8px 0; padding: 10px 12px;
+  display: grid; gap: 7px; max-width: 900px;
+}
+.bg4-codex-approval .who { color: var(--accent); font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: .12em }
+.bg4-codex-approval code { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere }
+.bg4-codex-approval .cwd { color: var(--text-3); font: 10px var(--mono); overflow-wrap: anywhere }
 
 /* RENDERED AGENT PROSE. The director and the seats write GFM; this styles the
    React elements Markdown.tsx builds from it, wherever agent text is read

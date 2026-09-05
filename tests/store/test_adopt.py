@@ -376,3 +376,42 @@ class TestTheTelemetryAutoload:
         out = adopt.install_telemetry(tmp_path)
         assert out["action"] == "skipped"
         assert "no Godot project" in out["why"]
+
+
+class TestHarnessCheckoutIsNeverAGame:
+    """The tool's own repository refused as a project root or parent, at every
+    entry point — adopt, scaffold, and the store itself."""
+
+    @pytest.fixture()
+    def harness(self, tmp_path) -> Path:
+        checkout = tmp_path / "BuildersGate"
+        (checkout / "src").mkdir(parents=True)
+        (checkout / "pyproject.toml").write_text(
+            '[project]\nname = "builders-gate"\nversion = "0.0.0"\n',
+            encoding="utf-8")
+        return checkout
+
+    def test_detects_the_checkout_and_anything_inside_it(self, harness, tmp_path):
+        assert project.harness_checkout(harness) == harness.resolve()
+        assert project.harness_checkout(harness / "hot-cargo") == harness.resolve()
+        assert project.harness_checkout(tmp_path / "elsewhere") is None
+
+    def test_adopt_refuses(self, harness):
+        with pytest.raises(project.HarnessCheckoutError):
+            adopt.adopt(harness)
+        assert not (harness / ".bgate").exists()
+        assert not (harness / "CLAUDE.md").exists()
+
+    def test_scaffold_refuses_a_child_directory(self, harness):
+        from bgate_core.store import scaffold
+        with pytest.raises(project.HarnessCheckoutError):
+            scaffold.new_project(harness / "hot-cargo", "Hot Cargo", kind="2d")
+        assert not (harness / "hot-cargo").exists()
+
+    def test_store_init_refuses(self, harness):
+        with pytest.raises(project.HarnessCheckoutError):
+            project.init(harness, "Nope")
+
+    def test_cli_adopt_reports_and_exits_2(self, harness, capsys):
+        assert cli.adopt_project(str(harness)) == 2
+        assert "Builders Gate source checkout" in capsys.readouterr().out

@@ -10,6 +10,43 @@ from . import db
 from .util import slugify
 
 ENGINES = ("godot", "none")
+
+
+class HarnessCheckoutError(ValueError):
+    """The directory is the Builders Gate source checkout, or inside it."""
+
+
+def harness_checkout(path: str | os.PathLike[str]) -> Optional[Path]:
+    """The Builders Gate checkout that `path` is, or sits inside — else None.
+
+    A game scaffolded into the tool's own repository is the mistake this
+    exists to refuse: it happened once (a `.bgate/`, a stamped `.gitignore`
+    block and a whole `hot-cargo/` project landed in the harness tree), and
+    nothing here said no. Detection is the package's own pyproject, not a
+    directory name, so a renamed clone is still recognised.
+    """
+    try:
+        here = Path(path).expanduser().resolve()
+    except OSError:
+        return None
+    for candidate in (here, *here.parents):
+        marker = candidate / "pyproject.toml"
+        try:
+            if marker.is_file() and 'name = "builders-gate"' in marker.read_text(
+                    encoding="utf-8", errors="ignore"):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def refuse_harness(path: str | os.PathLike[str], verb: str = "create a project") -> None:
+    hit = harness_checkout(path)
+    if hit is not None:
+        raise HarnessCheckoutError(
+            f"refusing to {verb} at {Path(path)}: that is inside the Builders "
+            f"Gate source checkout ({hit}). Run this from, or point it at, a "
+            "directory outside the tool's own repository.")
 DIMENSIONS = ("2d", "3d", "2d+3d")
 
 # The ceilings a new project is born under. Declared once, read by the seed
@@ -175,6 +212,7 @@ def init(root: str | os.PathLike[str], name: str, pitch: str = "",
         raise ValueError(f"engine must be one of {ENGINES}, got {engine!r}")
     if dimension not in DIMENSIONS:
         raise ValueError(f"dimension must be one of {DIMENSIONS}, got {dimension!r}")
+    refuse_harness(root, "record a project")
 
     Path(root).mkdir(parents=True, exist_ok=True)
     with db.tx(root) as conn:

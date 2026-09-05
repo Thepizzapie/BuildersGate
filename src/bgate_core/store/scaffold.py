@@ -14,6 +14,7 @@ import os
 import shutil
 from pathlib import Path
 
+from . import project
 from .util import slugify
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
@@ -70,8 +71,10 @@ def list_templates() -> list[dict]:
             "description": {
                 "2d": "Side-on platformer slice: player, ground, ledge, jump/land "
                       "telemetry, feel tunables exported.",
-                "3d": "First-person slice: capsule player, ground, block, jump/land "
-                      "telemetry, feel tunables exported.",
+                "3d": "Third-person slice: camera-relative controller + orbit/follow/"
+                      "fixed camera rig, a prop kit (platform, ramp, crate, pickup, "
+                      "trigger volume), an arcade vehicle with a chase camera in "
+                      "vehicle_demo.tscn, jump/land telemetry, feel tunables exported.",
             }[kind],
         })
     return out
@@ -107,6 +110,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
         raise FileNotFoundError(f"template not found: {template}")
 
     target = Path(dest)
+    project.refuse_harness(target, "scaffold a game")
     if target.exists() and any(target.iterdir()) and not (force or replace):
         raise FileExistsError(
             f"{target} is not empty — pass force=True to scaffold into it anyway"

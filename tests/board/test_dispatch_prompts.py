@@ -25,6 +25,8 @@ def _prompt_for_legacy(root: str, item: dict, native_images: bool = False) -> st
         "NATIVELY - no runner scripts.\n\n"
         f"WORK ITEM #{item['id']} ({item['source']}): {item['title']}\n"
         f"{item['brief']}\n\n"
+        f"MCP project_dir: {root}\n"
+        "Use that exact project_dir on every Builders Gate tool call.\n\n"
         + (seat_rule + "\n\n" if seat_rule else "")
         + (policy + "\n\n" if policy else "")
         + "Protocol, in order:\n"
@@ -127,6 +129,7 @@ def _prompt_for_legacy(root: str, item: dict, native_images: bool = False) -> st
         # lanes and the gates, so it reads as colour on top of the work rather
         # than as the brief itself.
         + ("\n" + persona + "\n" if persona else "")
+        + "\n"
     )
 
 

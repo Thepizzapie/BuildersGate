@@ -5,8 +5,9 @@ import { Markdown } from "../../components/Markdown";
 import { useEvents, FALLBACK_MS } from "../../hooks";
 import { toast } from "../../bridge";
 import { directorChat, directorConfigure, directorNew, directorSay,
-         directorUsageConnect, directorUsageDisconnect,
-         type ChatMsg, type ChatState } from "./api";
+         directorUsageConnect, directorUsageDisconnect, directorApprove,
+         directorDispatchMode,
+         type ChatMsg, type ChatState, type DirectorApproval } from "./api";
 
 /* A CLAUDE CODE SESSION, IN A PANE. Nothing else.
  *
@@ -35,11 +36,16 @@ export function DirectorChat({ active, onSent }: {
   const [sending, setSending] = useState(false);
   const [runner, setRunner] = useState("claude");
   const [model, setModel] = useState("opus");
+  const [dispatchMode, setDispatchMode] = useState<"structured" | "chaos">("structured");
   const [runners, setRunners] = useState<NonNullable<ChatState["runners"]>>([]);
   const [models, setModels] = useState<NonNullable<ChatState["models"]>>({});
   const [usage, setUsage] = useState<NonNullable<ChatState["usage"]>>({});
   const [usageBridge, setUsageBridge] = useState<NonNullable<ChatState["usage_bridge"]>>({});
+  const [approvals, setApprovals] = useState<DirectorApproval[]>([]);
+  const [approvalBusy, setApprovalBusy] = useState("");
   const [bridgeBusy, setBridgeBusy] = useState(false);
+  const runnerLabel = runners.find((row) => row.value === runner)?.label || runner;
+  const modelLabel = (models[runner] || []).find((row) => row.value === model)?.label || model;
   const seen = useRef(0);
   const feed = useRef<HTMLDivElement>(null);
   const wasRunning = useRef(false);
@@ -56,10 +62,12 @@ export function DirectorChat({ active, onSent }: {
     setWaiting(String(got.waiting || ""));
     if (got.runner) setRunner(got.runner);
     if (got.model) setModel(got.model);
+    if (got.dispatch_mode) setDispatchMode(got.dispatch_mode);
     if (got.runners) setRunners(got.runners);
     if (got.models) setModels(got.models);
     if (got.usage) setUsage(got.usage);
     if (got.usage_bridge) setUsageBridge(got.usage_bridge);
+    setApprovals(got.approvals || []);
     // The board only changes when a turn ends, so refresh it then rather than
     // on every tick of this poll.
     if (wasRunning.current && !got.running) onSent?.();
@@ -76,7 +84,7 @@ export function DirectorChat({ active, onSent }: {
     if (!el) return;
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
     if (near) el.scrollTop = el.scrollHeight;
-  }, [msgs.length, running]);
+  }, [msgs.length, approvals.length, running]);
 
   /* The one verb other screens need: atlas and the asset library both offer
      "deploy a task about this", and both prefill this box. */
@@ -118,6 +126,18 @@ export function DirectorChat({ active, onSent }: {
     if (r.data.models) setModels(r.data.models);
   }
 
+  async function chooseDispatchMode(mode: "structured" | "chaos") {
+    if (sending || mode === dispatchMode) return;
+    setSending(true);
+    const r = await directorDispatchMode(mode);
+    setSending(false);
+    if (r.ok) {
+      setDispatchMode(mode);
+      toast(`${mode} dispatch mode`, "ok");
+      onSent?.();
+    }
+  }
+
   async function toggleUsageBridge() {
     if (bridgeBusy) return;
     setBridgeBusy(true);
@@ -128,6 +148,15 @@ export function DirectorChat({ active, onSent }: {
     if (!r.ok || !r.data) return;
     setUsageBridge(r.data);
     if (!r.data.enabled) setUsage((was) => ({ ...was, five_hour: {}, weekly: {} }));
+    poll();
+  }
+
+  async function answerApproval(id: string, decision: string) {
+    if (approvalBusy) return;
+    setApprovalBusy(id);
+    const r = await directorApprove(id, decision);
+    setApprovalBusy("");
+    if (r.ok) setApprovals((rows) => rows.filter((row) => row.id !== id));
     poll();
   }
 
@@ -145,6 +174,11 @@ export function DirectorChat({ active, onSent }: {
           </div>
         )}
         {msgs.map((m) => <Line key={m.n} msg={m} />)}
+        {approvals.map((approval) => (
+          <ApprovalCard key={approval.id} approval={approval}
+                        busy={approvalBusy === approval.id}
+                        onAnswer={answerApproval} />
+        ))}
         {running && (
           <div className="bg4-msg dir live">
             <div className="who">director</div>
@@ -154,7 +188,21 @@ export function DirectorChat({ active, onSent }: {
       </ScrollArea>
 
       <div className="bg4-composer">
-        <div className="bg4-director-strip">
+        <details className="bg4-director-config">
+          <summary>
+            <span className="bg4-config-label">
+              <Ti name="adjustments-horizontal" size={14} />
+              <span>Session setup</span>
+            </span>
+            <span className="bg4-config-summary"
+                  aria-label={`${runnerLabel}, ${modelLabel}, ${dispatchMode} dispatch`}>
+              <span>{runnerLabel}</span><i />
+              <span>{modelLabel}</span><i />
+              <span>{dispatchMode}</span>
+            </span>
+            <Ti name="chevron-down" size={14} className="bg4-config-chevron" />
+          </summary>
+          <div className="bg4-director-strip">
           <Group gap={6} wrap="nowrap" className="bg4-director-pickers">
             <Select aria-label="Director coding tool" size="xs" allowDeselect={false}
                     value={runner} disabled={running || sending}
@@ -173,6 +221,14 @@ export function DirectorChat({ active, onSent }: {
                     }))}
                     onChange={(value) => {
                       if (value && value !== model) choose(runner, value);
+                    }} />
+            <Select aria-label="Director dispatch mode" size="xs" allowDeselect={false}
+                    value={dispatchMode} disabled={sending}
+                    data={[{ value: "structured", label: "Structured" },
+                           { value: "chaos", label: "Chaos" }]}
+                    onChange={(value) => {
+                      if (value === "structured" || value === "chaos")
+                        void chooseDispatchMode(value);
                     }} />
           </Group>
           <div className="bg4-director-usage" aria-label="Director usage">
@@ -200,8 +256,9 @@ export function DirectorChat({ active, onSent }: {
             </Button>
           </div>
         )}
-        <Group gap="xs" align="flex-end" wrap="nowrap">
-          <div style={{ flex: 1, minWidth: 0 }}>
+        </details>
+        <div className="bg4-promptbox">
+          <div className="bg4-promptfield">
             <Textarea autosize minRows={1} maxRows={10} variant="unstyled"
                       value={text} onChange={(e) => setText(e.currentTarget.value)}
                       placeholder="ask the director, or say what to build"
@@ -212,11 +269,39 @@ export function DirectorChat({ active, onSent }: {
                         }
                       }} />
           </div>
-          <Button variant="default" size="compact-xs" onClick={fresh}>new</Button>
-          <Button size="xs" onClick={send} loading={sending}
-                  disabled={!text.trim()}>send</Button>
-        </Group>
+          <div className="bg4-prompt-actions">
+            <Button variant="subtle" size="compact-xs" onClick={fresh}
+                    leftSection={<Ti name="plus" size={13} />}>New</Button>
+            <Button size="compact-sm" onClick={send} loading={sending}
+                    disabled={!text.trim()}
+                    rightSection={<Ti name="arrow-up" size={13} />}>Send</Button>
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function ApprovalCard({ approval, busy, onAnswer }: {
+  approval: DirectorApproval; busy: boolean;
+  onAnswer(id: string, decision: string): void;
+}) {
+  const detail = approval.command || approval.reason || approval.server ||
+    (approval.permissions ? JSON.stringify(approval.permissions) : "Codex requests approval");
+  const has = (decision: string) => approval.available_decisions.includes(decision);
+  return (
+    <div className="bg4-codex-approval">
+      <div className="who">Codex approval · {approval.kind.replace("_", " ")}</div>
+      <code>{detail}</code>
+      {approval.cwd && <span className="cwd">{approval.cwd}</span>}
+      <Group gap={6}>
+        {has("accept") && <Button size="compact-xs" loading={busy}
+          onClick={() => onAnswer(approval.id, "accept")}>approve</Button>}
+        {has("acceptForSession") && <Button size="compact-xs" variant="default"
+          disabled={busy} onClick={() => onAnswer(approval.id, "acceptForSession")}>session</Button>}
+        {has("decline") && <Button size="compact-xs" color="red" variant="subtle"
+          disabled={busy} onClick={() => onAnswer(approval.id, "decline")}>deny</Button>}
+      </Group>
     </div>
   );
 }

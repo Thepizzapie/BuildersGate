@@ -233,6 +233,9 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  # EXPORTED pck rather than an editor run, which is the same
                  # question godot_evidence answers one build later.
                  "godot_export_probe",
+                 # ...and the diff that does the looking: editor load vs pck
+                 # load of one scene.
+                 "godot_export_verify",
                  "evidence_check_ui"),
     "dialogue": ("dialogue_",),
     "quest": ("quest_",),
@@ -250,6 +253,9 @@ CRAFTS: dict[str, tuple[str, ...]] = {
               # from a spec and measures it, exactly as level_generate does
               # for rooms.
               "track_generate",
+              # And a 3D room-and-corridor graybox is a level: blockout_generate
+              # emits it with a baked navmesh and a measured report.
+              "blockout_generate",
               "tileset_describe"),
     "verdicts": ("art_qa_verdict", "art_tournament_verdict",
                  # The free look before anything else is spent on a sheet.
@@ -271,7 +277,11 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  # is the only thing here that measures the player rather than
                  # the geometry. Both are judgements about a runtime, which is
                  # what this craft is.
-                 "evidence_assert", "traversal_prove"),
+                 "evidence_assert", "traversal_prove",
+                 # The 3D gates that were hand-written inside every game:
+                 # boot scene, shared sub_resources, support, headroom,
+                 # colliders. One call, world space.
+                 "godot_scene_audit"),
     "brainstorm": ("brainstorm_",),
 }
 
@@ -294,6 +304,9 @@ CRAFTS: dict[str, tuple[str, ...]] = {
 SPINE_GROUPS: dict[str, frozenset[str]] = {
     "core": frozenset({
         "agent_activity", "agent_steer", "agent_steer_all", "ask_human",
+        # Chaos-mode integration is board plumbing the Director runs, not a
+        # craft: the branch review and merge belong beside the queue.
+        "worktree_integrations", "worktree_merge",
         "asset_lock", "asset_release", "asset_status", "asset_track",
         "asset_verify", "bgate_doctor", "board_digest",
         "godot_run", "godot_screenshot", "godot_status",

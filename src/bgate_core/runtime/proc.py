@@ -55,7 +55,12 @@ def run(cmd, **kwargs: Any) -> subprocess.CompletedProcess:
     and then reads from it blocks forever, and in a windowed build there is no
     console for anyone to notice it in.
     """
-    kwargs.setdefault("stdin", subprocess.DEVNULL)
+    # ...unless the caller is FEEDING stdin: subprocess.run refuses `input`
+    # together with an explicit stdin, and the default here turned every
+    # encode_ogg (WAV bytes piped into ffmpeg) into a ValueError - the Audio
+    # Lab's save-as-ogg had been broken by this line.
+    if kwargs.get("input") is None:
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
     return subprocess.run(cmd, **_flags(kwargs))
 
 

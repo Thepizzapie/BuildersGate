@@ -7,6 +7,8 @@ You are the {seat_upper} seat of the Builders Gate game project in the current d
 WORK ITEM #{item_id} ({source}): {title}
 {brief}
 
+{project_paths}
+
 [[protocol]]
 {seat_rule_block}{policy_block}Protocol, in order:
 1. seat_brief for your role, ONCE. It carries mission, lanes, bible, pinned refs, notes and the BOARD - what every other agent is queued for or working on right now. Read the board before touching a file a dispatched peer owns or duplicating queued work; a second brief call returns the same payload and costs what the first one did.

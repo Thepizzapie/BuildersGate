@@ -54,6 +54,9 @@ class TestValidation:
         with pytest.raises(settings.SettingError):
             settings.coerce("gate.mode", "whenever")
         assert settings.coerce("gate.mode", "builders") == "builders"
+        assert settings.coerce("dispatch.mode", "chaos") == "chaos"
+        with pytest.raises(settings.SettingError):
+            settings.coerce("dispatch.mode", "random")
 
     def test_bools_take_the_shapes_a_browser_actually_sends(self):
         for truthy in (True, 1, "1", "true", "on", "yes"):

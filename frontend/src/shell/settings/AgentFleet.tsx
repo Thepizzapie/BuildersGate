@@ -103,13 +103,9 @@ export function AgentFleet({ active }: { active: boolean }) {
             started yourself in a terminal was never recorded, so it is not here
             and never will be - and someone looking for the session they are
             talking to reasonably concludes the panel is broken. */}
-        Every agent Builders Gate dispatched, across every project, from the
-        on-disk registry - including ones this dashboard did not start and ones
-        working a project you do not have open. A session you started yourself in
-        a terminal is not dispatched work and does not appear here. Stopping
-        kills the whole process tree (a runner starts children of its own) and
-        banks the work item as failed, so the board never claims work is in
-        flight that nothing is doing.
+        Shows agents dispatched by Builders Gate across all projects. Terminal
+        sessions started outside Builders Gate are not included. Stopping an
+        agent marks its work item as failed.
       </p>
 
       {!fleet.projects.length && (

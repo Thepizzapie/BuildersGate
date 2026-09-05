@@ -52,9 +52,11 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from bgate_core.board import activity as _activity
+from bgate_core.board import gitwork as _gitwork
 from bgate_core.board import queue as _queue
 from bgate_core.store import settings as _settings
 from bgate_ui.agents import runners as _runners
@@ -64,6 +66,12 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 # project root (resolved) -> the live session entry.
 _live: dict[str, dict] = {}
 _lock = threading.Lock()
+
+# Dashboard-owned watches for dispatched work. These are deliberately outside
+# either CLI session: switching the Director between Claude and Codex must not
+# stop it following the agents it launched.
+_board_watches: dict[tuple[str, int], str] = {}
+_board_watch_lock = threading.Lock()
 
 # One turn may run this long before the session is treated as wedged. Generous
 # on purpose: "investigate why the last three gameplay items failed" is a real
@@ -80,6 +88,8 @@ IDLE_S = int(os.environ.get("BGATE_CONSOLE_IDLE_S") or 60 * 60)
 POLL_S = 0.15
 
 FALLBACK_MODEL = "opus"
+CODEX_APPROVAL_POLICY = "untrusted"
+CODEX_SANDBOX = "read-only"
 
 # Appended to the stock system prompt — the framing, not the capability. The
 # capability is the argv. This is a session-start prompt and nothing more: who
@@ -87,15 +97,20 @@ FALLBACK_MODEL = "opus"
 # call. Everything else a normal `claude` session already knows.
 DIRECTOR_SYSTEM = (
     "You are the DIRECTOR of this game project, in a persistent session behind "
-    "the project dashboard's chat. You are a full session in the project "
-    "directory — read files, search, run commands — and you also hold the "
-    "builders-gate MCP toolset.\n"
+    "the project dashboard's chat. Use the Builders Gate tools for board, "
+    "project, and agent operations. Do not inspect dashboard internals, process "
+    "lists, databases, local APIs, or CLI state as a fallback when a Builders "
+    "Gate tool is denied or unavailable. Use shell commands only for project "
+    "file inspection, builds, and tests requested by the human.\n"
     "\n"
     "Substantial game work goes to a seat: queue_add(seat, title, brief), or "
     "queue_add_chain when the pieces depend on each other. Nothing dispatches "
     "unless the dashboard is running, so say so if it is not. Corrections to a "
     "run already in flight are agent_steer(item_id, text), not a new item. A "
-    "failed item is yours to read and queue_reopen with a reason.\n"
+    "failed item is yours to read and queue_reopen with a reason. The dashboard "
+    "board monitor follows every dispatched agent and posts its outcome here; "
+    "do not make a one-time queue check and describe a newly queued item as "
+    "idle or undispatched.\n"
     "\n"
     "Answer the human in plain prose, and lead with the answer."
 )
@@ -166,6 +181,20 @@ def _seat_table(root) -> str:
 def system_prompt(root) -> str:
     """The session-start prompt: the framing, the game, the seats."""
     return (f"{DIRECTOR_SYSTEM}\n\n{_game_facts(root)}\n\n{_seat_table(root)}")
+
+
+def _dispatch_instruction(root) -> str:
+    mode = str(_setting(root, "dispatch.mode", "structured"))
+    return (
+        "STRUCTURED: file independent work as separate queue_add calls so ready "
+        "items batch across the available agent slots. Use queue_add_chain, or "
+        "explicit dependencies, whenever one task consumes another task's output "
+        "or must wait for the same locked file."
+        if mode == "structured" else
+        "CHAOS: file every available independent task immediately; the scheduler "
+        "fills the agent cap and isolates every task in a git worktree. Dependencies "
+        "still use queue_add_chain. Completed branches return to you for review and "
+        "worktree_merge; resolve integration conflicts without dropping either side.")
 
 
 class Unavailable(RuntimeError):
@@ -317,9 +346,76 @@ def history(root, after: int = 0) -> dict:
             "waiting": str(live.get("waiting") or ""),
             "live": bool(live.get("live")),
             "session_id": live.get("cli_session_id") or "",
+            "approvals": pending_approvals(root),
             **configuration(root),
             "usage": usage(root),
             "usage_bridge": usage_bridge(root)}
+
+
+def pending_approvals(root) -> list[dict]:
+    """Approval prompts emitted by the live Codex app-server connection."""
+    with _lock:
+        entry = _live.get(_pkey(root))
+        rows = list((entry or {}).get("approvals", {}).values())
+    return [{key: value for key, value in row.items()
+             if not key.startswith("_")} for row in rows]
+
+
+def decide_approval(root, approval_id: str, decision: str) -> dict:
+    """Answer one app-server approval using its original JSON-RPC id."""
+    with _lock:
+        entry = _live.get(_pkey(root))
+        row = ((entry or {}).get("approvals") or {}).get(str(approval_id))
+    if entry is None or row is None:
+        raise ValueError("that approval is no longer pending")
+    allowed = [str(value) for value in row.get("available_decisions") or []]
+    if decision not in allowed:
+        raise ValueError("that decision is not available for this approval")
+    result = _approval_result(row, decision)
+    try:
+        _codex_write(entry, {"id": row["_rpc_id"], "result": result})
+    except (OSError, ValueError, KeyError) as exc:
+        with _lock:
+            entry.get("approvals", {}).pop(str(approval_id), None)
+        raise ValueError("the Codex session is gone; send a message to "
+                         "restart it") from exc
+    with _lock:
+        entry.get("approvals", {}).pop(str(approval_id), None)
+        if not entry.get("approvals"):
+            entry["waiting"] = ""
+    return {"ok": True, "id": str(approval_id), "decision": decision}
+
+
+def _approval_result(row: dict, decision: str) -> dict:
+    kind = row["kind"]
+    if kind in ("command", "file_change"):
+        return {"decision": decision}
+    elif kind == "permissions":
+        requested = row.get("permissions") if isinstance(row.get("permissions"), dict) else {}
+        granted = ({key: value for key, value in requested.items()
+                    if value is not None} if decision.startswith("accept") else {})
+        return {"permissions": granted,
+                "scope": "session" if decision == "acceptForSession" else "turn"}
+    return {"action": decision, "content": None, "_meta": None}
+
+
+def _auto_approve(root, approval: dict) -> bool:
+    """Auto-review only the surfaces already bounded by this orchestration."""
+    if not _setting(root, "dispatch.codex_auto_approve", False):
+        return False
+    kind = approval.get("kind")
+    if kind == "mcp":
+        return str(approval.get("server") or "") == _runners.MCP_SERVER_NAME
+    if kind != "command":
+        return False
+    cwd = str(approval.get("cwd") or "").strip()
+    if not cwd:
+        return True
+    try:
+        Path(cwd).resolve().relative_to(Path(root).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def send(root, text: str) -> dict:
@@ -329,6 +425,76 @@ def send(root, text: str) -> dict:
     threading.Thread(target=_run_chat_turn, args=(str(root), str(text)),
                      daemon=True, name="director-chat").start()
     return {"ok": True, "n": said["n"]}
+
+
+_integration_inflight: set[tuple[str, int]] = set()
+
+
+def _abandon_item(root, item_id: int, reason: str) -> None:
+    """A Chaos branch past its integration ceiling fails the item, so the
+    board shows a failure with a reason instead of a hold nobody labelled."""
+    from bgate_core.board import queue as _queue
+    try:
+        if _queue.get(root, int(item_id)).get("status") == "integrating":
+            _queue.complete(root, int(item_id), failed=True,
+                            result="Chaos integration abandoned: " + reason)
+    except LookupError:
+        return
+    _post(root, "error", f"item #{int(item_id)}: Chaos integration abandoned "
+                         f"({reason})")
+    report_monitored_item(root, item_id)
+
+
+def request_integration(root, item_id: int) -> dict:
+    """Hand a completed Chaos branch to the persistent Director session."""
+    key = (_pkey(root), int(item_id))
+    with _lock:
+        if key in _integration_inflight:
+            return {"ok": True, "already_running": True, "item_id": int(item_id)}
+        _integration_inflight.add(key)
+    dirty = _gitwork.dirty(root)
+    if dirty.get("available") and dirty.get("dirty"):
+        with _lock:
+            _integration_inflight.discard(key)
+        return {"ok": False, "item_id": int(item_id),
+                "reason": "working branch is dirty; the scheduler re-offers "
+                          "the branch once it is clean"}
+    noted = _gitwork.note_integration_prompt(root, item_id)
+    if noted.get("failed") or not noted.get("pending"):
+        with _lock:
+            _integration_inflight.discard(key)
+        if noted.get("failed"):
+            _abandon_item(root, item_id, str(noted.get("reason") or ""))
+        return {"ok": False, "item_id": int(item_id), "abandoned": bool(
+            noted.get("failed")), "reason": str(noted.get("reason") or "")}
+
+    def run() -> None:
+        prompt = (
+            f"CHAOS integration is ready for work item #{int(item_id)}. "
+            "Review the item result and branch diff. If it is sound, call "
+            f"worktree_merge(item_id={int(item_id)}). If the merge conflicts, "
+            "inspect both sides, correct the isolated branch without discarding "
+            "unrelated work, and retry. Report the integration outcome.")
+
+        def settle(reply: str, failed: bool) -> None:
+            if failed:
+                _post(root, "error", reply)
+
+        try:
+            _post(root, "tool", f"item #{int(item_id)} is ready for review",
+                  tool="Chaos integration")
+            _turn(str(root), prompt, _chat_reseed(root), settle, record=True)
+        except Exception as exc:
+            _post(root, "error", f"Chaos integration #{int(item_id)} failed: "
+                                  f"{type(exc).__name__}: {exc}")
+        finally:
+            report_monitored_item(root, item_id)
+            with _lock:
+                _integration_inflight.discard(key)
+
+    threading.Thread(target=run, daemon=True,
+                     name=f"director-integrate-{int(item_id)}").start()
+    return {"ok": True, "item_id": int(item_id)}
 
 
 def reset(root) -> dict:
@@ -429,6 +595,7 @@ def _model_options(root) -> dict[str, list[dict]]:
 def configuration(root) -> dict:
     installed = _runners.available()
     return {"runner": _runner_for(root), "model": _model_for(root),
+            "dispatch_mode": str(_setting(root, "dispatch.mode", "structured")),
             "runners": [
                 {"value": key,
                  "label": "Claude Code" if key == "claude" else "Codex",
@@ -590,9 +757,18 @@ def _spawn(root, resume: str = "") -> dict:
                               "resumed": bool(resume),
                               "ts": time.time()}) + "\n").encode("utf-8"))
     handle.flush()
-    args = _runners._claude_director_args(
-        exe, system=system_prompt(root), model=_model_for(root),
-        resume=resume)
+    # To a FILE, beside the log: the framing plus the seat table is past
+    # cmd.exe's argv limit on Windows (see _claude_director_args).
+    system = system_prompt(root)
+    system_file = _home(root) / "director-system.md"
+    try:
+        system_file.write_text(system, encoding="utf-8")
+        args = _runners._claude_director_args(
+            exe, system=system, model=_model_for(root),
+            resume=resume, system_file=str(system_file))
+    except OSError:
+        args = _runners._claude_director_args(
+            exe, system=system, model=_model_for(root), resume=resume)
     try:
         proc = subprocess.Popen(
             args, cwd=str(root), env=_environ(root),
@@ -880,9 +1056,9 @@ def _codex_lock(root) -> threading.Lock:
 
 def _codex_tool(item: dict) -> tuple[str, str]:
     kind = str(item.get("type") or "")
-    if kind == "command_execution":
+    if kind in ("commandExecution", "command_execution"):
         return "Bash", str(item.get("command") or "")[:400]
-    if kind == "mcp_tool_call":
+    if kind in ("mcpToolCall", "mcp_tool_call"):
         name = str(item.get("tool") or item.get("name") or "MCP")
         args = item.get("arguments") or item.get("input") or {}
         try:
@@ -890,24 +1066,254 @@ def _codex_tool(item: dict) -> tuple[str, str]:
         except (TypeError, ValueError):
             hint = ""
         return name, hint
-    if kind in ("file_change", "web_search"):
+    if kind in ("fileChange", "file_change", "webSearch", "web_search"):
         return kind.replace("_", " ").title(), str(
             item.get("path") or item.get("query") or "")[:400]
     return "", ""
 
 
+_APPROVAL_METHODS = {
+    "item/commandExecution/requestApproval": "command",
+    "item/fileChange/requestApproval": "file_change",
+    "item/permissions/requestApproval": "permissions",
+    "mcpServer/elicitation/request": "mcp",
+}
+
+
+def _codex_write(entry: dict, message: dict) -> None:
+    raw = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+    with entry["write_lock"]:
+        entry["stdin"].write(raw)
+        entry["stdin"].flush()
+
+
+def _codex_reader(entry: dict) -> None:
+    while True:
+        try:
+            line = entry["stdout"].readline()
+        except (OSError, ValueError):
+            return
+        if not line:
+            return
+        try:
+            entry["handle"].write(line)
+            entry["handle"].flush()
+        except (OSError, ValueError):
+            pass
+        try:
+            ev = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        method = str(ev.get("method") or "")
+        if method in _APPROVAL_METHODS and "id" in ev:
+            params = ev.get("params") if isinstance(ev.get("params"), dict) else {}
+            approval_id = uuid.uuid4().hex
+            decisions = params.get("availableDecisions")
+            if not isinstance(decisions, list):
+                decisions = (["accept", "acceptForSession", "decline"]
+                             if _APPROVAL_METHODS[method] != "mcp"
+                             else ["accept", "decline"])
+            approval = {
+                "id": approval_id, "kind": _APPROVAL_METHODS[method],
+                "method": method, "reason": str(params.get("reason") or
+                                                   params.get("message") or ""),
+                "command": str(params.get("command") or ""),
+                "cwd": str(params.get("cwd") or ""),
+                "server": str(params.get("serverName") or ""),
+                "permissions": params.get("permissions"),
+                "available_decisions": decisions,
+                "_rpc_id": ev["id"], "_params": params,
+            }
+            if _auto_approve(entry["root"], approval):
+                _codex_write(entry, {"id": ev["id"],
+                                     "result": _approval_result(approval, "accept")})
+                continue
+            with _lock:
+                entry["approvals"][approval_id] = approval
+                entry["waiting"] = "waiting for your approval"
+            continue
+        if "id" in ev and ("result" in ev or "error" in ev):
+            with entry["rpc_cv"]:
+                entry["rpc_results"][str(ev["id"])] = ev
+                entry["rpc_cv"].notify_all()
+            continue
+        entry["events"].append(ev)
+
+
+def _codex_rpc(entry: dict, method: str, params: dict,
+               timeout: float = 30.0) -> dict:
+    with entry["rpc_cv"]:
+        request_id = entry["next_rpc"]
+        entry["next_rpc"] += 1
+    _codex_write(entry, {"id": request_id, "method": method, "params": params})
+    deadline = time.monotonic() + timeout
+    with entry["rpc_cv"]:
+        while str(request_id) not in entry["rpc_results"]:
+            if entry["proc"].poll() is not None:
+                raise Unavailable(f"Codex app server exited ({entry['proc'].returncode})")
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise Unavailable(f"Codex app server did not answer {method}")
+            entry["rpc_cv"].wait(min(left, 0.25))
+        response = entry["rpc_results"].pop(str(request_id))
+    if response.get("error"):
+        error = response["error"]
+        message = error.get("message") if isinstance(error, dict) else error
+        raise Unavailable(f"Codex {method} failed: {message}")
+    result = response.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+def _spawn_codex(root, resume: str = "") -> dict:
+    exe = _runners.find_codex()
+    if not exe:
+        raise Unavailable("codex CLI not found; install or select Claude Code")
+    reason = _runners.preflight(_runners.RUNNERS["codex"], str(root), exe)
+    if reason:
+        raise Unavailable(reason)
+    path = log_path(root)
+    handle = open(path, "ab")
+    handle.write((json.dumps({"type": "bgate_console_start", "runner": "codex-app-server",
+                              "resumed": bool(resume), "ts": time.time()}) + "\n").encode())
+    handle.flush()
+    model = _model_for(root)
+    args = _runners._codex_app_server_args(exe)
+    try:
+        proc = subprocess.Popen(
+            args, cwd=str(root), env=_environ(root), stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=handle, creationflags=_NO_WINDOW,
+            start_new_session=(sys.platform != "win32"))
+    except OSError as exc:
+        handle.close()
+        raise Unavailable(f"could not start Codex: {exc}") from exc
+    entry = {"proc": proc, "handle": handle, "stdin": proc.stdin,
+             "stdout": proc.stdout, "write_lock": threading.Lock(),
+             "rpc_cv": threading.Condition(), "rpc_results": {},
+             "next_rpc": 1, "events": [], "approvals": {},
+             "root": str(root), "runner": "codex", "model": model,
+             "cli_session_id": resume, "resumed": bool(resume),
+             "current_item": 0, "busy": False,
+             "record": "", "says": [], "waiting": "",
+             "turns": 0, "started_at": time.monotonic(),
+             "last_at": time.monotonic(), "turn_lock": threading.Lock()}
+    with _lock:
+        _live[_pkey(root)] = entry
+    threading.Thread(target=_codex_reader, args=(entry,), daemon=True,
+                     name="codex-app-reader").start()
+    try:
+        _codex_rpc(entry, "initialize", {"clientInfo": {
+            "name": "builders-gate", "title": "Builders Gate", "version": "1"
+        }, "capabilities": {"experimentalApi": True,
+                             "requestAttestation": False}})
+        _codex_write(entry, {"method": "initialized"})
+        common = {"model": model or None, "cwd": str(root),
+                  "approvalPolicy": CODEX_APPROVAL_POLICY,
+                  "approvalsReviewer": "user", "sandbox": CODEX_SANDBOX}
+        if resume:
+            result = _codex_rpc(entry, "thread/resume", {
+                "threadId": resume, **common, "excludeTurns": True})
+        else:
+            result = _codex_rpc(entry, "thread/start", {
+                **common, "developerInstructions": system_prompt(root)})
+    except Exception:
+        _reap(_pkey(root), entry)
+        raise
+    thread = result.get("thread") if isinstance(result.get("thread"), dict) else {}
+    entry["cli_session_id"] = str(thread.get("id") or resume)
+    return entry
+
+
+def _monitor_text(item: dict, status: str, runner: str = "",
+                  ready: tuple[int, ...] = ()) -> str:
+    item_id = int(item.get("id") or 0)
+    title = str(item.get("title") or "work")[:120]
+    if status == "dispatched":
+        via = f" via {runner}" if runner else ""
+        return f"Watching item #{item_id} ({title}){via}."
+    result = " ".join(str(item.get("result") or "").split())[:300]
+    line = f"Item #{item_id} is {status}"
+    if result:
+        line += f": {result}"
+    if ready:
+        line += ". Now ready: " + ", ".join(f"#{value}" for value in ready)
+    return line + "."
+
+
+def monitor_item(root, item_id: int, runner: str = "") -> None:
+    """Attach the Director transcript to a dispatched board item."""
+    key = (_pkey(root), int(item_id))
+    with _board_watch_lock:
+        if key in _board_watches:
+            return
+        _board_watches[key] = "dispatched"
+
+    try:
+        first = _queue.get(root, int(item_id))
+    except Exception:
+        with _board_watch_lock:
+            _board_watches.pop(key, None)
+        return
+
+    _post(root, "tool", _monitor_text(first, "dispatched", runner),
+          tool="Board monitor")
+
+def report_monitored_item(root, item_id: int) -> None:
+    """Publish the current state after the dispatch lifecycle advances it."""
+    key = (_pkey(root), int(item_id))
+    with _board_watch_lock:
+        last = _board_watches.get(key)
+    if last is None:
+        return
+    try:
+        item = _queue.get(root, int(item_id))
+    except Exception:
+        return
+    status = str(item.get("status") or "")
+    if status == last:
+        return
+    ready = ()
+    if status == "done":
+        try:
+            successors = {int(row["id"])
+                          for row in _queue.successors(root, item_id)}
+            now_ready = {int(row["id"]) for row in _queue.ready(root)}
+            ready = tuple(sorted(successors & now_ready))
+        except Exception:
+            pass
+    _post(root, "tool", _monitor_text(item, status, ready=ready),
+          tool="Board monitor")
+    with _board_watch_lock:
+        if status in {"done", "failed", "cancelled"}:
+            _board_watches.pop(key, None)
+        else:
+            _board_watches[key] = status
+
+
+def _ensure_codex(root, resume: str = "") -> dict:
+    key = _pkey(root)
+    with _lock:
+        entry = _live.get(key)
+    if entry is not None:
+        stale = (entry.get("runner") != "codex"
+                 or entry.get("model") != _model_for(root)
+                 or entry["proc"].poll() is not None)
+        if not stale:
+            return entry
+        _reap(key, entry)
+    return _spawn_codex(root, resume=resume)
+
+
 def _collect_codex(entry: dict, deadline: float) -> dict:
     final = ""
-    def consume(events: list[dict]):
-        nonlocal final
-        for ev in events:
-            kind = str(ev.get("type") or "")
-            if kind == "thread.started":
-                entry["cli_session_id"] = str(
-                    ev.get("thread_id") or ev.get("threadId") or "")
-            elif kind == "item.completed":
-                item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
-                if item.get("type") == "agent_message":
+    tokens = {}
+    while True:
+        while entry["events"]:
+            ev = entry["events"].pop(0)
+            method = str(ev.get("method") or "")
+            params = ev.get("params") if isinstance(ev.get("params"), dict) else {}
+            if method == "item/completed":
+                item = params.get("item") if isinstance(params.get("item"), dict) else {}
+                if item.get("type") == "agentMessage":
                     text = str(item.get("text") or "").strip()
                     if text:
                         final = text
@@ -919,83 +1325,53 @@ def _collect_codex(entry: dict, deadline: float) -> dict:
                     tool, hint = _codex_tool(item)
                     if tool:
                         _post(entry["record"], "tool", hint, tool=tool)
-            elif kind == "turn.completed":
-                raw = ev.get("usage") if isinstance(ev.get("usage"), dict) else {}
-                tokens = {"input": int(raw.get("input_tokens") or 0),
-                          "output": int(raw.get("output_tokens") or 0),
-                          "cache_read": int(raw.get("cached_input_tokens") or 0)}
+            elif method == "thread/tokenUsage/updated":
+                usage = params.get("tokenUsage") or {}
+                total = usage.get("total") if isinstance(usage, dict) else {}
+                tokens = {"input": int((total or {}).get("inputTokens") or 0),
+                          "output": int((total or {}).get("outputTokens") or 0),
+                          "cache_read": int((total or {}).get("cachedInputTokens") or 0)}
+            elif method == "turn/completed":
+                turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+                if turn.get("status") == "failed":
+                    error = turn.get("error") or {}
+                    return {"ok": False, "error": str(
+                        error.get("message") if isinstance(error, dict) else error)[:400]}
                 return {"ok": bool(final), "text": final, "tokens": tokens,
-                        "context_limit": _context_limit(ev),
                         "error": "Codex completed without an answer" if not final else ""}
-            elif kind in ("turn.failed", "error"):
-                error = ev.get("error")
-                if isinstance(error, dict):
-                    error = error.get("message") or error.get("code")
-                return {"ok": False, "dead": True,
-                        "error": str(error or "Codex turn failed")[:400]}
-        return None
-
-    while True:
-        got = consume(_read_events(entry))
-        if got is not None:
-            return got
+            elif method == "error":
+                error = params.get("error") or params
+                message = error.get("message") if isinstance(error, dict) else error
+                return {"ok": False, "error": str(message or "Codex turn failed")[:400]}
         code = entry["proc"].poll()
         if code is not None:
-            # Drain output written between the poll and this read.
-            got = consume(_read_events(entry))
-            if got is not None:
-                return got
             return {"ok": False, "dead": True,
-                    "error": f"Codex exited ({code}) without answering"}
+                    "error": f"Codex app server exited ({code}) without answering"}
         if time.monotonic() >= deadline:
             return {"ok": False, "dead": True,
                     "error": f"Codex did not answer within {int(TURN_TIMEOUT_S)}s and was stopped"}
         time.sleep(POLL_S)
 
 
-def _codex_deliver(root, prompt: str, *, resume: str, record: bool,
+def _codex_deliver(root, entry: dict, prompt: str, *, record: bool,
                    item_id: int) -> dict:
-    exe = _runners.find_codex()
-    if not exe:
-        raise Unavailable("codex CLI not found; install or select Claude Code")
-    reason = _runners.preflight(_runners.RUNNERS["codex"], str(root), exe)
-    if reason:
-        raise Unavailable(reason)
-    path = log_path(root)
-    handle = open(path, "ab")
-    handle.write((json.dumps({"type": "bgate_console_start", "runner": "codex",
-                              "resumed": bool(resume), "ts": time.time()}) + "\n").encode())
-    handle.flush()
-    model = _model_for(root)
-    args = _runners._codex_director_args(
-        exe, model=model, cwd=str(root), resume=resume)
+    entry["current_item"] = int(item_id)
+    entry["busy"] = True
+    entry["record"] = str(root) if record else ""
+    entry["says"] = []
+    entry["waiting"] = ""
+    _codex_rpc(entry, "turn/start", {
+        "threadId": entry["cli_session_id"],
+        "input": [{"type": "text", "text": prompt, "text_elements": []}],
+        "approvalPolicy": CODEX_APPROVAL_POLICY, "approvalsReviewer": "user"})
     try:
-        proc = subprocess.Popen(
-            args, cwd=str(root), env=_environ(root), stdin=subprocess.PIPE,
-            stdout=handle, stderr=handle, creationflags=_NO_WINDOW,
-            start_new_session=(sys.platform != "win32"))
-    except OSError as exc:
-        handle.close()
-        raise Unavailable(f"could not start Codex: {exc}") from exc
-    entry = {"proc": proc, "handle": handle, "stdin": proc.stdin,
-             "root": str(root), "runner": "codex", "model": model,
-             "log": str(path), "scan_pos": handle.tell(), "rem": b"",
-             "cli_session_id": resume, "resumed": bool(resume),
-             "current_item": int(item_id), "busy": True,
-             "record": str(root) if record else "", "says": [], "waiting": "",
-             "turns": 0, "started_at": time.monotonic(),
-             "last_at": time.monotonic()}
-    with _lock:
-        _live[_pkey(root)] = entry
-    try:
-        proc.stdin.write(prompt.encode("utf-8"))
-        proc.stdin.close()
-        entry["stdin"] = None
         return _collect_codex(entry, time.monotonic() + max(30.0, TURN_TIMEOUT_S))
     finally:
-        if proc.poll() is None:
-            _kill_tree(proc.pid)
-        _reap(_pkey(root), entry)
+        entry["current_item"] = 0
+        entry["busy"] = False
+        entry["record"] = ""
+        entry["waiting"] = ""
+        entry["last_at"] = time.monotonic()
 
 
 def _turn_codex(root, prompt: str, reseed_context: str, settle, *,
@@ -1008,14 +1384,18 @@ def _turn_codex(root, prompt: str, reseed_context: str, settle, *,
                 context = ("\n\nRecent dashboard conversation:\n" + reseed_context
                            if reseed_context else "")
                 text = system_prompt(root) + context + "\n\nHuman request:\n" + prompt
-            got = _codex_deliver(root, text, resume=resume, record=record,
+            try:
+                entry = _ensure_codex(root, resume=resume)
+            except Unavailable:
+                if resume and attempt == 0:
+                    forget(root, "codex")
+                    resume = ""
+                    continue
+                raise
+            got = _codex_deliver(root, entry, text, record=record,
                                  item_id=item_id)
             if got.get("ok"):
-                session_id = str(got.get("session_id") or "")
-                # The collector stores the id on the live entry; recover it
-                # from the start event if the result did not carry it.
-                if not session_id:
-                    session_id = _last_codex_session(log_path(root))
+                session_id = str(entry.get("cli_session_id") or "")
                 _remember(root, sessions={"codex": session_id})
                 _store_usage(root, "codex", got.get("tokens") or {},
                              got.get("context_limit") or 0)
@@ -1023,26 +1403,11 @@ def _turn_codex(root, prompt: str, reseed_context: str, settle, *,
                 return
             if resume and attempt == 0:
                 forget(root, "codex")
+                _reap(_pkey(root), entry)
                 resume = ""
                 continue
             settle(str(got.get("error") or "Codex answered nothing"), True)
             return
-
-
-def _last_codex_session(path: Path) -> str:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except OSError:
-        return ""
-    for line in reversed(lines[-500:]):
-        try:
-            ev = json.loads(line)
-        except (TypeError, ValueError):
-            continue
-        if ev.get("type") == "thread.started":
-            return str(ev.get("thread_id") or ev.get("threadId") or "")
-    return ""
-
 
 def _resume_failed(entry: dict, got: dict) -> bool:
     """Same crude-and-honest rule as brainsession._resume_failed, for the same
@@ -1100,6 +1465,7 @@ def _turn(root, prompt: str, reseed_context: str, settle,
           *, item_id: int = 0, record: bool = False) -> None:
     """One turn through the session. ``settle(text, failed)`` is what to do
     with the answer — post it to the chat, or close a work item with it."""
+    prompt = prompt + "\n\nDirector dispatch policy: " + _dispatch_instruction(root)
     if _runner_for(root) == "codex":
         _turn_codex(root, prompt, reseed_context, settle,
                     item_id=item_id, record=record)

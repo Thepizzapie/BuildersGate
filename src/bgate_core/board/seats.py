@@ -118,20 +118,22 @@ ART_3D_WORKFLOW = (
     "script. Boxing one of these by hand is what this block exists to "
     "stop, and nothing refuses it.\n"
     "• PRIMITIVES ARE FOR WHAT IS GEOMETRIC: bg_box / bg_cyl / bg_ball / "
-    "bg_plane, mirrored, tapered, joined — props, vehicles, terrain, "
-    "block-out. MEASURED on a baseball player: the pose read, the hands and "
-    "cap did not, the logo scrambled. THAT IS THE CEILING.\n"
+    "bg_plane — crates, rails, terrain, block-out. NOT the cast: a boxed "
+    "vehicle or character is a graybox stand-in. MEASURED on a baseball "
+    "player: pose read, hands and cap did not, logo scrambled. THAT IS THE "
+    "CEILING.\n"
+    "• 'PRIMITIVES ONLY' IN THE BIBLE WITH A 3D PROVIDER KEYED "
+    "(provider_status) is a graybox stage, not a look: ask_human once — ship "
+    "boxes as the cast, or generate? — and keep building meanwhile.\n"
     "• NEVER SEEN AS A MESH? Do not make one: image_sprites(ref_image=the "
     "approved character), naming NO provider — character work routes to "
     "nano-banana-2 (kie, else what is keyed) on its own, and naming one "
     "hard-fails a project keyed elsewhere.\n"
     "\n"
     "A WASHED-OUT MODEL IS A TEXTURE PROBLEM: extract the base-colour image "
-    "from the .glb and look at the file. FRAGMENTATION IS NOT THE DEFECT - "
-    "real atlases are chopped-up islands. The defect is islands of FLAT "
-    "AVERAGED COLOUR, what a per-face bake makes: no weave, no eyes, no "
-    "strands, and nothing downstream can add detail a file does not have. "
-    "Fragmented but detailed is a GOOD atlas - rig it and look.\n"
+    "from the .glb and look. Fragmented islands are normal; islands of FLAT "
+    "AVERAGED COLOUR (a per-face bake: no weave, no eyes) are the defect, and "
+    "nothing downstream adds detail a file lacks.\n"
     "\n"
     "THE STEPS BELOW ARE THE PRIMITIVE ROUTE ONLY.\n"
     "EIGHT STEPS, IN ORDER.\n"
@@ -243,6 +245,15 @@ _LEVEL_RULE = (
     "closes. It refuses an unplayable level (reachable, clearance, "
     "softlock, stranded); a finding is a bug to report, not a "
     "difficulty dial. It takes the same prop_manifest.\n"
+    "• 3D GAMES: blockout_generate. Rooms and corridors in metres (or "
+    "from_plan=<level_plan result> to convert a BSP layout), doors, box "
+    "props, a spawn and goal volumes -> a node-shaped graybox .tscn with a "
+    "BAKED navmesh and a report that MEASURES it: walkable floor per room "
+    "after props, door and corridor widths against the agent, a real "
+    "NavigationServer path from the spawn to every room. report.ok false "
+    "is a design bug with the fix named, not a number to argue with. "
+    "Block out and measure BEFORE any prop is generated; traversal_prove "
+    "drives the Goals volumes it emits.\n"
     "• You hold level_plan, level_generate and sidescroll_generate. "
     "You do NOT hold the "
     "generators: tilesets and prop sheets are the ART seat's craft. If "
@@ -301,6 +312,14 @@ OWNERSHIP_RULE = (
     "the game. Every cross-seat wire has exactly ONE owner, and two valid "
     "implementations of the same wire is a DEFECT, not redundancy - the first "
     "benchmark game shipped every sound effect twice that way and passed QA.\n"
+    "• 3D GEOMETRY IS ASSET GENERATION AND ASSET GENERATION IS ART. Every "
+    "visible mesh - imported glb, generated, or a primitive BoxMesh/CylinderMesh/"
+    "CSG built inline in a .tscn - is filed to the ART seat, so it gets "
+    "godot_deliver_asset's stand-up photo, scale_check and the consistency "
+    "gate. Tech gets the CollisionShape3D, layers, groups and script wiring "
+    "under it. 'The bible says boxes and cylinders' is a look, not a routing; "
+    "reading it as 'a tech job' filed a whole 3D cast to tech with nobody "
+    "measuring a single model.\n"
     "• Pairs where this bites: audio file -> gameplay event; art asset -> "
     "scene/resource consumer; animation -> state machine; simulation -> UI; "
     "death -> occupancy/state cleanup; ability -> VFX; narrative content -> "
@@ -636,7 +655,21 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "project is not building, because an unsaid no gets built "
                    "anyway. Every settled decision names its acceptance test "
                    "and what it deliberately leaves dark. A deferral nobody "
-                   "labelled gets 'fixed' as a bug.",
+                   "labelled gets 'fixed' as a bug. ROUTING: every visible 3D "
+                   "mesh - imported, generated, or a primitive authored inline in "
+                   "a .tscn - is asset generation and goes to ART; tech gets the "
+                   "collider, layers and wiring under it. 'Boxes and cylinders' in "
+                   "the bible is a look, not a reason to file the cast to tech. "
+                   "AND IN A 3D PROJECT THE CAST IS GENERATED: player, enemies, "
+                   "vehicles and hero props come from the keyed 3D provider "
+                   "(provider_status; character_generate / "
+                   "blender_generate). Primitives are the GRAYBOX stage, never the "
+                   "shipped look. A bible constraint forbidding generated or "
+                   "imported meshes is the HUMAN's decision - ask_human before "
+                   "writing one, and never derive it from 'install nothing new': "
+                   "a keyed provider is not an install. Measured: a full 3D run "
+                   "shipped zero generated models because the director wrote "
+                   "'no imported meshes' on its own and every seat obeyed it.",
         # docs/** BELONGS TO SOMEBODY NOW. It belonged to nobody, and the
         # default table having no owner for documentation was a trap: a project
         # whose bible told every 3D seat to append to docs/3d-pipeline-report.md
@@ -722,7 +755,12 @@ DEFAULT_SEATS: dict[str, dict] = {
     },
     "art": {
         "title": "Art",
-        "mission": "Own models, textures, and look. Lock every binary before "
+        "mission": "Own models, textures, and look. EVERY VISIBLE MESH IS ART'S "
+                   "- imported, generated, OR a BoxMesh/CylinderMesh/CSG authored "
+                   "inline in a .tscn. A look constraint that says 'boxes and "
+                   "cylinders, no imported meshes' is an art DIRECTION, not a "
+                   "reassignment to tech; tech owns the collider, layers and "
+                   "wiring under the mesh, never the mesh. Lock every binary before "
                    "editing; export through blender_export_gltf and deliver with "
                    "godot_deliver_asset, because the engine's view is the truth "
                    "and deliver is import PLUS the lit stand-up photo that "
@@ -739,7 +777,15 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "verify delivered meshes and scene overrides in an export "
                    "(godot_export_probe), because the export silently drops what the "
                    "editor tolerates.",
-        "write_globs": ["game/assets/**", "blender/**", "art/**"],
+        # Mesh-bearing scenes are ART's to write. Without these the seat that
+        # owns every visible mesh could not touch the .tscn a primitive lives
+        # in, and the director read that as "not art's job" (Hot Cargo,
+        # 2026-09-04: items 1-4, the whole 3D cast, filed to tech).
+        "write_globs": ["game/assets/**", "blender/**", "art/**",
+                        "game/scenes/props/**", "game/scenes/characters/**",
+                        "game/scenes/vehicles/**", "game/scenes/kit/**",
+                        "game/scenes/**/models/**", "game/scenes/**/*_model.tscn",
+                        "game/scenes/**/*_mesh.tscn"],
         "workflow": (
             "ANIMATIONS SHIP AS STITCHED SHEETS, NOT LOOSE FRAMES — the house "
             "rules name which tool mints vs animates (animation_generate for "

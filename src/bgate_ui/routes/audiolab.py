@@ -60,6 +60,15 @@ def _audio(rel: str, *, must_exist: bool = True) -> tuple[Path, Path]:
         target.relative_to(base)
     except ValueError:
         raise api.forbidden("path escapes the project root", rel=rel)
+    # The same containment as a plain string prefix test on the normalised
+    # path. relative_to above is the check that matters to a reader; this is
+    # the shape a static analyser recognises as one (CodeQL py/path-injection
+    # kept flagging every path derived from the request without it).
+    normalised = os.path.normpath(str(target))
+    prefix = os.path.normpath(str(base)) + os.sep
+    if not (normalised + os.sep).startswith(prefix):
+        raise api.forbidden("path escapes the project root", rel=rel)
+    target = Path(normalised)
     if target.suffix.lower() not in audiolab.AUDIO_SUFFIXES:
         raise api.ApiError(415, "not an audio file",
                            detail={"rel": rel,
@@ -343,6 +352,24 @@ def lab_save(payload: dict) -> dict:
     be a worse ritual than checking the parent directory is inside the project.
     """
     project_root, target = _audio(str(payload.get("rel") or ""), must_exist=False)
+    redirected_from = None
+    if target.suffix.lower() == ".mp3":
+        # AN MP3 IS A SOURCE, NOT A DESTINATION. The lab renders lossless PCM
+        # and this product has no mp3 encoder; refusing the save left an
+        # edited kie take with nowhere to go ("Save failed - cannot write
+        # .mp3", Hot Cargo 2026-09-04). The edit lands beside the take as the
+        # Ogg the engine wants, the take stays as it was, and the reply says
+        # where it went so the editor can reopen it.
+        redirected_from = target.relative_to(project_root).as_posix()
+        # Back through the same gate as the original: the redirected path is
+        # re-resolved and re-checked against the project root, so the final
+        # write target is contained by construction, not by inference.
+        project_root, target = _audio(redirected_from[:-len(".mp3")] + ".ogg",
+                                      must_exist=False)
+        # The client's mtime belongs to the mp3 it opened, never to the ogg
+        # beside it: drop it, so an existing ogg is a plain "already exists -
+        # pass overwrite" the editor already knows how to ask about.
+        payload = {**payload, "mtime": None}
     if target.suffix.lower() not in audiolab.WRITABLE:
         raise api.ApiError(415, f"cannot write {target.suffix} — "
                                 f"writable: {sorted(audiolab.WRITABLE)}",
@@ -413,6 +440,7 @@ def lab_save(payload: dict) -> dict:
         **_describe(project_root, target),
         "backup": backup,
         "created": not existed,
+        "redirected_from": redirected_from,
         "source_info": info,
         # A new file has no .import until Godot sees it, and the loop settings
         # live there — say so once, here, instead of failing later.

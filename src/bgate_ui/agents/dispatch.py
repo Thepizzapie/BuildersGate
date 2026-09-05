@@ -193,7 +193,37 @@ def _runner_for(root: str, seat: str) -> "_runners.Runner":
         return _runners.get(_runners.DEFAULT_RUNNER)
 
 
-def _model_for(root: str, seat: str) -> Optional[str]:
+def _compatible_model(runner: "_runners.Runner",
+                      chosen: Optional[str]) -> Optional[str]:
+    """Return a model the selected runner can accept.
+
+    Agent settings historically contained Claude aliases only.  Once the art
+    seat became routable to Codex, passing its default ``opus`` through made
+    every retry fail before doing work.  Codex's own installed catalog is the
+    authority here; when it is unavailable, a known Claude alias is omitted so
+    Codex can use its valid account default.
+    """
+    value = str(chosen or "").strip()
+    if runner.name != "codex" or not value:
+        return value or None
+    from bgate_core.runtime import modelcatalog
+    from bgate_ui.agents import codexmeta
+
+    rows = codexmeta.snapshot().get("models") or []
+    offered = {str(row.get("value") or "") for row in rows}
+    if value in offered:
+        return value
+    preferred = next((row for row in rows if row.get("default")), None)
+    fallback = str((preferred or (rows[0] if rows else {})).get("value") or "")
+    if fallback:
+        return fallback
+    if value.lower() in modelcatalog.AGENT_MODELS:
+        return None
+    return value
+
+
+def _model_for(root: str, seat: str,
+               runner: Optional["_runners.Runner"] = None) -> Optional[str]:
     """Which model this seat's agent runs on.
 
     NOTHING PASSED --model BEFORE THIS. Every dispatch call site - autodeploy,
@@ -219,7 +249,7 @@ def _model_for(root: str, seat: str) -> Optional[str]:
         chosen = str(_settings.get(root, key) or "").strip()
         if not chosen and key == "dispatch.model_art":
             chosen = str(_settings.get(root, "dispatch.model") or "").strip()
-        return chosen or None
+        return _compatible_model(runner or _runner_for(root, seat), chosen)
     except Exception:
         return None
 
@@ -515,7 +545,8 @@ def _prompt_template(seat: str) -> str:
     return "".join(base.values())
 
 
-def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
+def _prompt_for(root: str, item: dict, native_images: bool = False,
+                worktree: str = "") -> str:
     from bgate_core.board.seats import SEAT_IDENTITY
 
     seat = str(item["seat"])
@@ -529,6 +560,13 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         "source": item["source"],
         "title": item["title"],
         "brief": item["brief"],
+        "project_paths": (
+            f"MCP project_dir: {root}\n"
+            + (f"Editable worktree: {worktree}\nUse the MCP project_dir above "
+               "for shared board, brief, locks, references, and settings. "
+               "Write project files and tool output paths inside the editable "
+               "worktree." if worktree else
+               "Use that exact project_dir on every Builders Gate tool call.")),
         "seat_rule_block": (seat_rule + "\n\n") if seat_rule else "",
         "policy_block": (policy + "\n\n") if policy else "",
         "verify_rule": _verify_rule(root),
@@ -841,6 +879,10 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # The git boundary. A run dispatched on top of uncommitted work produces a
     # diff that cannot tell the agent's edits from the human's, so mixing them
     # has to be asked for.
+    try:
+        dispatch_mode = str(_settings.get(root, "dispatch.mode") or "structured")
+    except Exception:
+        dispatch_mode = "structured"
     if allow_dirty is None:
         allow_dirty = _flag(root, "dispatch.allow_dirty", "BGATE_ALLOW_DIRTY")
     state = _git.dirty(root)
@@ -879,7 +921,11 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # Through the registry (which declares BGATE_GIT_ISOLATION as the supplying
     # var, so the variable still wins) rather than gitwork's env-only reader,
     # which left the Settings toggle writing a value nothing consulted.
-    if base_commit and _flag(root, "dispatch.isolation", "BGATE_GIT_ISOLATION"):
+    if dispatch_mode == "chaos" and not base_commit:
+        return _refused("worktree_failed", "Chaos mode requires a git repository "
+                        "with a baseline commit before it can isolate agents")
+    if base_commit and (dispatch_mode == "chaos" or
+                        _flag(root, "dispatch.isolation", "BGATE_GIT_ISOLATION")):
         made = _git.make_worktree(root, item_id, base=base_commit)
         if not made["available"]:
             return _refused("worktree_failed", made["reason"])
@@ -956,6 +1002,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         "BGATE_LANES": _seatmod.lane_mode(root),
         "BGATE_WORK_ITEM": str(item_id),
         "BGATE_LOCK_OWNER": f"item-{item_id}",
+        "BGATE_DISPATCH_MODE": dispatch_mode,
         # Who this session is, for anything that asks whether a human is
         # responsible. Without it a spawned agent inherits the dashboard user's
         # identity and can approve its own work - it did, until this line.
@@ -976,10 +1023,14 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # An explicit model on the call wins; otherwise the seat's configured one.
     # Before _model_for existed this was `model` alone, which every caller left
     # as None - see _model_for for what that cost.
-    model = model or _model_for(root, item.get("seat") or "")
+    model = _compatible_model(
+        runner, model or _model_for(root, item.get("seat") or "", runner))
     args = runner.build_args(exe, permission_mode=permission_mode,
                              model=model, cwd=cwd, native_images=native_images,
-                             max_turns=_max_turns(root))
+                             max_turns=_max_turns(root),
+                             mcp_env_vars=env.keys(),
+                             auto_approve=(runner.name == "codex" and bool(
+                                 _settings.get(root, "dispatch.codex_auto_approve"))))
 
     # CONTAINMENT, CHECKED AT THE SPAWN RATHER THAN TRUSTED.
     #
@@ -1006,7 +1057,8 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # _live entry, put the item back to 'queued', and the orphan sat on its
     # stdin until the pid sweep found it. Everything that can fail without a
     # process is done while there is no process to strand.
-    prompt = _prompt_for(root, item, native_images=native_images)
+    prompt = _prompt_for(root, item, native_images=native_images,
+                         worktree=worktree)
     try:
         log_handle = open(log_path, "ab")
     except OSError:
@@ -1143,6 +1195,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                           # the sweep all need it and only the spawner knows it;
                           # stop(item_id) has no root argument to be given one.
                           "root": str(root), "actor": actor,
+                          "dispatch_mode": dispatch_mode,
                           "branch": branch, "worktree": worktree}
     # Status is already 'dispatched' - the reservation above wrote it before any
     # of the slow work, which is what makes two dispatchers safe against each
@@ -1185,6 +1238,14 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                    "runner": runner.name, "cost_tracked": runner.cost_tracked,
                    "native_images": native_images,
                    "worktree": worktree})
+    try:
+        # The Director transcript follows the run from here onward. Keeping the
+        # hook at the shared spawn point makes it runner-neutral: Codex and
+        # Claude produce the same board-monitor updates.
+        from bgate_ui.agents import directorsession as _director
+        _director.monitor_item(root, item_id, runner=runner.name)
+    except Exception:
+        pass
     return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path),
             "base_commit": base_commit, "branch": branch, "worktree": worktree,
             "max_runtime_s": ceiling_s,
@@ -1460,6 +1521,18 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
             except LookupError:
                 return
             continue
+        # Codex consumes its prompt through stdin and closes it before doing
+        # any work. That EOF is not completion: only arm the exit grace once
+        # its queue item has actually finished.
+        if entry.get("runner") == "codex" and not entry.get("stop_reason"):
+            try:
+                if _queue.get(root, item_id)["status"] not in (
+                        "done", "failed", "cancelled", "review", "integrating"):
+                    continue
+                if _open_claims(root, item_id):
+                    continue
+            except LookupError:
+                return
         # stdin closed: give the process the grace period, then kill its
         # whole tree (the agent's own MCP-server children orphan too).
         # setdefault matters: another path (stop, a manual sweep) may close
@@ -1548,7 +1621,39 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
                 json.dumps(record), encoding="utf-8")
     except Exception:
         pass
-    _auto_commit(root, item_id, entry)
+    integration_mode = str(entry.get("dispatch_mode") or "structured")
+    if entry.get("worktree") and integration_mode == "chaos":
+        prepared = _git.prepare_worktree(
+            root, item_id, entry["worktree"], base,
+            seat=str(entry.get("seat") or ""))
+        try:
+            record = read_run_record(root, item_id)
+            record["integration"] = prepared
+            run_record_path(root, item_id).write_text(
+                json.dumps(record), encoding="utf-8")
+        except (OSError, ValueError, TypeError) as exc:
+            from bgate_core.board import activity as _activity
+            _activity.log(root, "dispatch",
+                          f"item {item_id}: run record not updated ({exc})",
+                          seat=str(entry.get("seat") or ""))
+        try:
+            current = _queue.get(root, item_id)
+        except LookupError:
+            return
+        if prepared.get("pending"):
+            from bgate_ui.agents import directorsession as _director
+            _director.request_integration(root, item_id)
+        elif current.get("status") == "integrating":
+            if prepared.get("integrated"):
+                _queue.complete(root, item_id, result=current.get("result") or "")
+            else:
+                _queue.complete(
+                    root, item_id,
+                    result="Chaos integration preparation failed: "
+                           + str(prepared.get("reason") or "unknown error"),
+                    failed=True)
+    elif not entry.get("worktree"):
+        _auto_commit(root, item_id, entry)
 
 
 def _auto_commit(root: str, item_id: int, entry: dict) -> None:
@@ -1685,8 +1790,16 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
         # rather than set_status so a session that exits cleanly without
         # self-reporting still lands in the approval gate instead of skipping it.
         if _queue.get(root, item_id)["status"] == "dispatched":
-            _queue.complete(root, item_id, result=result,
-                            failed=(outcome != "done"))
+            try:
+                chaos = (entry.get("worktree") and
+                         entry.get("dispatch_mode") == "chaos")
+            except Exception:
+                chaos = False
+            if chaos and outcome == "done":
+                _queue.set_status(root, item_id, "integrating", result=result)
+            else:
+                _queue.complete(root, item_id, result=result,
+                                failed=(outcome != "done"))
     except LookupError:
         pass
     # CLAIMS DIE WITH THE RUN, BUT THE WORK DOES NOT. An item the agent claimed
@@ -1751,6 +1864,11 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
                                if entry.get("started_at") else 0),
                    "actor": entry.get("actor") or "",
                    "result": str(result or "")[:400]})
+    try:
+        from bgate_ui.agents import directorsession as _director
+        _director.report_monitored_item(root, item_id)
+    except Exception:
+        pass
     return row
 
 

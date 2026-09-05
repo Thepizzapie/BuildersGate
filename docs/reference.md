@@ -455,6 +455,26 @@ in each piece, then join the two halves of every cut on the way back up. The
 join builds a spanning tree, so every room is reachable from every other by
 construction. The result reports `connected`, checked with a flood fill.
 
+For a 3D game the same plan feeds `blockout_generate(from_plan=<that result>,
+cell_m=1.5)`, or you write the rooms in metres yourself:
+
+```bash
+blockout_generate(godot_project, spec={
+  "out_scene": "res://scenes/blockout/house.tscn",
+  "player": {"height": 1.8, "radius": 0.4}, "auto_doors": True,
+  "rooms": [{"name": "Kitchen", "x": 0, "z": 0, "w": 6, "d": 5,
+             "props": [{"name": "Counter", "x": 0, "z": 0, "w": 4, "h": 0.92, "d": 0.6}]},
+            {"name": "Hall", "kind": "corridor", "x": 6, "z": 1.5, "w": 4, "d": 1.6},
+            {"name": "Lounge", "x": 10, "z": 0, "w": 7, "d": 6}],
+  "spawn": {"room": "Kitchen"}, "goals": [{"name": "Exit", "room": "Lounge"}]})
+```
+
+The scene is node-shaped (one wall per shared edge, doors with lintels, props
+that rest on the floor by construction, a baked `NavigationRegion3D`, `Goals`
+volumes for `traversal_prove`) and the report is the point: walkable floor per
+room after the props, door and corridor widths against the agent, and a real
+navmesh path from the spawn to every room. `report.ok` false names the fix.
+
 Which sprite goes in each cell is a neighbour bitmask, the same job Godot's
 terrain sets do in the editor. Builders Gate writes `tile_map_data` directly and
 never opens the editor. `wall_layout` says how the sheet is arranged:
@@ -647,7 +667,8 @@ the causal history.
 | Seats and board | `seat_*`, `queue_*`, `board_digest`, `plan_status`, `agent_steer`, `ask_human`, `handoff_*` | Identity, lanes, work items, chains, dependencies, escalation |
 | Blender | `blender_*`, `character_generate`, `animation_curves` | Modelling, rigging, weights, flex, texture, turnaround, sprites, image-to-3D |
 | Godot | `godot_*`, `evidence_check_ui` | Run, test, scaffold, import, deliver, screenshot, inspect, retarget |
-| Scene | `scene_*`, `level_plan`, `level_generate` | Node surgery and level layout |
+| Scene | `scene_*`, `level_plan`, `level_generate`, `blockout_generate`, `track_generate` | Node surgery and level layout (2D tiles, 3D rooms, circuits) |
+| 3D gates | `godot_scene_audit`, `godot_export_verify` | Boot scene, shared sub_resources, support, headroom, colliders; editor-vs-pck diff |
 | Images | `image_*`, `sprite_*`, `item_*`, `vfx_animate`, `ref_*`, `profile_*`, `consistency_check`, `art_qa_verdict`, `art_tournament_*` | Generation, sprite sheets, items, references, consistency, art review |
 | Cutout | `cutout_*` | 2D part-on-skeleton characters |
 | Audio | `voice_*`, `sfx_*`, `music_*`, `dialogue_*` | Speech, sound effects, music generation and selection, dialogue trees |

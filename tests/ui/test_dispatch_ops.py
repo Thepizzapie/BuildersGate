@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -214,6 +215,34 @@ class TestConcurrencyCap:
 
 
 class TestWatchdog:
+    @pytest.mark.parametrize("status,should_kill", [
+        ("dispatched", False), ("done", True), ("failed", True),
+    ])
+    def test_codex_prompt_eof_is_not_completion(self, root, monkeypatch,
+                                               status, should_kill):
+        item = queue.add(root, "art", "Codex EOF regression")
+        queue.set_status(root, item["id"], status)
+        entry = self._entry("unused", runner="codex", started_at=0,
+                            max_runtime_s=1800)
+        dispatch._live[item["id"]] = entry
+        clock = [0]
+        killed = []
+
+        def tick(_):
+            clock[0] += 100
+            if clock[0] > 300:
+                dispatch._live.pop(item["id"], None)
+
+        monkeypatch.setattr(dispatch.time, "sleep", tick)
+        monkeypatch.setattr(dispatch.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(dispatch, "_last_output_age_s", lambda *a: 0)
+        monkeypatch.setattr(dispatch, "_kill_tree", killed.append)
+        monkeypatch.setattr(dispatch._assets, "heartbeat", lambda *a: None)
+        dispatch._watch_completion(str(root), item["id"], exit_grace_s=90)
+        assert bool(killed) is should_kill
+        if not should_kill:
+            assert "eof_at" not in entry
+
     def _entry(self, log, **over):
         entry = {"proc": FakeProc(pid=777), "log": str(log),
                  "started_at": time.monotonic(), "run_start_pos": 0,
@@ -267,6 +296,74 @@ class TestWatchdog:
 
 @needs_git
 class TestGitSurface:
+    def test_initialize_creates_a_standalone_repo_with_a_baseline(self, root):
+        (root / "project.godot").write_text("[application]\n", encoding="utf-8")
+
+        got = gitwork.initialize(root)
+
+        assert got["available"] is True
+        assert got["created"] is True
+        assert Path(got["toplevel"]).resolve() == root.resolve()
+        assert gitwork.head(root)
+
+    def test_chaos_worktree_is_committed_then_merged(self, root):
+        (root / "game.txt").write_text("base\n", encoding="utf-8")
+        _git_repo(root)
+        base = gitwork.head(root)
+        made = gitwork.make_worktree(root, 77, base=base)
+        assert made["available"]
+        worktree = Path(made["worktree"])
+        (worktree / "game.txt").write_text("chaos\n", encoding="utf-8")
+
+        prepared = gitwork.prepare_worktree(
+            root, 77, worktree, base, seat="gameplay")
+        assert prepared["pending"] is True
+        assert gitwork.integration(root, 77)["commit"] == prepared["commit"]
+
+        merged = gitwork.merge_worktree(root, 77)
+        assert merged["integrated"] is True
+        assert (root / "game.txt").read_text(encoding="utf-8") == "chaos\n"
+        assert gitwork.integration(root, 77)["pending"] is False
+
+    def test_conflicting_branch_is_abandoned_after_the_ceiling(self, root):
+        """A branch that cannot merge is offered a bounded number of times,
+        then fails — not re-asked every five minutes for the life of the
+        server. A dirty working branch does not count against it."""
+        (root / "game.txt").write_text("base\n", encoding="utf-8")
+        _git_repo(root)
+        base = gitwork.head(root)
+        made = gitwork.make_worktree(root, 78, base=base)
+        worktree = Path(made["worktree"])
+        (worktree / "game.txt").write_text("theirs\n", encoding="utf-8")
+        assert gitwork.prepare_worktree(root, 78, worktree, base)["pending"]
+        (root / "game.txt").write_text("ours\n", encoding="utf-8")
+
+        held = gitwork.merge_worktree(root, 78)
+        assert held["pending"] is True and "dirty" in held["reason"]
+        assert gitwork.integration(root, 78)["attempts"] == 0
+
+        _git_repo(root)                       # commit "ours" -> real conflict
+        for attempt in range(1, gitwork.MAX_INTEGRATION_ATTEMPTS):
+            got = gitwork.merge_worktree(root, 78)
+            assert got["integrated"] is False and got["pending"] is True
+            assert got["attempts"] == attempt
+        last = gitwork.merge_worktree(root, 78)
+        assert last["pending"] is False and last["failed"] is True
+        assert gitwork.integrations(root, pending=True) == []
+        assert gitwork.dirty(root)["dirty"] is False   # merge was aborted
+
+    def test_director_prompts_are_counted_and_capped(self, root):
+        (root / "game.txt").write_text("base\n", encoding="utf-8")
+        _git_repo(root)
+        base = gitwork.head(root)
+        made = gitwork.make_worktree(root, 79, base=base)
+        (Path(made["worktree"]) / "game.txt").write_text("x\n", encoding="utf-8")
+        gitwork.prepare_worktree(root, 79, Path(made["worktree"]), base)
+        for n in range(1, gitwork.MAX_INTEGRATION_ATTEMPTS + 1):
+            assert gitwork.note_integration_prompt(root, 79)["prompts"] == n
+        final = gitwork.note_integration_prompt(root, 79)
+        assert final["failed"] is True and final["pending"] is False
+
     def test_no_repo_degrades_instead_of_raising(self, root):
         got = gitwork.probe(root)
         assert got["available"] is False and got["reason"]

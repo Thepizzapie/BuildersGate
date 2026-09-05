@@ -93,7 +93,7 @@ cd emberfall
 This creates a **new directory** named after the project, not whatever
 directory you are standing in, containing `.bgate/game.db` and a runnable Godot
 game. It prints the absolute path it wrote to. `--kind 3d` gives you a
-first-person slice instead.
+third-person slice instead: a camera-relative controller with an orbit/follow/fixed camera rig, a prop kit (platform, ramp, crate, pickup, trigger volume) and an arcade vehicle demo.
 
 If you already have a Godot game, use `bgate adopt` instead. It never
 scaffolds and never overwrites. See [setup.md](setup.md).

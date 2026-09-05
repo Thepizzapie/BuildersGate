@@ -1,0 +1,29 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/pickup.gd" id="1_pickup"]
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_range"]
+radius = 0.6
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_coin"]
+top_radius = 0.18
+bottom_radius = 0.18
+height = 0.04
+
+[sub_resource type="StandardMaterial3D" id="Mat_coin"]
+albedo_color = Color(0.95, 0.78, 0.2, 1)
+metallic = 0.6
+roughness = 0.3
+
+[node name="Pickup" type="Area3D"]
+collision_layer = 4
+collision_mask = 0
+script = ExtResource("1_pickup")
+
+[node name="Range" type="CollisionShape3D" parent="."]
+shape = SubResource("SphereShape3D_range")
+
+[node name="Visual" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0, -1, 0, 1, 0, 0, 0.4, 0)
+mesh = SubResource("CylinderMesh_coin")
+surface_material_override/0 = SubResource("Mat_coin")
