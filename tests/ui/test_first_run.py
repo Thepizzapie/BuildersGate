@@ -132,6 +132,11 @@ class TestCreateOverHttp:
         assert state["project"]["name"] == "Ember Run"
         assert state["root"] == str(root)
         assert len(state["seats"]) == len(seats.ROLES)
+        # And the machine-wide pointer agrees with the running server, so the
+        # SessionStart hook and `bgate use` name the same game the console does.
+        from bgate_core.store import project as _project
+        assert Path(_project.active_root()).resolve() == root.resolve()
+        assert str(root) in {str(Path(p)) for p in _project.known_projects().values()}
 
     def test_3d_template_sets_the_dimension(self, client, monkeypatch):
         monkeypatch.delenv("BGATE_ROOT")

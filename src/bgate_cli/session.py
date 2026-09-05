@@ -275,9 +275,14 @@ def _lines(root) -> list[str]:
             # between "delegated" and "filed": autopilot is a persisted switch
             # that survives a restart OFF, and dispatch() refuses outright on a
             # dirty tree (bgate_ui/agents/dispatch.py — "commit or stash first").
+            # THE EFFECTIVE VALUE, not the raw doc. autopilot.on defaults to
+            # ON and a fresh project has no doc at all, so reading the doc
+            # told the director "autopilot is OFF" on a board that was
+            # dispatching (Hot Cargo, 2026-09-04) - and it filed work with a
+            # hand-deploy warning while the console banner said on.
             try:
-                from bgate_core.store import workspace as _ws
-                if not bool(_ws.get(root, "director", "autopilot", {}).get("on")):
+                from bgate_core.store import settings as _settings
+                if not bool(_settings.get(root, "autopilot.on")):
                     out.append("         autopilot is OFF — queued items wait "
                                "for a hand on the deploy button, not for a slot.")
             except Exception:

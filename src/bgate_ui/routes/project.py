@@ -197,6 +197,16 @@ def project_create(request: Request, payload: dict) -> dict:
     # directory below the cwd, which walking up will never find. Without this
     # the dashboard would create a project and then keep reporting none.
     os.environ["BGATE_ROOT"] = str(root)
+    # AND THE MACHINE-WIDE POINTER, so `bgate use`, the SessionStart hook and
+    # a director started from a terminal agree with the running server about
+    # which game this is. Without it the console served the new project while
+    # ~/.bgate/active.json still named the previous one.
+    try:
+        _project.register(root, name)
+        _project.set_active(root)
+    except Exception as exc:
+        _activity.log(root, "project", f"active pointer not updated ({exc})",
+                      seat="director")
 
     return api.ok({
         "root": str(root),
