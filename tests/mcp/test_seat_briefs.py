@@ -128,6 +128,8 @@ NOT_TOOLS = {
     "bg_ball", "bg_bone_chain", "bg_box", "bg_clean", "bg_cyl", "bg_finish",
     "bg_help", "bg_join", "bg_mat", "bg_mirror", "bg_plane", "bg_smooth",
     "bg_stats", "bg_taper", "bg_unwrap",
+    # the surface kit (_blender_surface_kit), same namespace
+    "bg_fuse", "bg_shade", "bg_lathe", "bg_loft", "bg_material", "bg_surface_help",
     # parameters and result keys
     "anchor_views", "artifact_id", "audio_track", "cast_refs", "decal_on",
     "dry_run",

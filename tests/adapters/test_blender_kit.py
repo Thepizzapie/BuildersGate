@@ -171,10 +171,14 @@ try:
     bg_bone_chain("Skeleton", [("Zero", (0, 0, 1), (0, 0, 1), None)])
 except ValueError as exc:
     print("refused")
-print("MODE", bpy.context.object.mode if bpy.context.object else "none")
+print("MODE", bpy.context.mode)
 """, out_dir=str(tmp_path))
         assert got["ok"] is True, got.get("error")
         assert "refused" in got["print"]
+        # bpy.context.mode, not context.object.mode: after the refusal nothing
+        # is active (Blender 4.5 leaves context.object None), and the question
+        # is whether the SESSION is still in edit mode, not whether an object
+        # is selected.
         assert "MODE OBJECT" in got["print"]
 
 
