@@ -33,7 +33,10 @@ needs_godot = pytest.mark.skipif(
     not godot.available()["available"], reason="Godot not installed"
 )
 
-HUMAN = 'bg_human(height=1.8, rig=True, name="Probe", pose="a")'
+# build=0.6: the default build's thighs touch, so no crotch can be measured and
+# rig() now FAILS such a figure on anatomy ("TRUNK ASSUMED") - which is right,
+# and not what these bind-proof tests are about. The slim build has a gap.
+HUMAN = 'bg_human(height=1.8, build=0.6, rig=True, name="Probe", pose="a")'
 
 
 @pytest.fixture(scope="module")
@@ -490,8 +493,25 @@ def test_template_deviation_of_a_real_bind(bound_glb):
     assert verdict["passed"] is True, verdict["issues"]
 
 
+@pytest.fixture(scope="module")
+def fat_bound_glb(tmp_path_factory):
+    """bg_human at its DEFAULT build: thighs touch, no crotch gap. Bound, and
+    rig() says so honestly - `rigged` True, `ok` False, "TRUNK ASSUMED" - which
+    is the anatomy verdict working, and exactly the figure the test below is
+    about."""
+    out = tmp_path_factory.mktemp("rigq_fat") / "fat.glb"
+    got = blender.run_script('bg_human(height=1.8, rig=True, name="Probe", pose="a")',
+                             export_glb=str(out), record=False, out_dir=str(out.parent))
+    assert got["ok"] is True, got.get("error")
+    bound = out.parent / "fat_bound.glb"
+    report = blender.rig(str(out), str(bound), timeout=900)
+    assert report.get("rigged") is True, report.get("reason")
+    assert report.get("ok") is False and "TRUNK ASSUMED" in report["error"]
+    return bound
+
+
 @needs_blender
-def test_a_figure_with_no_crotch_gap_gets_no_proportion_check_at_all(bound_glb):
+def test_a_figure_with_no_crotch_gap_gets_no_proportion_check_at_all(fat_bound_glb):
     """AND THAT IS A REAL LIMITATION, NOT A BUG — worth a test so it is not
     rediscovered as one.
 
@@ -506,8 +526,7 @@ def test_a_figure_with_no_crotch_gap_gets_no_proportion_check_at_all(bound_glb):
     a 7.5-head adult, which is the behaviour it was just taken off. A caller
     who wants that comparison asks for it by name, as the test above does.
     """
-    out, _ = bound_glb
-    got = blender.template_deviation(str(out), timeout=900)
+    got = blender.template_deviation(str(fat_bound_glb), timeout=900)
     assert got["ok"] is False
     assert "crotch" in got["error"] or "calf" in got["error"], got["error"]
     verdict = blender.template_deviation_verdict(got)
