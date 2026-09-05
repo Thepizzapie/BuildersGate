@@ -343,6 +343,18 @@ def lab_save(payload: dict) -> dict:
     be a worse ritual than checking the parent directory is inside the project.
     """
     project_root, target = _audio(str(payload.get("rel") or ""), must_exist=False)
+    redirected_from = None
+    if target.suffix.lower() == ".mp3":
+        # AN MP3 IS A SOURCE, NOT A DESTINATION. The lab renders lossless PCM
+        # and this product has no mp3 encoder; refusing the save left an
+        # edited kie take with nowhere to go ("Save failed - cannot write
+        # .mp3", Hot Cargo 2026-09-04). The edit lands beside the take as the
+        # Ogg the engine wants, the take stays as it was, and the reply says
+        # where it went so the editor can reopen it.
+        redirected_from = target.relative_to(project_root).as_posix()
+        target = target.with_suffix(".ogg")
+        if payload.get("mtime") is not None and not target.exists():
+            payload = {**payload, "mtime": None}
     if target.suffix.lower() not in audiolab.WRITABLE:
         raise api.ApiError(415, f"cannot write {target.suffix} — "
                                 f"writable: {sorted(audiolab.WRITABLE)}",
@@ -413,6 +425,7 @@ def lab_save(payload: dict) -> dict:
         **_describe(project_root, target),
         "backup": backup,
         "created": not existed,
+        "redirected_from": redirected_from,
         "source_info": info,
         # A new file has no .import until Godot sees it, and the loop settings
         # live there — say so once, here, instead of failing later.

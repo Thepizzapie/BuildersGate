@@ -147,7 +147,50 @@ def probe(path: str | os.PathLike[str]) -> dict:
             return {**base, **_probe_ogg(path)}
     except (OSError, wave.Error, AudioError, struct.error, IndexError) as exc:
         return {**base, "probe_error": f"{type(exc).__name__}: {exc}"}
-    return base            # .mp3 — the browser decodes it, we do not guess
+    # .mp3, or a WAV/OGG whose header the readers above could not parse: ask
+    # ffprobe, which is beside every ffmpeg this module already resolves. The
+    # picker showed 87 raw kie takes as "? · ?Hz mono" (Hot Cargo, 2026-09-04)
+    # because this returned nothing for an mp3 and the client printed its
+    # defaults as facts.
+    probed = _probe_ffprobe(path)
+    return {**base, **probed} if probed else base
+
+
+def _ffprobe_bin() -> Optional[str]:
+    import shutil
+    ffmpeg = _ffmpegbin.resolve()
+    if ffmpeg:
+        candidate = Path(ffmpeg).with_name("ffprobe" + Path(ffmpeg).suffix)
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("ffprobe")
+
+
+def _probe_ffprobe(path: Path) -> dict:
+    exe = _ffprobe_bin()
+    if not exe:
+        return {"probe_error": "no ffprobe on this machine"}
+    try:
+        proc = _run([exe, "-v", "error", "-select_streams", "a:0", "-show_entries",
+                     "stream=sample_rate,channels:format=duration", "-of", "json", str(path)],
+                    capture_output=True, text=True, timeout=20)
+    except (OSError, ValueError) as exc:
+        return {"probe_error": f"{type(exc).__name__}: {exc}"}
+    except Exception as exc:  # subprocess.TimeoutExpired and friends
+        return {"probe_error": f"{type(exc).__name__}: {exc}"}
+    if proc.returncode != 0:
+        return {"probe_error": (proc.stderr or "ffprobe failed").strip()[:200]}
+    try:
+        data = json.loads(proc.stdout or "{}")
+        stream = (data.get("streams") or [{}])[0]
+        rate = int(stream.get("sample_rate") or 0) or None
+        channels = int(stream.get("channels") or 0) or None
+        seconds = float((data.get("format") or {}).get("duration") or 0.0) or None
+    except (ValueError, TypeError, IndexError) as exc:
+        return {"probe_error": f"unreadable ffprobe output: {exc}"}
+    frames = int(round(seconds * rate)) if seconds and rate else None
+    return {"sample_rate": rate, "channels": channels, "seconds": seconds,
+            "frames": frames, "probe_error": None}
 
 
 # ---------------------------------------------------------------------------

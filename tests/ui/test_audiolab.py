@@ -459,9 +459,10 @@ def test_save_refuses_junk_and_unwritable_targets(client, game):
                        json={"rel": HIT, "wav": "!!!"}).status_code == 400
     assert client.post("/api/audio/lab/save", json={
         "rel": HIT, "wav": base64.b64encode(b"not a wav").decode()}).status_code == 400
-    (game / "assets/audio/voice.mp3").write_bytes(b"\xff\xfb")
+    # An mp3 target is redirected to a sibling .ogg (its own test below); a
+    # suffix the lab has no story for is still refused outright.
     assert client.post("/api/audio/lab/save", json={
-        "rel": "assets/audio/voice.mp3",
+        "rel": "assets/audio/voice.flac",
         "wav": base64.b64encode(_wav_bytes()).decode()}).status_code == 415
 
 
@@ -645,3 +646,52 @@ def test_the_beat_maker_is_loaded_and_renders_through_the_clip_editor():
     assert "Math.random(" not in bm, "a beat must render identically every time"
     lab = (static / "audiolab.js").read_text(encoding="utf-8")
     assert "BeatMaker.mount" in lab and "function adopt(" in lab
+
+
+
+class TestProbeMp3:
+    """An mp3 in the picker used to read "? · ?Hz mono": probe() answered
+    nothing for anything but WAV/OGG. ffprobe sits beside every ffmpeg the
+    lab already uses, so it answers now."""
+
+    def test_mp3_is_probed_through_ffprobe(self, tmp_path):
+        import shutil
+        import subprocess
+        from bgate_core.audio import audiolab as _lab
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg or not _lab._ffprobe_bin():
+            pytest.skip("ffmpeg/ffprobe not installed")
+        mp3 = tmp_path / "take.mp3"
+        subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1.5",
+                        "-ac", "2", "-ar", "44100", str(mp3)], check=True, capture_output=True)
+        info = _lab.probe(mp3)
+        assert info["probe_error"] is None
+        assert info["sample_rate"] == 44100 and info["channels"] == 2
+        assert 1.3 < info["seconds"] < 1.7
+
+    def test_a_missing_file_still_says_less_rather_than_raising(self, tmp_path):
+        from bgate_core.audio import audiolab as _lab
+        info = _lab.probe(tmp_path / "nothing.mp3")
+        assert info["sample_rate"] is None and info["probe_error"]
+
+
+def test_saving_over_an_mp3_lands_beside_it_as_ogg(client, game):
+    """A raw kie take is an mp3; the lab cannot encode mp3 and used to refuse
+    the save outright. Now the edit becomes <stem>.ogg next to the take, the
+    take is untouched, and the reply names both."""
+    import shutil
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not installed (ogg encode)")
+    take = game / "_raw" / "sfx" / "skid_1.mp3"
+    take.parent.mkdir(parents=True, exist_ok=True)
+    take.write_bytes(b"ID3" + b"\x00" * 64)          # bytes are never read; only the path matters
+    r = client.post("/api/audio/lab/save", json={
+        "rel": "_raw/sfx/skid_1.mp3", "wav": base64.b64encode(_wav_bytes(seconds=0.4)).decode(),
+        "mtime": int(take.stat().st_mtime)})
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["rel"] == "_raw/sfx/skid_1.ogg" and d["redirected_from"] == "_raw/sfx/skid_1.mp3"
+    assert d["created"] is True
+    assert (game / "_raw" / "sfx" / "skid_1.ogg").is_file()
+    assert take.read_bytes().startswith(b"ID3")
+    assert audiolab.probe(game / "_raw" / "sfx" / "skid_1.ogg")["seconds"] == pytest.approx(0.4, abs=0.05)
