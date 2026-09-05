@@ -772,6 +772,14 @@ after - so "did that fix it" is a number rather than an impression.
 ## blender_rig
 
 ```text
+ANATOMY IS A VERDICT, NOT A NOTE: the report carries `anatomy` - whether the
+trunk (Hips/Spine/Chest/Neck/Head) was hung from the crotch, shoulder line
+and crown MEASURED off this mesh, and how far the height-only template
+would have put them (template_worst_shift, in body heights, against an 0.08
+bound). A trunk that could not be measured FAILS the rig (ok false, error
+"TRUNK ASSUMED"): that is how a character shipped with thigh bones 37 cm
+above its crotch while every gate said green. Fix the plate or pass heads=.
+
 Take a GENERATED mesh to a bound, weighted character an engine can move.
 
 Every image-to-3D backend returns `rigged: false` - geometry and nothing
@@ -2270,7 +2278,7 @@ not the Builders Gate root - that one is `project_dir`.
 ```text
 Create a runnable Godot project wired for playtesting.
 
-kind: 2d (platformer slice) | 3d (first-person slice). dest defaults to
+kind: 2d (platformer slice) | 3d (third-person slice + prop kit + vehicle demo). dest defaults to
 <project root>/game.
 
 The template ships the BGate telemetry autoload already registered, and a
@@ -4403,6 +4411,41 @@ A REAL sound effect through kie (Suno sounds endpoint): engines, skids,
 impacts, ambience, UI. Lands every take in audio/sfx/<name>_<n>.<ext> with
 <name>.prompt.json beside it. Costs credits per call. sfx_generate stays for
 retro/8-bit projects only.
+```
+
+## godot_scene_audit
+
+```text
+Audit a 3D scene for the defects that shipped green everywhere else. Call
+it with scene="" to audit the scene the game BOOTS into - the one nobody
+else names. STATIC: run/main_scene set and not the scaffold demo
+(boot_is_scaffold); a mesh/shape/material sub_resource shared by several
+nodes and assigned into by a script (shared_subresource_mutated - every
+node gets the last writer's value); an instanced scene whose script resizes
+its own embedded sub_resources without resource_local_to_scene
+(instanced_subresource_mutated); a ConcavePolygonShape3D under a moving
+body (trimesh_on_moving_body). IN-ENGINE, world space, after two physics
+steps: every visible mesh has a collider on its body (no_collider) that
+matches its bounds (collider_mismatch); every static/rigid body above the
+floor rests on something within 3 cm or is touched by a neighbour
+(floating / unsupported / sunk); every landing surface between 0.15 and
+2.5 m up has `headroom` clear above a 5x5 grid of its top (no_headroom /
+partial_headroom). ok is false on any error-level finding. Run it once per
+project before any presentation gate.
+```
+
+## godot_export_verify
+
+```text
+Load one scene from the PROJECT and from the exported PCK and diff what the
+engine built: node set, types, visibility, transforms, mesh and bounds,
+materials per surface (albedo, texture, shader), collider class and size,
+bone and animation counts, and every exported script variable - the
+per-instance overrides a pck has been seen to drop (Corniche: six identical
+cars where every editor screenshot showed six liveries). ok is false on any
+difference; each diff names the node, the field and both values. Make the
+pck with `godot --headless --path <project> --export-pack <preset> out.pck`
+and run this after every export whose evidence came from an editor run.
 ```
 
 ## godot_export_probe

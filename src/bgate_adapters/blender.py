@@ -2838,13 +2838,23 @@ def fit_trunk(eb, L):
              ("Neck", shoulder, neck_top),
              ("Head", neck_top, crown_inset))
     moved = []
+    # WHERE THE TEMPLATE HAD THEM, kept so the report can say how wrong the
+    # height-only skeleton was for THIS body. On the owner that number was
+    # 0.215 body heights at the hips (37.6 cm) with every gate green.
+    template = {}
+    height = float(L.get("height") or 0.0) or 1.0
     for name, head_z, tail_z in chain:
         bone = eb.get(name)
         if bone is None:
             continue
+        template[name] = round(float(bone.head.z), 5)
         bone.head = Vector((0.0, 0.0, head_z))
         bone.tail = Vector((0.0, 0.0, tail_z))
         moved.append(name)
+    shifts = {name: round((dict(((n, h) for n, h, _t in chain))[name] - template[name]) / height, 4)
+              for name in template}
+    worst_name = max(shifts, key=lambda n: abs(shifts[n])) if shifts else ""
+    worst = abs(shifts[worst_name]) if worst_name else 0.0
     # THE SHOULDER BONES HANG OFF UpperChest, so their heads belong on the
     # measured shoulder line too. Left where the template put them they span
     # from inside the neck down to the joint, which is the 0.643 m "shoulder"
@@ -2864,6 +2874,13 @@ def fit_trunk(eb, L):
             "heights": {name: round(value, 5) for name, value in at.items()},
             "neck": neck_top, "neck_from": neck_from,
             "head_tail": crown_inset,
+            "template_heights": template,
+            # Template-vs-mesh disagreement, in body heights, per trunk bone.
+            # Above TDEV_BOUND the height-only skeleton would have been wrong
+            # for this body: the fit corrected it, and the report says so.
+            "template_shift": shifts, "template_worst": worst_name,
+            "template_worst_shift": round(worst, 4),
+            "template_disagrees": worst > TDEV_BOUND,
             "anchors": anchor_rows(L.get("trunk") or {})}
 
 
@@ -3231,6 +3248,38 @@ else:
         # takes that to 0 of 23 when the plate was posed to the template,
         # 5 of 23 when it was not.
         out["placed"] = fit_bones(arm, mesh)
+        # THE ANATOMY VERDICT. A trunk hung from the template alone is the
+        # owner's disease - thigh bones inside the belly, every gate green -
+        # so an unmeasured trunk is a FAILED rig, not a note in a sub-dict.
+        # A measured trunk that moved bones past TDEV_BOUND is reported as
+        # the template having disagreed with this body; the fit corrected it.
+        trunk = (out["placed"] or {}).get("trunk") or {}
+        anatomy = {"trunk_measured": bool(trunk.get("fitted")),
+                   "bound_body_heights": TDEV_BOUND}
+        if trunk.get("fitted"):
+            anatomy.update({
+                "crotch": trunk.get("crotch"), "shoulder_line": trunk.get("shoulder_line"),
+                "neck": trunk.get("neck"), "neck_from": trunk.get("neck_from"),
+                "template_worst_bone": trunk.get("template_worst"),
+                "template_worst_shift": trunk.get("template_worst_shift"),
+                "template_disagreed": bool(trunk.get("template_disagrees")),
+                "ok": True})
+            if trunk.get("template_disagrees"):
+                anatomy["note"] = ("the height-only template put %s %.1f%% of body height "
+                                   "from where this mesh has it; bones were placed from "
+                                   "the mesh" % (trunk.get("template_worst"),
+                                                100.0 * float(trunk.get("template_worst_shift") or 0.0)))
+        else:
+            anatomy.update({"ok": False, "why": trunk.get("why") or "trunk not measured"})
+            out["ok"] = False
+            out["error"] = ("TRUNK ASSUMED: the crotch or shoulder line could not be "
+                            "measured off this mesh (%s), so Hips/Spine/Chest/Neck/Head "
+                            "sit where a 7.5-head template of this height puts them. "
+                            "That is how a character shipped with thigh bones 37 cm above "
+                            "its crotch. Fix the plate (neutral A/T pose, keyed backdrop, "
+                            "strict side profile) or pass heads= and re-rig."
+                            % (trunk.get("why") or "no reason recorded"))
+        out["anatomy"] = anatomy
 
     if arm is None:
         out["ok"] = False

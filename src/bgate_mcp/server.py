@@ -4991,6 +4991,63 @@ def godot_export_probe(pck: Annotated[str, Field(description='The exported .pck 
 
 
 
+# THE GATES THAT WERE HAND-WRITTEN INSIDE EVERY GAME AND NEVER IN THE HARNESS.
+# MEASURED (catnip-fiend 2026-08-24): the game booted into the scaffold demo
+# after full production; eight instances of one prop scene shared a resized
+# sub_resource and all took the last one's size; a book stood on the catnip and
+# a cabinet overhung the counter - every geometry gate measured the surface and
+# none the space above it; 130 assertions green throughout.
+@_tool
+def godot_scene_audit(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+                      scene: Annotated[str, Field(description='res:// path of the scene to audit. EMPTY audits the scene the game BOOTS into (run/main_scene), which is the one nobody else names.')] = "",
+                      player_height: Annotated[float, Field(description='Standing height of the player body in metres; sets the headroom ray and the height bars. Default 1.8.')] = 1.8,
+                      player_radius: Annotated[float, Field(description='Half-width of the player body; insets the headroom grid. Default 0.4.')] = 0.4,
+                      headroom: Annotated[Optional[float], Field(description='Clear height required above a landing surface. Default: player_height.')] = None,
+                      timeout: int = 180) -> dict:
+    """Audit a 3D scene for the defects that shipped green everywhere else.
+
+    STATIC: run/main_scene set and not the scaffold demo (BOOT_IS_SCAFFOLD);
+    a mesh/shape/material sub_resource shared by several nodes and assigned
+    into by a script (SHARED_SUBRESOURCE_MUTATED - every node gets the last
+    writer's value); an instanced scene whose script resizes its own embedded
+    sub_resources without resource_local_to_scene (INSTANCED_SUBRESOURCE_
+    MUTATED); a ConcavePolygonShape3D under a moving body (TRIMESH_ON_MOVING_
+    BODY). IN-ENGINE, world space, after two physics steps: every visible mesh
+    has a collider on its body (NO_COLLIDER) that matches its bounds
+    (COLLIDER_MISMATCH); every static/rigid body above the floor rests on
+    something within 3 cm (FLOATING / UNSUPPORTED); every landing surface
+    between 0.15 and 2.5 m up has `headroom` clear above a 5x5 grid of its top
+    (NO_HEADROOM / PARTIAL_HEADROOM). `ok` is false on any error-level finding.
+    Run it with scene="" once per project before any presentation gate.
+    """
+    from bgate_adapters import godot_audit as _audit
+    _contained_path(godot_project, "godot_project")
+    return _audit.audit(godot_project, scene or None, player_height=float(player_height),
+                        player_radius=float(player_radius), headroom=headroom, timeout=timeout)
+
+
+# EDITOR RUN != EXPORT, PROVED BY DIFF RATHER THAN BY A HUMAN NOTICING. MEASURED
+# (Corniche 2026-09-04): per-instance livery overrides resolved in every
+# screenshot and vanished in the pck; rails "shattered" on grades in the build.
+# godot_export_probe lets a script look; this looks for you.
+@_tool
+def godot_export_verify(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+                        pck: Annotated[str, Field(description='The exported .pck (or .zip); absolute or relative to the project. `godot --headless --path <project> --export-pack <preset> <out.pck>` makes one.')],
+                        scene: Annotated[str, Field(description='res:// scene to compare. EMPTY compares the boot scene.')] = "",
+                        timeout: int = 180) -> dict:
+    """Load one scene from the PROJECT and from the PCK and diff what the
+    engine built: node set, types, visibility, transforms, mesh and bounds,
+    materials per surface (albedo, texture, shader), collider class and size,
+    bone and animation counts, and every exported script variable - the
+    per-instance overrides a pck has been seen to drop. `ok` is false on any
+    difference; each diff names the node, the field, and both values. Run it
+    after every export whose evidence came from an editor run.
+    """
+    from bgate_adapters import godot_audit as _audit
+    _contained_path(godot_project, "godot_project")
+    return _audit.export_verify(godot_project, pck, scene or None, timeout=timeout)
+
+
 # A LEVEL-DESIGN TOOL FOR DRIVING GAMES. MEASURED (Corniche, 2026-09-04): with no
 # tool, the tech seat hand-wrote a 1,900-line generator over 12 hours and the
 # director rescued it five times (a folded closure, terrain through the road,
@@ -5417,7 +5474,7 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
                    force: bool = False, replace: bool = False) -> dict:
     """Create a runnable Godot project wired for playtesting.
 
-    kind: 2d (platformer slice) | 3d (first-person slice). dest defaults to
+    kind: 2d (platformer slice) | 3d (third-person slice + prop kit + vehicle demo). dest defaults to
     <project root>/game. The template ships the BGate telemetry autoload and a
     player whose feel tunables are exported AND emitted. A non-empty dest is
     refused unless force or replace, and they differ: force=True fills in WHAT

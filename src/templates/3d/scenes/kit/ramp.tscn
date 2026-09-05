@@ -1,0 +1,25 @@
+[gd_scene load_steps=4 format=3]
+
+[sub_resource type="BoxMesh" id="BoxMesh_ramp"]
+resource_local_to_scene = true
+size = Vector3(3, 0.3, 5)
+
+[sub_resource type="StandardMaterial3D" id="Mat_ramp"]
+albedo_color = Color(0.5, 0.56, 0.5, 1)
+roughness = 0.95
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_ramp"]
+resource_local_to_scene = true
+size = Vector3(3, 0.3, 5)
+
+[node name="Ramp" type="StaticBody3D"]
+
+[node name="Slab" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.9659258, 0.2588190, 0, -0.2588190, 0.9659258, 0, 0, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Slab"]
+mesh = SubResource("BoxMesh_ramp")
+surface_material_override/0 = SubResource("Mat_ramp")
+
+[node name="Shape" type="CollisionShape3D" parent="Slab"]
+shape = SubResource("BoxShape3D_ramp")

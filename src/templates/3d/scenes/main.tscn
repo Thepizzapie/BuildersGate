@@ -1,6 +1,12 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=16 format=3]
 
-[ext_resource type="Script" path="res://scripts/player.gd" id="1_player"]
+[ext_resource type="Script" path="res://scripts/third_person_controller.gd" id="1_player"]
+[ext_resource type="Script" path="res://scripts/camera_rig.gd" id="2_rig"]
+[ext_resource type="PackedScene" path="res://scenes/kit/platform.tscn" id="3_platform"]
+[ext_resource type="PackedScene" path="res://scenes/kit/ramp.tscn" id="4_ramp"]
+[ext_resource type="PackedScene" path="res://scenes/kit/crate.tscn" id="5_crate"]
+[ext_resource type="PackedScene" path="res://scenes/kit/pickup.tscn" id="6_pickup"]
+[ext_resource type="PackedScene" path="res://scenes/kit/trigger_volume.tscn" id="7_trigger"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_ground"]
 size = Vector3(40, 1, 40)
@@ -8,21 +14,39 @@ size = Vector3(40, 1, 40)
 [sub_resource type="BoxMesh" id="BoxMesh_ground"]
 size = Vector3(40, 1, 40)
 
+[sub_resource type="StandardMaterial3D" id="Mat_ground"]
+albedo_color = Color(0.42, 0.5, 0.36, 1)
+roughness = 1.0
+
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.4
 height = 1.8
 
-[sub_resource type="BoxShape3D" id="BoxShape3D_block"]
-size = Vector3(3, 1, 3)
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_player"]
+radius = 0.4
+height = 1.8
 
-[sub_resource type="BoxMesh" id="BoxMesh_block"]
-size = Vector3(3, 1, 3)
+[sub_resource type="StandardMaterial3D" id="Mat_player"]
+albedo_color = Color(0.2, 0.55, 0.85, 1)
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_reach"]
+radius = 1.2
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 1
+background_color = Color(0.62, 0.7, 0.8, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.7, 0.72, 0.78, 1)
+ambient_light_energy = 0.8
 
 [node name="BGateDemo" type="Node3D"]
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.7, -0.5, 0.5, 0, 0.7, 0.7, -0.7, -0.5, 0.5, 0, 8, 0)
 shadow_enabled = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
 
 [node name="Ground" type="StaticBody3D" parent="."]
 
@@ -31,22 +55,53 @@ shape = SubResource("BoxShape3D_ground")
 
 [node name="GroundMesh" type="MeshInstance3D" parent="Ground"]
 mesh = SubResource("BoxMesh_ground")
+surface_material_override/0 = SubResource("Mat_ground")
 
-[node name="Block" type="StaticBody3D" parent="."]
+[node name="Platform" parent="." instance=ExtResource("3_platform")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 1, -4)
 
-[node name="BlockShape" type="CollisionShape3D" parent="Block"]
-shape = SubResource("BoxShape3D_block")
+[node name="Ramp" parent="." instance=ExtResource("4_ramp")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 1.05, 0.3)
 
-[node name="BlockMesh" type="MeshInstance3D" parent="Block"]
-mesh = SubResource("BoxMesh_block")
+[node name="Crate" parent="." instance=ExtResource("5_crate")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3, 0.9, -2)
+
+[node name="Coin" parent="." instance=ExtResource("6_pickup")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 2, -4)
+
+[node name="Goal" parent="." instance=ExtResource("7_trigger")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6, 1.5, 6)
+volume_id = "goal"
 
 [node name="Player" type="CharacterBody3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0)
+collision_layer = 2
+collision_mask = 1
 script = ExtResource("1_player")
 
 [node name="PlayerShape" type="CollisionShape3D" parent="Player"]
 shape = SubResource("CapsuleShape3D_player")
 
-[node name="Camera3D" type="Camera3D" parent="Player"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
+[node name="PlayerMesh" type="MeshInstance3D" parent="Player"]
+mesh = SubResource("CapsuleMesh_player")
+surface_material_override/0 = SubResource("Mat_player")
+
+[node name="InteractRange" type="Area3D" parent="Player"]
+collision_layer = 0
+collision_mask = 4
+
+[node name="Reach" type="CollisionShape3D" parent="Player/InteractRange"]
+shape = SubResource("SphereShape3D_reach")
+
+[node name="CameraRig" type="Node3D" parent="." node_paths=PackedStringArray("target_path")]
+transform = Transform3D(1, 0, 0, 0, 0.9553365, 0.2955202, 0, -0.2955202, 0.9553365, 0, 3.4, 0)
+script = ExtResource("2_rig")
+target_path = NodePath("../Player")
+
+[node name="SpringArm3D" type="SpringArm3D" parent="CameraRig"]
+spring_length = 5.0
+margin = 0.2
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig/SpringArm3D"]
+current = true
+fov = 65.0

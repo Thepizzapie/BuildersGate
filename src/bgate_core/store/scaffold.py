@@ -71,8 +71,10 @@ def list_templates() -> list[dict]:
             "description": {
                 "2d": "Side-on platformer slice: player, ground, ledge, jump/land "
                       "telemetry, feel tunables exported.",
-                "3d": "First-person slice: capsule player, ground, block, jump/land "
-                      "telemetry, feel tunables exported.",
+                "3d": "Third-person slice: camera-relative controller + orbit/follow/"
+                      "fixed camera rig, a prop kit (platform, ramp, crate, pickup, "
+                      "trigger volume), an arcade vehicle with a chase camera in "
+                      "vehicle_demo.tscn, jump/land telemetry, feel tunables exported.",
             }[kind],
         })
     return out

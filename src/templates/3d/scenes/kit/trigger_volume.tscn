@@ -1,0 +1,15 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/trigger_volume.gd" id="1_trigger"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_trigger"]
+resource_local_to_scene = true
+size = Vector3(2, 2, 2)
+
+[node name="TriggerVolume" type="Area3D"]
+collision_layer = 0
+collision_mask = 2
+script = ExtResource("1_trigger")
+
+[node name="Shape" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_trigger")
