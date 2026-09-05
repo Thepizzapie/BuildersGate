@@ -168,7 +168,7 @@ ART_3D_WORKFLOW = (
     "7. blender_look_audit, THEN blender_turnaround. The audit names tacked "
     "shells, unbevelled edges, flat colours, floating parts; the frames' "
     "verdict answers 'is this render readable' — fix a blown frame with "
-    "exposure=, never geometry. Your eyes answer 'is this the right model'.\n"
+    "exposure=, never with geometry. Your eyes answer 'is this the right model'.\n"
     "8. WRITE INSIDE THE PROJECT OR NOBODY REVIEWS IT — combine, texture and "
     "turnaround register artifacts only under the root, so check an "
     "`artifact_id` came back. Then blender_sweep WHEN ACCEPTED, dry_run "
