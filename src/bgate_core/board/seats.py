@@ -310,6 +310,14 @@ OWNERSHIP_RULE = (
     "the game. Every cross-seat wire has exactly ONE owner, and two valid "
     "implementations of the same wire is a DEFECT, not redundancy - the first "
     "benchmark game shipped every sound effect twice that way and passed QA.\n"
+    "• 3D GEOMETRY IS ASSET GENERATION AND ASSET GENERATION IS ART. Every "
+    "visible mesh - imported glb, generated, or a primitive BoxMesh/CylinderMesh/"
+    "CSG built inline in a .tscn - is filed to the ART seat, so it gets "
+    "godot_deliver_asset's stand-up photo, scale_check and the consistency "
+    "gate. Tech gets the CollisionShape3D, layers, groups and script wiring "
+    "under it. 'The bible says boxes and cylinders' is a look, not a routing; "
+    "reading it as 'a tech job' filed a whole 3D cast to tech with nobody "
+    "measuring a single model.\n"
     "• Pairs where this bites: audio file -> gameplay event; art asset -> "
     "scene/resource consumer; animation -> state machine; simulation -> UI; "
     "death -> occupancy/state cleanup; ability -> VFX; narrative content -> "
@@ -645,7 +653,11 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "project is not building, because an unsaid no gets built "
                    "anyway. Every settled decision names its acceptance test "
                    "and what it deliberately leaves dark. A deferral nobody "
-                   "labelled gets 'fixed' as a bug.",
+                   "labelled gets 'fixed' as a bug. ROUTING: every visible 3D "
+                   "mesh - imported, generated, or a primitive authored inline in "
+                   "a .tscn - is asset generation and goes to ART; tech gets the "
+                   "collider, layers and wiring under it. 'Boxes and cylinders' in "
+                   "the bible is a look, not a reason to file the cast to tech.",
         # docs/** BELONGS TO SOMEBODY NOW. It belonged to nobody, and the
         # default table having no owner for documentation was a trap: a project
         # whose bible told every 3D seat to append to docs/3d-pipeline-report.md
@@ -731,7 +743,12 @@ DEFAULT_SEATS: dict[str, dict] = {
     },
     "art": {
         "title": "Art",
-        "mission": "Own models, textures, and look. Lock every binary before "
+        "mission": "Own models, textures, and look. EVERY VISIBLE MESH IS ART'S "
+                   "- imported, generated, OR a BoxMesh/CylinderMesh/CSG authored "
+                   "inline in a .tscn. A look constraint that says 'boxes and "
+                   "cylinders, no imported meshes' is an art DIRECTION, not a "
+                   "reassignment to tech; tech owns the collider, layers and "
+                   "wiring under the mesh, never the mesh. Lock every binary before "
                    "editing; export through blender_export_gltf and deliver with "
                    "godot_deliver_asset, because the engine's view is the truth "
                    "and deliver is import PLUS the lit stand-up photo that "
@@ -748,7 +765,15 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "verify delivered meshes and scene overrides in an export "
                    "(godot_export_probe), because the export silently drops what the "
                    "editor tolerates.",
-        "write_globs": ["game/assets/**", "blender/**", "art/**"],
+        # Mesh-bearing scenes are ART's to write. Without these the seat that
+        # owns every visible mesh could not touch the .tscn a primitive lives
+        # in, and the director read that as "not art's job" (Hot Cargo,
+        # 2026-09-04: items 1-4, the whole 3D cast, filed to tech).
+        "write_globs": ["game/assets/**", "blender/**", "art/**",
+                        "game/scenes/props/**", "game/scenes/characters/**",
+                        "game/scenes/vehicles/**", "game/scenes/kit/**",
+                        "game/scenes/**/models/**", "game/scenes/**/*_model.tscn",
+                        "game/scenes/**/*_mesh.tscn"],
         "workflow": (
             "ANIMATIONS SHIP AS STITCHED SHEETS, NOT LOOSE FRAMES — the house "
             "rules name which tool mints vs animates (animation_generate for "
