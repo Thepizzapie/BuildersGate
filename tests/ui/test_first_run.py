@@ -137,6 +137,12 @@ class TestCreateOverHttp:
         from bgate_core.store import project as _project
         assert Path(_project.active_root()).resolve() == root.resolve()
         assert str(root) in {str(Path(p)) for p in _project.known_projects().values()}
+        # And the seat lanes point at the scaffold's real layout (scenes/ and
+        # scripts/ at the root), not the <root>/game the defaults assume.
+        assert made["lanes"]["changed"] is True
+        art = seats.roles_for(root)["art"]["write_globs"]
+        assert "assets/**" in art and not any(g.startswith("game/") for g in art)
+        assert "scripts/**" in seats.roles_for(root)["gameplay"]["write_globs"]
 
     def test_3d_template_sets_the_dimension(self, client, monkeypatch):
         monkeypatch.delenv("BGATE_ROOT")

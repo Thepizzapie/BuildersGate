@@ -1088,7 +1088,15 @@ def project_init(name: str, pitch: str = "", engine: str = "godot",
     on this one tool the directory is the thing being made, not looked up.
     """
     target = root or _root_hint() or os.getcwd()
-    return _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
+    made = _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
+    # Same as bgate init / adopt / the dashboard: lanes re-rooted at the
+    # layout that is actually there, not the <root>/game the defaults assume.
+    try:
+        from bgate_core.board import seats as _seats
+        made["lanes"] = _seats.apply_layout(target)
+    except Exception as exc:
+        made["lanes"] = {"changed": False, "why": f"could not set lanes: {exc}"}
+    return made
 
 
 @_tool

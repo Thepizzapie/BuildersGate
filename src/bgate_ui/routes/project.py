@@ -164,6 +164,17 @@ def project_create(request: Request, payload: dict) -> dict:
     project = _project.init(root, name, pitch=(payload.get("pitch") or "").strip(),
                             engine="godot", dimension=kind)
     repository = _gitwork.initialize(root)
+    # LANES POINTED AT THE LAYOUT JUST LAID DOWN. The scaffold writes scenes/
+    # and scripts/ straight into <root>; the default seat table is written
+    # against <root>/game. bgate init and adopt already re-root the lanes;
+    # this path did not, so a dashboard-created project ran with lanes that
+    # matched nothing (best-game-ever, 2026-09-04: seat_config empty, every
+    # seat's writes out of lane, the routing hint naming nobody).
+    try:
+        from bgate_core.board import seats as _seats
+        lanes = _seats.apply_layout(root)
+    except Exception as exc:
+        lanes = {"changed": False, "why": f"could not set lanes: {exc}"}
     if not repository["available"]:
         _activity.log(root, "project",
                       f"could not initialise Git ({repository['reason']})",
@@ -214,6 +225,7 @@ def project_create(request: Request, payload: dict) -> dict:
         "kind": kind,
         "files": len(made["files"]),
         "repository": repository,
+        "lanes": lanes,
         # The dashboard token is minted per project, and this page was served
         # before the project existed — the client has to reload to get one.
         "reload": True,
