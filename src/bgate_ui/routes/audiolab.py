@@ -60,6 +60,15 @@ def _audio(rel: str, *, must_exist: bool = True) -> tuple[Path, Path]:
         target.relative_to(base)
     except ValueError:
         raise api.forbidden("path escapes the project root", rel=rel)
+    # The same containment as a plain string prefix test on the normalised
+    # path. relative_to above is the check that matters to a reader; this is
+    # the shape a static analyser recognises as one (CodeQL py/path-injection
+    # kept flagging every path derived from the request without it).
+    normalised = os.path.normpath(str(target))
+    prefix = os.path.normpath(str(base)) + os.sep
+    if not (normalised + os.sep).startswith(prefix):
+        raise api.forbidden("path escapes the project root", rel=rel)
+    target = Path(normalised)
     if target.suffix.lower() not in audiolab.AUDIO_SUFFIXES:
         raise api.ApiError(415, "not an audio file",
                            detail={"rel": rel,
