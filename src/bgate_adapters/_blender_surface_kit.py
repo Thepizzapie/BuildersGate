@@ -34,6 +34,40 @@ def _bg_apply_mod(obj, mod):
     bpy.ops.object.modifier_apply(modifier=mod.name)
 
 
+def _bg_decimate_to(obj, target_tris, passes=4):
+    """Collapse-decimate to about `target_tris`. One pass stops well short of
+    a small ratio (measured: 833k tris asked for 5000, got 25645), so pass
+    again until within 15% or the passes run out. Returns the final count."""
+    have = 0
+    for _ in range(max(1, int(passes))):
+        obj.data.calc_loop_triangles()
+        have = len(obj.data.loop_triangles)
+        if have <= target_tris * 1.15:
+            break
+        mod = obj.modifiers.new("BGateDecimate", "DECIMATE")
+        mod.ratio = max(0.01, float(target_tris) / float(have))
+        mod.use_collapse_triangulate = True
+        _bg_apply_mod(obj, mod)
+    obj.data.calc_loop_triangles()
+    return len(obj.data.loop_triangles)
+
+
+def _bg_sharp_edges(obj, angle=30.0):
+    """(count, share) of two-face edges sharper than `angle` - what a
+    bevel-by-angle would touch."""
+    import bmesh
+    bm = bmesh.new(); bm.from_mesh(obj.data)
+    rad = _math.radians(angle)
+    n = sharp = 0
+    for e in bm.edges:
+        if len(e.link_faces) == 2:
+            n += 1
+            if e.calc_face_angle(0.0) > rad:
+                sharp += 1
+    bm.free()
+    return sharp, ((sharp / n) if n else 0.0)
+
+
 def _bg_smooth_by_angle(obj, angle=30.0):
     """Smooth shading with a hard-edge angle, on whichever API this Blender has."""
     _bg_active(obj)
@@ -60,7 +94,10 @@ def _bg_smooth_by_angle(obj, angle=30.0):
 def bg_shade(obj, bevel=0.0, angle=30.0, segments=2, weighted=True):
     """Bevel-by-angle + smooth-by-angle + weighted normals. The faceted look
     goes away at almost no triangle cost. `bevel` is metres (0 skips it; a
-    good default is 0.5% of the object's largest dimension)."""
+    good default is 0.5% of the object's largest dimension). The bevel is
+    skipped when it would touch hundreds of edges and grow the mesh past
+    1.5x (a remeshed or organic surface) - that is a subdivision, not a
+    softened corner; obj["bg_bevel_skipped"] says so."""
     if obj is None or obj.type != "MESH":
         return obj
     # WELD FIRST. A glTF round trip splits every vertex along a hard edge (a
@@ -68,6 +105,20 @@ def bg_shade(obj, bevel=0.0, angle=30.0, segments=2, weighted=True):
     # bevel or a smooth-by-angle on unshared edges does nothing. Measured:
     # 12 tris in, 12 tris out, "bevel applied".
     bg_clean(obj)
+    obj["bg_bevel_skipped"] = 0
+    if bevel and bevel > 0:
+        sharp, share = _bg_sharp_edges(obj, angle)
+        obj.data.calc_loop_triangles()
+        have = len(obj.data.loop_triangles)
+        grown = have + sharp * 2 * max(1, int(segments))   # one strip per bevelled edge
+        if sharp > 500 and grown > 1.5 * have:
+            # Hundreds of sharp edges on an already dense surface (a remesh,
+            # an organic form): bevelling them is not "soften the corners",
+            # it is a subdivision - measured 20k tris -> 55k, 8k -> 21k.
+            # Smooth-by-angle carries the look there. A box's 12 edges and a
+            # 48-segment lathe's rims still get their bevel.
+            obj["bg_bevel_skipped"] = 1
+            bevel = 0.0
     if bevel and bevel > 0:
         mod = obj.modifiers.new("BGateBevel", "BEVEL")
         mod.width = float(bevel)
@@ -95,7 +146,9 @@ def bg_fuse(objects, name, voxel=0.0, smooth=2, target_tris=0, angle=30.0):
     `target_tris` (0 keeps the remesh count) -> material indices carried over
     from the nearest original face, so a fused car keeps its paint, glass and
     rubber. `voxel` is the remesh cell in metres; 0 picks 0.4% of the largest
-    dimension. Returns the fused object.
+    dimension, coarsened when a target_tris is far below what that cell
+    gives (fine tread is thousands of tubes a collapse cannot remove).
+    Returns the fused object; obj["bg_voxel"] is the cell used.
     """
     meshes = [o for o in objects if o is not None and o.type == "MESH"]
     if not meshes:
@@ -119,19 +172,23 @@ def bg_fuse(objects, name, voxel=0.0, smooth=2, target_tris=0, angle=30.0):
     fused.data.use_remesh_preserve_volume = True
     _bg_active(fused)
     bpy.ops.object.voxel_remesh()
+    if target_tris and target_tris > 0 and not (voxel and voxel > 0):
+        fused.data.calc_loop_triangles()
+        have = len(fused.data.loop_triangles)
+        if have > 8 * target_tris:
+            # Count scales with 1/cell^2. Aim at ~6x the target so the
+            # collapse has room, then re-remesh from the fused volume.
+            cell = cell * _math.sqrt(have / (6.0 * float(target_tris)))
+            fused.data.remesh_voxel_size = cell
+            bpy.ops.object.voxel_remesh()
+    fused["bg_voxel"] = float(cell)
     if smooth and smooth > 0:
         mod = fused.modifiers.new("BGateSmooth", "SMOOTH")
         mod.factor = 0.5
         mod.iterations = int(smooth)
         _bg_apply_mod(fused, mod)
     if target_tris and target_tris > 0:
-        fused.data.calc_loop_triangles()
-        have = len(fused.data.loop_triangles)
-        if have > target_tris:
-            mod = fused.modifiers.new("BGateDecimate", "DECIMATE")
-            mod.ratio = max(0.01, float(target_tris) / float(have))
-            mod.use_collapse_triangulate = True
-            _bg_apply_mod(fused, mod)
+        _bg_decimate_to(fused, int(target_tris))
     # Materials back from the oracle: nearest original face wins.
     slots = [m for m in oracle.data.materials if m is not None]
     fused.data.materials.clear()
@@ -600,12 +657,7 @@ def bg_tree(name="Tree", seed=1, height=6.0, trunk_radius=0.22, levels=3, branch
         # that is not prisms pushed through a trunk.
         trunk = bg_fuse([trunk], name, smooth=2, target_tris=int(target_tris or 0), angle=50.0)
     elif target_tris and target_tris > 0:
-        trunk.data.calc_loop_triangles()
-        have = len(trunk.data.loop_triangles)
-        if have > target_tris:
-            mod = trunk.modifiers.new("BGateDecimate", "DECIMATE")
-            mod.ratio = max(0.02, float(target_tris) / float(have))
-            _bg_apply_mod(trunk, mod)
+        _bg_decimate_to(trunk, int(target_tris))
     if not fuse:
         _bg_smooth_by_angle(trunk, 50.0)
         bg_unwrap(trunk)

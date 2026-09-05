@@ -118,6 +118,48 @@ def _game_readiness(depsgraph):
     return issues
 
 
+def _flatten_procedural_inputs():
+    """Unlink Principled inputs fed by a node graph with no image in it.
+
+    The glTF exporter writes a linked Base Color as WHITE unless an image
+    texture feeds it (measured: a bark preset's noise-mixed brown came into
+    Godot as 1,1,1). The socket's own default_value already holds the
+    preset's flat colour, so dropping the link is what "the glTF carries the
+    Principled constants" needs to be true. Alpha is left alone: the
+    exporter reads alphaMode MASK off that graph. Runs at export time only,
+    after any .blend sidecar has been saved, so the graph survives there.
+    Returns the material names touched."""
+    touched = []
+    def has_image(socket, seen=None):
+        seen = seen or set()
+        for link in socket.links:
+            node = link.from_node
+            if node.name in seen:
+                continue
+            seen.add(node.name)
+            if node.type == "TEX_IMAGE":
+                return True
+            for inp in node.inputs:
+                if inp.is_linked and has_image(inp, seen):
+                    return True
+        return False
+    for mat in bpy.data.materials:
+        if not mat.use_nodes or mat.node_tree is None:
+            continue
+        for node in mat.node_tree.nodes:
+            if node.type != "BSDF_PRINCIPLED":
+                continue
+            for name in ("Base Color", "Roughness", "Metallic", "Normal", "Emission Color"):
+                sock = node.inputs.get(name)
+                if sock is None or not sock.is_linked or has_image(sock):
+                    continue
+                for link in list(sock.links):
+                    mat.node_tree.links.remove(link)
+                if mat.name not in touched:
+                    touched.append(mat.name)
+    return touched
+
+
 def _export_flags():
     """What THIS scene needs from the exporter. Measured, not assumed."""
     import bpy
@@ -269,11 +311,13 @@ def _export_glb(path):
     dropped = sorted(k for k in kwargs if k != "filepath" and k not in known)
     kwargs = {k: v for k, v in kwargs.items() if k in known or k == "filepath"}
 
+    flattened = _flatten_procedural_inputs()
     bpy.ops.export_scene.gltf(**kwargs)
     import os
     return {
         "exported": os.path.exists(path),
         "path": path,
+        "flattened_materials": flattened,
         "bytes": os.path.getsize(path) if os.path.exists(path) else 0,
         # True when modifier intent reached the .glb by EITHER route. Callers
         # have asserted on this key since before the shape-key path existed.
