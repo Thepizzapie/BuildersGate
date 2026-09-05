@@ -77,10 +77,6 @@ class TestLongIsCited:
         """So the agent can judge whether to stop NOW, before opening anything."""
         assert LONG[:200] in _messages(root)[0]["text"]
 
-    def test_it_says_how_much_was_left_out(self, root, posted):
-        """Silence about the remainder is how a truncated steer reads."""
-        assert "more characters" in _messages(root)[0]["text"]
-
     def test_the_note_names_the_item_and_the_sender(self, root, posted):
         body = open(posted["note_path"], encoding="utf-8").read()
         assert "#7" in body

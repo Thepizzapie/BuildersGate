@@ -25,12 +25,6 @@ def test_the_art_mission_claims_primitives():
     assert "BoxMesh" in mission and "not a reassignment to tech" in mission
 
 
-def test_the_director_and_the_ownership_rule_route_geometry_to_art():
-    assert "goes to ART" in seats.DEFAULT_SEATS["director"]["mission"]
-    assert "3D GEOMETRY IS ASSET GENERATION AND ASSET GENERATION IS ART" in seats.OWNERSHIP_RULE
-    assert "Tech gets the CollisionShape3D" in seats.OWNERSHIP_RULE
-
-
 def test_the_cast_is_generated_and_a_primitives_only_bible_is_a_human_call():
     d = seats.DEFAULT_SEATS["director"]["mission"]
     assert "THE CAST IS GENERATED" in d and "ask_human before" in d

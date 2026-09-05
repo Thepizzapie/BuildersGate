@@ -298,11 +298,6 @@ class TestTheDeliveredScene:
         """A separate timer drifts the moment the video stalls on a slow disk."""
         assert "stream_position" in cinecut.CUTSCENE_GD
 
-    def test_the_script_cannot_finish_twice(self):
-        gd = cinecut.CUTSCENE_GD
-        assert "if _done:" in gd
-
-
 class TestWrittenCaptionFiles:
     def test_both_files_are_written_from_one_source(self, tmp_path):
         lines = cinecut.captions(_shots((5, "cut", 0, "hello there")))

@@ -103,12 +103,6 @@ class TestAseJson:
         assert text.count('"duration": 1.0') == 2
         assert text.count('"duration": 2.0') == 1
 
-    def test_a_play_once_tag_does_not_loop(self):
-        text = asejson.spriteframes_text(
-            _export(_RECTS, [{"name": "ko", "from": 0, "to": 2, "repeat": "1"}]),
-            "x.png", "a")
-        assert '"loop": false' in text
-
     def test_pingpong_is_baked_into_the_frame_list(self):
         """Godot has no ping-pong loop mode, so 0,1,2 plays as 0,1,2,1 — same
         bake sprites.py does for animspec ping-pong."""

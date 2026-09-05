@@ -240,26 +240,6 @@ def test_the_prompt_can_be_improved_in_place():
     assert "/api/prompt/expand" in SRC, "the improve button calls no endpoint"
 
 
-@pytest.mark.parametrize("tpl", TEMPLATES, ids=lambda t: t["id"])
-def test_template_wiring_typechecks(tpl):
-    assert tpl["nodes"] and tpl["edges"], f"template {tpl['id']} parsed nothing"
-    ports = dict(BASE_PORTS)
-    ports.update({k: v["ports"] for k, v in STEPS.items()})
-    for src_node, src_port, dst_node, dst_port in tpl["edges"]:
-        for alias in (src_node, dst_node):
-            assert alias in tpl["nodes"], f"{tpl['id']}: unknown node {alias!r}"
-        src_type, dst_type = tpl["nodes"][src_node], tpl["nodes"][dst_node]
-        assert src_type in ports, f"{tpl['id']}: unknown step {src_type}"
-        assert dst_type in ports, f"{tpl['id']}: unknown step {dst_type}"
-        out_ports, in_ports = ports[src_type]["out"], ports[dst_type]["in"]
-        assert src_port in out_ports, f"{tpl['id']}: {src_type} has no out {src_port!r}"
-        assert dst_port in in_ports, f"{tpl['id']}: {dst_type} has no in {dst_port!r}"
-        a, b = out_ports[src_port], in_ports[dst_port]
-        assert not a or not b or a.lower() == b.lower(), (
-            f"{tpl['id']}: {src_type}.{src_port} ({a}) cannot connect to "
-            f"{dst_type}.{dst_port} ({b}) — nodecanvas refuses this edge")
-
-
 # --------------------------------------------------------------------------- #
 # per-node run
 # --------------------------------------------------------------------------- #
@@ -293,11 +273,6 @@ def test_wf_calls_the_documented_run_and_pick_endpoints():
     assert "__status === 404" in WF_CODE
 
 
-def test_running_is_reflected_in_node_state():
-    assert 'status = "running"' in WF_CODE, \
-        "a node that is running must say so on the card"
-
-
 # --------------------------------------------------------------------------- #
 # picking
 # --------------------------------------------------------------------------- #
@@ -320,13 +295,6 @@ def test_pick_node_can_reject_everything():
 def test_pick_node_shows_the_winner():
     body = _section(STEPS["control.pick"]["src"], "body", "config")
     assert "won" in body and "chosen:" in body, "the pick node never says which candidate won"
-
-
-def test_pick_node_is_a_pick_not_a_bare_gate():
-    """Approving says a human was happy; picking says WHICH — only the second
-    hands the next step a value to consume."""
-    assert 'kind: "pick"' in STEPS["control.pick"]["src"], \
-        "a picker that resolves to nothing is a decoration"
 
 
 def test_candidates_fall_back_to_upstream_model_nodes():

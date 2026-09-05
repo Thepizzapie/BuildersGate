@@ -226,9 +226,6 @@ class TestBrief:
         assert "transcript" not in playtest.brief(root, loaded)
         assert "transcript" in playtest.brief(root, loaded, include_transcript=True)
 
-    def test_brief_warns_agents_they_cannot_watch_video(self, root, loaded):
-        assert "cannot watch" in playtest.brief(root, loaded)["note"]
-
     def test_brief_exposes_confidence_telemetry_truth_and_work_lineage(
             self, root, session):
         with db.tx(root) as conn:

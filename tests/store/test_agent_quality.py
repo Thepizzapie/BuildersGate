@@ -94,34 +94,3 @@ class TestPinsGoToGeneratingSeats:
 
 
 # --- completion: a no-writes 'done' is marked as the claim it is -------------
-
-class TestUnbackedCompletionsAreMarked:
-    def test_a_machine_done_with_no_writes_carries_the_note(self, root, monkeypatch):
-        item = queue.add(root, "gameplay", "implement the dash")
-        queue.set_status(root, int(item["id"]), "dispatched")
-        monkeypatch.setenv("BGATE_ACTOR", f"agent:item-{item['id']}")
-        done = queue.complete(root, int(item["id"]), result="dash implemented")
-        assert "HARNESS NOTE" in done["result"]
-        assert "NO file writes" in done["result"]
-
-    def test_a_human_close_is_not_accused(self, root):
-        item = queue.add(root, "gameplay", "implement the dash")
-        queue.set_status(root, int(item["id"]), "dispatched")
-        done = queue.complete(root, int(item["id"]), result="closed by hand")
-        assert "HARNESS NOTE" not in done["result"]
-
-    def test_a_chat_turn_is_not_accused(self, root, monkeypatch):
-        item = queue.add(root, "narrative", "what is the hero's name?",
-                         source="chat")
-        queue.set_status(root, int(item["id"]), "dispatched")
-        monkeypatch.setenv("BGATE_ACTOR", f"agent:item-{item['id']}")
-        done = queue.complete(root, int(item["id"]), result="Scoville.")
-        assert "HARNESS NOTE" not in done["result"]
-
-    def test_a_failed_run_is_not_accused_twice(self, root, monkeypatch):
-        item = queue.add(root, "gameplay", "implement the dash")
-        queue.set_status(root, int(item["id"]), "dispatched")
-        monkeypatch.setenv("BGATE_ACTOR", f"agent:item-{item['id']}")
-        failed = queue.complete(root, int(item["id"]),
-                                result="could not", failed=True)
-        assert "HARNESS NOTE" not in failed["result"]

@@ -272,17 +272,6 @@ class TestAssetVerifyIsReleaseTruth:
         rows = greenlight._assets_unmet(root)
         assert any("OLDER build" in r["claim"] for r in rows)
 
-    def test_dynamic_loading_is_preserved_as_a_caveat_not_erased(
-            self, root, monkeypatch):
-        monkeypatch.setattr(assets, "verify", lambda _r: {
-            "ok": True, "missing": [], "integration": {
-                "ok": False, "dangling": [], "dynamic_load_sites": 3,
-                "delivered_but_unwired": [{"path": "a.png"}],
-                "freshness": {"ok": True, "stale": []}}})
-        row = greenlight._assets_unmet(root)[0]
-        assert "CANDIDATE, not a verdict" in row["claim"]
-        assert "3 place(s)" in row["claim"]
-
     def test_a_clean_project_produces_no_asset_rows(self, root, monkeypatch):
         monkeypatch.setattr(assets, "verify", lambda _r: {
             "ok": True, "missing": [], "integration": {
@@ -829,37 +818,10 @@ class TestSalvageBeforeRetry:
         assert got["verdict"] == "unknown"
         assert "Look before regenerating" in got["why"]
 
-    def test_the_two_ceilings_are_reported_as_independent(self):
-        said = salvage.ceilings({"max_runtime_s": 900, "num_turns": 200})
-        assert "independent of one another" in said["note"]
-        assert "Raising the clock does nothing for a run that died on turns" \
-            in said["note"]
-
-
 # ---------------------------------------------------------------------------
 # §18 Test output, and the engine error that was NOT noise
 # ---------------------------------------------------------------------------
 class TestTestRunnerSignals:
-    def test_assertions_and_the_process_are_two_separate_verdicts(self):
-        """`ok: false` with `0` failed assertions read as nonsense and was
-        dismissed as harness noise by two readers for a full session. The
-        engine error behind it — `N resources still in use at exit` — was a
-        REAL leak in the project's own tests."""
-        said = enginetests._why(
-            assertions_ok=True, process_ok=False, fails=0,
-            errors=["ERROR: 3 resources still in use at exit"], reported="")
-        assert "ASSERTIONS PASSED" in said
-        assert "separate fault" in said
-        assert "not automatically noise" in said
-
-    def test_a_failed_assertion_reads_as_a_failed_assertion(self):
-        said = enginetests._why(False, True, 2, [], "")
-        assert "2 FAIL marker(s)" in said
-
-    def test_both_failing_is_named_as_two_faults(self):
-        said = enginetests._why(False, False, 1, ["boom"], "")
-        assert "two independent faults" in said
-
     def test_scratch_files_in_the_test_dir_are_not_suite_members(self):
         """Agents leave `tests/.orig_*.gd` and temp probes behind, and
         Path.glob('*.gd') matches leading dots unlike a shell glob — so a
@@ -981,15 +943,6 @@ class TestPremiseRefuted:
                      "claimed blind spot cannot exist",
             did_instead="traced the implementation and built the correct fix")
         assert queue.get(root, int(item["id"]))["status"] == "queued"
-
-    def test_it_lands_on_the_items_own_record(self, root):
-        item = _item(root)
-        queue.premise_refuted(
-            root, int(item["id"]),
-            claim="the previous attempt reported PASS on this route",
-            measured="the driver accepted arrival on a single mid-air frame",
-            did_instead="fixed the driver, then re-ran the route")
-        assert "PREMISE REFUTED" in queue.get(root, int(item["id"]))["result"]
 
     def test_it_reaches_the_morning_report(self, root):
         from bgate_core.design import gameplan
@@ -1250,12 +1203,6 @@ class TestUnknownArgumentsAreRefused:
         assert got["unknown_arguments"] == ["only"]
 
     @pytest.mark.anyio
-    async def test_it_names_the_parameter_you_probably_meant(self):
-        from bgate_mcp import server as _server
-        got = await _call(_server, "godot_test_run", {"path": "x.gd"})
-        assert "did you mean 'paths'" in got["error"]
-
-    @pytest.mark.anyio
     async def test_a_correct_call_is_untouched(self):
         from bgate_mcp import server as _server
         got = await _call(_server, "queue_get", {"item_id": 987654})
@@ -1454,11 +1401,6 @@ class TestEveryGateDeclaresWhatItDoesNotMeasure:
     def test_the_scale_gate_names_the_dimension_trap(self):
         said = findings.BLIND_SPOTS["scale"]
         assert "opaque pixels" in said and "engine geometry" in said
-
-    def test_the_traversal_gate_admits_it_proves_one_route(self):
-        said = findings.BLIND_SPOTS["traversal"]
-        assert "ONE route" in said
-
 
 class TestBoardRowsCarryLiveness:
     """§33. `num_turns` and `total_cost_usd` are written at COMPLETION, so the

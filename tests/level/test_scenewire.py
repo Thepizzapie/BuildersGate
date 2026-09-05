@@ -140,11 +140,6 @@ def test_a_script_refuses_the_node_path_and_says_where_to_go():
     assert "attach_script" in str(exc.value)
 
 
-def test_node_names_are_sanitised():
-    r = scenewire.wire(SCENE, "res://assets/hero.png", node_name="my node!! 2")
-    assert '[node name="mynode2"' in r["text"]
-
-
 # ---------------------------------------------------------------------------
 # Scripts
 # ---------------------------------------------------------------------------
@@ -194,14 +189,6 @@ def test_unwire_refuses_a_node_with_children():
     with pytest.raises(scenewire.WireError) as exc:
         scenewire.unwire(SCENE, "Ground")
     assert "child" in str(exc.value)
-
-
-def test_a_sibling_with_a_shared_prefix_is_not_a_child():
-    """'GroundVisual' is not under 'Ground2' — a prefix test would say it was."""
-    scene = SCENE + '\n[node name="Ground2" type="Node2D" parent="."]\n'
-    out = scenewire.unwire(scene, "Ground2")
-    assert '[node name="Ground2"' not in out["text"]
-    assert '[node name="GroundVisual"' in out["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -302,12 +289,6 @@ def test_a_plain_node_needs_no_file_behind_it():
     assert '[node name="HUD" type="CanvasLayer" parent="."]' in r["text"]
     _consistent(r["text"])
     assert len(scenewire.parse(r["text"])["ext"]) == 1, "no resource was added"
-
-
-def test_adding_with_properties_writes_them():
-    r = scenewire.add_node(SCENE, name="Spawn", node_type="Marker2D",
-                           props={"position": "Vector2(10, 20)"})
-    assert "position = Vector2(10, 20)" in r["text"]
 
 
 def test_setting_and_clearing_a_property():

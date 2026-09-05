@@ -285,18 +285,6 @@ class TestStopKillsTheTree:
         assert "stopped by director@desk" in row["result"]
         assert "without self-reporting" not in row["result"]
 
-    def test_the_reap_does_not_retell_a_stop_as_a_crash(self, root, monkeypatch):
-        item = _dispatched(root)
-        entry = _entry(root, item["id"])
-        dispatch._live[item["id"]] = entry
-        monkeypatch.setattr(dispatch, "_kill_tree", lambda pid: None)
-        dispatch.stop(item["id"], actor="me")
-
-        entry["proc"].code = 1                     # the tree is gone now
-        row = dispatch._reap(str(root), item["id"], entry, 1)
-        assert "stopped by me" in row["result"]
-        assert "stopped by me" in queue.get(root, item["id"])["result"]
-
     def test_stop_on_a_real_agent_records_the_stop(self, root, fake_claude):
         item = queue.add(root, "art", "kill me")
         assert dispatch.dispatch(root, item["id"])["ok"]

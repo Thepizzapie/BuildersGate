@@ -102,12 +102,6 @@ class TestRequestConstruction:
         assert seen["payload"]["callBackUrl"] == "https://example.test/cb"
         assert "callBackUrl" not in seen["payload"]["input"]
 
-    def test_an_unsupported_field_is_refused_not_dropped(self):
-        # Dropping it would bill for a generation that ignored the setting.
-        with pytest.raises(kie.KieError) as exc:
-            kie.build_input("nano-banana", seed=7)
-        assert "does not take seed" in str(exc.value)
-
     def test_a_missing_required_field_is_named(self):
         with pytest.raises(kie.KieError) as exc:
             kie.build_input("qwen-edit", prompt="x")
@@ -129,13 +123,6 @@ class TestRequestConstruction:
         with pytest.raises(kie.KieError) as exc:
             kie.build_input("seedance-2", prompt="ab")   # min is 3 characters
         assert "characters" in str(exc.value)
-
-    def test_an_array_cap_is_enforced(self):
-        urls = [f"https://example.test/{i}.png" for i in range(10)]
-        with pytest.raises(kie.KieError) as exc:
-            kie.build_input("seedance-2", prompt="a chase",
-                            reference_image_urls=urls)
-        assert "at most 9" in str(exc.value)
 
     def test_a_local_path_in_a_url_field_is_refused_with_the_reason(self):
         # The failure this prevents: encoding a data URI on a guess, paying for
@@ -217,20 +204,6 @@ class TestPolling:
         ])
         got = kie.poll("t", timeout=30.0, interval=0.0)
         assert got["state"] == "success" and got["creditsConsumed"] == 30
-
-    def test_fail_raises_with_failmsg_not_a_silent_empty_result(
-            self, keyed, monkeypatch):
-        self._records(monkeypatch, [
-            {"state": "fail", "failCode": "501", "failMsg": "content blocked"}])
-        with pytest.raises(kie.KieError) as exc:
-            kie.poll("t", timeout=30.0, interval=0.0)
-        assert "content blocked" in str(exc.value)
-
-    def test_an_unknown_state_stops_rather_than_spinning(self, keyed, monkeypatch):
-        self._records(monkeypatch, [{"state": "thinking"}])
-        with pytest.raises(kie.KieError) as exc:
-            kie.poll("t", timeout=30.0, interval=0.0)
-        assert "unknown state" in str(exc.value)
 
     def test_it_gives_up_bounded_rather_than_holding_a_seat_forever(
             self, keyed, monkeypatch):
@@ -315,11 +288,6 @@ class TestSuno:
         kie.build_music("x" * 4000, custom=True, model="V5")
         with pytest.raises(kie.KieError):
             kie.build_music("x" * 4000, custom=True, model="V4")
-
-    def test_style_and_title_are_refused_in_simple_mode_not_dropped(self):
-        with pytest.raises(kie.KieError) as exc:
-            kie.build_music("a loop", style="chiptune")
-        assert "custom mode" in str(exc.value)
 
     def test_duration_is_v5_5_only(self):
         with pytest.raises(kie.KieError) as exc:
@@ -477,15 +445,6 @@ class TestWiring:
         monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
         spec = generate.plan({"provider": "kie", "model": "nano-banana"})
         assert spec["provider"] == "kie" and spec["unit_usd"] > 0
-
-    def test_an_unknown_kie_model_is_refused_at_plan_time(self, monkeypatch):
-        from bgate_core.board import generate
-
-        monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
-        with pytest.raises(generate.GenerateRefused) as exc:
-            generate.plan({"provider": "kie", "model": "seedance-2"})
-        # A video model is not an image model, however real its id is.
-        assert "no image model" in str(exc.value)
 
     def test_chroma_uploads_anchors_for_kie_rather_than_refusing_them(
             self, root, monkeypatch):

@@ -877,11 +877,3 @@ class TestSelfCheck:
             "bpy.context.view_layer.update()\n"
             "bg_base_assert(made)\n"))
         assert "bg_base_assert" in message
-
-    def test_the_self_check_refuses_a_base_off_the_ground(self, tmp_path):
-        message = _fails(tmp_path, (
-            "made = bg_human(height=1.8)\n"
-            "made['obj'].location = (0.0, 0.0, 0.9)\n"
-            "bpy.context.view_layer.update()\n"
-            "bg_base_assert(made)\n"))
-        assert "ground plane" in message

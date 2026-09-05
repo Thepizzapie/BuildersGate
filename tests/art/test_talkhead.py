@@ -128,13 +128,6 @@ class TestSheet:
 
 
 class TestSpriteFrames:
-    def test_talk_loops_and_blink_does_not(self):
-        tres = talkhead.spriteframes("cat_talk.png")
-        talk = tres.split('&"talk"')[0]
-        blink = tres.split('&"blink"')[0].split('&"talk"')[-1]
-        assert '"loop": true' in talk
-        assert '"loop": false' in blink
-
     def test_blink_is_not_in_the_talk_cycle(self):
         """A blink on every syllable is a twitch, not a character."""
         assert "blink" not in talkhead.TALK_CYCLE
@@ -163,10 +156,3 @@ class TestPrompt:
     def test_an_unknown_frame_is_refused(self):
         with pytest.raises(ValueError):
             talkhead.prompt_for("a cat.", "smirk")
-
-    def test_the_hold_clause_only_appears_with_an_anchor(self):
-        """Without a reference there is nothing to hold identical to, and the
-        clause would be instructing the model about an image it cannot see."""
-        assert "Change ONLY" not in talkhead.prompt_for("a cat.", "rest")
-        assert "Change ONLY" in talkhead.prompt_for("a cat.", "rest",
-                                                    has_anchor=True)

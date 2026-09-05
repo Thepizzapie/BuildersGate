@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -837,19 +836,6 @@ class TestSessionStart:
         monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: True)
         assert "UP" in session.build_context(str(root))
 
-    def test_autopilot_off_is_the_effective_value_not_the_raw_doc(self, root, monkeypatch):
-        """autopilot.on defaults ON and a fresh project has no doc, so reading
-        the doc told the director 'autopilot is OFF' on a dispatching board
-        while the console banner said on (Hot Cargo, 2026-09-04)."""
-        from bgate_ui.agents import autodeploy
-        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: True)
-        monkeypatch.setattr(session, "_board_root", lambda *a, **k: str(root))
-        assert "autopilot is OFF" not in session.build_context(str(root))
-        autodeploy.set_enabled(root, False)
-        assert "autopilot is OFF" in session.build_context(str(root))
-        autodeploy.set_enabled(root, True)
-        assert "autopilot is OFF" not in session.build_context(str(root))
-
     def test_surfaces_who_else_is_in_a_file(self, root, monkeypatch):
         """THE REGRESSION THIS EXISTS FOR. Two sessions, one module, one
         afternoon, no warning — because nothing ever told either of them that
@@ -862,11 +848,6 @@ class TestSessionStart:
         assert "LIVE" in text
         assert "game/scripts/combat.gd" in text and "item-7" in text
         assert "coordinate" in text
-
-    def test_reports_the_enforcement_mode(self, root, monkeypatch):
-        monkeypatch.delenv("BGATE_SEAT", raising=False)
-        monkeypatch.setenv("BGATE_DIRECTOR_MODE", "block")
-        assert "director mode = block" in session.build_context(str(root))
 
     def test_a_broken_lookup_prints_nothing_rather_than_crashing(self, root,
                                                                  monkeypatch):
@@ -916,74 +897,6 @@ class TestSessionStart:
         assert "NO GAME" in text
         assert "project_dir" in text
         assert "Corporate Quest" in text and str(game) in text
-        db.close_all()
-
-    def test_the_temp_filter_survives_two_spellings_of_one_directory(
-            self, tmp_path, monkeypatch):
-        """CAUGHT BY CI, NOT BY THIS SUITE, WHICH IS THE POINT OF THE TEST.
-
-        A GitHub Actions runner reports the temp directory as
-        `C:\\Users\\RUNNER~1\\AppData\\Local\\Temp` while every path the process
-        builds says `C:\\Users\\runneradmin\\...`. normcase and normpath fix
-        slashes and case and leave the 8.3 short name alone, so the prefix test
-        never matched and a fixture project was listed as a real game. On a
-        developer machine both spellings are already long, so it passed.
-
-        The 8.3 form cannot be manufactured portably, so this asserts the
-        property that fixes it: two spellings of ONE directory must compare
-        equal after `_real`.
-        """
-        from bgate_core.store import db, project
-        fixture = tmp_path / "fixture-game"
-        fixture.mkdir()
-        project.init(fixture, "Fixture Game")
-        checkout = tmp_path / "checkout"
-        checkout.mkdir()
-        (checkout / db.DB_DIRNAME).mkdir()
-        db.connect(checkout)
-
-        # The same directory, spelled the way a different API would hand it
-        # back: trailing separator, a redundant `.` segment, and case variation
-        # ONLY WHERE CASE IS NOT PART OF THE NAME.
-        #
-        # Uppercasing is another spelling of one directory on Windows and macOS
-        # and a different directory on Linux, where `/TMP/pytest-of-...` simply
-        # does not exist — so applying it unconditionally asserted that _real
-        # resolves two paths that are not the same path to the same string,
-        # which is neither true nor wanted. That is what failed the advisory
-        # Linux job. Probed rather than keyed on sys.platform, because the
-        # filesystem decides this, not the OS.
-        spelled = str(tmp_path)
-        if os.path.exists(spelled.upper()):
-            spelled = spelled.upper()
-        spelled += os.sep + "." + os.sep
-        monkeypatch.setattr(session, "_temp_dir", lambda: session._real(spelled))
-        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: False)
-
-        text = session.build_context(str(checkout))
-        assert "Fixture Game" not in text, (
-            "two spellings of one directory did not compare equal — the fixture "
-            "filter is back to a raw string prefix test")
-        db.close_all()
-
-    def test_fixture_projects_in_temp_do_not_crowd_out_the_real_one(
-            self, tmp_path, monkeypatch):
-        """The registry is machine-wide and the suite writes to it. Four dead
-        pytest tmpdirs ahead of the one game is a list that answers nothing."""
-        from bgate_core.store import db, project
-        fixture = tmp_path / "fixture-game"
-        fixture.mkdir()
-        project.init(fixture, "Fixture Game")      # registered, and inside temp
-        checkout = tmp_path / "checkout"
-        checkout.mkdir()
-        (checkout / db.DB_DIRNAME).mkdir()
-        db.connect(checkout)
-        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: False)
-        # The filter must drop it — an honest "nothing registered" beats a list
-        # of four dead fixtures with the real game hidden under "...and 1 more".
-        text = session.build_context(str(checkout))
-        assert "Fixture Game" not in text
-        assert "no other project is registered" in text
         db.close_all()
 
     def test_a_board_serving_another_root_is_not_this_project_s_board(

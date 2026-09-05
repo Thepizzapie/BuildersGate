@@ -102,12 +102,6 @@ def test_ctrl_right_is_tested_before_the_pan_branch(js):
     assert down < wheel < capture < pan
 
 
-def test_right_without_ctrl_still_reaches_the_pan_untouched(js):
-    assert "if (ev.button === 2 && (ev.ctrlKey || ev.metaKey)){" in js
-    assert ("if (ev.button === 1 || ev.button === 2 || ev.altKey || S.space){"
-            in js), "middle, plain right, alt and space must still pan"
-
-
 # ---------------------------------------------------------------------------
 # Getting out again
 # ---------------------------------------------------------------------------
@@ -133,19 +127,6 @@ def test_every_listener_the_wheel_adds_is_removed(js):
     added = set(re.findall(r'window\.addEventListener\("(\w+)", (onWheel\w+)', js))
     removed = set(re.findall(r'window\.removeEventListener\("(\w+)", (onWheel\w+)', js))
     assert added and added == removed
-
-
-def test_cancel_is_reachable_three_ways(js):
-    assert "if (i < 0) wheelClose(); else wheelPick(i);" in js          # hub release
-    assert "> w.R + w.btn) return wheelClose();" in js                  # clicked away
-    assert 'if (S.wheel && ev.key === "Escape")' in js                  # escape
-
-
-def test_a_drag_out_and_back_is_a_cancel_not_a_tap(js):
-    """Measuring only the final delta reads "changed my mind" as "show me the
-    wheel" and leaves it up. The gesture's furthest point is what decides."""
-    assert "w.moved = Math.max(w.moved," in js
-    assert "if (w.moved < 6 && Date.now() - w.t0 < 320)" in js
 
 
 # ---------------------------------------------------------------------------

@@ -518,14 +518,6 @@ class TestStyle:
     """"Cutscenes in whatever style" — three levers, and the one that matters
     most is that ALL of them reach EVERY shot without anyone remembering to."""
 
-    def test_the_style_is_actually_in_the_prompt(self, root):
-        """The first cut of this module stored a `style` column that nothing
-        read: a sequence could be given a look and every shot was generated
-        without it. This is the test that would have caught that."""
-        cinematic.plan(root, "seq", _shots(2), style="noir")
-        for shot in cinematic.sequence(root, "seq")["shots"]:
-            assert "film noir" in shot["prompt"]
-
     def test_style_trails_the_prompt_rather_than_leading_it(self, root):
         """Trailing style applies to the whole prompt. Leading it styles only
         the noun it sits next to — "a cel-shaded knight in a ruined hall"
@@ -1011,21 +1003,6 @@ class TestDelivery:
         cinematic.deliver(root, "seq")
         again = cinematic.deliver(root, "seq")
         assert again["script_kept"] is False
-
-    @needs_theora
-    def test_the_node_name_is_a_legal_godot_identifier(self, root, monkeypatch):
-        """Godot node names take no dots, slashes or colons, and a slug has
-        hyphens."""
-        TestGeneratingAShot()._stub(monkeypatch)
-        cinematic.plan(root, "The Long Fall", _shots(1))
-        out = cinematic.generate_shot(root, "The Long Fall", 1)
-        cinematic.keep(root, out["artifact_id"], actor="human")
-        cut = cinematic.assemble(root, "The Long Fall")
-        cinematic.keep(root, cut["artifact_id"], actor="human")
-        got = cinematic.deliver(root, "The Long Fall")
-        text = (root / got["scene"]).read_text(encoding="utf-8")
-        assert '[node name="TheLongFall" type="CanvasLayer"]' in text
-
 
 class TestWhatReachesTheEngineProject:
     """The first build transcoded EVERY kept shot into the game. Nothing

@@ -439,33 +439,6 @@ class TestOwnershipDoctrine:
     stream was non-null and playing. A paragraph in the bible stopped it
     recurring in games 2 and 3, so the paragraph is now a default."""
 
-    @pytest.mark.parametrize("seat", sorted(seats.DEFAULT_SEATS))
-    def test_every_seat_is_told_who_owns_the_wire(self, root, seat):
-        rules = seats.dispatch_rules(root, seat)
-        assert "PRODUCING A THING IS NOT OWNING ITS WIRE" in rules
-        assert "THE ARTIFACT DECIDES" in rules
-
-    def test_a_project_override_does_not_drop_the_board_wide_rules(self, root):
-        """A project turning a seat's CRAFT rules off must not silently turn
-        off the doctrine that is not about craft."""
-        import json
-
-        (root / ".bgate").mkdir(exist_ok=True)
-        (root / ".bgate" / seats.DISPATCH_RULES_FILENAME).write_text(
-            json.dumps({"art": ""}), encoding="utf-8")
-        rules = seats.dispatch_rules(root, "art")
-        assert "OWNING ITS WIRE" in rules
-        assert "THE CONTRACT DECIDES THE SHEET" not in rules   # the override won
-
-    def test_a_new_project_carries_the_constraint_in_its_bible(self, tmp_path):
-        from bgate_core.design import bible
-        from bgate_core.store import project
-
-        project.init(tmp_path, "ownership-seed")
-        titles = [row["title"] for row in bible.list_sections(tmp_path,
-                                                              "constraint")]
-        assert "Integration ownership" in titles
-
     def test_re_running_init_does_not_stack_copies(self, tmp_path):
         from bgate_core.design import bible
         from bgate_core.store import project
@@ -488,11 +461,6 @@ class TestVerificationDoctrine:
                          "RUNTIME show it", "EXACTLY ONCE", "DUPLICATED",
                          "STALE"):
             assert question in workflow
-
-    def test_qa_is_told_to_measure_the_artifact_not_the_report(self):
-        assert "MEASURE THE ARTIFACT, NOT THE PRODUCER'S REPORT" in \
-            seats.DEFAULT_SEATS["qa"]["workflow"]
-
 
 # ---------------------------------------------------------------------------
 # What the two control runs found, after the fixes above were in

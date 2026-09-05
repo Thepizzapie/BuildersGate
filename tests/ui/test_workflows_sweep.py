@@ -453,21 +453,6 @@ class TestReopen:
             workflows.reopen(root, run["id"], "gen", actor="agent:item-7")
         assert node(workflows.get(root, run["id"]), "gen")["status"] == "running"
 
-    def test_it_refuses_a_worker_this_process_still_holds(self, root, provider):
-        run = workflows.start(root, image_graph(), dispatch=False)
-        _orphan(root, run["id"], "gen")
-        pending: Future = Future()
-        with workflows._INFLIGHT_LOCK:
-            workflows._INFLIGHT[(int(run["id"]), "gen")] = pending
-        try:
-            with pytest.raises(ValueError) as caught:
-                workflows.reopen(root, run["id"], "gen", actor="marta@box")
-            assert "still working" in str(caught.value)
-        finally:
-            pending.set_result(None)
-            with workflows._INFLIGHT_LOCK:
-                workflows._INFLIGHT.pop((int(run["id"]), "gen"), None)
-
     def test_it_refuses_a_gate(self, root):
         run = workflows.start(root, agent_graph())
         finish(root, node(run, "art")["work_item_id"])

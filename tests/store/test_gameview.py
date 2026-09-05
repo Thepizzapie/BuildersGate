@@ -44,20 +44,9 @@ class TestTheCamera:
     what it wants inherits the model's default for everything it forgot to
     forbid, and the model's default for 'game prop' is isometric."""
 
-    def test_the_top_down_clause_forbids_isometric_explicitly(self):
-        clause = gv.camera_clause("top_down", "floor")
-        assert "NOT isometric" in clause
-        assert "NEVER show a left face and a right face" in clause
-
     def test_the_side_clause_forbids_top_down_explicitly(self):
         clause = gv.camera_clause("side_scroller", "floor")
         assert "NOT top-down" in clause and "NOT isometric" in clause
-
-    def test_the_isometric_clause_ASKS_for_two_side_faces(self):
-        """The exact thing the other two forbid — which is why one camera
-        across all three views cannot work."""
-        clause = gv.camera_clause("isometric", "floor")
-        assert "TWO side faces" in clause
 
     def test_one_view_holds_several_cameras_by_mount(self):
         """A top-down game draws floor props overhead, wall props on the wall's

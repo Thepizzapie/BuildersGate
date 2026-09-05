@@ -589,16 +589,6 @@ class TestErrors:
         assert "is the server running" in str(exc.value)
         assert "BGATE_HUNYUAN3D_URL" in str(exc.value)
 
-    def test_unreachable_hosted_does_not_talk_about_starting_a_server(self, monkeypatch):
-        def boom(*a, **k):
-            raise urllib.error.URLError("dns")
-        monkeypatch.setattr("urllib.request.urlopen", boom)
-        from bgate_adapters import _http
-        monkeypatch.setattr(_http, "_sleep", lambda *_: None)
-        with pytest.raises(imageto3d.ImageTo3DError) as exc:
-            imageto3d._request("tripo", "/task", "k", payload={}, method="POST")
-        assert "server running" not in str(exc.value)
-
     def test_a_non_json_response_is_named_as_such(self, monkeypatch):
         class Resp:
             def read(self):

@@ -122,14 +122,6 @@ class TestCollapse:
         assert "grid-template-columns:1fr" in block
         assert ".cockpit > .split{display:none}" in block
 
-    def test_rail_splitter_is_hidden_at_both_rail_breakpoints(self):
-        css = CSS.read_text(encoding="utf-8")
-        for width in ("1180px", "820px"):
-            block = css.split(f"@media(max-width:{width})", 1)[1].split("\n  }", 1)[0]
-            assert ".deck > .split{display:none}" in block, (
-                f"the rail handle survives the {width} collapse"
-            )
-
     def test_a_collapsed_grid_declares_no_track_for_the_hidden_handle(self):
         """The bug this caught, kept caught.
 

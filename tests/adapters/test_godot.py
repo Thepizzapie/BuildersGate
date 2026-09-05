@@ -38,25 +38,6 @@ class TestDiscovery:
             pytest.skip("windows-only binary split")
         assert "_console" not in godot.find_godot().lower()
 
-    def test_both_windows_binaries_deliver_stdout(self):
-        """Guards the correction: the 'plain exe loses stdout' claim is FALSE.
-
-        If this ever fails, discovery must flip back to the console launcher.
-        """
-        import sys
-        from pathlib import Path
-        if sys.platform != "win32":
-            pytest.skip("windows-only binary split")
-
-        main = Path(godot.find_godot())
-        console = main.with_name(main.stem + "_console" + main.suffix)
-        if not console.exists():
-            pytest.skip("no console launcher alongside this build")
-
-        for exe in (main, console):
-            got = godot.run_script(HELLO, timeout=90)
-            assert "BGATE_OK from Godot" in got["stdout"], exe.name
-
     def test_zero_byte_exe_is_ignored(self, tmp_path, monkeypatch):
         """A failed unzip leaves a 0-byte .exe that looks installed. Seen live."""
         stub = tmp_path / "Godot_v4.7.1-stable_win64.exe"

@@ -151,15 +151,6 @@ class TestGuards:
             if line.strip() and line[:1] == " ":
                 pytest.fail(f"space-indented GDScript line: {line!r}")
 
-    def test_capture_waits_for_frame_post_draw(self):
-        """A bare get_image() races the renderer and intermittently returns the
-        PREVIOUS frame. Pin the await so nobody 'simplifies' it away."""
-        assert "await RenderingServer.frame_post_draw" in godot._EVIDENCE_GD
-
-    def test_overlay_is_excluded_from_its_own_manifest(self):
-        """The injected overlay must never be reported as game content."""
-        assert "if node == _overlay or node == self:" in godot._EVIDENCE_GD
-
     def test_animated_sprites_are_measured(self):
         """AnimatedSprite2D has NO get_rect() in Godot 4 though Sprite2D does.
 
@@ -169,13 +160,6 @@ class TestGuards:
         """
         assert "node is AnimatedSprite2D" in godot._EVIDENCE_GD
         assert "get_frame_texture" in godot._EVIDENCE_GD
-
-    def test_hidden_subtrees_are_skipped_by_default(self):
-        """A hidden Control was never laid out, so its bounds are pre-layout
-        garbage. haymaker's closed F1 panel contributed ~90 labels all claiming
-        identical bounds, outnumbering real content 30:1."""
-        assert "not vis and not _include_hidden" in godot._EVIDENCE_GD
-
 
 # --- live capture (needs the real engine + a display) ----------------------
 

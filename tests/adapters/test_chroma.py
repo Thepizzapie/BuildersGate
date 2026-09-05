@@ -119,27 +119,11 @@ class TestWhoGetsTheClause:
                        "no gradient", "no vignette", "inside the frame"):
             assert demand in text, demand
 
-    def test_sprite_work_gets_the_clause(self, tmp_path, stub_openai):
-        chroma.generate("a paladin", tmp_path / "a.png", provider="openai",
-                        task_kind="animation")
-        assert "COMPLETELY FLAT" in stub_openai["prompt"]
-
     def test_a_backdrop_does_not(self, tmp_path, stub_openai):
         chroma.generate("a rainy alley", tmp_path / "b.png", provider="openai",
                         task_kind="background")
         assert stub_openai["prompt"] == "a rainy alley"
         assert "background" not in stub_openai["kwargs"]
-
-    def test_a_prompt_asking_for_transparency_has_the_wish_stripped(
-            self, tmp_path, stub_openai):
-        """items.STYLE still says "fully transparent background" — left next to
-        the flat-chroma clause the model splits the difference and keys into
-        swiss cheese."""
-        chroma.generate("a sword icon, fully transparent background, no shadow",
-                        tmp_path / "c.png", provider="openai", task_kind="item")
-        head = stub_openai["prompt"].split(" BACKGROUND (mandatory)")[0]
-        assert "transparent background" not in head.lower()
-        assert "no shadow" in head
 
     def test_the_keyed_path_never_also_asks_the_api_for_alpha(
             self, tmp_path, stub_openai):

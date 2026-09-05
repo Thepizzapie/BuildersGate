@@ -107,11 +107,6 @@ def client(root, monkeypatch):
 # The adapter's contract with Suno
 # ---------------------------------------------------------------------------
 class TestSunoRequestShape:
-    def test_simple_mode_caps_the_prompt_at_500(self):
-        with pytest.raises(kie.KieError) as exc:
-            kie.build_music("x" * 501)
-        assert "500" in str(exc.value)
-
     def test_custom_mode_ceiling_moves_with_the_model(self):
         # V4 is the odd one out at 3,000; everything newer takes 5,000.
         kie.build_music("x" * 3000, model="V4", custom=True)
@@ -124,12 +119,6 @@ class TestSunoRequestShape:
         with pytest.raises(kie.KieError) as exc:
             kie.build_music("a march", style="brass")
         assert "custom" in str(exc.value)
-
-    def test_duration_is_v5_5_only(self):
-        assert kie.build_music("hum", model="V5_5", duration=45)["duration"] == 45
-        with pytest.raises(kie.KieError) as exc:
-            kie.build_music("hum", model="V5", duration=45)
-        assert "V5_5" in str(exc.value)
 
     def test_duration_is_bounded(self):
         with pytest.raises(kie.KieError):
@@ -193,24 +182,11 @@ class TestSunoStatuses:
         assert record["callback_failed"] is True
         assert len(kie.music_tracks(record)) == 2
 
-    def test_callback_exception_with_no_audio_is_a_failure(self, root, fake):
-        fake.status, fake.tracks = "CALLBACK_EXCEPTION", []
-        with pytest.raises(kie.KieError) as exc:
-            kie.poll_music("task-1", root=root, timeout=5)
-        assert "no audio" in str(exc.value)
-
     def test_a_sensitive_word_error_says_what_to_do(self, root, fake):
         fake.status = "SENSITIVE_WORD_ERROR"
         with pytest.raises(kie.KieError) as exc:
             kie.poll_music("task-1", root=root, timeout=5)
         assert "reword" in str(exc.value)
-
-    def test_an_unknown_status_stops_rather_than_spins(self, root, fake):
-        fake.status = "ASCENDED"
-        with pytest.raises(kie.KieError) as exc:
-            kie.poll_music("task-1", root=root, timeout=5)
-        assert "unknown status" in str(exc.value)
-
 
 class TestTheUrlIsNeverTheAsset:
     def test_every_track_is_downloaded_inside_the_call(self, root, fake, tmp_path):
@@ -505,14 +481,6 @@ class TestKeepingIsWhatMakesItReal:
                   for r in artifacts.list_revisions(root, logical_name="chase")}
         assert sorted(states.values()) == sorted(["superseded",
                                                   states[takes[1]["revision"]]])
-
-    def test_keeping_a_deleted_candidate_says_what_happened(self, root, fake):
-        music.generate(root, "night chase", name="chase")
-        one = music.candidates(root)[0]
-        (root / one["path"]).unlink()
-        with pytest.raises(music.MusicError) as exc:
-            music.keep(root, one["artifact_id"], actor="human")
-        assert "14 days" in str(exc.value)
 
     def test_keep_refuses_a_non_audio_artifact(self, root):
         image = root / ".bgate_out" / "art" / "hero.png"

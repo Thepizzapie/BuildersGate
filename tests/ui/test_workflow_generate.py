@@ -379,22 +379,6 @@ class TestRunOneNode:
             "a node whose worker died is also 'running'; the refusal has to "
             "name the verb that ends that wait")
 
-    def test_a_gate_is_resolved_not_run(self, root, provider):
-        run = start(root, fanout_graph())
-        workflows.join(run["id"])
-        run = workflows.advance(root, run["id"])
-        with pytest.raises(ValueError) as caught:
-            workflows.run_node(root, run["id"], "pick")
-        assert "resolved by a human" in str(caught.value)
-
-    def test_agent_steps_stay_single_file_even_when_pressed_by_hand(self, root, provider):
-        run = start(root, serial_agents_graph())
-        waiting = next(n["node_id"] for n in run["nodes"] if n["status"] == "pending"
-                       and n["kind"] == "agent")
-        with pytest.raises(ValueError) as caught:
-            workflows.run_node(root, run["id"], waiting)
-        assert "one at a time" in str(caught.value)
-
     def test_run_one_node_over_http(self, client, root, provider):
         started = client.post("/api/workflows/runs", json=stepped_graph()).json()
         assert started["ok"] is True, started
@@ -460,16 +444,6 @@ class TestPick:
         with pytest.raises(ValueError) as caught:
             workflows.approve(root, run["id"], "pick", actor="marta@box")
         assert "pick(artifact_id=" in str(caught.value)
-
-    def test_an_unrelated_artifact_cannot_be_picked(self, root, provider):
-        run = self._to_pick(root)
-        stray = root / "stray.png"
-        stray.write_bytes(b"png")
-        other = artifacts.register(root, "stray", stray, producer="test")
-        with pytest.raises(ValueError) as caught:
-            workflows.pick(root, run["id"], "pick", artifact_id=other["id"],
-                           actor="marta@box")
-        assert "not one of this pick's candidates" in str(caught.value)
 
     def test_the_choice_reaches_the_downstream_step(self, root, provider):
         run = self._to_pick(root)

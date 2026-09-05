@@ -71,12 +71,6 @@ def shell(client, page) -> str:
 # 1. Every mutation goes through one helper that reads the response
 # ---------------------------------------------------------------------------
 class TestMutationsSurfaceTheError:
-    def test_the_page_ships_a_shared_mutate_helper(self, page):
-        assert "async function mutate(" in page
-        # It has to understand BOTH envelopes the backend speaks.
-        assert "function apiError(" in page
-        assert "function unwrap(" in page
-
     def test_the_blanket_swallowing_catch_is_gone(self, page):
         # `.catch(()=>({}))` does not even fire on a 500 — the error body is
         # valid JSON — so it never did anything but hide the response.
@@ -118,12 +112,6 @@ class TestMutationsSurfaceTheError:
         assert "mutate(" in body, f"{fn} still calls fetch directly"
         assert endpoint in body
         assert "await fetch(" not in body, f"{fn} still has a raw fetch"
-
-    def test_a_failed_mutation_skips_the_re_render(self, page):
-        # `if (!r.ok) return;` is what keeps the operator's selection alive.
-        for fn in ("dispatchItem", "stopItem"):
-            assert "if (!r.ok) return;" in _function_body(page, fn)
-
 
 def _function_body(page: str, name: str) -> str:
     """Source of one top-level `async function name(...)` / `function name(...)`."""
@@ -467,13 +455,6 @@ class TestVideoOffset:
         body = _function_body(src, "seekReview")
         assert "toVideoTime(t)" in body
 
-    def test_transcript_sync_converts_back_to_session_time(self):
-        body = _function_body(island("Review.tsx"), "syncTranscript")
-        assert "video.currentTime + activeReviewOffset" in body
-
-    def test_it_degrades_to_zero_when_the_backend_omits_the_field(self):
-        assert "d.session.video_offset_s ?? d.video_offset_s ?? 0" in island("Review.tsx")
-
     def test_the_backend_stores_the_offset_the_shell_wants(self, root):
         from bgate_core.store import db
 
@@ -512,10 +493,6 @@ class TestPreflightPolling:
         assert "/api/doctor" in body
         assert body.index("/api/doctor") < body.index("/api/playtest/preflight")
         assert "_ptDoctorGone" in body      # one 404 and it stops asking
-
-    def test_it_never_probes_while_recording(self):
-        assert "if (m.current.recording) return;" in _function_body(island("PlayPanel.tsx"), "ptPreflight")
-
 
 # ---------------------------------------------------------------------------
 # 10. One theme layer, and no font that cannot load

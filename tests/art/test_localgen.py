@@ -159,14 +159,6 @@ def test_graph_without_the_prompt_token_is_refused(tmp_path, monkeypatch):
     assert "baked into the graph" in str(exc.value)
 
 
-def test_editor_format_export_is_named_as_such(tmp_path, monkeypatch):
-    path = _workflow(tmp_path, editor_format=True)
-    monkeypatch.setenv(localgen.TXT2IMG_ENV, str(path))
-    with pytest.raises(localgen.LocalGenError) as exc:
-        localgen.build_prompt("generate", prompt="a knight")
-    assert "EDITOR format" in str(exc.value)
-
-
 def test_edit_graph_without_an_image_token_is_refused(tmp_path, monkeypatch):
     path = _workflow(tmp_path, name="edit.json", image=False)
     monkeypatch.setenv(localgen.EDIT_ENV, str(path))

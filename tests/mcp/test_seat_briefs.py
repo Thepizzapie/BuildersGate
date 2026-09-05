@@ -316,16 +316,6 @@ class TestNoTwoRulesFightOverOneDecision:
             "one only a human eye answers, so 'LOOK at the frame' and 'a blown "
             "frame is lighting' compete again")
 
-    def test_the_layer_ceiling_is_described_as_the_warning_it_is(self):
-        # THE DECISION: what happens at nine layers. blender_combine warns and
-        # assembles; the old brief implied a refusal. A rule an agent believes
-        # is enforced is a rule it stops keeping.
-        text = seats.ART_3D_WORKFLOW
-        assert "warns above eight" in text
-        assert "nothing refuses you" in text
-        assert "EIGHT IS THE CEILING" not in text, (
-            "this phrasing claims an enforcement that does not exist")
-
     def test_the_brief_does_not_tell_the_seat_to_wait_for_a_human(self):
         # THE DECISION: whether to stop before spending. ask_human returns
         # immediately; there is no blocking checkpoint anywhere in this

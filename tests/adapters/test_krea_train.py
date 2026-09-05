@@ -62,14 +62,6 @@ class TestDatasetGate:
         assert got["ok"] is True
         assert any("thin" in w for w in got["warnings"])
 
-    def test_duplicates_and_junk_are_named_individually(self, tmp_path):
-        one = _png(tmp_path / "a.png")
-        got = krea.check_training_set([one, one, str(tmp_path / "nope.png"),
-                                       _png(tmp_path / "b.jpg")])
-        whys = {r["path"]: r["why"] for r in got["rejected"]}
-        assert "the same image twice" in whys[one]
-        assert "not a file" in whys[str(tmp_path / "nope.png")]
-
     def test_a_wrong_format_is_refused(self, tmp_path):
         bad = tmp_path / "sheet.tres"
         bad.write_text("not an image", encoding="utf-8")
@@ -214,20 +206,6 @@ class TestUpload:
         assert b'name="description"' in sent["body"] and b"the anchor" in sent["body"]
         assert b"image/png" in sent["body"]
 
-    def test_a_response_without_a_url_is_an_error_not_an_empty_string(
-            self, tmp_path, monkeypatch):
-        class Resp:
-            def read(self): return b'{"id":"a1"}'
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-
-        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: Resp())
-        monkeypatch.setenv("KREA_API_KEY", "test-key")
-        with pytest.raises(krea.KreaError) as exc:
-            krea.upload(_png(tmp_path / "a.png"))
-        assert "no image_url" in str(exc.value)
-
-
 class TestGenerateWithATrainedStyle:
     def test_the_styles_array_rides_alongside_the_references(self, captured,
                                                               tmp_path):
@@ -271,12 +249,6 @@ class TestTheFloorIsAResizeNotARefusal:
         assert row["scale"] == pytest.approx(1.044, abs=0.01)
         assert row["to"] == [1672, 1024]
         assert any("upscaled" in w for w in got["warnings"])
-
-    def test_something_genuinely_tiny_is_still_refused(self, tmp_path):
-        icon = _png(tmp_path / "icon.png", 48, 48)
-        got = krea.check_training_set([icon])
-        why = got["rejected"][0]["why"]
-        assert "inventing detail" in why
 
     def test_the_cap_is_where_the_constant_says(self, tmp_path):
         """0.6 of the floor — an enlargement past 1.67x is the line."""

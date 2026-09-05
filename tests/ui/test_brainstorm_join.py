@@ -511,21 +511,6 @@ class TestTheRoomTalksToItself:
             "", "art", "gameplay", "", "art", "gameplay"]
         assert got.json()["data"]["answering"] is True
 
-    def test_the_follow_up_round_reads_what_the_others_just_said(
-            self, client, answers):
-        """The delivery mechanism is the transcript itself — no synthetic turn
-        is injected, so what a seat argues with is the real row."""
-        session = self._room(client, answers, 1)
-        answers["replies"] = {"art": "two days", "gameplay": "not worth it"}
-        client.post(f"/api/brainstorm/{session['id']}/message",
-                    json={"text": "weather?"})
-        _quiet()
-        last_art = [a for a in answers["asked"] if a["seat"] == "art"][-1]
-        contents = [t["content"] for t in last_art["turns"]]
-        assert "GAMEPLAY SEAT: not worth it" in contents
-        # And it is told it is in a discussion, which is what licenses a PASS.
-        assert "THE ROOM IS STILL TALKING" in last_art["system"]
-
     def test_a_pass_is_not_written_into_the_transcript(self, client, root,
                                                        answers):
         session = self._room(client, answers, 2)

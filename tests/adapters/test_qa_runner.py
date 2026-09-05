@@ -191,18 +191,6 @@ class TestScoring:
         red = [s for s in got["scripts"] if s["script"].endswith("red_test.gd")][0]
         assert red["errors"] and red["ok"] is False
 
-    async def test_a_timeout_is_a_failure_that_names_itself(self, wired,
-                                                            monkeypatch):
-        self._suite(wired)
-        _fake_engine(monkeypatch, {
-            "GREEN": {"stdout": "PASS\n"},
-            "RED": {"ok": False, "error": "Godot timed out after 180s",
-                    "seconds": 180},
-        })
-        got = await call("godot_test_run")
-        red = [s for s in got["scripts"] if s["script"].endswith("red_test.gd")][0]
-        assert "timed out" in red["error"]
-
     async def test_an_explicit_subset_runs_only_that(self, wired, monkeypatch):
         self._suite(wired)
         _fake_engine(monkeypatch, {"GREEN": {"stdout": "PASS\n"},

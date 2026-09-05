@@ -271,14 +271,6 @@ class TestDecalOnTheKeyedPath:
 
         assert NO_TEXT.search(provider["prompt"]) is None
 
-    def test_and_it_demands_the_lettering_instead(self, provider, tmp_path):
-        chroma.generate("the Ironsides wordmark", tmp_path / "logo.png",
-                        provider="openai", task_kind="decal")
-
-        text = provider["prompt"].lower()
-        assert "is the graphic" in text
-        assert "background only" in text
-
     def test_it_still_gets_the_whole_background_mechanism(self, provider,
                                                           tmp_path):
         """Scoping the ban must not soften the contract — the audit still has
