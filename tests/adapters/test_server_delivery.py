@@ -20,6 +20,7 @@ in the `_tool` decorator, so a direct call tests code no client reaches.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from pathlib import Path
@@ -419,7 +420,9 @@ async def test_a_raising_adapter_is_a_result_not_a_broken_server(wired,
 # renaming a function in the library fails the second, and dropping one from the
 # docs fails it too, while inventing a helper in prose fails the first.
 
-KIT_DOC = server.blender_run.__doc__ or ""
+# The WIRE doc is the first paragraph plus a pointer (server._wire_doc); the
+# kit block lives in the source docstring, which is what the pointer names.
+KIT_DOC = inspect.getdoc(getattr(server.blender_run, "__wrapped__", server.blender_run)) or ""
 
 # The base-mesh entry points the docs are REQUIRED to name. Stated explicitly
 # rather than derived: not every def in the library is a thing an agent should

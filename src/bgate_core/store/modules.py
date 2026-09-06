@@ -216,6 +216,9 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                 # feet actually do. Both are the 3D seat's own checks on a rig
                 # it just changed.
                 "skin_dominance", "animation_contacts",
+                # mesh_faceting is the same shape: a silhouette-vs-triangle
+                # read of a .glb, no Blender spawned.
+                "mesh_faceting",
                 # The clip-pack roster: which CC0 packs blender_animate can
                 # retarget from. Reads a cache, spawns nothing.
                 "animation_library",

@@ -1080,7 +1080,7 @@ a canopy, a slime, a belly, a cloud. Where two shapes would be pushed through
 each other, put two balls.
 ```
 
-## blender_sweep
+## blender_tube
 
 ```text
 A tube along a path [[x, y, z], ...] with a radius per point: pipes, cables,

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from . import surface as _surface
 from .surface import MATERIAL_PRESETS, _DUMP, _run
 
 __all__ = ["hull", "skin", "blob", "sweep", "rock", "MATERIAL_PRESETS"]

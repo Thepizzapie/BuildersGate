@@ -130,6 +130,10 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
                 engine: str = "BLENDER_WORKBENCH", timeout: int = 180,
                 label: str = "", kit: bool = True) -> dict:
     """Run a bpy script in headless Blender and get the scene back as facts.
+    The modelling kit is preloaded (kit=True): inside the script call
+    bg_help(), bg_base_help(), bg_form_help() and bg_surface_help() to print
+    the worked examples, and start a body from bg_human / bg_quadruped /
+    bg_prop_frame - never from primitives.
 
     `bpy` is already imported. Returns per-object tri/vert counts (evaluated, so
     modifiers count), UV warnings, materials, your print() output, and - with
@@ -137,12 +141,9 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
     preview gallery; give a `label` so humans can tell renders apart).
 
     THE MODELLING KIT IS ALREADY THERE (kit=True, the default). Do not write your
-    own material/UV/hygiene helpers - an agent burned 33 KB and most of an hour
-    doing exactly that on the first real character run. Available:
-      bg_help()                      PRINTS A COMPLETE WORKED LAYER SCRIPT - a
-                                     humanoid built from one head-height, a
-                                     named rig with roll, the checks, bg_finish
-                                     last. Read it before writing your first one.
+    own material/UV/hygiene helpers - an agent burned an hour doing exactly that:
+      bg_help()                      PRINTS A COMPLETE WORKED LAYER SCRIPT -
+                                     read it before writing your first one.
       bg_wipe()                      empty the scene (no default cube)
       bg_box/bg_cyl/bg_ball/bg_plane named primitives
       bg_mirror/bg_smooth/bg_taper   symmetry, subsurf, limb taper
@@ -175,34 +176,24 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
       bg_rock(name, size, seed)      a seeded boulder that sits on the ground
       bg_form_help()                 PRINTS the worked coupe-from-two-outlines,
                                      quadruped and rock
-      bg_bone_chain(name, bones)     an armature with NAMED bones. Entries are
-                                     (name, head, tail, parent=None, roll_deg=0);
-                                     order does not matter, parents are wired in
-                                     a second pass, and ROLL IS IN DEGREES - set
-                                     it on limbs or a humanoid retarget gives you
-                                     the twisted-forearm look.
+      bg_bone_chain(name, bones)     an armature with NAMED bones: entries are
+                                     (name, head, tail, parent=None, roll_deg=0),
+                                     any order; ROLL IS IN DEGREES - set it on
+                                     limbs or a retarget twists the forearms.
       bg_finish(obj, colour=...)     clean + apply + unwrap + material, in order
       bg_stats(obj)                  verts/faces/loose/nonmanifold/ngons/flipped
                                      PLUS world-space dims/centre/min/max
       bg_bounds(obj)                 world-space min/max/dims/centre, in metres
-      bg_flipped(obj)                how many faces point INWARD (count, measured
-                                     on a throwaway copy - the mesh is untouched)
+      bg_flipped(obj)                how many faces point INWARD (non-destructive)
       bg_overlap(a, b)               do two layers' world bounds intersect, and
-                                     by how much. Layers are built in isolated
-                                     scenes, so "is the cap sunk into the head"
-                                     is a question NOTHING else in the pipeline
-                                     can ask until they are already combined.
+                                     by how much - the only pre-combine answer
+                                     to "is the cap sunk into the head".
 
-    bg_bone_chain RAISES - deliberately, and it is the only thing in the kit that
-    does. Everything else swallows its problems because a helper that raises
-    takes the whole run down; a rig cannot afford that trade, because a wrong rig
-    looks built and comes apart in the engine several steps later. It refuses: a
-    parent no bone in the list defines (which used to produce silent parentless
-    roots), a duplicate bone name, head == tail (Blender DELETES zero-length
-    bones on leaving edit mode and says nothing, so the bone simply is not in the
-    armature you get back), and a name Blender had to rename or truncate (bind=
-    'bone:Head' then matches nothing in blender_combine). Every message names the
-    bone. Read the message and fix the chain - do not wrap it in a try.
+    bg_bone_chain RAISES - the only kit helper that does, because a wrong rig
+    looks built and comes apart in the engine later. It refuses an undefined
+    parent, a duplicate name, head == tail (Blender silently deletes zero-length
+    bones) and a name Blender would rename (bind='bone:Head' then matches
+    nothing). Fix the chain - do not wrap it in a try.
 
     START A BODY FROM THE BASE MESH LIBRARY, NOT FROM PRIMITIVES. Same kit, same
     namespace, no import:
@@ -226,18 +217,15 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
       bg_base_report / bg_base_assert  the base's own self-check (assert RAISES)
       bg_base_help()                 prints BG_BASE_EXAMPLE, the worked script
       BG_UNIT="metre", BG_HUMAN_HEIGHT=1.8, BG_GROUND=0.0, BG_FORWARD=(0,1,0),
-      BG_LEFT=(-1,0,0), BG_SIDES - the base FACES +Y, which the glTF exporter
-                                     turns into -Z, which is what Godot calls
-                                     forward. Author faces, visors and emblems
-                                     on the +Y side; the figure's own left is -X.
+      BG_LEFT=(-1,0,0), BG_SIDES - the base FACES +Y (glTF turns it into -Z,
+                                     Godot's forward): author faces and emblems
+                                     on +Y; the figure's own left is -X.
       bg_unit_check / bg_unit_assert (RAISES) / bg_rescale
 
-    FIT LAYERS ONTO LANDMARKS INSTEAD OF GUESSING COORDINATES. MEASURED: a cap
-    placed with bg_fit(cap, bg_mark(base, "head_top"), "on") rests on the crown
-    at 10% overlap; the same cap at a hand-typed 1.7 m is 89% INSIDE the skull
-    and passed every check the old pipeline had. The honest limit - the base has
-    no face and no fingers. It is a correctly-proportioned blockout to build the
-    character ONTO, not a finished character.
+    FIT LAYERS ONTO LANDMARKS, NOT HAND-TYPED COORDINATES: bg_fit(cap,
+    bg_mark(base, "head_top"), "on") rests on the crown; the same cap at a
+    typed 1.7 m sat 89% inside the skull and passed every old check. The limit:
+    the base has no face and no fingers - a proportioned blockout to build ONTO.
 
     Pass kit=False only for a script that must run against bare bpy.
 
@@ -1807,7 +1795,7 @@ def blender_blob(balls: Annotated[list, Field(description='[[x, y, z, radius], .
 
 
 @_tool
-def blender_sweep(points: Annotated[list, Field(description='[[x, y, z], ...] the path, in metres.')],
+def blender_tube(points: Annotated[list, Field(description='[[x, y, z], ...] the path, in metres.')],
                   radii: Annotated[list, Field(description='One radius per point (a tapering horn), or a single-element list for a constant pipe.')],
                   out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
                   name: Annotated[str, Field(description='Object name. Default Sweep.')] = "Sweep",
@@ -1827,7 +1815,7 @@ def blender_sweep(points: Annotated[list, Field(description='[[x, y, z], ...] th
         rs = rs * len(points or [])
     result = _form.sweep(points, rs, out_path, name=name, segments=segments, caps=caps, smooth_path=smooth_path,
                          preset=preset, colour=colour or None, timeout=timeout)
-    return _surface_result(result, out_path, "blender_sweep", points=len(points or []), tris=result.get("tris"))
+    return _surface_result(result, out_path, "blender_tube", points=len(points or []), tris=result.get("tris"))
 
 
 @_tool

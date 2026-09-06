@@ -118,7 +118,7 @@ ART_3D_WORKFLOW = (
     "script. Boxing one of these by hand is what this block exists to stop.\n"
     "• THE FORM IS BUILT FIRST, NEVER FROM BOXES: blender_hull a car from "
     "side+top outlines, blender_skin a creature from a stick figure, "
-    "blender_blob boulders, blender_sweep pipes, bg_lathe a tyre; then "
+    "blender_blob boulders, blender_tube pipes, bg_lathe a tyre; then "
     "bg_shade, bg_material + blender_bake, blender_decal. bg_fuse repairs existing shells (a fused wheel is a lump). Boxes "
     "are block-out, NOT the cast. THAT IS THE CEILING.\n"
     "• 'PRIMITIVES ONLY' IN THE BIBLE WITH A 3D PROVIDER KEYED "
