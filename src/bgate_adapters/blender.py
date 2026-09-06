@@ -5749,7 +5749,19 @@ else:
                             pb.location = clip["root_location"][0]
                             pb.keyframe_insert("location", frame=frame)
                     n += 1
-                for fc in action.fcurves:
+                # Blender 4.4+ slotted actions: `Action.fcurves` is gone in 5.x;
+                # the curves live in layers -> strips -> channelbags.
+                def _action_fcurves(act):
+                    curves = getattr(act, "fcurves", None)
+                    if curves is not None:
+                        return list(curves)
+                    found = []
+                    for layer in getattr(act, "layers", []):
+                        for strip in getattr(layer, "strips", []):
+                            for bag in getattr(strip, "channelbags", []):
+                                found.extend(bag.fcurves)
+                    return found
+                for fc in _action_fcurves(action):
                     for kp in fc.keyframe_points:
                         kp.interpolation = "LINEAR"
                 rec.update(action=name, frames=n, seconds=round(n / FPS, 3),
