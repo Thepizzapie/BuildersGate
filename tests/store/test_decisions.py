@@ -24,6 +24,11 @@ from fastapi.testclient import TestClient
 
 from bgate_core.store import db, project
 from bgate_core.design import decisions
+# Imported here, before any test sets BGATE_SEAT: the server registers its
+# tools ONCE, at import, for the seat the process was started under. A
+# first import from inside a gameplay-seat test would leave the director's
+# tools (not_building_add) unregistered for the human-session test below.
+from bgate_mcp import server as _server  # noqa: F401
 from bgate_ui.app import app
 
 

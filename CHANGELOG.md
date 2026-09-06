@@ -9,6 +9,45 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.45] - 2026-09-06
+
+### Added
+- **The modelling kit builds the smooth shape FIRST: hull, skin, blob, tube, round, rock**
+- **Surface tools: fuse, shade, lathe, loft, eleven material presets, bake, decals**
+- **`blender_tree`, `blender_scatter` and `blender_look_audit`**
+- **Live Blender: the kit inside a Blender that stays open**
+- **`mesh_faceting`: the gap between the silhouette and the triangle count**
+- **`blockout_generate`: a measured 3D graybox from a spec or a level_plan**
+- **`godot_scene_audit` and `godot_export_verify`: the 3D gates every game hand-wrote and none shipped**
+- **The 3D scaffold is third-person, with a prop kit and an arcade vehicle demo**
+- **Chaos dispatch mode: every run in its own worktree, integration bounded**
+- **Codex seats: forwarded MCP identity, isolated config, bounded auto-approval**
+
+### Changed
+- **A dispatched agent carries the tools it was measured using, not 203**
+- **Autodeploy refuses to spawn an item whose brief names a leased file**
+- **The tool schema bills the contract, not the essay**
+- **In a 3D project the cast is GENERATED; every visible mesh routes to art**
+- **The Builders Gate checkout itself is refused as a project root**
+- **The test suite lost 144 prose-pinning tests and can no longer launch real agents**
+
+### Fixed
+- **`blender_animate` runs on Blender 5.x**
+- **The director console died at spawn on Windows with a >8 KB system prompt**
+- **Playtest told every adopted project it had no game**
+- **Dashboard and MCP project creation re-root the seat lanes to the scaffold's layout**
+- **SessionStart read the raw autopilot doc; project_create left the active pointer behind**
+- **Audio Lab: mp3 probing, an edited mp3 saves as a sibling ogg, `encode_ogg` no longer raises**
+- **The rig anatomy verdict fails a trunk it could not measure**
+- **Agent commits and chaos merges carry a fallback author when the repo has none**
+- **Two tools were registered as `blender_sweep`; the tube is `blender_tube`**
+- **`bgate_track_gen.gd` preloaded a path that only exists after `track_generate`**
+
+### Security
+- **Audio Lab paths are contained in the shape CodeQL recognises; `project_create` keeps exception text out of the reply**
+
+Full narrative: [docs/decisions/0.1.45.md](https://github.com/Thepizzapie/BuildersGate/blob/main/docs/decisions/0.1.45.md)
+
 ## [0.1.44] - 2026-09-04
 
 ### Removed
