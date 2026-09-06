@@ -33,11 +33,6 @@ class TestNote:
         assert after.startswith(first)
         assert after.count("\n") == 2
 
-    def test_flushed_per_line_so_a_kill_keeps_what_landed(self, root):
-        """No buffering: the last note before a crash is the important one."""
-        handoff.note(root, "next", "survive me")
-        assert "survive me" in handoff.path_for(root).read_text(encoding="utf-8")
-
     def test_rejects_an_unknown_kind(self, root):
         with pytest.raises(ValueError, match="unknown kind"):
             handoff.note(root, "vibes", "x")

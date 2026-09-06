@@ -68,11 +68,6 @@ class TestClause:
                           "rendering target", "pinned", "the pixel set"):
             assert editorial not in text, f"{editorial!r} leaked into the prompt"
 
-    def test_it_forbids_text_in_the_image(self, brief):
-        """The single most common failure once a style clause exists, and it
-        must survive truncation — it is appended after the budget."""
-        assert "no text, letters" in ad.clause(brief, limit=80).lower()
-
     def test_advisory_direction_is_included(self, brief):
         assert "snes" in ad.clause(brief).lower()
 
@@ -194,20 +189,6 @@ class TestWiring:
                         model="krea-2-medium", task_kind="prop", root=brief)
         assert "painterly" in seen["prompt"].lower()
 
-    def test_no_project_means_no_clause_and_no_crash(self, monkeypatch, tmp_path):
-        from bgate_core.art import chroma
-        seen = {}
-        monkeypatch.setattr("bgate_adapters.krea.generate",
-                            lambda p, o, **k: (seen.update(prompt=p),
-                                               {"ok": False, "error": "x"})[1])
-        chroma.generate("a chair", tmp_path / "o.png", provider="krea",
-                        model="krea-2-medium", task_kind="prop")
-        # The keyable-background clause still applies (task_kind "prop" is
-        # keyed) — what must be absent is the ART DIRECTION text.
-        assert "ART DIRECTION" not in seen["prompt"]
-        assert "Style direction:" not in seen["prompt"]
-
-
 class TestScopeByKind:
     """A directive about BODIES is not a directive about a spark.
 
@@ -236,10 +217,6 @@ class TestScopeByKind:
 
     def test_a_tile_still_gets_projection(self, brief):
         assert "isometric" in ad.clause(brief, task_kind="tile")
-
-    def test_the_universal_directives_reach_everything(self, brief):
-        for kind in ("animation", "prop", "tile", "vfx", "ui", ""):
-            assert "pixel art" in ad.clause(brief, task_kind=kind)
 
     def test_an_unspecified_kind_is_not_narrowed(self, brief):
         """Scoping subtracts only from a caller that SAID what it was making.

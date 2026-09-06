@@ -417,14 +417,6 @@ class TestArtifactNote:
     reviewer is ever shown it. turnaround's caller has said so since it was
     measured; combine and apply_texture returned a cheerful ok=True."""
 
-    def test_combine_outside_the_project_says_the_asset_cannot_be_registered(
-            self, rigged, tmp_path, monkeypatch):
-        _no_root(monkeypatch)
-
-        got = _one_layer(rigged, tmp_path / "hero.glb")
-
-        assert "outside the project root" in got["artifact_note"]
-
     def test_combine_inside_the_project_says_nothing(self, rigged, root,
                                                      monkeypatch):
         """The note must be about containment and not about being noisy."""

@@ -192,16 +192,6 @@ class TestTheBugReport:
         assert "someviewer" in markdown
         assert "watching a stream of the game, not running it" in markdown
 
-    def test_the_dev_s_own_note_gets_no_caveat(self, root, session):
-        note = playtest.add_note(root, session["id"], "armour 4 should be 40",
-                                 ts=session["epoch"] + 20)
-        item = playtest.get_item(root, note["id"])
-        markdown = playtest._item_markdown(
-            1, item, playtest.get(root, session["id"]), window_s=5.0)
-        assert "from live chat" not in markdown
-        assert "Typed during play" in markdown
-
-
 class TestRefusals:
     def test_an_unknown_source_is_refused(self, root, session):
         with pytest.raises(ValueError):

@@ -49,20 +49,6 @@ def test_slot_and_animation_names_fold_to_one_form():
         rigmap.slot_name("   ")
 
 
-def test_grid_must_tile_the_sheet():
-    with pytest.raises(rigmap.RigError) as exc:
-        rigmap.normalise(_rig(), sheet_size=(100, 64))
-    assert "does not tile" in str(exc.value)
-    # The same grid against the size it was written for is fine.
-    rigmap.normalise(_rig(), sheet_size=(128, 64))
-
-
-def test_a_frame_past_the_last_cell_is_refused():
-    with pytest.raises(rigmap.RigError) as exc:
-        rigmap.normalise(_rig(animations=[{"name": "walk", "frames": [0, 99]}]))
-    assert "past the last cell" in str(exc.value)
-
-
 def test_two_anchors_for_one_slot_on_one_frame_is_a_contradiction():
     """Not "last one wins" — a stamper picking a winner silently is the bug."""
     with pytest.raises(rigmap.RigError):

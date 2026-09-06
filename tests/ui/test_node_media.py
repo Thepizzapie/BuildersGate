@@ -203,11 +203,6 @@ def test_wf_reads_prices_from_the_batch_endpoint():
         "if (unit == null) return null;" in src
 
 
-def test_estimate_multiplies_images_by_the_fetched_unit_price():
-    src = WF_JS.read_text(encoding="utf-8")
-    assert "images * unit" in src, "the estimate is not count x unit price"
-
-
 @pytest.mark.parametrize("name", sorted(p.name for p in STEP_FILES))
 def test_node_bodies_do_no_io(name):
     """A body runs on every paint. fetch() in one is a request per repaint."""

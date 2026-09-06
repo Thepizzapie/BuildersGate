@@ -150,6 +150,19 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
                                      what makes automatic weighting work later
       bg_unwrap(obj)                 smart-project UVs (no UVs = no texture)
       bg_mat(obj, name, rgb)         a BLOCKING-IN colour, not a shipped surface
+      bg_material(name, preset, colour, obj=)  a SURFACE: car_paint, rubber,
+                                     brushed_metal, chrome, painted_metal_worn,
+                                     plastic, glass, bark, wood, concrete,
+                                     emissive (bake it with blender_bake)
+      bg_fuse(objs, name, ...)       touching shells -> ONE continuous surface
+                                     (voxel union + smooth + decimate), the
+                                     materials carried over. Trunk+branches,
+                                     hull+fenders. NOT shapes tacked together.
+      bg_shade(obj, bevel=, angle=)  bevel-by-angle + smooth-by-angle + weighted
+                                     normals - kills the faceted look for free
+      bg_lathe(name, [(r, z), ...])  revolve a profile: tyre, rim, bottle, column
+      bg_loft(name, sections, ...)   skin cross-sections: a car body, a hull
+      bg_surface_help()              PRINTS the worked wheel + fused tree
       bg_bone_chain(name, bones)     an armature with NAMED bones. Entries are
                                      (name, head, tail, parent=None, roll_deg=0);
                                      order does not matter, parents are wired in
@@ -1366,3 +1379,255 @@ def blender_animate(model: Annotated[str, Field(description='The RIGGED humanoid
         _log("blender", f"blender_animate REFUSED {model}: skin and skeleton "
                         "disagree about forward", ref=str(model))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Surfaces: continuous forms and real materials. MEASURED (Meridian,
+# 2026-09-05): a tree of octagonal prisms shoved through one another, leaves
+# as flat triangles, a 116k-triangle car with eleven flat colours and zero
+# textures, panel lines as geometry hovering over the paint. The kit was
+# bg_box, bg_cyl and join, so that is what got built. These are the operations
+# a modeller reaches for instead; the same helpers are in blender_run's kit as
+# bg_fuse / bg_shade / bg_lathe / bg_loft / bg_material.
+# ---------------------------------------------------------------------------
+from bgate_adapters import surface as _surface  # noqa: E402
+
+
+def _surface_result(result: dict, out_path: str, producer: str, **meta) -> dict:
+    if result.get("ok"):
+        artifact = _register_artifact(_Path(out_path).stem, out_path, producer=producer,
+                                      metadata={k: v for k, v in meta.items() if v is not None})
+        if artifact:
+            result["artifact"] = artifact
+            result["artifact_id"] = artifact["id"]
+        _log("blender", f"{producer} wrote {_Path(out_path).name}", ref=str(out_path))
+    return result
+
+
+@_tool
+def blender_fuse(model: Annotated[str, Field(description='The .glb/.gltf/.blend whose parts are fused.')],
+                 out_path: Annotated[str, Field(description='Where the fused .glb is written; keep it inside the project.')],
+                 objects: Annotated[Optional[list[str]], Field(description='Object names to fuse. Empty fuses every mesh in the file.')] = None,
+                 name: Annotated[str, Field(description='Name of the fused object. Default Fused.')] = "Fused",
+                 voxel: Annotated[float, Field(description='Remesh cell in metres. 0 picks 0.4% of the largest dimension.')] = 0.0,
+                 smooth: Annotated[int, Field(description='Smoothing iterations after the remesh. Default 2.')] = 2,
+                 target_tris: Annotated[int, Field(description='Decimate back to this many triangles; 0 keeps the remesh count.')] = 0,
+                 timeout: int = 600) -> dict:
+    """Fuse touching or overlapping meshes into ONE continuous surface.
+
+    Join -> voxel remesh (the union: a branch grows out of the trunk instead
+    of poking through it) -> smooth -> decimate to target_tris -> every
+    material index carried over from the nearest original face, so a fused
+    car keeps its paint, glass and rubber. The cure for shapes tacked
+    together. Fuse what is genuinely one body (trunk+branches, hull+fenders);
+    leave wheels, glass and lights as their own objects.
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.fuse(model, out_path, objects=objects, name=name, voxel=voxel,
+                           smooth=smooth, target_tris=target_tris, timeout=timeout)
+    return _surface_result(result, out_path, "blender_fuse", model=str(model), objects=objects,
+                           tris=result.get("tris_after"))
+
+
+@_tool
+def blender_shade(model: Annotated[str, Field(description='The .glb/.gltf/.blend to shade.')],
+                  out_path: Annotated[str, Field(description='Where the result is written; keep it inside the project.')],
+                  objects: Annotated[Optional[list[str]], Field(description='Object names to shade. Empty shades every mesh.')] = None,
+                  bevel: Annotated[Optional[float], Field(description="Bevel width in metres. Omitted: 0.5% of each object's largest dimension. 0 skips the bevel.")] = None,
+                  angle: Annotated[float, Field(description='Edges sharper than this stay hard; the rest smooth. Default 30.')] = 30.0,
+                  segments: Annotated[int, Field(description='Bevel segments. Default 2.')] = 2,
+                  timeout: int = 300) -> dict:
+    """Bevel-by-angle + smooth-by-angle + weighted normals. The faceted,
+    hard-edged look goes away at almost no triangle cost. Run it on every
+    hard-surface object before delivery; run blender_fuse first where parts
+    should be one body.
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.shade(model, out_path, objects=objects, bevel=bevel, angle=angle,
+                            segments=segments, timeout=timeout)
+    return _surface_result(result, out_path, "blender_shade", model=str(model), objects=objects)
+
+
+@_tool
+def blender_lathe(profile: Annotated[list, Field(description='[[radius, height], ...] in metres, bottom to top. radius 0 at an end makes a pole; repeat the first point last to close a ring (a tyre).')],
+                  out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                  name: Annotated[str, Field(description='Object name. Default Lathe.')] = "Lathe",
+                  segments: Annotated[int, Field(description='Segments around. Default 32.')] = 32,
+                  preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                  colour: Annotated[str, Field(description='Hex colour for the preset, e.g. #141414.')] = "",
+                  bevel: Annotated[float, Field(description='Bevel width in metres after the lathe. 0 skips.')] = 0.0,
+                  timeout: int = 300) -> dict:
+    """Revolve a 2D profile around Z into a smooth solid: a tyre, a rim, a
+    bottle, a column, a lamp shade, a barrel. One profile beats a stack of
+    cylinders every time - it is one surface, tapers exactly, and unwraps.
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.lathe(profile, out_path, name=name, segments=segments, preset=preset,
+                            colour=colour or None, bevel=bevel, timeout=timeout)
+    return _surface_result(result, out_path, "blender_lathe", profile=profile, tris=result.get("tris"))
+
+
+@_tool
+def blender_loft(sections: Annotated[list, Field(description='Cross-sections, each a list of [x, y, z] with the SAME point count, in order along the form.')],
+                 out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 name: Annotated[str, Field(description='Object name. Default Loft.')] = "Loft",
+                 closed: Annotated[bool, Field(description="Join each section's last point to its first (a tube). Default True.")] = True,
+                 caps: Annotated[bool, Field(description='Fill the two end sections. Default True.')] = True,
+                 smooth: Annotated[int, Field(description='Subdivision levels. 1 rounds a boxy loft into a body. Default 0.')] = 0,
+                 mirror_x: Annotated[bool, Field(description='Mirror across X so you draw half the form. Default False.')] = False,
+                 preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 bevel: Annotated[float, Field(description='Bevel width in metres after the loft. 0 skips.')] = 0.0,
+                 timeout: int = 300) -> dict:
+    """Skin a surface across cross-sections: a car body from five outlines, a
+    boat hull, a fuselage, a bottle that is not round. Five sections and
+    smooth=1 is a body; a box is not.
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.loft(sections, out_path, name=name, closed=closed, caps=caps, smooth=smooth,
+                           mirror_x=mirror_x, preset=preset, colour=colour or None, bevel=bevel,
+                           timeout=timeout)
+    return _surface_result(result, out_path, "blender_loft", sections=len(sections), tris=result.get("tris"))
+
+
+@_tool
+def blender_material(model: Annotated[str, Field(description='The .glb/.gltf/.blend whose materials are replaced.')],
+                     out_path: Annotated[str, Field(description='Where the .glb is written; a .blend sidecar with the node graphs lands beside it.')],
+                     assign: Annotated[list, Field(description='[{target: object name | material slot name | "" for everything, preset, colour (hex), scale, roughness, wear (painted_metal_worn), strength, name}]')],
+                     timeout: int = 300) -> dict:
+    """Apply material PRESETS in a colour: car_paint, rubber, brushed_metal,
+    chrome, painted_metal_worn, plastic, glass, bark, wood, concrete,
+    emissive. A FLAT COLOUR IS A PLACEHOLDER; these are surfaces. The glTF
+    carries the Principled constants (colour, roughness, metallic, coat); the
+    procedural detail lives in the .blend sidecar - run blender_bake on it to
+    turn the detail into maps the engine can show. Inside blender_run the
+    same presets are bg_material(name, preset, colour, obj=...).
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.apply_materials(model, out_path, assign, timeout=timeout)
+    return _surface_result(result, out_path, "blender_material", model=str(model),
+                           presets=[row.get("preset") for row in assign], sidecar=result.get("sidecar"))
+
+
+@_tool
+def blender_bake(model: Annotated[str, Field(description='The .blend sidecar blender_material wrote (preferred), or a .glb - then pass `assign` too.')],
+                 out_path: Annotated[str, Field(description='Where the textured .glb is written; keep it inside the project.')],
+                 textures_dir: Annotated[str, Field(description='Directory the PNG maps land in, inside the project.')],
+                 objects: Annotated[Optional[list[str]], Field(description='Object names to bake. Empty bakes every mesh.')] = None,
+                 resolution: Annotated[int, Field(description='Map size in pixels per object. Default 1024.')] = 1024,
+                 samples: Annotated[int, Field(description='Cycles samples for the AO pass. Default 16.')] = 16,
+                 maps: Annotated[Optional[list[str]], Field(description='Subset of albedo, roughness, normal, ao. Default all four.')] = None,
+                 ao_strength: Annotated[float, Field(description='How much of the AO is multiplied into the albedo. Default 0.6.')] = 0.6,
+                 assign: Annotated[Optional[list], Field(description='blender_material rows to apply in THIS session before baking (needed when `model` is a glb).')] = None,
+                 timeout: int = 1800) -> dict:
+    """Bake every object's material to albedo / roughness / normal / AO PNGs
+    and rewire the object to them, so the exported glTF carries real
+    textures. A glb has already lost its procedural nodes: bake the .blend
+    sidecar, or pass the same `assign` rows so the presets exist in this
+    session. Per-object maps; fuse first for one atlas per body.
+    """
+    _contained_path(out_path, "out_path")
+    _contained_path(textures_dir, "textures_dir")
+    result = _surface.bake(model, out_path, textures_dir=textures_dir, objects=objects,
+                           resolution=resolution, samples=samples, maps=maps, ao_strength=ao_strength,
+                           assign=assign, timeout=timeout)
+    return _surface_result(result, out_path, "blender_bake", model=str(model), resolution=resolution,
+                           maps=[b.get("maps") for b in result.get("baked") or []])
+
+
+@_tool
+def blender_decal(model: Annotated[str, Field(description='The .glb/.gltf/.blend to place decals on.')],
+                  out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                  decals: Annotated[list, Field(description='[{image (PNG with alpha) | panel_line: true, target: object name, position: [x,y,z], normal: [x,y,z], size: [w,h] metres, roll (deg), cuts, lift, roughness, metallic, emissive, name}]')],
+                  timeout: int = 300) -> dict:
+    """Place conformed, alpha-clipped decal sheets: panel lines, badges,
+    light lenses, labels, dirt - instead of modelling them as geometry that
+    hovers over the paint. Each sheet is subdivided and shrink-wrapped onto
+    the target with a small lift and exports as alphaMode MASK.
+    panel_line=true generates the panel-gap image for you.
+    """
+    _contained_path(out_path, "out_path")
+    rows = []
+    for d in decals:
+        row = dict(d)
+        if row.get("panel_line") and not row.get("image"):
+            line = _Path(out_path).with_name(f"{_Path(out_path).stem}_panel_line.png")
+            row["image"] = _surface.panel_line_image(line)
+        rows.append(row)
+    result = _surface.decals(model, out_path, rows, timeout=timeout)
+    return _surface_result(result, out_path, "blender_decal", model=str(model),
+                           placed=[p.get("name") for p in result.get("placed") or []])
+
+
+@_tool
+def blender_tree(out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project. A leaf card PNG lands beside it unless leaf_image is given.')],
+                 name: Annotated[str, Field(description='Object name; leaves are <name>_Leaves. Default Tree.')] = "Tree",
+                 seed: Annotated[int, Field(description='Deterministic seed; change it for a different tree of the same species.')] = 1,
+                 height: Annotated[float, Field(description='Trunk length in metres. Default 6.')] = 6.0,
+                 trunk_radius: Annotated[float, Field(description='Trunk radius at the base in metres. Default 0.22.')] = 0.22,
+                 levels: Annotated[int, Field(description='Branching levels 1..5. Default 3.')] = 3,
+                 branches: Annotated[Optional[list[int]], Field(description='Children per branch at each level, e.g. [4, 3, 2].')] = None,
+                 spread_deg: Annotated[float, Field(description='Angle children leave their parent at. Default 45.')] = 45.0,
+                 length_ratio: Annotated[float, Field(description='Child length / parent length. Default 0.62.')] = 0.62,
+                 lean_deg: Annotated[float, Field(description='Trunk lean. Default 6.')] = 6.0,
+                 bark_colour: Annotated[str, Field(description='Hex colour for the bark preset. Default #6b5a45.')] = "#6b5a45",
+                 leaves: Annotated[bool, Field(description='Add leaf cards at the tips. Default True.')] = True,
+                 leaf_image: Annotated[str, Field(description='PNG with alpha for the leaf card; empty generates a plain leaf. Use image_generate for a painted one.')] = "",
+                 leaf_size: Annotated[float, Field(description='Leaf card size in metres. Default 0.35.')] = 0.35,
+                 leaves_per_tip: Annotated[int, Field(description='Cards per branch tip. Default 6.')] = 6,
+                 leaf_colour: Annotated[str, Field(description='Hex tint multiplied into the leaf card; empty keeps the image.')] = "",
+                 target_tris: Annotated[int, Field(description='Decimate the trunk to this many triangles; 0 keeps it.')] = 0,
+                 fuse: Annotated[bool, Field(description='Voxel-union the branches into one shell (blender_fuse). Default True.')] = True,
+                 timeout: int = 600) -> dict:
+    """A tree that is ONE swept, tapered surface (recursive branches as
+    bevelled curves, welded) plus one mesh of alpha-clipped leaf cards at the
+    tips - not a stack of prisms with triangles for leaves. Bark preset
+    applied; bake it with blender_bake. Same species, new seed = new tree.
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.tree(out_path, name=name, seed=seed, height=height, trunk_radius=trunk_radius,
+                           levels=levels, branches=tuple(branches or (4, 3, 2)), length_ratio=length_ratio,
+                           spread_deg=spread_deg, lean_deg=lean_deg, bark_colour=bark_colour, leaves=leaves,
+                           leaf_image=leaf_image or None, leaf_size=leaf_size, leaves_per_tip=leaves_per_tip,
+                           leaf_colour=leaf_colour or None, target_tris=target_tris, fuse=fuse, timeout=timeout)
+    return _surface_result(result, out_path, "blender_tree", seed=seed, levels=levels,
+                           trunk_tris=result.get("trunk_tris"), leaf_cards=result.get("leaf_cards"))
+
+
+@_tool
+def blender_scatter(model: Annotated[str, Field(description='The .glb/.gltf/.blend holding both the surface and the item.')],
+                    out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                    target: Annotated[str, Field(description='Object to scatter over (the ground, a branch, a roof).')],
+                    item: Annotated[str, Field(description='Object to copy (a grass tuft, a pebble, a leaf card).')],
+                    count: Annotated[int, Field(description='Copies. Default 200.')] = 200,
+                    seed: Annotated[int, Field(description='Deterministic seed. Default 1.')] = 1,
+                    scale: Annotated[Optional[list[float]], Field(description='[min, max] scale per copy. Default [0.8, 1.25].')] = None,
+                    align: Annotated[bool, Field(description='Rotate each copy to the face normal. Default True.')] = True,
+                    up_only: Annotated[bool, Field(description='Skip faces pointing down. Default True.')] = True,
+                    sink: Annotated[float, Field(description='Drop each copy into the surface by this many metres. Default 0.')] = 0.0,
+                    timeout: int = 600) -> dict:
+    """Scatter copies of one mesh over another's faces, area-weighted, as ONE
+    mesh with the item's materials: grass over ground, pebbles on a path,
+    extra leaf cards along a branch. Deterministic per seed.
+    """
+    _contained_path(out_path, "out_path")
+    result = _surface.scatter(model, out_path, target=target, item=item, count=count, seed=seed,
+                              scale=tuple(scale or (0.8, 1.25)), align=align, up_only=up_only, sink=sink,
+                              timeout=timeout)
+    return _surface_result(result, out_path, "blender_scatter", target=target, item=item, count=count)
+
+
+@_tool
+def blender_look_audit(model: Annotated[str, Field(description='The .glb/.gltf/.blend to judge.')],
+                       tri_budget: Annotated[int, Field(description='Triangles per object above which over_budget fires. Default 20000.')] = 20000,
+                       timeout: int = 300) -> dict:
+    """Measure what makes a model read as SHAPES TACKED TOGETHER, before a
+    human has to say so: disconnected shells inside one object (tacked_shells),
+    hard unbevelled edges (faceted), vertices split on every edge from a glb
+    round trip (split_vertices), materials with no image map (untextured),
+    no UVs, parts touching nothing (floating_part - a headlight in front of
+    the fender), and objects over the triangle budget. `ok` is false on any
+    warning; each finding names the tool that fixes it. Numbers judge form,
+    not taste - render a turnaround and LOOK as well.
+    """
+    return _surface.look_audit(model, tri_budget=tri_budget, timeout=timeout)

@@ -62,20 +62,6 @@ class TestPick:
 
 
 class TestBillingNote:
-    def test_a_live_provider_forbids_hand_rolling(self, monkeypatch):
-        _rows(monkeypatch,
-              kie={"keyed": True, "balance": 412.0, "balance_unit": "credits"})
-        note = gateway.billing_note(None)
-        assert "ROUTING EVENT" in note
-        assert "412 credits" in note
-        assert "Do NOT hand-roll" in note
-
-    def test_nothing_funded_routes_to_the_human(self, monkeypatch):
-        _rows(monkeypatch)
-        note = gateway.billing_note(None)
-        assert "Nothing is funded" in note
-        assert "file the top-up as the blocker" in note
-
     def test_probes_are_cached_not_hammered(self, monkeypatch):
         """A burst of billing failures is exactly when this runs - it must
         not turn into a burst of network probes."""

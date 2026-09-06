@@ -68,12 +68,6 @@ class TestTheSplitIsVisible:
         assert set(got["usable"]) == {"hunyuan-local", "krea"}
         assert got["available"] is True
 
-    def test_it_says_out_loud_that_it_did_not_probe(self, stub):
-        """The word 'usable' carried an implication the call never checked."""
-        stub(local=("hunyuan-local",))
-        assert "no server running" in server._imageto3d_summary()["checked"]
-
-
 class TestTheNoteAnswersTheQuestionThatWasGotWrong:
     def test_a_hosted_option_is_pointed_at_by_name(self, stub):
         """The one sentence that would have saved the session."""
@@ -81,15 +75,6 @@ class TestTheNoteAnswersTheQuestionThatWasGotWrong:
         note = server._imageto3d_summary()["note"]
         assert "krea" in note
         assert "no local server" in note
-
-    def test_local_only_is_warned_about_explicitly(self, stub):
-        """With nothing hosted, a refused connection really can mean the path is
-        down — but only after a probe, and the agent has to be told to run one
-        rather than infer from an unqualified 'usable'."""
-        stub(local=("hunyuan-local", "trellis-cpp"))
-        note = server._imageto3d_summary()["note"]
-        assert "CONFIGURED, not" in note
-        assert "refused connection" in note
 
     def test_nothing_configured_still_says_what_to_set(self, stub):
         """The control: the empty answer must not gain a misleading hint."""

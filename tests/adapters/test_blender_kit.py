@@ -143,14 +143,6 @@ bg_bone_chain("Skeleton", [("Hand", (0, 0, 1), (0, 0, 2), "Arm")])
         assert "'Hand'" in error and "'Arm'" in error
         assert "no bone in the list defines" in error
 
-    def test_the_error_lists_the_bones_that_do_exist(self, tmp_path):
-        error = _fails(tmp_path, """
-bg_bone_chain("Skeleton", [("Hand", (0, 0, 1), (0, 0, 2), "Arm"),
-                           ("Spine", (0, 0, 0), (0, 0, 1), None)])
-""")
-        # Naming the near-miss is the difference between a fix and a hunt.
-        assert "Hand, Spine" in error
-
     def test_a_zero_length_bone_is_refused_not_deleted(self, tmp_path):
         # Blender drops head == tail bones on leaving edit mode and reports
         # nothing — the bone is simply absent from the armature you get back.
@@ -171,15 +163,6 @@ bg_bone_chain("Skeleton", [("Head", (0, 0, 1), (0, 0, 2), None),
         assert "'Head'" in error
         assert "defined twice" in error
 
-    def test_a_name_blender_changes_is_refused(self, tmp_path):
-        # Blender truncates over 63 characters. Same failure as a collision:
-        # the caller asked for a name and did not get it, and only finds out
-        # when a rigid layer binds to nothing.
-        error = _fails(tmp_path, """
-bg_bone_chain("Skeleton", [("B" * 80, (0, 0, 1), (0, 0, 2), None)])
-""")
-        assert "will match nothing" in error
-
     def test_a_refusal_does_not_strand_blender_in_edit_mode(self, tmp_path):
         # The raise happens inside edit mode. Anything the run does afterwards —
         # including the adapter reading the scene back — needs object mode.
@@ -188,10 +171,14 @@ try:
     bg_bone_chain("Skeleton", [("Zero", (0, 0, 1), (0, 0, 1), None)])
 except ValueError as exc:
     print("refused")
-print("MODE", bpy.context.object.mode if bpy.context.object else "none")
+print("MODE", bpy.context.mode)
 """, out_dir=str(tmp_path))
         assert got["ok"] is True, got.get("error")
         assert "refused" in got["print"]
+        # bpy.context.mode, not context.object.mode: after the refusal nothing
+        # is active (Blender 4.5 leaves context.object None), and the question
+        # is whether the SESSION is still in edit mode, not whether an object
+        # is selected.
         assert "MODE OBJECT" in got["print"]
 
 

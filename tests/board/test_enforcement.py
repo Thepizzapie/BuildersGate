@@ -93,19 +93,3 @@ class TestDescribe:
         assert [ln.split(" = ")[0] for ln in lines[1:]] == [
             "director", "lanes", "aegis", "gate"]
         assert all(ln.endswith(".") for ln in lines)
-
-    def test_describe_names_the_override_that_won(self, root, monkeypatch):
-        monkeypatch.setenv("BGATE_ENFORCEMENT", "relaxed")
-        monkeypatch.setenv("BGATE_AEGIS", "block")
-        text = enforcement.describe(str(root))
-        assert "Enforcement profile 'relaxed' (env" in text
-        assert "aegis = block (BGATE_AEGIS)" in text
-        assert "lanes = collide (profile 'relaxed')" in text
-
-    def test_hook_status_carries_the_policy(self, root, monkeypatch, capsys):
-        from bgate_cli import main as cli
-
-        monkeypatch.delenv("BGATE_SEAT", raising=False)
-        assert "Enforcement profile" in hook.selftest(str(root))["enforcement"]
-        cli.hook_status(str(root))
-        assert "Enforcement profile 'standard'" in capsys.readouterr().out

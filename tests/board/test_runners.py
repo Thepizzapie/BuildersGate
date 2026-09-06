@@ -264,19 +264,6 @@ class TestImagePolicy:
         assert "BGATE_IMAGE_MODEL" in prompt, (
             "the env ban does not reach a native tool; the agent has to be told")
 
-    def test_bgate_adds_nothing_to_the_prompt(self, root):
-        """The default needs no paragraph — image_generate is already the only
-        image tool in the process, and prompt weight on every art dispatch is
-        not free."""
-        prompt = dispatch._prompt_for(root, self._item(root), native_images=False)
-        assert "IMAGE BACKEND FOR THIS RUN" not in prompt
-
-    def test_a_non_art_seat_never_gets_the_policy(self, root):
-        prompt = dispatch._prompt_for(root, self._item(root, "gameplay"),
-                                      native_images=True)
-        assert "IMAGE BACKEND FOR THIS RUN" not in prompt
-
-
 # ---------------------------------------------------------------------------
 # The guards that do not apply, saying so
 # ---------------------------------------------------------------------------

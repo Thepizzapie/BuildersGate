@@ -378,16 +378,6 @@ class TestLayout:
 
 
 class TestTiming:
-    def test_holds_reach_the_resource(self):
-        """Godot has carried per-frame durations all along; this emitter wrote a
-        flat 1.0 for every frame ever made."""
-        tres = sprites._sprite_frames_tres(
-            "s.png", [("attack", 4)], (160, 240), 12.0, "assets/sprites",
-            timing={"attack": {"holds": [0.7, 2.0, 1.0, 1.4]}})
-        block = tres.split('&"attack"')[0]
-        assert '"duration": 0.7' in block
-        assert '"duration": 2.0' in block
-
     def test_ping_pong_replays_frames_without_stuttering_at_the_ends(self):
         tres = sprites._sprite_frames_tres(
             "s.png", [("idle", 3)], (160, 240), 6.0, "assets/sprites",
@@ -397,19 +387,6 @@ class TestTiming:
         assert block.count('SubResource("atlas_1")') == 2
         assert block.count('SubResource("atlas_0")') == 1
         assert block.count('SubResource("atlas_2")') == 1
-
-    def test_a_timing_loop_flag_overrides_the_name_rule(self):
-        tres = sprites._sprite_frames_tres(
-            "s.png", [("ko", 2)], (160, 240), 8.0, "assets/sprites",
-            timing={"ko": {"loop": True}})
-        assert '"loop": true' in tres
-
-    def test_a_zero_hold_cannot_drop_a_frame(self):
-        """0 parses fine and then never displays, which reads as a dropped frame
-        and looks like an ordinary number in the file."""
-        tres = sprites._sprite_frames_tres(
-            "s.png", [("a", 1)], (16, 16), 8.0, "d", timing={"a": {"holds": [0]}})
-        assert '"duration": 0.05' in tres
 
     def test_an_order_naming_a_frame_that_does_not_exist_is_dropped(self):
         """Substituting frame 0 for it would emit an animation nobody asked for

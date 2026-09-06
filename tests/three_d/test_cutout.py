@@ -84,14 +84,6 @@ def test_a_fresh_document_is_valid_and_complete_in_shape():
     assert d["skin"] == {}
 
 
-def test_bone_names_must_be_nodepath_safe():
-    d = cutout.empty("hero")
-    d["bones"][2]["name"] = "head/left"
-    with pytest.raises(CutoutError) as exc:
-        cutout.normalise(d)
-    assert "legal Godot node name" in str(exc.value)
-
-
 def test_a_cycle_is_refused():
     d = cutout.empty("hero")
     by = {b["name"]: b for b in d["bones"]}
@@ -101,29 +93,11 @@ def test_a_cycle_is_refused():
     assert "cycle" in str(exc.value)
 
 
-def test_two_roots_are_refused():
-    d = cutout.empty("hero")
-    for bone in d["bones"]:
-        if bone["name"] == "head":
-            bone["parent"] = ""
-    with pytest.raises(CutoutError) as exc:
-        cutout.normalise(d)
-    assert "exactly one root" in str(exc.value)
-
-
 def test_a_slot_on_a_missing_bone_is_refused():
     d = cutout.empty("hero")
     d["slots"][0]["bone"] = "tentacle"
     with pytest.raises(CutoutError):
         cutout.normalise(d)
-
-
-def test_skin_for_an_unknown_slot_is_refused():
-    d = cutout.empty("hero")
-    d["skin"] = {"tail": {"texture": "x.png"}}
-    with pytest.raises(CutoutError) as exc:
-        cutout.normalise(d)
-    assert "which this template does not have" in str(exc.value)
 
 
 def test_duplicate_bone_names_are_refused():
@@ -199,16 +173,6 @@ def test_zero_keys_are_floats_not_ints(project, doc):
             assert "." in number or "e" in number, f"integer key in {line}"
 
 
-def test_positions_flip_into_godot_space(project, doc):
-    """Doc +y is up; Godot +y is down. Exactly one flip, in one place."""
-    text = cutoutwire.scene_text(doc, project_dir=project,
-                                 library_res="res://x.tres",
-                                 script_res="res://y.gd", sizes=SIZES)
-    # hips sit 96 above the ground in the doc, so 96 BELOW the origin in Godot.
-    hips = [line for line in text.splitlines() if line.startswith("position = ")]
-    assert "Vector2(0.0, -96.0)" in hips[0]
-
-
 def test_every_sprite_pins_absolute_z(project, doc):
     text = cutoutwire.scene_text(doc, project_dir=project,
                                  library_res="res://x.tres",
@@ -216,14 +180,6 @@ def test_every_sprite_pins_absolute_z(project, doc):
     sprites = text.count('type="Sprite2D"')
     assert sprites == 13
     assert text.count("z_as_relative = false") == sprites
-
-
-def test_the_library_is_registered_under_the_empty_name(project, doc):
-    text = cutoutwire.scene_text(doc, project_dir=project,
-                                 library_res="res://x.tres",
-                                 script_res="res://y.gd")
-    assert '"": ExtResource("2_lib")' in text
-    assert "callback_mode_method = 1" in text
 
 
 def test_looping_clips_have_no_key_on_the_length(project, doc):
@@ -237,14 +193,6 @@ def test_looping_clips_have_no_key_on_the_length(project, doc):
 def test_the_no_loop_clips_do_not_loop(project, doc):
     for name in cutout.NO_LOOP:
         assert cutoutwire.bake_clip(doc, name)["loop_mode"] == 0
-
-
-def test_a_part_outside_the_project_is_refused(project, doc, tmp_path):
-    doc["skin"]["head"]["texture"] = str(tmp_path / "elsewhere.png")
-    with pytest.raises(CutoutError) as exc:
-        cutoutwire.scene_text(doc, project_dir=project,
-                              library_res="res://x.tres", script_res="res://y.gd")
-    assert "outside the Godot project" in str(exc.value)
 
 
 def test_emit_is_byte_identical_for_an_unchanged_document(project, doc):

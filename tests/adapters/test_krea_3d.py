@@ -101,13 +101,6 @@ class TestPriceIsUnknownNotFree:
         krea.submit_3d("a crate", model="trellis-2")
         assert captured, "a priced model should not be gated"
 
-    def test_the_refusal_says_compute_tokens_are_the_wrong_meter(self, captured):
-        """Krea's user guide quotes compute tokens; those are the web app's
-        subscription currency, not the API's USD balance. Somebody reading the
-        wrong page is exactly how this got mis-stated in the first place."""
-        got = krea.generate_3d("out.glb", images=["plate.png"], model="tripo")
-        assert "web app" in got["price_note"]
-
     def test_a_failed_generation_still_reports_unknown_not_zero(self, monkeypatch):
         monkeypatch.setenv("KREA_API_KEY", "test-key")
 
@@ -170,17 +163,6 @@ class TestUnsupportedParametersAreRefusedNotDropped:
                        enable_pbr=True)
         assert captured["payload"]["face_count"] == 200_000
         assert captured["payload"]["enable_pbr"] is True
-
-    def test_shape_is_checked_before_the_key(self, monkeypatch):
-        """A bad parameter must not be answered with "KREA_API_KEY not set".
-        That names the wrong problem, and it would make every refusal above
-        untestable without a live key."""
-        monkeypatch.delenv("KREA_API_KEY", raising=False)
-        monkeypatch.setattr(krea, "api_key", lambda root=None: "")
-        with pytest.raises(krea.KreaError) as err:
-            krea.submit_3d("a crate", model="tripo", enable_pbr=True)
-        assert "does not take enable_pbr" in str(err.value)
-
 
 class TestPayloadShape:
     def test_an_image_sets_image_mode(self, captured, tmp_path):

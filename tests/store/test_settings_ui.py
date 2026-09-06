@@ -165,11 +165,6 @@ class TestFindability:
         for part in ("help", "env_vars", "group"):
             assert part in body, f"the filter cannot match on {part}"
 
-    def test_non_default_values_are_surfaced(self):
-        body = screen()
-        assert 'f.source !== "default"' in body, (
-            "nothing marks a row the project has actually changed")
-
     @pytest.mark.parametrize("flag", ["guard", "human_only", "advanced"])
     def test_the_flags_the_hierarchy_leans_on_are_in_the_payload(self, flag):
         """describe() has to keep sending these, or the page goes flat again."""

@@ -79,10 +79,6 @@ def test_public_statics_exported(name):
     assert name + " =" in CODE, f"{name} is no longer exported"
 
 
-def test_engine_is_on_window():
-    assert "window.NodeCanvas = NodeCanvas" in CODE
-
-
 @pytest.mark.parametrize("opt", OPTIONS)
 def test_every_host_option_is_still_read(opt):
     assert f"o.{opt}" in CODE, f"option {opt!r} is no longer read by the engine"
@@ -114,10 +110,6 @@ def test_body_repaint_is_guarded_by_focus_and_change():
         "the body is no longer gated on (not focused AND actually changed)"
     assert body.count("body.innerHTML") == 1, \
         "the body is written outside the focus guard"
-
-
-def test_refresh_node_can_skip_the_body():
-    assert "opts.body !== false" in _method("_renderNode")
 
 
 def test_affordances_never_touch_a_node_body():

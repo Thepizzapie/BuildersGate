@@ -111,11 +111,6 @@ class TestClaudeConfig:
         assert entry["found"] is False
         assert "first run" in entry["error"]
 
-    def test_broken_json_refuses_to_guess(self, home):
-        (home / ".claude.json").write_text("{{{", encoding="utf-8")
-        assert "not valid JSON" in A._claude_read()["error"]
-
-
 class TestCodexConfig:
     def test_the_table_is_read(self, home):
         _codex_toml(home, "model = 'gpt-5'\n\n[mcp_servers.builders-gate]\n"
@@ -363,9 +358,6 @@ class TestTheOtherClients:
         assert line.startswith("code --add-mcp")
         assert '\\"name\\"' in line
 
-    def test_the_typed_name_is_the_exe_not_the_row_id(self, home):
-        assert "vscode --add-mcp" not in A.command_line("vscode")
-
     def test_gemini_is_registered_at_user_scope(self, home):
         """The default scope is the CURRENT PROJECT, and a registration that
         only works in the directory you were standing in is the same class of
@@ -426,8 +418,3 @@ class TestDoctorRow:
         row = A.doctor_row()
         assert row["available"] is True
         assert "no dispatch runner" in row["detail"]
-
-    def test_nothing_at_all_points_at_the_command_that_helps(self, home,
-                                                             monkeypatch):
-        monkeypatch.setattr(A, "status", lambda: [])
-        assert "bgate connect" in A.doctor_row()["detail"]

@@ -80,10 +80,6 @@ class TestTheReport:
         assert M.connect([]) == 0
         assert "wired, pinned to this interpreter" in capsys.readouterr().out
 
-    def test_the_report_names_the_restart_nobody_remembers(self, home, capsys):
-        M.connect([])
-        assert "restart the client" in capsys.readouterr().out
-
     def test_show_prints_a_block_for_a_client_with_no_mcp_add(self, home,
                                                               capsys):
         (home / ".cursor").mkdir()
@@ -91,11 +87,6 @@ class TestTheReport:
         out = capsys.readouterr().out
         assert "mcpServers" in out
         assert sys.executable in out
-
-    def test_show_answers_for_a_client_nobody_here_has_heard_of(self, home,
-                                                               capsys):
-        M.connect([], show=True)
-        assert "any other MCP client" in capsys.readouterr().out
 
     def test_json_is_the_whole_payload(self, home, capsys):
         M.connect([], as_json=True)

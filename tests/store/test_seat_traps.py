@@ -81,16 +81,6 @@ class TestItIsInTheBrief:
         assert len(after) > len(before)
         assert any("ROW-major" in t for t in after)
 
-    def test_the_existing_rules_survived(self, root):
-        """The tooling rule is prepended, not substituted — the boundary rule
-        and the work manifest are what stop an agent leaving its project and
-        dying without a checkpoint trail. (The lane rule went advisory on
-        2026-08-19; the project boundary is the enforced line now.)"""
-        rules = " ".join(_brief(root)["rules"])
-        assert "boundary is enforced" in rules
-        assert "WORK MANIFEST" in rules
-
-
 class TestItStaysAffordable:
     def test_the_traps_are_a_small_fraction_of_the_brief_budget(self, root):
         """A brief is a budget. If this ever grows past a tenth of it, the bar

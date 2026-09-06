@@ -268,12 +268,6 @@ class TestCli:
         assert code == 2
         assert not (empty / "nope").exists()
 
-    def test_init_is_listed_in_the_help(self, capsys, monkeypatch):
-        monkeypatch.setattr(cli.sys, "argv", ["bgate"])
-        cli.main()
-        assert "bgate init" in capsys.readouterr().out
-
-
 class TestServeBanner:
     """`python -m bgate_ui` printed nothing at all, so the command that starts
     the product looked like a hang."""

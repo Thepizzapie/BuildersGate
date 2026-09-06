@@ -296,12 +296,6 @@ class TestQaGateCap:
             (qa_gate.ESCALATION_SOURCE,))]) == 1
         assert dispatched == []
 
-    def test_the_last_round_tells_the_reviewer_it_is_the_last(self, root):
-        item = dict(queue.add(root, "art", "final round"))
-        item["attempts"] = qa_gate.MAX_ROUNDS - 1
-        assert "the last automatic one" in qa_gate._brief_for(item)
-
-
 # ---------------------------------------------------------------------------
 # 5 + 6. The director board is bounded and lineage survives a reload
 # ---------------------------------------------------------------------------

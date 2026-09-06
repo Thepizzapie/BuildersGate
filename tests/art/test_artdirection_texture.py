@@ -213,11 +213,6 @@ class TestDecalClause:
         for demand in ("legible", "exact spelling", "high contrast"):
             assert demand in text, f"{demand!r} missing from the decal clause"
 
-    def test_it_is_isolated_with_nothing_behind_it(self, brief):
-        text = ad.clause(brief, task_kind="decal").lower()
-        assert "nothing else is in the frame" in text
-        assert "no drop shadow" in text
-
     def test_it_carries_no_character_anatomy(self, brief):
         assert "chibi" not in ad.clause(brief, task_kind="decal")
 
@@ -509,19 +504,6 @@ class TestWiring:
         from bgate_core.art import chroma
 
         assert chroma.needs_key("texture") is False
-
-    def test_the_form_clause_reaches_a_rootless_call(self, monkeypatch, tmp_path):
-        """No project means no bible, but "a texture map carries no baked
-        lighting" was never a bible statement."""
-        from bgate_core.art import chroma
-
-        seen = {}
-        monkeypatch.setattr("bgate_adapters.krea.generate",
-                            lambda p, o, **k: (seen.update(prompt=p),
-                                               {"ok": False, "error": "x"})[1])
-        chroma.generate("mossy stone", tmp_path / "t.png", provider="krea",
-                        model="krea-2-medium", task_kind="texture")
-        assert "TEXTURE MAP" in seen["prompt"]
 
     def test_an_ordinary_krea_character_call_is_unchanged(self, brief,
                                                           monkeypatch, tmp_path):

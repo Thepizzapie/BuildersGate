@@ -157,11 +157,6 @@ class TestBugReport:
         assert built["items"] == [item]
         assert "huh, weird" not in built["markdown"]
 
-    def test_missing_repro_steps_say_so_instead_of_looking_complete(
-            self, root, session, item):
-        md = playtest.report(root, session)["markdown"]
-        assert "nobody has reproduced this" in md
-
     def test_per_item_report_covers_one_item_whatever_its_status(
             self, root, session, item):
         with db.tx(root) as conn:

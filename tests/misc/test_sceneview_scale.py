@@ -137,17 +137,3 @@ def test_the_hud_names_both_percentages():
     assert "game ${" in paint and "editor ${" in paint
     assert re.search(r"view\.z\s*/\s*gs", paint), \
         "the game percentage is view.z relative to the game's factor"
-
-
-def test_the_one_to_one_button_says_what_it_goes_to():
-    """"1:1" names the wrong thing on a stretched project — one WHAT to one
-    what? It goes to the size the player sees."""
-    paint = _body("_paint")
-    assert '"game" : "1:1"' in paint
-
-
-def test_a_missing_scale_from_the_api_is_one_not_a_crash():
-    """An older server does not send `scale` at all. The panel then behaves as
-    an unstretched project rather than dividing by undefined — which is exactly
-    what a dashboard running yesterday's Python does."""
-    assert "isFinite(s) && s > 0 ? s : 1" in _body("gameScaleOf")

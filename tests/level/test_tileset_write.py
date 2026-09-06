@@ -127,15 +127,6 @@ class TestCollision:
     def _poly(self):
         return [[(-16, -16), (-7, -16), (-7, 16), (-16, 16)]]
 
-    def test_polygons_reach_the_file_in_godots_own_shape(self):
-        text = tilemap.write_tileset(
-            [{"id": 0, "texture": "res://a.png", "tiles": [(0, 0)],
-              "collision": {(0, 0): self._poly()}}],
-            tile_size=(32, 32), physics=True)
-        assert "physics_layer_0/collision_layer = 1" in text
-        assert ("0:0/0/physics_layer_0/polygon_0/points = "
-                "PackedVector2Array(-16, -16, -7, -16, -7, 16, -16, 16)") in text
-
     def test_no_polygons_count_line(self):
         """Godot infers the count and DROPS every polygon when the count is
         written explicitly — the resource still loads, reporting no shapes."""

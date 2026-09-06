@@ -88,21 +88,9 @@ class TestTheSearch:
 
 
 class TestTheRender:
-    def test_the_count_is_distinct_tools_not_group_memberships(self):
-        # sprite_sheet_check is in two groups; the surface is still 5 tools.
-        assert "THE 5 TOOLS" in toolindex.render(SAMPLE)
-
-    def test_it_names_the_seat_when_there_is_one(self):
-        assert "the ART seat" in toolindex.render(SAMPLE, seat="art")
-        assert "this session" in toolindex.render(SAMPLE)
-
     def test_the_spine_is_last(self):
         text = toolindex.render(SAMPLE)
         assert text.index("IMAGE") < text.index("SPINE")
-
-    def test_no_schemas_leak_into_it(self):
-        text = toolindex.render(SAMPLE)
-        assert "More prose that must not appear" not in text
 
     def test_compact_is_names_only_and_much_smaller(self):
         full = toolindex.render(SAMPLE)

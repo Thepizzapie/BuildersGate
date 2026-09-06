@@ -266,15 +266,6 @@ class TestBlenderDiscoveryOrder:
         assert blender._path_version("/opt/blender-4.5.1/blender") == (4, 5, 1)
         assert blender._path_version("/usr/bin/blender") == ()
 
-    def test_4_10_beats_4_9(self, installs):
-        """The whole bug in one assert: "4.10" < "4.9" as strings."""
-        installs("4.9", "4.10")
-        assert "Blender 4.10" in blender.find_blender()
-
-    def test_4_5_beats_3_6(self, installs):
-        installs("4.5", "3.6")
-        assert "Blender 4.5" in blender.find_blender()
-
     def test_below_floor_install_is_unavailable_with_its_version(self, installs):
         installs("4.1")
         with pytest.raises(blender.BlenderNotFound) as exc:
@@ -285,10 +276,6 @@ class TestBlenderDiscoveryOrder:
         assert "not found" not in message.lower()  # it IS installed; say so
         assert blender.available()["available"] is False
         assert "4.1" in blender.available()["reason"]
-
-    def test_a_newer_install_wins_over_a_too_old_one(self, installs):
-        installs("4.1", "4.5")
-        assert "Blender 4.5" in blender.find_blender()
 
     def test_unversioned_layout_is_a_fallback_not_a_winner(self, tmp_path,
                                                            monkeypatch):

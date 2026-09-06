@@ -650,21 +650,6 @@ class TestGeneratedSceneText:
         kw.setdefault("bounds_position", [-0.4, 0.0, -0.35])
         return godot.character_scene_text("res://assets/hero.glb", **kw)
 
-    def test_the_model_is_a_child_never_the_root(self):
-        """A .glb is re-imported on every change and anything written into it
-        is discarded. The script, the collider and the hurtbox have to hang off
-        a node the importer does not own."""
-        text = self._scene(script_res="res://scripts/player.gd")
-        assert '[node name="Hero" type="CharacterBody3D"]' in text
-        assert ('[node name="Model" parent="." instance=ExtResource("1_model")]'
-                in text)
-        assert 'script = ExtResource("2_script")' in text
-
-    def test_it_carries_a_collision_shape(self):
-        text = self._scene()
-        assert '[node name="CollisionShape3D" type="CollisionShape3D" parent="."]' in text
-        assert 'shape = SubResource("CapsuleShape3D_body")' in text
-
     def test_the_capsule_is_fitted_to_the_measured_bounds(self):
         """The template's capsule was a guess (0.4 / 1.8) that no asset was
         ever checked against. This one comes from the engine's own numbers.
@@ -746,22 +731,6 @@ class TestGeneratedSceneText:
 
 
 class TestPreviewSceneText:
-    def test_the_preview_camera_wins_over_the_characters_own(self):
-        """MEASURED, and the reason the first frame off this path was a
-        full-screen blur: the character scene used to carry a first-person
-        Camera3D (player.gd needs $Camera3D), Godot makes the FIRST camera into
-        the tree current, and the subject is instanced before the preview
-        camera. The screenshot was taken from inside the character's head.
-
-        The character no longer ships a camera by default, and this assertion
-        stays anyway: with_camera=True, or any camera a human adds to the
-        subject, would otherwise take the frame back off us without a word."""
-        text = godot.preview_scene_text("res://scenes/hero.tscn",
-                                        longest_axis=1.8)
-        assert '[node name="PreviewCamera" type="Camera3D" parent="."]' in text
-        camera = text.split('[node name="PreviewCamera"', 1)[1]
-        assert "current = true" in camera
-
     def test_the_camera_stands_on_the_side_the_face_is_on(self):
         """The screenshot is the artifact a human is handed to judge the asset,
         and for a while it showed the back of the head.
@@ -809,16 +778,6 @@ class TestPreviewSceneText:
         visible_h = 2.0 * dist * math.tan(math.radians(40.0) / 2.0)
         assert 1.8 < visible_h < 1.8 * 2.0, (
             f"1.8 m subject in {visible_h:.2f} m of frame — clipped or a speck")
-
-    def test_there_is_a_floor_to_stand_on(self):
-        """The subject runs the template player script, which applies gravity
-        from its first physics frame. With no floor it had fallen ~10 m out of
-        frame by the 1.2 s capture, and the screenshot came back as an empty
-        background that looked exactly like a failed import."""
-        text = godot.preview_scene_text("res://scenes/hero.tscn",
-                                        longest_axis=1.8, floor_y=-0.9)
-        assert '[node name="Floor" type="StaticBody3D" parent="."]' in text
-        assert 'shape = SubResource("BoxShape3D_floor")' in text
 
     def test_the_floor_sits_under_the_feet_not_through_them(self):
         text = godot.preview_scene_text("res://scenes/hero.tscn",

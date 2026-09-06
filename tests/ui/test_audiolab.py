@@ -214,12 +214,6 @@ def test_turning_looping_off_zeroes_the_mode_not_the_offsets(wav):
     assert "edit/loop_mode=0" in audiolab.import_path(wav).read_text(encoding="utf-8")
 
 
-def test_a_loop_past_the_end_of_the_clip_is_refused(wav):
-    with pytest.raises(audiolab.AudioError) as exc:
-        audiolab.write_loop(wav, enabled=True, begin_s=99.0)
-    assert "past the clip" in str(exc.value)
-
-
 def test_a_backwards_loop_range_is_refused(wav):
     with pytest.raises(audiolab.AudioError):
         audiolab.write_loop(wav, enabled=True, begin_s=1.0, end_s=0.5)

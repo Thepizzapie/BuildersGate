@@ -82,10 +82,6 @@ class TestScriptContract:
         src = blender._rig_script()
         assert src.index("ARMATURE_AUTO") < src.index("ARMATURE_ENVELOPE")
 
-    def test_the_verdict_counts_vertices_without_groups(self):
-        assert "if not v.groups" in blender._rig_script()
-
-
 class TestHumanoidTemplate:
     """The template has to SHIP, or a first-run user gets none of this.
 

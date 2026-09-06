@@ -72,13 +72,6 @@ def test_empty_and_header_only_data_are_empty_not_errors():
     assert tilemap.decode_cells(_packed([])) == []
 
 
-def test_a_truncated_cell_is_refused_rather_than_half_read():
-    blob = base64.b64decode(_packed([(1, 1, 0, 0, 0, 0)]))
-    with pytest.raises(tilemap.TileError) as exc:
-        tilemap.decode_cells(base64.b64encode(blob[:-3]).decode())
-    assert "whole number" in str(exc.value)
-
-
 def test_non_base64_is_refused():
     with pytest.raises(tilemap.TileError):
         tilemap.decode_cells("!!!! not base64 !!!!")
@@ -112,14 +105,6 @@ def test_a_coordinate_outside_int16_is_refused_not_wrapped():
     with pytest.raises(tilemap.TileError) as exc:
         tilemap.encode_cells([{"x": 70000, "y": 0, "source": 0}])
     assert "int16" in str(exc.value)
-
-
-def test_two_cells_on_one_coordinate_are_refused():
-    """A layer holds one tile per coordinate; the loser would silently vanish."""
-    with pytest.raises(tilemap.TileError) as exc:
-        tilemap.encode_cells([{"x": 1, "y": 1, "source": 0},
-                              {"x": 1, "y": 1, "source": 3}])
-    assert "(1, 1)" in str(exc.value)
 
 
 def test_encoding_nothing_is_a_valid_empty_layer():

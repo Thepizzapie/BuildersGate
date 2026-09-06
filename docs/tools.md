@@ -1034,6 +1034,108 @@ whose bones are named on another scheme entirely reports `checked: 0` and
 refuses, rather than passing an empty intersection as agreement.
 ```
 
+## blender_fuse
+
+```text
+Fuse touching or overlapping meshes into ONE continuous surface: join,
+voxel remesh (the union happens here - a branch grows out of the trunk
+instead of poking through it), smooth, decimate back to target_tris, and
+carry every material index over from the nearest original face. The cure
+for "shapes tacked together". voxel=0 picks 0.4% of the largest dimension.
+```
+
+## blender_shade
+
+```text
+Bevel-by-angle + smooth-by-angle + weighted normals on the named objects
+(default all). The faceted look goes away at almost no triangle cost; the
+default bevel is 0.5% of each object's largest dimension.
+```
+
+## blender_lathe
+
+```text
+Revolve a 2D profile [[radius, height], ...] around Z into a smooth solid:
+a tyre, a rim, a bottle, a column. radius 0 at an end makes a pole.
+Optionally a material preset and colour. Cylindrically unwrapped.
+```
+
+## blender_loft
+
+```text
+Skin a surface across cross-sections (each a list of [x, y, z] with the same
+point count): a car body from five outlines, a hull, a fuselage. closed
+joins each ring, caps fills the ends, smooth adds subdivision levels,
+mirror_x mirrors across X so you draw half the car.
+```
+
+## blender_material
+
+```text
+Apply material PRESETS - car_paint, rubber, brushed_metal, chrome,
+painted_metal_worn (wear=0..1), plastic, glass, bark, wood, concrete,
+emissive - to objects or material slots, in a colour. The glTF carries the
+Principled constants; the procedural detail lives in the .blend sidecar
+written beside out_path. Bake from that (blender_bake) to turn the detail
+into maps. Inside blender_run the same presets are bg_material(...).
+```
+
+## blender_bake
+
+```text
+Bake every object's material to albedo / roughness / normal / AO PNGs
+(Cycles, CPU) and rewire the object to the baked maps, so the glTF ships
+real textures. Load the .blend sidecar blender_material wrote, or pass the
+same `assign` rows to apply presets in this session first - a glb has
+already lost its procedural nodes and bakes back to a flat colour.
+AO is multiplied into the albedo (ao_strength).
+```
+
+## blender_decal
+
+```text
+Place conformed, alpha-clipped decal sheets on a surface: panel lines,
+badges, lights, labels - instead of modelling them as geometry that hovers
+over the paint. Each decal is an image (or panel_line=true for a generated
+panel-gap line), a target object, a position and normal, and a size; the
+sheet is subdivided and shrink-wrapped onto the target with a small lift.
+```
+
+## blender_tree
+
+```text
+A tree that is ONE swept, tapered surface plus one mesh of alpha-clipped
+leaf cards at the tips - not a stack of prisms with triangles for leaves.
+Recursive branches as bevelled curves, welded and voxel-fused into one
+shell (fuse=True), bark preset applied (bake it with blender_bake), a leaf
+card PNG generated beside the glb unless leaf_image is given (paint one
+with image_generate for a hero tree). Deterministic per seed: same species,
+new seed, new tree.
+```
+
+## blender_scatter
+
+```text
+Scatter copies of one mesh over another's faces, area-weighted, as ONE
+mesh with the item's materials: grass over ground, pebbles on a path, more
+leaf cards along a branch. align rotates to the face normal, up_only skips
+undersides, sink drops each copy into the surface. Deterministic per seed.
+```
+
+## blender_look_audit
+
+```text
+Measure what makes a model read as SHAPES TACKED TOGETHER before a human
+says so: disconnected shells inside one object (tacked_shells), hard
+unbevelled edges (faceted), vertices split on every edge from a glb round
+trip (split_vertices), materials with no image map (untextured), no UVs,
+parts touching nothing (floating_part), objects over the triangle budget.
+Counts are taken on a welded copy; a sheet of cards (leaves, scatter) is
+not tacked parts; a whole asset beside another is not a floating part. ok
+is false on any warning and each finding names the tool that fixes it.
+Numbers judge form, not taste - render a turnaround and LOOK as well.
+```
+
 ## blender_texture
 
 ```text

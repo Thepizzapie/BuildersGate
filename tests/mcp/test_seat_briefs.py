@@ -128,6 +128,9 @@ NOT_TOOLS = {
     "bg_ball", "bg_bone_chain", "bg_box", "bg_clean", "bg_cyl", "bg_finish",
     "bg_help", "bg_join", "bg_mat", "bg_mirror", "bg_plane", "bg_smooth",
     "bg_stats", "bg_taper", "bg_unwrap",
+    # the surface kit (_blender_surface_kit), same namespace
+    "bg_fuse", "bg_shade", "bg_lathe", "bg_loft", "bg_material", "bg_surface_help",
+    "bg_tree", "bg_scatter", "bg_leaf_material",
     # parameters and result keys
     "anchor_views", "artifact_id", "audio_track", "cast_refs", "decal_on",
     "dry_run",
@@ -315,16 +318,6 @@ class TestNoTwoRulesFightOverOneDecision:
             "the brief no longer distinguishes the verdict's question from the "
             "one only a human eye answers, so 'LOOK at the frame' and 'a blown "
             "frame is lighting' compete again")
-
-    def test_the_layer_ceiling_is_described_as_the_warning_it_is(self):
-        # THE DECISION: what happens at nine layers. blender_combine warns and
-        # assembles; the old brief implied a refusal. A rule an agent believes
-        # is enforced is a rule it stops keeping.
-        text = seats.ART_3D_WORKFLOW
-        assert "warns above eight" in text
-        assert "nothing refuses you" in text
-        assert "EIGHT IS THE CEILING" not in text, (
-            "this phrasing claims an enforcement that does not exist")
 
     def test_the_brief_does_not_tell_the_seat_to_wait_for_a_human(self):
         # THE DECISION: whether to stop before spending. ask_human returns

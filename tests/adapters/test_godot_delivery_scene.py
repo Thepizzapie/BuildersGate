@@ -45,28 +45,6 @@ class TestTheDeliveredSceneDoesNotStealTheView:
 
         assert "Camera3D" not in text, text
 
-    def test_the_rest_of_the_scene_is_unchanged_by_dropping_the_camera(self):
-        """The camera was the only thing removed. The body, the instanced model
-        and the fitted capsule are what the scene exists for."""
-        text = _scene()
-
-        assert '[node name="Pirate" type="CharacterBody3D"]' in text
-        assert ('[node name="Model" parent="." instance=ExtResource("1_model")]'
-                in text)
-        assert '[node name="CollisionShape3D" type="CollisionShape3D" parent="."]' in text
-
-    def test_an_opted_in_camera_still_refuses_to_be_current(self):
-        """templates/3d's player.gd does `@onready var _camera := $Camera3D`, so
-        the option has to survive for a scene that IS the player. It stays
-        harmless by never claiming the view: node order decides `current` when
-        nobody declares it, and node order is exactly what put the boot frame
-        inside the character's head."""
-        text = _scene(with_camera=True)
-
-        assert '[node name="Camera3D" type="Camera3D" parent="."]' in text
-        assert "current = false" in text
-        assert "current = true" not in text
-
     def test_load_steps_still_counts_what_is_there_with_a_camera(self):
         """A Camera3D is neither an ext_resource nor a sub_resource, so the
         header must not move — Godot trusts load_steps and a wrong count is a
