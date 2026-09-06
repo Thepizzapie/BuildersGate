@@ -148,10 +148,26 @@ def claude_mcp_config(server_name: str = MCP_SERVER_NAME) -> list[str]:
     this never edits ~/.claude.json — the same bargain `mcp_overrides` strikes
     with ~/.codex/config.toml, for the same reason.
 
-    NOT `--strict-mcp-config`. That would drop every server the user configured
-    themselves, and a dispatched agent losing the human's own tooling is a
-    worse surprise than the one being fixed. Ours becomes guaranteed; theirs is
-    left alone.
+    WAS "NOT `--strict-mcp-config`", REVERSED ON MEASUREMENT. The original
+    reasoning was that dropping every server the user configured themselves is
+    a worse surprise than the one being fixed — ours guaranteed, theirs left
+    alone. That is a real cost and it was the right call to state; what it
+    lacked was a number.
+
+    The number: across 76 dispatched runs on the measuring machine, agents
+    invoked the user's other MCP servers EXACTLY ZERO times. They invoked
+    bgate's tools, six built-ins, ToolSearch and PowerShell, and nothing else.
+    Meanwhile each run's init event listed 203-229 tools, of which roughly 110
+    came from a dozen servers registered at user scope for the human's own
+    work — every one of those schemas riding in the agent's context on every
+    turn, at ~119K tokens per turn and 200 turns on the worst item.
+
+    So the trade the old note weighed was never live: the surprise it protected
+    against had not happened once, and its price was most of the context window.
+    `--strict-mcp-config` is now passed. If a seat ever genuinely needs a
+    non-bgate server, add it to the `--mcp-config` JSON above where it is
+    declared and auditable, rather than inheriting whatever the human happens
+    to have installed that week.
     """
     import json as _json
 
@@ -211,6 +227,20 @@ class Runner:
     chat: Optional[Chat] = None
 
 
+#: The built-in tools a dispatched agent may have. See _claude_args for how
+#: this is enforced (--tools, not --allowedTools) and what it cost to find out.
+#: Every entry is a tool the agents were MEASURED using across 76 real runs;
+#: nothing is here on the theory that it might be handy.
+AGENT_BUILTIN_TOOLS: tuple[str, ...] = (
+    "Read", "Edit", "Write", "Glob", "Grep", "Bash",
+    # 288 calls. Tools arrive deferred, so without this an agent cannot fetch
+    # the schema of a tool its own brief told it to use.
+    "ToolSearch",
+    # Windows is the supported platform and this is how a run drives it.
+    "PowerShell",
+)
+
+
 def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
                  cwd: str, native_images: bool, max_turns: int = 0,
                  auto_approve: bool = False, mcp_env_vars=()) -> list[str]:
@@ -239,12 +269,43 @@ def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
     boundary; an agent grinding through a tool loop offers no such boundary and
     runs past its dollars unobserved. Turns are counted by the CLI and end the
     session on their own. 0 means the caller wants none.
+
+    --tools IS THE ONE THAT ACTUALLY LIMITS THE TOOLBOX, and for a long time
+    this function did not pass it. `--allowedTools` reads like the restriction
+    and is not one: the CLI documents it as "tool names to ALLOW", a PERMISSION
+    list that decides what runs without prompting. Availability is `--tools`.
+    So a dispatch asking for six tools got them permitted — and every other
+    built-in handed over anyway.
+
+    MEASURED on this project's own agent logs, from each run's init event:
+    dispatch asked for 6 tools, the runs were given 203-229. Among them Task
+    and Workflow, so every seated agent could spawn subagents — Workflow can
+    open dozens in one call — plus CronCreate, RemoteTrigger, ScheduleWakeup,
+    SendMessage, WebSearch and WebFetch. None of that was intended and none of
+    it was visible from this file.
+
+    WHAT THE LIST BELOW IS, and why it is not just the six: it is what the
+    agents were MEASURED using across 76 runs. Read/Edit/Bash/Grep/Write/Glob
+    are the intended set. ToolSearch is on it because tools arrive deferred and
+    it was called 288 times — remove it and an agent cannot fetch the schema of
+    a tool it has been told to use. PowerShell is on it because this is the
+    supported platform and it was called 23 times. Task, Workflow and the
+    scheduling and messaging tools are deliberately absent: a seated agent
+    coordinates through the board (queue_add, seat_post_note), which is
+    auditable, rather than by spawning work nothing is tracking.
+
+    --strict-mcp-config is the same hole on the MCP side. Without it a
+    dispatched agent inherits every server the HUMAN has registered at user
+    scope, which on the measuring machine was a dozen unrelated ones. The
+    agents invoked exactly zero of their tools across 76 runs and paid for all
+    of their schemas on every turn.
     """
     return [exe, "-p", "--permission-mode", permission_mode,
             "--input-format", "stream-json", "--output-format", "stream-json",
             "--verbose", "--replay-user-messages",
-            "--allowedTools", f"mcp__{MCP_SERVER_NAME}", "Read", "Edit", "Write",
-            "Glob", "Grep", "Bash"] \
+            "--tools", ",".join(AGENT_BUILTIN_TOOLS),
+            "--allowedTools", f"mcp__{MCP_SERVER_NAME}", *AGENT_BUILTIN_TOOLS,
+            "--strict-mcp-config"] \
         + claude_mcp_config() \
         + (["--model", model] if model else []) \
         + (["--max-turns", str(max_turns)] if max_turns else [])

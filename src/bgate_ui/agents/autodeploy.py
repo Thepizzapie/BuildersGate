@@ -289,6 +289,34 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
                 mem["floor_until"] = now + BURN_COOLDOWN_S
             refused.append(entry)
             break
+        # A FILE ANOTHER RUN IS EDITING IS A REASON NOT TO SPAWN, NOT A REASON
+        # TO FAIL LATER. The lease is enforced at the PreToolUse hook, which is
+        # the right place for correctness and the worst possible place for
+        # cost: the agent is already spawned, has read the brief and half the
+        # repo, and only discovers the wall when it tries to write. It then
+        # burns its whole runtime being refused.
+        #
+        # MEASURED on one file, scenes/graybox_house.tscn: items #72, #78, #79,
+        # #84, #87 and #88 all queued against it, and #88 alone spent two full
+        # rounds and $3.49 discovering a collision the board already knew
+        # about. Every one of those briefs said "check asset_status first" and
+        # it made no difference, because an instruction to the agent cannot
+        # prevent the spawn that already happened.
+        #
+        # The match is by PATH MENTIONED IN THE BRIEF, which is a heuristic and
+        # is deliberately the loose direction: a brief that names the file it
+        # is about is the normal case here, and the cost of a false skip is a
+        # 90-second cooldown while the cost of a false spawn is a whole run.
+        held_by = _leased_path_in_brief(root, item)
+        if held_by:
+            entry = {"item_id": item_id, "code": "file_leased",
+                     "message": held_by, "at": time.strftime("%H:%M:%S")}
+            refused.append(entry)
+            with _lock:
+                mem["last"] = entry
+                mem["cool"][item_id] = now + ITEM_COOLDOWN_S
+            continue
+
         result = _dispatch.dispatch(root, item_id, actor="autodeploy")
         if result.get("ok"):
             sent.append(item_id)
@@ -361,6 +389,47 @@ def _pending_integrations(root: str | os.PathLike[str]) -> int:
         return len(_gitwork.integrations(root, pending=True))
     except Exception:
         return 0
+
+
+def _leased_path_in_brief(root, item) -> str:
+    """"" if this item is safe to spawn, else why it is not.
+
+    Reads the live path leases and asks whether this item's own brief or title
+    names one of them. Best-effort in the same sense the hook is: an unreadable
+    lease store answers "nobody holds anything", because a dispatcher that
+    stops on its own inability to check is worse than one that occasionally
+    spawns into a collision — which is exactly the behaviour this replaces.
+
+    A lease held by THIS item does not block it: reopened items keep their own
+    lease across attempts, and refusing to re-dispatch an item because it holds
+    its own file would deadlock it forever.
+    """
+    try:
+        from bgate_core.store import assets as _assets
+
+        leases = _assets.list_path_leases(root)
+    except Exception:                                             # noqa: BLE001
+        return ""
+    if not leases:
+        return ""
+    haystack = f"{item.get('title') or ''} {item.get('brief') or ''}".lower()
+    mine = f"item-{item.get('id')}"
+    for lease in leases:
+        owner = str(lease.get("owner") or "")
+        if mine and mine in owner:
+            continue
+        path = str(lease.get("path") or "").strip()
+        if not path:
+            continue
+        # match on the basename too: a brief usually writes the repo-relative
+        # path, but not always with the same separators.
+        base = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if base and base in haystack:
+            return (f"{path} is leased by {owner} (seat "
+                    f"{lease.get('seat') or '?'}) until "
+                    f"{lease.get('expires_at') or 'forever'} — not spawning "
+                    "an agent that would be refused at its first write")
+    return ""
 
 
 def start(root: str | os.PathLike[str]) -> bool:

@@ -11,6 +11,7 @@ caller and test.
 from bgate_adapters import animcurves as _animcurves
 from bgate_adapters import blender as _blender
 from bgate_adapters import bonepaths as _bonepaths
+from bgate_adapters import meshquality as _meshquality
 from bgate_adapters import skinweights as _skinweights
 from typing import Annotated
 
@@ -764,6 +765,91 @@ def skin_dominance(model: str, max_ratio: float = 3.0,
              f"{'passed' if verdict.get('passed') else 'FAILED'} "
              f"(max ratio {report.get('max_ratio')}, "
              f"{report.get('rigid_fraction', 0.0):.0%} rigid, "
+             f"{len(verdict.get('issues') or [])} issues)",
+             ref=str(model))
+    return report
+
+
+@_tool
+def mesh_faceting(model: str, max_dent_fraction: float = 0.18,
+                  max_stale_fraction: float = 0.10,
+                  max_sliver_fraction: float = 0.08,
+                  max_inverted_fraction: float = 0.05,
+                  flag_flat_shaded: bool = False,
+                  crease_deg: float = 30.0, sliver_deg: float = 10.0) -> dict:
+    """Does this surface look decimated - no Blender needed.
+
+    THE GAP BETWEEN THE SILHOUETTE AND THE TRIANGLE COUNT, which nothing else
+    in this product measures. Found when a player looked at a shipped
+    character's sleeve and said "notice the roughness in the polygons": it read
+    as a crinkled paper bag, visible facets and shallow dents across a shape
+    that should be smooth. Every geometry gate passed it, because each asks a
+    question this defect does not answer to - the triangle count was inside
+    budget, the dimensions measured correct, has_geometry and has_collider were
+    true, the skin weights were plausible, and the SILHOUETTE was fine, which
+    is all a turnaround render shows.
+
+    FOUR DEFECTS THAT ALL LOOK LIKE "IT LOOKS ROUGH", and separating them is
+    the point, because three of the four fixes make the others worse:
+
+      denting          the geometry is lumpy - decimation moved vertices off
+                       the original surface. Fix the collapse (staged halving,
+                       weld first). NEVER by touching normals.
+      stale_normals    geometry fine, shading not: stored normals no longer
+                       agree with the faces using them, which happens the
+                       moment anything moves vertices on a mesh carrying baked
+                       custom split normals. Re-bake the moved region only.
+      inverted_winding faces wound backwards, normals ~180 degrees off. FLIP
+                       THE WINDING and keep the normals. Over half the faces of
+                       a raw hosted image-to-3D generation arrive like this.
+      slivers          long thin triangles, which shade badly whatever the
+                       normals say. Weld and drop degenerates BEFORE collapsing.
+
+    WHY THE SIGN OF THE FOLD AND NOT ITS SIZE. Measured on this module's own
+    fixtures: a cube's typical interior fold is 90 degrees and it is perfect; a
+    dented sphere's is 27 and it is broken. So a magnitude threshold set high
+    enough to pass a cube lets the dent through, and one low enough to catch
+    the dent condemns every hard edge in a furniture kit. What actually differs
+    is CONSISTENCY - on any clean surface, smooth or boxy, the edges meeting at
+    a vertex bend the same way, because the surface is locally convex or
+    locally concave. A pit alternates. Counting sign flips per vertex needs no
+    per-asset tuning, which is the only reason it survives contact with a real
+    project.
+
+    IT WELDS BY POSITION FIRST, and that is not a detail. An exported glTF
+    duplicates a vertex at every UV seam and hard edge, so before welding NOT
+    ONE of a cube's twelve hard edges is shared by index - the first version of
+    this tool reported a cube as having six interior edges and a maximum fold
+    of zero degrees. Every asset in this pipeline looks like that at its seams.
+
+    A PLAUSIBILITY CHECK, NOT A PROOF. A genuinely crumpled subject - a duvet,
+    a rug, foliage - reads as dented and should; the verdict names the mesh so
+    a human can dismiss it. Deliberately faceted low-poly reads as flat_shaded,
+    correctly, and does not fail unless `flag_flat_shaded` is on.
+
+    The file-level figures are the WORST mesh, never an average, because an
+    average hides one ruined sleeve inside a body that is fine - which is the
+    case this was built for. `verdict.passed` is False rather than True when
+    nothing could be measured.
+    """
+    path = _contained_path(model, "model")
+    report = _meshquality.faceting(path, crease_deg=crease_deg,
+                                   sliver_deg=sliver_deg)
+    verdict = _meshquality.faceting_verdict(
+        report,
+        max_dent_fraction=max_dent_fraction,
+        max_stale_fraction=max_stale_fraction,
+        max_sliver_fraction=max_sliver_fraction,
+        max_inverted_fraction=max_inverted_fraction,
+        flag_flat_shaded=flag_flat_shaded)
+    report["verdict"] = verdict
+    if report.get("measured"):
+        _log("blender",
+             f"mesh-faceting {model} -> "
+             f"{'passed' if verdict.get('passed') else 'FAILED'} "
+             f"(dent {report.get('dent_fraction', 0.0):.0%}, "
+             f"stale {report.get('stale_fraction', 0.0):.0%}, "
+             f"slivers {report.get('sliver_fraction', 0.0):.0%}, "
              f"{len(verdict.get('issues') or [])} issues)",
              ref=str(model))
     return report
