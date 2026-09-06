@@ -97,7 +97,7 @@ else:
                     smooth=int(P.get("smooth") or 0), target_tris=int(P.get("target_tris") or 0),
                     angle=float(P.get("angle") or 30.0))
     fused.data.calc_loop_triangles()
-    _report({"ok": True, "fused": fused.name, "parts": len(parts), "faces_before": before,
+    _report({"ok": True, "fused": fused.name, "voxel": float(fused.get("bg_voxel") or 0.0), "parts": len(parts), "faces_before": before,
              "tris_after": len(fused.data.loop_triangles),
              "materials": [m.name for m in fused.data.materials if m]})
 '''
@@ -110,9 +110,13 @@ for o in parts:
     bevel = P.get("bevel")
     if bevel is None:
         bevel = max(dims) * 0.005 if P.get("auto_bevel", True) else 0.0
+    o.data.calc_loop_triangles(); before = len(o.data.loop_triangles)
     bg_shade(o, bevel=float(bevel), angle=float(P.get("angle") or 30.0),
              segments=int(P.get("segments") or 2), weighted=bool(P.get("weighted", True)))
-    done.append({"name": o.name, "bevel": float(bevel)})
+    o.data.calc_loop_triangles()
+    skipped = bool(o.get("bg_bevel_skipped"))
+    done.append({"name": o.name, "bevel": 0.0 if skipped else float(bevel), "bevel_skipped": skipped,
+                 "tris_before": before, "tris_after": len(o.data.loop_triangles)})
 _report({"ok": bool(done), "shaded": done, "error": "" if done else "no mesh objects matched"})
 '''
 
@@ -195,8 +199,10 @@ applied, missing = _assign_presets(P["assign"])
 sidecar = P.get("sidecar") or ""
 if sidecar:
     bpy.ops.wm.save_as_mainfile(filepath=sidecar, copy=True)
-_report({"ok": not missing, "applied": applied, "missing": missing, "sidecar": sidecar,
-         "error": ("no object or material slot named %s" % missing) if missing else ""})
+landed = [a for a in applied if a["slots"]]
+_report({"ok": bool(landed), "applied": applied, "missing": missing, "sidecar": sidecar,
+         "warning": ("no object or material slot named %s" % missing) if (missing and landed) else "",
+         "error": "" if landed else ("no object or material slot named %s" % missing)})
 '''
 
 _BAKE = _LOAD + _ASSIGN + r'''
@@ -225,6 +231,24 @@ def _ensure_uv(o):
         return True
     return False
 
+def _keeps_constants(m):
+    """Transmissive or emissive: the glTF constants say more than a bake."""
+    if not (m and m.use_nodes):
+        return False
+    b = next((n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if b is None:
+        return False
+    def val(name):
+        s = b.inputs.get(name)
+        return None if s is None or s.is_linked else s.default_value
+    t = val("Transmission Weight")
+    if t is not None and float(t) > 0.5:
+        return True
+    e = val("Emission Strength"); c = val("Emission Color")
+    if e is not None and float(e) > 0.0 and c is not None and max(c[:3]) > 0.05:
+        return True
+    return False
+
 def _metallic_of(mats):
     vals = []
     for m in mats:
@@ -240,7 +264,13 @@ for o in parts:
     if not mats:
         mats = [bg_material(o.name + "_plastic", "plastic", (0.6, 0.6, 0.6))]
         o.data.materials.append(mats[0])
-    metallic = _metallic_of(mats)
+    keep = [m for m in mats if _keeps_constants(m)]
+    bake_mats = [m for m in mats if m not in keep]
+    if not bake_mats:
+        baked.append({"name": o.name, "maps": {}, "kept": [m.name for m in keep], "unwrapped": unwrapped,
+                      "resolution": res})
+        continue
+    metallic = _metallic_of(bake_mats)
     images = {}
     nodes_added = []
     for kind in wanted:
@@ -318,13 +348,21 @@ for o in parts:
         nm = tree.nodes.new("ShaderNodeNormalMap"); nm.location = (0, -300)
         tree.links.new(t.outputs["Color"], nm.inputs["Color"])
         tree.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
-    o.data.materials.clear()
-    o.data.materials.append(baked_mat)
+    if keep:
+        for slot in o.material_slots:
+            if slot.material not in keep:
+                slot.material = baked_mat
+    else:
+        o.data.materials.clear()
+        o.data.materials.append(baked_mat)
     baked.append({"name": o.name, "maps": files, "unwrapped": unwrapped, "metallic": metallic,
-                  "resolution": res})
+                  "resolution": res, "kept": [m.name for m in keep]})
+warnings = []
 if assign_missing:
-    errors.append("assign: no object or material slot named %s" % assign_missing)
-_report({"ok": bool(baked) and not errors, "baked": baked, "errors": errors, "assigned": assigned})
+    landed = [a for a in assigned if a["slots"]]
+    (warnings if landed else errors).append("assign: no object or material slot named %s" % assign_missing)
+_report({"ok": bool(baked) and not errors, "baked": baked, "errors": errors, "warnings": warnings,
+         "assigned": assigned})
 '''
 
 _DECAL = _LOAD + r'''
@@ -659,21 +697,40 @@ for o in MESHES:
     bm = bmesh.new(); bm.from_mesh(me)
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0005)
     bm.verts.ensure_lookup_table()
-    seen = set(); shells = 0
+    seen = set(); shells = 0; shell_boxes = []
+    mw = o.matrix_world
     for v in bm.verts:
         if v.index in seen:
             continue
         shells += 1
+        lo = [1e18, 1e18, 1e18]; hi = [-1e18, -1e18, -1e18]
         stack = [v]
         while stack:
             cur = stack.pop()
             if cur.index in seen:
                 continue
             seen.add(cur.index)
+            w = mw @ cur.co
+            for k in range(3):
+                lo[k] = min(lo[k], w[k]); hi[k] = max(hi[k], w[k])
             for e in cur.link_edges:
                 other = e.other_vert(cur)
                 if other.index not in seen:
                     stack.append(other)
+        shell_boxes.append((lo, hi))
+    # Pairs of shells whose boxes touch or overlap: parts pushed through or
+    # sat on each other. Shells apart (a left and a right lens) are not that.
+    pad = 0.005 * size
+    tacked_pairs = 0
+    if 1 < len(shell_boxes) <= 400:
+        for i in range(len(shell_boxes)):
+            a_lo, a_hi = shell_boxes[i]
+            for j in range(i + 1, len(shell_boxes)):
+                b_lo, b_hi = shell_boxes[j]
+                if all(a_lo[k] - pad <= b_hi[k] and b_lo[k] - pad <= a_hi[k] for k in range(3)):
+                    tacked_pairs += 1
+    elif len(shell_boxes) > 400:
+        tacked_pairs = len(shell_boxes)
     # Hard edges: dihedral angle over 30 deg. Loose edges (one face) count as
     # split seams - a glb round trip leaves a flat box with 12 loose tris.
     hard = 0; measured = 0; loose = 0
@@ -686,12 +743,19 @@ for o in MESHES:
             loose += 1
     bm.free()
     mats = [m for m in me.materials if m is not None]
-    textured = 0
+    textured = 0; special = 0
     for m in mats:
         if m.use_nodes and any(n.type == "TEX_IMAGE" and n.image for n in m.node_tree.nodes):
             textured += 1
+            continue
+        b = next((n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None) if m.use_nodes else None
+        if b is not None:
+            t = b.inputs.get("Transmission Weight"); e = b.inputs.get("Emission Strength")
+            if (t is not None and not t.is_linked and float(t.default_value) > 0.5) or                (e is not None and not e.is_linked and float(e.default_value) > 0.0):
+                special += 1
     smooth_faces = sum(1 for p in me.polygons if p.use_smooth)
-    row = {"name": o.name, "tris": tris, "shells": shells, "hard_edges": hard, "edges": measured,
+    row = {"name": o.name, "tris": tris, "shells": shells, "tacked_pairs": tacked_pairs,
+           "hard_edges": hard, "edges": measured,
            "boundary_edges": loose, "materials": len(mats), "textured_materials": textured,
            "uv": len(me.uv_layers), "smooth_faces": smooth_faces, "faces": len(me.polygons),
            "dims": list(boxes[o.name]["dims"])}
@@ -699,18 +763,19 @@ for o in MESHES:
     big = max(boxes[o.name]["dims"]) >= 0.05 * size
     # A sheet of cards (leaves, scatter) is many shells BY DESIGN: every shell
     # is one or two faces. That is not parts pushed through each other.
-    cards = shells > 1 and len(me.polygons) / max(shells, 1) <= 2.0
+    per_shell = len(me.polygons) / max(shells, 1)
+    cards = (shells > 1 and per_shell <= 2.0) or (shells >= 20 and per_shell <= 8.0)
     row["card_sheet"] = cards
-    if shells > 1 and big and not cards:
+    if tacked_pairs > 0 and big and not cards:
         findings.append({"code": "tacked_shells", "node": o.name, "level": "warning",
-                         "detail": "%d disconnected shells in one object - parts pushed through each other instead of fused (blender_fuse)" % shells})
+                         "detail": "%d disconnected shells in one object, %d pairs touching or overlapping - parts pushed through each other instead of fused (blender_fuse)" % (shells, tacked_pairs)})
     if measured and hard / measured > 0.6 and tris < 5000 and big and not cards:
         findings.append({"code": "faceted", "node": o.name, "level": "warning",
                          "detail": "%d of %d edges are hard (>30 deg) and no bevel softens them (blender_shade)" % (hard, measured)})
     if loose > measured and tris > 20 and not cards:
         findings.append({"code": "split_vertices", "node": o.name, "level": "info",
                          "detail": "%d boundary edges vs %d shared - vertices split on every hard edge (a glb round trip); weld before shading" % (loose, measured)})
-    if mats and textured == 0 and big:
+    if mats and textured == 0 and special < len(mats) and big:
         findings.append({"code": "untextured", "node": o.name, "level": "warning",
                          "detail": "%d material(s), none with an image map - flat colours read as plastic (blender_material + blender_bake)" % len(mats)})
     if not mats and big:

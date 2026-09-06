@@ -131,6 +131,8 @@ NOT_TOOLS = {
     # the surface kit (_blender_surface_kit), same namespace
     "bg_fuse", "bg_shade", "bg_lathe", "bg_loft", "bg_material", "bg_surface_help",
     "bg_tree", "bg_scatter", "bg_leaf_material",
+    # the form kit (_blender_form_kit), same namespace
+    "bg_hull", "bg_skin", "bg_blob", "bg_sweep", "bg_round", "bg_rock", "bg_form_help",
     # parameters and result keys
     "anchor_views", "artifact_id", "audio_track", "cast_refs", "decal_on",
     "dry_run",

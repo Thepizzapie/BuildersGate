@@ -1052,6 +1052,86 @@ Bevel-by-angle + smooth-by-angle + weighted normals on the named objects
 default bevel is 0.5% of each object's largest dimension.
 ```
 
+## blender_hull
+
+```text
+A body from its SILHOUETTES: the side outline [[x, z], ...] intersected with
+the top outline [[x, y], ...] (the +y half is mirrored) and optionally a
+front outline is ONE shell, rounded as asked (round 0 hard silhouette, 2 a
+production car, 4 soap), decimated to target_tris. Two polygons replace the
+stack of boxes that reads as boxes: a car, a boat, a plane, a fish, a ship.
+```
+
+## blender_skin
+
+```text
+A body from a STICK FIGURE: joints [[x, y, z, radius], ...] and links
+[[i, j], ...] wrapped in one smooth organic shell where a leg grows out of
+the hip instead of poking into it. A creature, a character block-in, a hand,
+a root ball. Twelve joints are a quadruped; blender_rig it afterwards.
+```
+
+## blender_blob
+
+```text
+A body from BLOBS that merge: metaballs [[x, y, z, r], ...] (negative r
+carves; seven values make an ellipsoid) unioned by construction - a boulder,
+a canopy, a slime, a belly, a cloud. Where two shapes would be pushed through
+each other, put two balls.
+```
+
+## blender_tube
+
+```text
+A tube along a path [[x, y, z], ...] with a radius per point: pipes, cables,
+horns, tails, roots, railings, tentacles. smooth_path runs a curve through
+the points. One sweep replaces the chain of cylinders that shows its joints.
+```
+
+## blender_live_status
+
+```text
+Is a live Blender listening (Blender Lab's MCP extension, 5.1+)? Its
+version, whether the kit is installed in it yet, the open .blend. Headless
+blender_run keeps working regardless; this is the interactive companion.
+```
+
+## blender_live_run
+
+```text
+Run a kit script in the LIVE Blender. Unlike blender_run the scene persists
+between calls: build the body, look at it (view=), fix the arch in the next
+call, export when it reads right. The kit installs itself into the session on
+the first call; the scene is never wiped implicitly (blender_live_reset).
+```
+
+## blender_live_view
+
+```text
+Capture the live 3D viewport - what the human sees - to a PNG, through the
+viewport render; the scene camera when no 3D view is open.
+```
+
+## blender_live_export
+
+```text
+Export the live scene as it stands to a game .glb (Y-up, modifiers applied),
+changing nothing in the scene to do it.
+```
+
+## blender_live_reset
+
+```text
+Empty the live scene (bg_wipe): the one destructive live call, its own tool.
+```
+
+## blender_rock
+
+```text
+A boulder: a sphere displaced by seeded noise, sat on the ground, optional
+chiselled facets. Same seed, same rock; vary the seed for a field of them.
+```
+
 ## blender_lathe
 
 ```text

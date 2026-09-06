@@ -11,6 +11,7 @@ caller and test.
 from bgate_adapters import animcurves as _animcurves
 from bgate_adapters import blender as _blender
 from bgate_adapters import bonepaths as _bonepaths
+from bgate_adapters import meshquality as _meshquality
 from bgate_adapters import skinweights as _skinweights
 from typing import Annotated
 
@@ -129,6 +130,10 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
                 engine: str = "BLENDER_WORKBENCH", timeout: int = 180,
                 label: str = "", kit: bool = True) -> dict:
     """Run a bpy script in headless Blender and get the scene back as facts.
+    The modelling kit is preloaded (kit=True): inside the script call
+    bg_help(), bg_base_help(), bg_form_help() and bg_surface_help() to print
+    the worked examples, and start a body from bg_human / bg_quadruped /
+    bg_prop_frame - never from primitives.
 
     `bpy` is already imported. Returns per-object tri/vert counts (evaluated, so
     modifiers count), UV warnings, materials, your print() output, and - with
@@ -136,12 +141,9 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
     preview gallery; give a `label` so humans can tell renders apart).
 
     THE MODELLING KIT IS ALREADY THERE (kit=True, the default). Do not write your
-    own material/UV/hygiene helpers - an agent burned 33 KB and most of an hour
-    doing exactly that on the first real character run. Available:
-      bg_help()                      PRINTS A COMPLETE WORKED LAYER SCRIPT - a
-                                     humanoid built from one head-height, a
-                                     named rig with roll, the checks, bg_finish
-                                     last. Read it before writing your first one.
+    own material/UV/hygiene helpers - an agent burned an hour doing exactly that:
+      bg_help()                      PRINTS A COMPLETE WORKED LAYER SCRIPT -
+                                     read it before writing your first one.
       bg_wipe()                      empty the scene (no default cube)
       bg_box/bg_cyl/bg_ball/bg_plane named primitives
       bg_mirror/bg_smooth/bg_taper   symmetry, subsurf, limb taper
@@ -163,34 +165,35 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
       bg_lathe(name, [(r, z), ...])  revolve a profile: tyre, rim, bottle, column
       bg_loft(name, sections, ...)   skin cross-sections: a car body, a hull
       bg_surface_help()              PRINTS the worked wheel + fused tree
-      bg_bone_chain(name, bones)     an armature with NAMED bones. Entries are
-                                     (name, head, tail, parent=None, roll_deg=0);
-                                     order does not matter, parents are wired in
-                                     a second pass, and ROLL IS IN DEGREES - set
-                                     it on limbs or a humanoid retarget gives you
-                                     the twisted-forearm look.
+      bg_hull(name, side, top)       A BODY FROM ITS SILHOUETTES - side outline x
+                                     top outline -> ONE rounded shell. Start a
+                                     car, boat, plane, fish HERE, not with boxes.
+      bg_skin(name, joints, links)   A BODY FROM A STICK FIGURE - joints with
+                                     radii -> one organic shell. Creatures.
+      bg_blob(name, balls)           merging blobs (metaballs): boulders, canopy
+      bg_sweep(name, points, radii)  a tapering tube along a path: pipes, horns
+      bg_round(obj, levels, crease_angle=)  subdivision that keeps named edges
+      bg_rock(name, size, seed)      a seeded boulder that sits on the ground
+      bg_form_help()                 PRINTS the worked coupe-from-two-outlines,
+                                     quadruped and rock
+      bg_bone_chain(name, bones)     an armature with NAMED bones: entries are
+                                     (name, head, tail, parent=None, roll_deg=0),
+                                     any order; ROLL IS IN DEGREES - set it on
+                                     limbs or a retarget twists the forearms.
       bg_finish(obj, colour=...)     clean + apply + unwrap + material, in order
       bg_stats(obj)                  verts/faces/loose/nonmanifold/ngons/flipped
                                      PLUS world-space dims/centre/min/max
       bg_bounds(obj)                 world-space min/max/dims/centre, in metres
-      bg_flipped(obj)                how many faces point INWARD (count, measured
-                                     on a throwaway copy - the mesh is untouched)
+      bg_flipped(obj)                how many faces point INWARD (non-destructive)
       bg_overlap(a, b)               do two layers' world bounds intersect, and
-                                     by how much. Layers are built in isolated
-                                     scenes, so "is the cap sunk into the head"
-                                     is a question NOTHING else in the pipeline
-                                     can ask until they are already combined.
+                                     by how much - the only pre-combine answer
+                                     to "is the cap sunk into the head".
 
-    bg_bone_chain RAISES - deliberately, and it is the only thing in the kit that
-    does. Everything else swallows its problems because a helper that raises
-    takes the whole run down; a rig cannot afford that trade, because a wrong rig
-    looks built and comes apart in the engine several steps later. It refuses: a
-    parent no bone in the list defines (which used to produce silent parentless
-    roots), a duplicate bone name, head == tail (Blender DELETES zero-length
-    bones on leaving edit mode and says nothing, so the bone simply is not in the
-    armature you get back), and a name Blender had to rename or truncate (bind=
-    'bone:Head' then matches nothing in blender_combine). Every message names the
-    bone. Read the message and fix the chain - do not wrap it in a try.
+    bg_bone_chain RAISES - the only kit helper that does, because a wrong rig
+    looks built and comes apart in the engine later. It refuses an undefined
+    parent, a duplicate name, head == tail (Blender silently deletes zero-length
+    bones) and a name Blender would rename (bind='bone:Head' then matches
+    nothing). Fix the chain - do not wrap it in a try.
 
     START A BODY FROM THE BASE MESH LIBRARY, NOT FROM PRIMITIVES. Same kit, same
     namespace, no import:
@@ -214,18 +217,15 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
       bg_base_report / bg_base_assert  the base's own self-check (assert RAISES)
       bg_base_help()                 prints BG_BASE_EXAMPLE, the worked script
       BG_UNIT="metre", BG_HUMAN_HEIGHT=1.8, BG_GROUND=0.0, BG_FORWARD=(0,1,0),
-      BG_LEFT=(-1,0,0), BG_SIDES - the base FACES +Y, which the glTF exporter
-                                     turns into -Z, which is what Godot calls
-                                     forward. Author faces, visors and emblems
-                                     on the +Y side; the figure's own left is -X.
+      BG_LEFT=(-1,0,0), BG_SIDES - the base FACES +Y (glTF turns it into -Z,
+                                     Godot's forward): author faces and emblems
+                                     on +Y; the figure's own left is -X.
       bg_unit_check / bg_unit_assert (RAISES) / bg_rescale
 
-    FIT LAYERS ONTO LANDMARKS INSTEAD OF GUESSING COORDINATES. MEASURED: a cap
-    placed with bg_fit(cap, bg_mark(base, "head_top"), "on") rests on the crown
-    at 10% overlap; the same cap at a hand-typed 1.7 m is 89% INSIDE the skull
-    and passed every check the old pipeline had. The honest limit - the base has
-    no face and no fingers. It is a correctly-proportioned blockout to build the
-    character ONTO, not a finished character.
+    FIT LAYERS ONTO LANDMARKS, NOT HAND-TYPED COORDINATES: bg_fit(cap,
+    bg_mark(base, "head_top"), "on") rests on the crown; the same cap at a
+    typed 1.7 m sat 89% inside the skull and passed every old check. The limit:
+    the base has no face and no fingers - a proportioned blockout to build ONTO.
 
     Pass kit=False only for a script that must run against bare bpy.
 
@@ -753,6 +753,91 @@ def skin_dominance(model: str, max_ratio: float = 3.0,
              f"{'passed' if verdict.get('passed') else 'FAILED'} "
              f"(max ratio {report.get('max_ratio')}, "
              f"{report.get('rigid_fraction', 0.0):.0%} rigid, "
+             f"{len(verdict.get('issues') or [])} issues)",
+             ref=str(model))
+    return report
+
+
+@_tool
+def mesh_faceting(model: str, max_dent_fraction: float = 0.18,
+                  max_stale_fraction: float = 0.10,
+                  max_sliver_fraction: float = 0.08,
+                  max_inverted_fraction: float = 0.05,
+                  flag_flat_shaded: bool = False,
+                  crease_deg: float = 30.0, sliver_deg: float = 10.0) -> dict:
+    """Does this surface look decimated - no Blender needed.
+
+    THE GAP BETWEEN THE SILHOUETTE AND THE TRIANGLE COUNT, which nothing else
+    in this product measures. Found when a player looked at a shipped
+    character's sleeve and said "notice the roughness in the polygons": it read
+    as a crinkled paper bag, visible facets and shallow dents across a shape
+    that should be smooth. Every geometry gate passed it, because each asks a
+    question this defect does not answer to - the triangle count was inside
+    budget, the dimensions measured correct, has_geometry and has_collider were
+    true, the skin weights were plausible, and the SILHOUETTE was fine, which
+    is all a turnaround render shows.
+
+    FOUR DEFECTS THAT ALL LOOK LIKE "IT LOOKS ROUGH", and separating them is
+    the point, because three of the four fixes make the others worse:
+
+      denting          the geometry is lumpy - decimation moved vertices off
+                       the original surface. Fix the collapse (staged halving,
+                       weld first). NEVER by touching normals.
+      stale_normals    geometry fine, shading not: stored normals no longer
+                       agree with the faces using them, which happens the
+                       moment anything moves vertices on a mesh carrying baked
+                       custom split normals. Re-bake the moved region only.
+      inverted_winding faces wound backwards, normals ~180 degrees off. FLIP
+                       THE WINDING and keep the normals. Over half the faces of
+                       a raw hosted image-to-3D generation arrive like this.
+      slivers          long thin triangles, which shade badly whatever the
+                       normals say. Weld and drop degenerates BEFORE collapsing.
+
+    WHY THE SIGN OF THE FOLD AND NOT ITS SIZE. Measured on this module's own
+    fixtures: a cube's typical interior fold is 90 degrees and it is perfect; a
+    dented sphere's is 27 and it is broken. So a magnitude threshold set high
+    enough to pass a cube lets the dent through, and one low enough to catch
+    the dent condemns every hard edge in a furniture kit. What actually differs
+    is CONSISTENCY - on any clean surface, smooth or boxy, the edges meeting at
+    a vertex bend the same way, because the surface is locally convex or
+    locally concave. A pit alternates. Counting sign flips per vertex needs no
+    per-asset tuning, which is the only reason it survives contact with a real
+    project.
+
+    IT WELDS BY POSITION FIRST, and that is not a detail. An exported glTF
+    duplicates a vertex at every UV seam and hard edge, so before welding NOT
+    ONE of a cube's twelve hard edges is shared by index - the first version of
+    this tool reported a cube as having six interior edges and a maximum fold
+    of zero degrees. Every asset in this pipeline looks like that at its seams.
+
+    A PLAUSIBILITY CHECK, NOT A PROOF. A genuinely crumpled subject - a duvet,
+    a rug, foliage - reads as dented and should; the verdict names the mesh so
+    a human can dismiss it. Deliberately faceted low-poly reads as flat_shaded,
+    correctly, and does not fail unless `flag_flat_shaded` is on.
+
+    The file-level figures are the WORST mesh, never an average, because an
+    average hides one ruined sleeve inside a body that is fine - which is the
+    case this was built for. `verdict.passed` is False rather than True when
+    nothing could be measured.
+    """
+    path = _contained_path(model, "model")
+    report = _meshquality.faceting(path, crease_deg=crease_deg,
+                                   sliver_deg=sliver_deg)
+    verdict = _meshquality.faceting_verdict(
+        report,
+        max_dent_fraction=max_dent_fraction,
+        max_stale_fraction=max_stale_fraction,
+        max_sliver_fraction=max_sliver_fraction,
+        max_inverted_fraction=max_inverted_fraction,
+        flag_flat_shaded=flag_flat_shaded)
+    report["verdict"] = verdict
+    if report.get("measured"):
+        _log("blender",
+             f"mesh-faceting {model} -> "
+             f"{'passed' if verdict.get('passed') else 'FAILED'} "
+             f"(dent {report.get('dent_fraction', 0.0):.0%}, "
+             f"stale {report.get('stale_fraction', 0.0):.0%}, "
+             f"slivers {report.get('sliver_fraction', 0.0):.0%}, "
              f"{len(verdict.get('issues') or [])} issues)",
              ref=str(model))
     return report
@@ -1631,3 +1716,198 @@ def blender_look_audit(model: Annotated[str, Field(description='The .glb/.gltf/.
     not taste - render a turnaround and LOOK as well.
     """
     return _surface.look_audit(model, tri_budget=tri_budget, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# The form tools: the smooth shape built FIRST. Measured on Meridian's coupe,
+# repairing a box-built car (fuse, bevel, bake) made a lump with disc wheels;
+# the blocky look is decided by the vocabulary of the first script. These give
+# an agent silhouettes, stick figures, blobs and sweeps as one-call .glbs.
+# ---------------------------------------------------------------------------
+from bgate_adapters import form as _form  # noqa: E402
+
+
+@_tool
+def blender_hull(side: Annotated[list, Field(description='Side-view outline, closed, [[x, z], ...] in metres: nose, hood, roof, boot, floor - as a person sketches a car, boat, plane or fish.')],
+                 top: Annotated[list, Field(description='Top-view outline [[x, y], ...]. Give the +y half only and it is mirrored.')],
+                 out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 front: Annotated[Optional[list], Field(description='Optional front-view outline [[y, z], ...] (half mirrored) to shape the cross-section.')] = None,
+                 name: Annotated[str, Field(description='Object name. Default Hull.')] = "Hull",
+                 round: Annotated[int, Field(description='0 keeps the hard silhouette edges, 1 light chamfer, 2 a production car, 4 a bar of soap. Default 2.')] = 2,
+                 target_tris: Annotated[int, Field(description='Decimate the rounded shell to this many triangles; 0 keeps the remesh count. Default 16000.')] = 16000,
+                 bevel: Annotated[float, Field(description='With round=0: bevel width in metres on the silhouette edges.')] = 0.0,
+                 preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 timeout: int = 600) -> dict:
+    """A body from its SILHOUETTES: the side outline intersected with the top
+    outline (and a front outline if given) is ONE shell, rounded as much as
+    asked - the way a car, boat, plane, fish or spaceship is drawn. Two
+    polygons replace the stack of boxes that reads as boxes. Wheels: a
+    blender_lathe tyre each; glass and lamps: blender_decal or their own
+    lathe/loft parts with glass/emissive presets.
+    """
+    _contained_path(out_path, "out_path")
+    result = _form.hull(side, top, out_path, front=front, name=name, round=round, target_tris=target_tris,
+                        bevel=bevel, preset=preset, colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_hull", round=round, tris=result.get("tris"))
+
+
+@_tool
+def blender_skin(joints: Annotated[list, Field(description='[[x, y, z, radius], ...] in metres - the joints of a stick figure. Joint 0 is the root (chest or hips).')],
+                 links: Annotated[list, Field(description='[[i, j], ...] index pairs joining joints: spine, neck, each leg, tail.')],
+                 out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 name: Annotated[str, Field(description='Object name. Default Skin.')] = "Skin",
+                 subsurf: Annotated[int, Field(description='Subdivision levels rounding the tubes. Default 2.')] = 2,
+                 mirror_x: Annotated[bool, Field(description='Build the +x half and mirror it. Default False.')] = False,
+                 preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 timeout: int = 600) -> dict:
+    """A body from a STICK FIGURE: joints with radii, links between them, wrapped
+    in one smooth organic shell where a leg grows out of the hip instead of
+    poking into it. A creature, a character block-in, a hand, a root ball, a
+    coral. Twelve joints are a quadruped. Rig it with blender_rig afterwards.
+    """
+    _contained_path(out_path, "out_path")
+    result = _form.skin(joints, links, out_path, name=name, subsurf=subsurf, mirror_x=mirror_x,
+                        preset=preset, colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_skin", joints=len(joints or []), tris=result.get("tris"))
+
+
+@_tool
+def blender_blob(balls: Annotated[list, Field(description='[[x, y, z, radius], ...] in metres; a negative radius carves; [x, y, z, r, sx, sy, sz] is an ellipsoid stretched by those factors.')],
+                 out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 name: Annotated[str, Field(description='Object name. Default Blob.')] = "Blob",
+                 resolution: Annotated[float, Field(description='Mesh cell in metres; smaller is finer and slower. Default 0.06.')] = 0.06,
+                 threshold: Annotated[float, Field(description='Metaball threshold: lower merges neighbours more. Default 0.6.')] = 0.6,
+                 target_tris: Annotated[int, Field(description='Decimate to this many triangles; 0 keeps the count.')] = 0,
+                 preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 timeout: int = 600) -> dict:
+    """A body from BLOBS that merge: metaballs unioned by construction, no
+    seams, no shells - a boulder from five, a tree canopy from twenty, a slime,
+    a belly, a cloud, a bush. Where two shapes would be pushed through each
+    other, put two balls.
+    """
+    _contained_path(out_path, "out_path")
+    result = _form.blob(balls, out_path, name=name, resolution=resolution, threshold=threshold,
+                        target_tris=target_tris, preset=preset, colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_blob", balls=len(balls or []), tris=result.get("tris"))
+
+
+@_tool
+def blender_tube(points: Annotated[list, Field(description='[[x, y, z], ...] the path, in metres.')],
+                  radii: Annotated[list, Field(description='One radius per point (a tapering horn), or a single-element list for a constant pipe.')],
+                  out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                  name: Annotated[str, Field(description='Object name. Default Sweep.')] = "Sweep",
+                  segments: Annotated[int, Field(description='Segments around the tube. Default 12.')] = 12,
+                  smooth_path: Annotated[bool, Field(description='Run a smooth curve through the points (True) or straight runs between them (False). Default True.')] = True,
+                  caps: Annotated[bool, Field(description='Close the ends. Default True.')] = True,
+                  preset: Annotated[str, Field(description='Material preset (see blender_material); empty leaves it unassigned.')] = "",
+                  colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                  timeout: int = 300) -> dict:
+    """A tube along a path with a radius per point: pipes, cables, horns,
+    tails, roots, railings, tentacles, a tree limb. One sweep replaces the
+    chain of cylinders that shows its joints.
+    """
+    _contained_path(out_path, "out_path")
+    rs = list(radii or [])
+    if len(rs) == 1:
+        rs = rs * len(points or [])
+    result = _form.sweep(points, rs, out_path, name=name, segments=segments, caps=caps, smooth_path=smooth_path,
+                         preset=preset, colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_tube", points=len(points or []), tris=result.get("tris"))
+
+
+@_tool
+def blender_rock(out_path: Annotated[str, Field(description='Where the .glb is written; keep it inside the project.')],
+                 name: Annotated[str, Field(description='Object name. Default Rock.')] = "Rock",
+                 size: Annotated[Optional[list[float]], Field(description='[x, y, z] metres. Default [1.0, 0.8, 0.6].')] = None,
+                 seed: Annotated[int, Field(description='Same seed, same rock. Default 1.')] = 1,
+                 detail: Annotated[int, Field(description='Sphere subdivisions: 3 pebble (320 tris), 4 rock (1280), 5 hero boulder (5120). Default 4.')] = 4,
+                 roughness: Annotated[float, Field(description='0-1 how far the noise pushes the surface. Default 0.3.')] = 0.3,
+                 facets: Annotated[float, Field(description='0-1 planar-decimates toward a chiselled low-poly look. Default 0.')] = 0.0,
+                 flat_bottom: Annotated[bool, Field(description='Slice the underside so it sits. Default True.')] = True,
+                 preset: Annotated[str, Field(description='Material preset; concrete reads as stone. Empty leaves it unassigned.')] = "",
+                 colour: Annotated[str, Field(description='Hex colour for the preset.')] = "",
+                 timeout: int = 300) -> dict:
+    """A boulder: a sphere displaced by seeded noise, sat on the ground. Vary
+    the seed for a field of them (blender_scatter places pebbles).
+    """
+    _contained_path(out_path, "out_path")
+    result = _form.rock(out_path, name=name, size=tuple(size or (1.0, 0.8, 0.6)), seed=seed, detail=detail,
+                        roughness=roughness, facets=facets, flat_bottom=flat_bottom, preset=preset,
+                        colour=colour or None, timeout=timeout)
+    return _surface_result(result, out_path, "blender_rock", seed=seed, tris=result.get("tris"))
+
+
+# ---------------------------------------------------------------------------
+# The LIVE Blender: the same kit, inside a Blender that stays open (Blender
+# Lab's MCP extension, 5.1+). The scene persists between calls, the viewport
+# the human is looking at is the one being built in, and nothing relaunches.
+# ---------------------------------------------------------------------------
+from bgate_adapters import blender_live as _live  # noqa: E402
+
+
+@_tool
+def blender_live_status(port: Annotated[int, Field(description='The MCP bridge port set in the extension preferences. Default 9876.')] = 9876) -> dict:
+    """Is a live Blender listening? Reports its version, whether the kit is
+    installed in it yet, and the open .blend. Not available means: open
+    Blender, enable the MCP extension, press 'Start MCP Bridge Server' in its
+    preferences (or tick Autostart). Headless blender_run keeps working
+    regardless - this is the interactive companion, not a replacement.
+    """
+    return _live.available(port=port)
+
+
+@_tool
+def blender_live_run(script: Annotated[str, Field(description='bpy script with the kit in scope (bg_hull, bg_skin, bg_lathe, bg_material...). Assign `result = {...}` to hand values back. The scene is NOT wiped for you.')],
+                     export_glb: Annotated[str, Field(description='Also export the live scene to this .glb (inside the project). Empty skips.')] = "",
+                     view: Annotated[str, Field(description='Also capture the live 3D viewport to this PNG (inside the project). Empty skips.')] = "",
+                     port: Annotated[int, Field(description='The MCP bridge port. Default 9876.')] = 9876,
+                     timeout: int = 300) -> dict:
+    """Run a kit script in the LIVE Blender. Unlike blender_run, the scene
+    persists between calls: build the body in one call, look at it (view=),
+    fix the wheel arch in the next, export when it reads right. Every kit
+    function is in scope without a prelude; the kit installs itself into the
+    session on the first call. Use blender_live_reset to empty the scene - it
+    is never emptied implicitly.
+    """
+    if export_glb:
+        _contained_path(export_glb, "export_glb")
+    if view:
+        _contained_path(view, "view")
+    result = _live.run(script, export_glb=export_glb or None, view=view or None, port=port, timeout=timeout)
+    if result.get("ok") and export_glb:
+        return _surface_result(result, export_glb, "blender_live_run", live=True)
+    return result
+
+
+@_tool
+def blender_live_view(out_path: Annotated[str, Field(description='PNG path inside the project.')],
+                      port: int = 9876) -> dict:
+    """Capture what the human sees in the live Blender's 3D viewport (through
+    the viewport render), so agent and human are looking at the same frame.
+    Falls back to the scene camera when Blender has no 3D view open.
+    """
+    _contained_path(out_path, "out_path")
+    return _live.view(out_path, port=port)
+
+
+@_tool
+def blender_live_export(out_path: Annotated[str, Field(description='.glb path inside the project.')],
+                        port: int = 9876) -> dict:
+    """Export the live scene as it stands to a game .glb (Y-up, modifiers
+    applied, materials with their constants). Nothing in the scene is changed
+    or deleted to do it.
+    """
+    _contained_path(out_path, "out_path")
+    result = _live.export_glb(out_path, port=port)
+    return _surface_result(result, out_path, "blender_live_export", live=True)
+
+
+@_tool
+def blender_live_reset(port: int = 9876) -> dict:
+    """Empty the live scene (bg_wipe) - the one destructive live call, so it
+    is a separate tool and never a side effect of running a script.
+    """
+    return _live.reset(port=port)
