@@ -7,17 +7,32 @@ license = { file = "LICENSE" }
 authors = [{ name = "Thepizzapie" }]
 keywords = ["gamedev", "mcp", "godot", "blender", "agents"]
 requires-python = ">=3.11"
+# FLOORS ARE A SECURITY CONTROL, NOT A FORMALITY. A floor is the oldest version
+# a resolver may legally hand a user, so every one of these has to be at or
+# above the release that fixed the last known advisory for that package —
+# `pip install builders-gate` on a constrained resolver takes the floor, not the
+# latest. security.yml audits BOTH: the resolved tree and these floors pinned
+# exactly, because a floor-only vulnerability is invisible to the resolved run.
+#
+# uvicorn is >=0.31.1 because mcp requires it, not because uvicorn had a
+# problem: the old >=0.29 floor could not resolve against mcp's own >=0.30 at
+# all. starlette is DIRECT because bgate_ui imports it directly (api.py,
+# redact.py) and because fastapi's floor alone does not reach the fixed line —
+# fastapi <0.141 caps starlette below it.
 dependencies = [
-    "mcp>=1.2.0,<2",
-    "fastapi>=0.110",
-    "uvicorn>=0.29",
-    "Pillow>=10.0",
+    "mcp>=1.28.1,<2",
+    "fastapi>=0.141.1",
+    "starlette>=1.3.1",
+    "uvicorn>=0.31.1",
+    "Pillow>=12.3.0",
     "numpy>=1.26",
     "openai>=1.30",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.12,<0.13"]
+# ruff stays capped at <0.13 on purpose — a minor bump changes what the lint
+# accepts — and no ruff in that range carries an advisory.
+dev = ["pytest>=9.0.3", "httpx>=0.27.1", "ruff>=0.12,<0.13"]
 stt = ["faster-whisper>=1.0"]
 voice = ["websockets>=13"]
 record = ["sounddevice>=0.4"]
