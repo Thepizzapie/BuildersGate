@@ -61,6 +61,28 @@ jobs:
           .auditenv/bin/python -m pip install pip-audit
           .auditenv/bin/python -m pip_audit
 
+      - name: Audit the FLOORS — the oldest versions a user can legally install
+        # THE STEP ABOVE CANNOT FAIL THE WAY THIS ONE CAN. `pip install .`
+        # resolves to the newest release of everything, which is the version
+        # least likely to have an open advisory, so that job stayed green while
+        # the declared floors rotted to 23 known-vulnerable versions between
+        # them — mcp 1.2.0, starlette 0.36.3 via an old fastapi cap, and Pillow
+        # 10.0.0. A floor is what a constrained resolver actually serves, so it
+        # is the version worth auditing.
+        #
+        # Separate venv, because this one deliberately installs OLD packages and
+        # must not disturb the resolved-tree audit above.
+        #
+        # scripts/dep_floors.py derives the pins from pyproject rather than from
+        # a second list that would drift out of sync on the first bump.
+        run: |
+          python -m venv .floorenv
+          .floorenv/bin/python -m pip install --upgrade pip packaging
+          .floorenv/bin/python scripts/dep_floors.py > floors.txt
+          echo "--- floors under audit ---"; cat floors.txt
+          .floorenv/bin/python -m pip install pip-audit
+          .floorenv/bin/python -m pip_audit -r floors.txt
+
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
