@@ -1,6 +1,6 @@
 /**
  * The feel, asserted. `step` is pure, so the jump can be regression-tested with
- * no canvas and no browser — which is the whole reason it lives apart from
+ * no canvas and no browser, which is the whole reason it lives apart from
  * main.ts.
  */
 import { describe, expect, it } from "vitest";

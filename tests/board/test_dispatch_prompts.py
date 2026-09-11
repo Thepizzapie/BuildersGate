@@ -75,3 +75,24 @@ def test_a_per_seat_file_replaces_only_the_section_it_names(root, tmp_path,
 def test_the_template_ships_in_the_wheel():
     text = open("pyproject.toml", encoding="utf-8").read()
     assert "agents/prompts/*.txt" in text
+
+
+def test_a_web_project_is_told_to_verify_in_its_own_engine(root):
+    # A Godot project's step 4 names godot_check_project; a web project has no
+    # project.godot to check, and used to get the generic "run a build" line
+    # with godot_screenshot still named as the way to look at the result.
+    from bgate_core.store import project
+    project.set_engine(root, "web")
+    rule = dispatch._verify_rule(str(root))
+    assert "engine_check" in rule and "web_test_run" in rule
+    assert "engine_screenshot" in rule
+    assert "godot_" not in rule
+
+
+def test_node_joins_the_resolved_toolchain(monkeypatch):
+    monkeypatch.setattr(dispatch, "_TOOLCHAIN", {})
+    for var in ("BGATE_GODOT", "BGATE_NODE", "BGATE_BLENDER", "BGATE_FFMPEG"):
+        monkeypatch.delenv(var, raising=False)
+    import bgate_adapters.web as web
+    monkeypatch.setattr(web, "find_node", lambda: "C:/node/node.exe")
+    assert dispatch._toolchain_env().get("BGATE_NODE") == "C:/node/node.exe"

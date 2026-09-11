@@ -1,4 +1,4 @@
-"""The engine registry — phase 1 of giving project.engine teeth.
+"""The engine registry, phase 1 of giving project.engine teeth.
 
 The column existed since migration 0001 and changed nothing; these are the
 assertions that say what it now decides.
@@ -23,14 +23,14 @@ class TestRegistry:
         assert "unreal" in str(exc.value)
 
     def test_declared_but_undriven_engines_say_so_instead_of_importing(self):
-        # Unity is in the table so detection and adoption are honest about it.
+        # "none" is in the table so a directory with no game is a legal row.
         # Nothing must read that as "there is an adapter".
         assert engines.supported("godot") is True
         assert engines.supported("web") is True         # since phase 3
-        assert engines.supported("unity") is False
+        assert engines.supported("unity") is True       # since the adapter
         assert engines.supported("none") is False
         with pytest.raises(engines.EngineUnsupported):
-            engines.adapter("unity")
+            engines.adapter("none")
 
     def test_binary_reaches_the_adapter_through_one_name(self):
         # The 13 scattered find_godot() calls collapse into this. The adapter
@@ -65,7 +65,7 @@ class TestDetection:
     def test_a_godot_project_with_a_package_json_is_still_godot(self):
         """The reason DETECT_ORDER is not alphabetical.
 
-        package.json is written by anything with a build step — a Godot game
+        package.json is written by anything with a build step, a Godot game
         with a tooling dependency has one. Checking the weak marker first would
         relabel that game as a web project on a file that has nothing to do with
         its engine.
@@ -78,7 +78,7 @@ class TestDetection:
 
 
 class TestGameDirStaysNarrow:
-    """game_dir must NOT widen to every engine — see its docstring.
+    """game_dir must NOT widen to every engine, see its docstring.
 
     Thirty call sites take its answer and do Godot things with it. A web game
     adopted as a Godot game with an empty config is worse than one that is not
@@ -191,7 +191,7 @@ class TestDoctorRows:
 
 
 class TestToolOwnership:
-    """Which tools an engine claims — the table the registration gate reads."""
+    """Which tools an engine claims, the table the registration gate reads."""
 
     @staticmethod
     def _declared() -> list[str]:
@@ -253,7 +253,8 @@ class TestToolOwnership:
     def test_the_neutral_dispatchers_belong_to_no_engine(self):
         # They are the layer that ASKS the engine; owning them would delete the
         # thing that answers "what is this project even built in".
-        for name in ("engine_status", "engine_check"):
+        for name in ("engine_status", "engine_check", "engine_scaffold",
+                     "engine_templates", "engine_screenshot"):
             assert engines.tool_owner(name) == ""
             for engine in engines.names():
                 assert engines.tool_enabled(name, engine)
@@ -280,11 +281,15 @@ class TestRegistrationGate:
         for name in sorted(engines.ENGINE_TOOLS["godot"]):
             assert engines.tool_enabled(name, "godot"), name
 
-    def test_a_web_project_loses_exactly_the_godot_surface(self):
+    def test_a_web_project_loses_exactly_the_other_engines_surfaces(self):
         lost = sorted(n for n in engines.owned_tools()
                       if not engines.tool_enabled(n, "web"))
-        assert lost == sorted(engines.ENGINE_TOOLS["godot"])
+        assert lost == sorted(engines.ENGINE_TOOLS["godot"]
+                              | engines.ENGINE_TOOLS["unity"])
         assert len(lost) > 35
+        kept = sorted(n for n in engines.owned_tools()
+                      if engines.tool_enabled(n, "unity"))
+        assert kept == sorted(engines.ENGINE_TOOLS["unity"])
 
     def test_an_unreadable_project_registers_everything(self, tmp_path,
                                                         monkeypatch):

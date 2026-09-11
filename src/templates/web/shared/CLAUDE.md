@@ -5,7 +5,7 @@ A Builders Gate project. This file is what your Claude session reads first.
 ## What this is
 
 A web game: TypeScript, [vite](https://vite.dev) for the dev server and the
-build, [vitest](https://vitest.dev) for tests. No framework — the game loop is
+build, [vitest](https://vitest.dev) for tests. No framework, the game loop is
 in `src/game.ts` and it is yours to change.
 
 ## The loop
@@ -18,14 +18,14 @@ npm run build        # dist/
 ```
 
 From an agent session the same four moves are `engine_status`, `web_dev`,
-`web_test_run` and `web_build`. Prefer them: they take the engine lock, archive
+`web_test_run` and `web_build`. Prefer them: they log to the board, archive
 the evidence and, in `web_build`'s case, refuse a payload nobody could download.
 
 ## The payload is the product
 
 `web_build` measures what a first visit costs over the wire and fails when it
 is over budget (25 MB by default). This is not fussiness. A Godot 3D game
-exported to the web at 661 MB is what this check exists to prevent — it ran
+exported to the web at 661 MB is what this check exists to prevent, it ran
 perfectly and no player would ever have waited for it.
 
 When it fails, read `payload.biggest`. It is almost always one texture, one
@@ -46,7 +46,7 @@ the video and the voice track on one clock.
 
 Emit an event for anything you might later want to argue about with a number:
 jumps, deaths, retries, time in a room. The feel tunables live in
-`src/tunables.ts` — keep them there and emit them once at boot, so a recording
+`src/tunables.ts`, keep them there and emit them once at boot, so a recording
 knows which values produced it.
 
 ## What NOT to do

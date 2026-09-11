@@ -3,12 +3,12 @@
  *
  * NO THREE.JS IN THIS FILE, and that is the point. Everything here is plain
  * numbers, so the movement can be regression-tested with no WebGL, no canvas
- * and no browser — see game.test.ts. main.ts owns the scene graph and does
+ * and no browser, see game.test.ts. main.ts owns the scene graph and does
  * nothing but read this state and place meshes at it. A controller that can
  * only be exercised by looking at it is a controller whose jump nobody can
  * test.
  *
- * Right-handed, Y up, metres and seconds — the same convention three.js and
+ * Right-handed, Y up, metres and seconds, the same convention three.js and
  * glTF both use, so a model dropped in needs no conversion.
  */
 import { tunables, type Tunables } from "./tunables";
@@ -104,7 +104,7 @@ export function supportAt(x: number, z: number, radius: number):
  *
  * dt IS CLAMPED for the same reason the 2D template clamps it: a backgrounded
  * tab hands rAF several seconds at once, and an unclamped step drops the
- * character through the floor — which presents as broken collision and is not.
+ * character through the floor, which presents as broken collision and is not.
  */
 export function step(s: State, input: Input, dt: number,
                      knobs: Tunables = tunables): GameEvent[] {

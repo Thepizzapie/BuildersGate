@@ -73,7 +73,7 @@ function overlaps(s: State, solid: Solid): boolean {
  * Advance the world by `dt` seconds. Returns whatever happened worth recording.
  *
  * dt IS CLAMPED. A backgrounded tab hands rAF a delta of several seconds on
- * return, and an unclamped step teleports the player through the floor — which
+ * return, and an unclamped step teleports the player through the floor, which
  * presents as "the collision is broken" and is not.
  */
 export function step(s: State, input: Input, dt: number,
@@ -94,7 +94,7 @@ export function step(s: State, input: Input, dt: number,
     s.takeoff_y = s.y;
     s.peak_y = s.y;
     s.jump_pressed_for = Infinity;
-    s.airborne_for = knobs.coyote_time + 1; // spent — no double jump
+    s.airborne_for = knobs.coyote_time + 1; // spent, no double jump
     events.push({ kind: "jump", data: { x: s.x, coyote: !s.grounded } });
   }
 
@@ -111,7 +111,7 @@ export function step(s: State, input: Input, dt: number,
   s.grounded = false;
   for (const solid of SOLIDS) {
     if (!overlaps(s, solid)) continue;
-    // Landing only — a head-bump keeps the player under the platform rather
+    // Landing only, a head-bump keeps the player under the platform rather
     // than snapping them on top of it.
     if (s.vy >= 0 && s.y + s.h - s.vy * dt <= solid.y + 1) {
       s.y = solid.y - s.h;

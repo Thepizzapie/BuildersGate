@@ -1,4 +1,4 @@
-# Builders Gate — stamped by `bgate init`. Edit freely; the marked block below
+# Builders Gate, stamped by `bgate init`. Edit freely; the marked block below
 # is refreshed on re-init and anything outside it is left alone.
 
 node_modules/
@@ -10,5 +10,6 @@ dist/
 .bgate/
 .bgate_out/
 .bgate_web_dev.json
+.bgate_web_dev.log
 .env
 # --- end builders gate ---

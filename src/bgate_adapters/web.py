@@ -1,14 +1,14 @@
-"""The web engine — a TypeScript game that ships to a URL.
+"""The web engine, a TypeScript game that ships to a URL.
 
 WHY THIS EXISTS, measured rather than assumed. A finished Godot 3D game
 (Tommy Tomato Golf, 2026-09-08) was exported to the web to see how close it was:
-it ran, and the payload was 661 MB — a 622 MB .pck plus a 38 MB .wasm, holding
+it ran, and the payload was 661 MB, a 622 MB .pck plus a 38 MB .wasm, holding
 1.27 GB of heap after load. Nothing in the pipeline had ever asked what a build
 weighed, because for a desktop export nobody cares. On the web the payload IS
 the product: past a few tens of megabytes there is no game, only a spinner.
 
 That is the fact this adapter is shaped around. :func:`build` refuses a payload
-over a declared budget the same way the Godot side refuses an unimported asset —
+over a declared budget the same way the Godot side refuses an unimported asset -
 before it is somebody's surprise rather than after.
 
 WHAT THIS ADAPTER IS NOT: a framework. The templates are vite + TypeScript with
@@ -20,10 +20,10 @@ THE PIECES, and which external thing each needs:
   find_binary / available   node on PATH. Nothing else works without it.
   check_project             `npm run build` (or `tsc --noEmit`). Needs node and
                             an installed node_modules.
-  run_script                node, running a .ts/.js file through the project.
-  dev_server                vite (or whatever `npm run dev` starts), held under
-                            the engine lock like any other engine process.
-  screenshot                Playwright, which is TWO installs — the Python
+  run_script                node, running a .js file inside the project.
+  dev_server                vite (or whatever `npm run dev` starts), tracked
+                            in a pidfile beside the project; see dev_start.
+  screenshot                Playwright, which is TWO installs, the Python
                             package and its browser build. They fail
                             differently and are reported differently; see
                             :func:`browser_available`.
@@ -60,7 +60,7 @@ DEFAULT_DIST = "dist"
 #: 25 MB is not a preference, it is roughly where a game stops being openable by
 #: someone who was not already committed to opening it: ~20 s on a 10 Mbit
 #: connection, which is the point most measured bounce curves have already
-#: given up. It is a DEFAULT and a project sets its own — the number matters far
+#: given up. It is a DEFAULT and a project sets its own, the number matters far
 #: less than the fact that some number is checked at all, which is what the
 #: 661 MB export did not have.
 DEFAULT_BUDGET_BYTES = 25 * 1024 * 1024
@@ -105,7 +105,7 @@ def find_node() -> str:
 
 
 def find_binary() -> str:
-    """The engine registry's entrypoint — see bgate_core.runtime.engines.binary."""
+    """The engine registry's entrypoint, see bgate_core.runtime.engines.binary."""
     return find_node()
 
 
@@ -118,7 +118,7 @@ def available() -> dict:
 
 
 # A binary's version cannot change unless the FILE changes, so the cache is
-# keyed on the path and its mtime rather than on a clock — the same rule, and
+# keyed on the path and its mtime rather than on a clock, the same rule, and
 # the same reasoning, as godot._VERSION_CACHE.
 _VERSION_CACHE: dict[tuple[str, float], str] = {}
 
@@ -136,7 +136,7 @@ def version() -> dict:
     if key not in _VERSION_CACHE:
         try:
             got = subprocess.run([path, "--version"], capture_output=True,
-                                 text=True, timeout=20,
+                                 text=True, encoding="utf-8", errors="replace", timeout=20,
                                  creationflags=_NO_WINDOW)
             _VERSION_CACHE[key] = (got.stdout or got.stderr).strip().lstrip("v")
         except (OSError, subprocess.SubprocessError):
@@ -154,7 +154,7 @@ def _npm() -> str:
     found = shutil.which("npm")
     if not found:
         raise NodeNotFound(
-            "npm not found — it ships with Node.js. If node is on PATH and npm "
+            "npm not found, it ships with Node.js. If node is on PATH and npm "
             "is not, the install is incomplete.")
     return found
 
@@ -195,13 +195,17 @@ def installed(project_dir: str | os.PathLike[str]) -> bool:
     return (Path(project_dir) / "node_modules").is_dir()
 
 
+# EVERY node PROCESS IS READ AS UTF-8. vitest prints its ticks and crosses in
+# UTF-8 whatever the console codepage is, and on a Windows machine Python's
+# default is cp1252, which raised UnicodeDecodeError inside subprocess's reader
+# thread and handed back an EMPTY stdout for a suite that had just passed 7/7.
 def _npm_run(project_dir: str, script: str, timeout: int,
              extra: Optional[list[str]] = None) -> dict:
     started = time.monotonic()
     try:
         cmd = [_npm(), "run", script, *(extra or [])]
         got = subprocess.run(cmd, cwd=str(project_dir), capture_output=True,
-                             text=True, timeout=timeout,
+                             text=True, encoding="utf-8", errors="replace", timeout=timeout,
                              creationflags=_NO_WINDOW)
     except NodeNotFound as exc:
         return {"ok": False, "error": str(exc)}
@@ -233,7 +237,7 @@ def check_project(project_dir: str, timeout: int = 300) -> dict:
         return {"ok": False, "error": f"no {MANIFEST} in {project_dir}"}
     if not installed(root):
         return {"ok": False, "installed": False,
-                "error": "node_modules is not there — run `npm install` in "
+                "error": "node_modules is not there: run `npm install` in "
                          f"{project_dir} first. Builders Gate does not install "
                          "dependencies on your behalf."}
     have = scripts(root)
@@ -243,7 +247,7 @@ def check_project(project_dir: str, timeout: int = 300) -> dict:
     if "typecheck" in have:
         got = _npm_run(str(root), "typecheck", timeout)
         return {**got, "installed": True, "checked": "typecheck",
-                "note": "no `build` script — this typechecked but never "
+                "note": "no `build` script, this typechecked but never "
                         "produced the bundle a player would download."}
     return {"ok": False, "installed": True,
             "error": "package.json defines neither a `build` nor a "
@@ -255,7 +259,7 @@ def test_run(project_dir: str, timeout: int = 300) -> dict:
     root = Path(project_dir)
     if not installed(root):
         return {"ok": False, "installed": False,
-                "error": "node_modules is not there — run `npm install` first."}
+                "error": "node_modules is not there: run `npm install` first."}
     if "test" not in scripts(root):
         return {"ok": False, "error": "package.json defines no `test` script."}
     return {**_npm_run(str(root), "test", timeout), "installed": True}
@@ -277,11 +281,30 @@ def run_script(script: str, project_dir: Optional[str] = None,
     if not path.is_file():
         return {"ok": False, "error": f"{script} is not a readable file. "
                                       "run_script takes a path, not source."}
+    if project_dir:
+        # THE SCRIPT STAYS INSIDE THE PROJECT. The MCP gate contains the project
+        # directory, not this argument, so `../../anything.js` (or an absolute
+        # path elsewhere) would run under node with the project's cwd and the
+        # project's containment verdict. Resolve both sides so a symlink or a
+        # drive-letter case difference cannot slip past a string prefix.
+        try:
+            path.resolve().relative_to(Path(project_dir).resolve())
+        except ValueError:
+            return {"ok": False, "error": f"{script} is outside {project_dir}; "
+                                          "run_script only runs files inside "
+                                          "the project."}
+    if path.suffix.lower() in (".ts", ".tsx", ".mts", ".cts"):
+        # Node 20 cannot execute TypeScript, and the templates pin Node 20 as
+        # the floor. A .ts handed straight to node fails on the first type
+        # annotation with a SyntaxError that names nothing useful.
+        return {"ok": False, "error": f"{path.name} is TypeScript; node runs "
+                                      "JavaScript. Build it first, or point "
+                                      "this at the .js vite emits."}
     started = time.monotonic()
     try:
         got = subprocess.run([find_node(), str(path)],
                              cwd=str(project_dir or path.parent),
-                             capture_output=True, text=True, timeout=timeout,
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
                              creationflags=_NO_WINDOW)
     except NodeNotFound as exc:
         return {"ok": False, "error": str(exc)}
@@ -295,7 +318,7 @@ def run_script(script: str, project_dir: Optional[str] = None,
 
 
 # ---------------------------------------------------------------------------
-# The payload budget — the reason this adapter is shaped the way it is
+# The payload budget, the reason this adapter is shaped the way it is
 # ---------------------------------------------------------------------------
 def _gzip_size(path: Path) -> int:
     """What this file costs over the wire, not what it costs on disk.
@@ -330,12 +353,18 @@ def payload(dist_dir: str | os.PathLike[str],
     """
     base = Path(dist_dir)
     if not base.is_dir():
-        return {"ok": False, "error": f"no build output at {dist_dir} — build "
+        return {"ok": False, "error": f"no build output at {dist_dir}: build "
                                       "before measuring."}
     files: list[dict] = []
     total = 0
     for item in base.rglob("*"):
         if not item.is_file():
+            continue
+        rel = item.relative_to(base)
+        if any(part.startswith(".") for part in rel.parts):
+            # dist/.vite/manifest.json is the bundler's own bookkeeping; no
+            # browser ever asks for it, and counting it charges the budget for
+            # bytes nobody downloads.
             continue
         suffix = item.suffix.lower()
         if suffix in _PAYLOAD_IGNORE_SUFFIXES:
@@ -362,7 +391,7 @@ def payload(dist_dir: str | os.PathLike[str],
         "error": "" if within else (
             f"payload is {round(total / (1024 * 1024), 2)} MB over the wire, "
             f"budget is {round(budget_bytes / (1024 * 1024), 2)} MB. The "
-            f"biggest contributors are listed in `biggest` — this is the check "
+            f"biggest contributors are listed in `biggest`, this is the check "
             f"a 661 MB web export did not have."),
     }
 
@@ -391,7 +420,7 @@ def build(project_dir: str, timeout: int = 600,
 # The browser
 # ---------------------------------------------------------------------------
 def browser_available() -> dict:
-    """Is Playwright usable — BOTH the package and a browser build?
+    """Is Playwright usable, BOTH the package and a browser build?
 
     TWO INSTALLS THAT FAIL DIFFERENTLY, and conflating them is the mistake the
     art_key doctor row already had to unlearn: the row that asked "is the
@@ -405,7 +434,7 @@ def browser_available() -> dict:
         from playwright.sync_api import sync_playwright
     except ImportError:
         return {"available": False, "package": False, "browser": False,
-                "reason": "the playwright package is not installed — "
+                "reason": "the playwright package is not installed, "
                           "`pip install builders-gate[web]`."}
     try:
         with sync_playwright() as play:
@@ -417,7 +446,7 @@ def browser_available() -> dict:
         return {"available": False, "package": True, "browser": False,
                 "path": exe or "",
                 "reason": "the playwright package is installed but its browser "
-                          "build is not — run `playwright install chromium`. "
+                          "build is not: run `playwright install chromium`. "
                           "(Builders Gate does not download it for you: it is a "
                           "few hundred MB and that is your decision.)"}
     return {"available": True, "package": True, "browser": True, "path": exe}
@@ -434,7 +463,7 @@ def screenshot(url: str, out_path: str, *, at: float = 1.0,
 
     RETURNS THE CONSOLE AND THE FAILED REQUESTS ALONGSIDE THE IMAGE. A web game
     that renders nothing is almost always a 404 or a thrown exception, and both
-    are invisible in the picture — which is exactly how a blank screenshot gets
+    are invisible in the picture, which is exactly how a blank screenshot gets
     reported as "the shader is wrong".
     """
     probe = browser_available()
@@ -481,12 +510,12 @@ def screenshot(url: str, out_path: str, *, at: float = 1.0,
         "console": console[-40:],
         "console_errors": errors,
         "failed_requests": failed[:20],
-        # SAID ON EVERY RESULT, not only when it looks wrong — the same rule
+        # SAID ON EVERY RESULT, not only when it looks wrong, the same rule
         # godot.screenshot's `focus` caveat follows. A clean-looking capture
         # of a page that threw is read as evidence long before anyone thinks
         # to check the console separately.
         "note": ("a web game that renders nothing is usually a thrown exception "
-                 "or a 404, and neither shows in the image — read "
+                 "or a 404, and neither shows in the image: read "
                  "console_errors and failed_requests before concluding "
                  "anything about the picture."
                  if (errors or failed) else ""),
@@ -496,21 +525,25 @@ def screenshot(url: str, out_path: str, *, at: float = 1.0,
 # ---------------------------------------------------------------------------
 # The dev server
 # ---------------------------------------------------------------------------
-# A LONG-LIVED PROCESS IS NOT AN ENGINE CALL, and the difference decides how it
-# is locked. bgate_core.runtime.enginelock serialises ONE invocation: hold it,
-# spawn, wait, release. A dev server runs for as long as someone is looking at
-# the game, so holding the engine lock for its lifetime would block every
-# screenshot and build of the same project — the lock would be protecting the
-# project from the thing it exists to serve.
+# A LONG-LIVED PROCESS IS NOT AN ENGINE CALL. bgate_core.runtime.enginelock
+# serialises ONE invocation, hold it, spawn, wait, release, and its lock
+# lives under <project>/.godot/, which is Godot's cache and not this engine's.
+# A dev server runs for as long as someone is looking at the game, so a lock
+# held for its lifetime would block every screenshot and build of the same
+# project. Nothing here takes the engine lock: vite refuses a port it cannot
+# bind (--strictPort), and npm serialises nothing, so two concurrent builds of
+# one project are the caller's problem the way they are on the command line.
 #
-# So the server is tracked in a pidfile beside the project instead, and the
-# engine lock is taken only around the calls that actually contend (build,
-# check, test). Vite already refuses a port it cannot bind, so the pidfile is
-# bookkeeping for "which port did we start it on and is it still alive",
-# not a mutex.
+# The server is tracked in a pidfile beside the project. It is bookkeeping for
+# "which port did we start it on and is it still alive", not a mutex.
 _PIDFILE = ".bgate_web_dev.json"
 
-#: The address the dev server binds and the URL we hand back — one value, so
+#: Where the server's stdout goes. NOT A PIPE: nothing reads a pipe after
+#: dev_start returns, and a vite that logs past the OS pipe buffer (64 KB on
+#: Windows) blocks on write and stops serving, an HMR session gets there.
+_LOGFILE = ".bgate_web_dev.log"
+
+#: The address the dev server binds and the URL we hand back, one value, so
 #: they cannot disagree. See dev_start for what happened when they did.
 _HOST = "127.0.0.1"
 
@@ -532,23 +565,59 @@ def _pidfile(project_dir: str | os.PathLike[str]) -> Path:
     return Path(project_dir) / _PIDFILE
 
 
-def _alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
+def _logfile(project_dir: str | os.PathLike[str]) -> Path:
+    return Path(project_dir) / _LOGFILE
+
+
+def _tail(path: Path, limit: int = 2000) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[-limit:]
+    except OSError:
+        return ""
+
+
+#: What the pid in the pidfile may be. `npm run dev` is spawned through npm's
+#: shim: on Windows that pid is cmd.exe, elsewhere it is node or a shell, and
+#: vite itself is the node child under it.
+_OURS = frozenset({"node", "node.exe", "npm", "npm.cmd", "cmd.exe", "sh",
+                   "bash", "dash", "zsh"})
+
+
+def _image_name(pid: int) -> str:
+    """The executable name behind a pid, '' when there is no such process."""
     if os.name == "nt":
         try:
             got = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                capture_output=True, text=True, timeout=15,
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
                 creationflags=_NO_WINDOW)
         except (OSError, subprocess.SubprocessError):
-            return False
-        return str(pid) in (got.stdout or "")
+            return ""
+        for line in (got.stdout or "").splitlines():
+            cells = [c.strip().strip('"') for c in line.split('","')]
+            if len(cells) >= 2 and cells[1] == str(pid):
+                return cells[0].lower()
+        return ""
     try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
+        got = subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return Path((got.stdout or "").strip()).name.lower()
+
+
+def _alive(pid: int) -> bool:
+    """Is this pid still OUR dev server, not merely still a pid?
+
+    Pids are recycled. A pidfile left by a server that died an hour ago can
+    name a process the OS has since handed to something else, and dev_stop
+    kills the whole tree under it. So a live pid counts only when the image
+    behind it is one npm's shim or node would be running as; anything else is
+    reported stale and never signalled.
+    """
+    if pid <= 0:
         return False
-    return True
+    return _image_name(pid) in _OURS
 
 
 def dev_status(project_dir: str | os.PathLike[str]) -> dict:
@@ -576,7 +645,7 @@ def dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
 
     RETURNS ONLY ONCE THE PORT ANSWERS, or fails saying why. Returning as soon
     as the process spawned would hand the caller a URL that is not up yet, and
-    the screenshot taken against it photographs a connection error — which then
+    the screenshot taken against it photographs a connection error, which then
     reads as "the game is broken".
     """
     root = Path(project_dir)
@@ -584,7 +653,7 @@ def dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
         return {"ok": False, "error": f"no {MANIFEST} in {project_dir}"}
     if not installed(root):
         return {"ok": False, "installed": False,
-                "error": "node_modules is not there — run `npm install` first."}
+                "error": "node_modules is not there: run `npm install` first."}
     if "dev" not in scripts(root):
         return {"ok": False, "error": "package.json defines no `dev` script."}
     already = dev_status(root)
@@ -592,9 +661,14 @@ def dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
         return {"ok": True, "already_running": True, **already}
 
     url = f"http://{_HOST}:{port}/"
+    log_path = _logfile(root)
+    try:
+        log = open(log_path, "w", encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "error": f"cannot open {log_path}: {exc}"}
     try:
         # --host IS NOT OPTIONAL AND IT IS NOT ABOUT EXPOSURE. Vite's default
-        # host is the string "localhost", which on Windows binds ::1 ONLY —
+        # host is the string "localhost", which on Windows binds ::1 ONLY -
         # measured: the server was up and serving, and every probe of
         # http://127.0.0.1:<port>/ failed for the full 90s timeout. Binding the
         # address we are about to hand back makes the URL in the result true.
@@ -602,33 +676,41 @@ def dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
         proc = subprocess.Popen(
             [_npm(), "run", "dev", "--",
              "--host", _HOST, "--port", str(port), "--strictPort"],
-            cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, creationflags=_NO_WINDOW)
+            cwd=str(root), stdout=log, stderr=subprocess.STDOUT,
+            creationflags=_NO_WINDOW)
     except NodeNotFound as exc:
+        log.close()
         return {"ok": False, "error": str(exc)}
     except OSError as exc:
+        log.close()
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        # The child holds its own handle from here; ours only keeps the file
+        # open on Windows, where an open handle blocks a later unlink.
+        log.close()
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            out = (proc.stdout.read() if proc.stdout else "") or ""
             return {"ok": False, "exit_code": proc.returncode,
                     "error": "the dev server exited immediately",
-                    "output": out[-2000:]}
+                    "output": _tail(log_path), "log": str(log_path)}
         if _answers(url):
             _pidfile(root).write_text(
                 json.dumps({"pid": proc.pid, "port": port, "url": url,
-                            "at": time.time()}), encoding="utf-8")
+                            "at": time.time(), "log": str(log_path)}),
+                encoding="utf-8")
             return {"ok": True, "pid": proc.pid, "port": port, "url": url,
+                    "log": str(log_path),
                     "seconds": round(timeout - (deadline - time.monotonic()), 2)}
         time.sleep(0.25)
     # KILL THE TREE, NOT THE SHIM. npm spawns vite as a CHILD, so terminating
-    # the npm process leaves the actual server holding the port — measured: a
+    # the npm process leaves the actual server holding the port, measured: a
     # timed-out start orphaned a vite that then made every later dev_start fail
     # on --strictPort, for a server nothing was tracking and nobody could stop.
     _kill_tree(proc.pid)
-    return {"ok": False, "timeout": True,
+    return {"ok": False, "timeout": True, "output": _tail(log_path),
+            "log": str(log_path),
             "error": f"the dev server did not answer on {url} within {timeout}s"}
 
 

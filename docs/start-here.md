@@ -12,7 +12,10 @@ An MCP server is a program that gives an AI assistant extra tools. Claude Code
 can read files, edit files and run shell commands; an MCP server adds verbs.
 You register one once, and every Claude session on your machine can call it.
 
-Builders Gate is one of those, for Godot game development. It runs as a local
+Builders Gate is one of those, for game development in Godot, on the web
+(vite + TypeScript) or in Unity (adopted, compiled, tested and photographed
+through the editor).
+It runs as a local
 process over stdin and stdout: no network service, no account, no cloud. Close
 to 200 tools, including `godot_run`, `image_sprites`, `bible_add`, `asset_lock`
 and `playtest_start`. Each game gets one SQLite file at `.bgate/game.db` that
@@ -36,7 +39,7 @@ This is more machinery than a small project needs.
 | Term | Meaning |
 |---|---|
 | **Seat** | A fixed job title an agent adopts for a session. Eight of them: director, narrative, gameplay, tech, art, audio, cinematic, qa. A seat is an identity, not a process: a session sets `BGATE_SEAT=art` and inherits art's mission and writable paths. |
-| **Lane** | The glob patterns a seat normally writes. Art's are `game/assets/**`, `blender/**`, `art/**`; gameplay's are `game/scripts/**`, `game/scenes/**`. Advisory by default: an out-of-lane write lands and is reported to you rather than refused (`BGATE_LANES=block` restores hard enforcement). The hard boundary is the project itself — a dispatched agent cannot touch files outside the game it was dispatched for. |
+| **Lane** | The glob patterns a seat normally writes. Art's are `game/assets/**`, `blender/**`, `art/**`; gameplay's are `game/scripts/**`, `game/scenes/**`. Advisory by default: an out-of-lane write lands and is reported to you rather than refused (`BGATE_LANES=block` restores hard enforcement). The hard boundary is the project itself, a dispatched agent cannot touch files outside the game it was dispatched for. |
 | **Lock** | A claim on one binary file. Text merges, a `.blend` does not. `asset_lock` before editing, `asset_release` after. A held lock errors instead of queueing, so the second agent goes and does something else. |
 | **Work item** | One unit of queued work: seat, title, brief, status. A database row. Filing one costs nothing and starts nothing. |
 | **Dispatch** | Turning a queued item into a running agent. This is where money gets spent and where the refusals live. |
@@ -95,8 +98,18 @@ directory you are standing in, containing `.bgate/game.db` and a runnable Godot
 game. It prints the absolute path it wrote to. `--kind 3d` gives you a
 third-person slice instead: a camera-relative controller with an orbit/follow/fixed camera rig, a prop kit (platform, ramp, crate, pickup, trigger volume) and an arcade vehicle demo.
 
-If you already have a Godot game, use `bgate adopt` instead. It never
-scaffolds and never overwrites. See [setup.md](setup.md).
+`--engine web` scaffolds the same slice as a vite + TypeScript project
+instead: `npm install`, `npm run dev`, and the agent-side moves become
+`engine_check`, `web_dev`, `web_test_run`, `web_build` and
+`engine_screenshot`. `web_build` measures what a first visit downloads and
+refuses a payload over budget (25 MB by default), which a 661 MB Godot web
+export taught us to check.
+
+If you already have a game, use `bgate adopt` instead. It never scaffolds and
+never overwrites, and it records which engine it found: `project.godot`,
+`package.json` or Unity's `ProjectSettings/`. `project_set_engine` corrects
+the record later; the engine decides which tools every seat is handed. See
+[setup.md](setup.md).
 
 Run the game and press F1. Every `@export` in the current scene gets a slider
 bound to the live node, and moving it moves the game. Values persist and are
@@ -121,21 +134,21 @@ channel that leaves the machine.
 
 Settings holds every switch, each row saying whether its value is the default,
 something you stored, or an environment variable overriding both. Two of them
-decide how much runs without you: `autopilot` (does work start without you —
+decide how much runs without you: `autopilot` (does work start without you -
 ON by default, so a filed chain runs as soon as `bgate serve` is up) and the
 approval gate (does it finish without you).
 
 ### 3. Register the server and install the hook
 
 ```bash
-bgate connect claude          # or codex, gemini, vscode — `bgate connect` lists them
+bgate connect claude          # or codex, gemini, vscode, `bgate connect` lists them
 bgate hook-install .
 bgate hook-status .
 ```
 
 `bgate connect` with no argument writes nothing and reports every client it
 knows about: whether it is installed, whether Builders Gate is registered with
-it, and — the state nothing else can see — whether that registration names the
+it, and, the state nothing else can see, whether that registration names the
 right interpreter. Cursor, Windsurf and opencode have no `mcp add` subcommand
 and keep their servers in a file you also hand-edit, so `bgate connect --show`
 prints the block to paste rather than merging into it.
@@ -213,14 +226,14 @@ gets to `production` by earning it:
 
 ```text
 thesis      Write the ONE SENTENCE: what decision is the player repeatedly
-            making that makes this game interesting?  greenlight_thesis_set —
+            making that makes this game interesting?  greenlight_thesis_set -
             with the options, the stakes, the reason the answer is not the same
             every time, and the play that would collapse the whole thing.
             A premise ("a tense horror game about surviving the night shift")
             is refused. It is not a decision.
 
 graybox     Gameplay proves that loop in ONE UGLY ROOM.  No art, no audio, no
-            cinematic — those seats do not dispatch at this stage, at all.
+            cinematic, those seats do not dispatch at this stage, at all.
             greenlight_graybox_submit with a scene and evidence somebody can
             look at; greenlight_graybox_verdict is the director playing it and
             saying whether the interaction is actually interesting.
@@ -236,7 +249,7 @@ release     Everything above, plus a presentation gate that `--export-release`
 ```
 
 If a queued item will not dispatch and its dependencies are clean, this is
-almost always why — `greenlight_status` says which seats are held and what
+almost always why, `greenlight_status` says which seats are held and what
 would release them. `greenlight_waive(seat, reason)` lets one seat through for
 a real reason, on the record; there is no equivalent for the release gate.
 
@@ -285,7 +298,7 @@ Four habits that cost the most when skipped:
   `room_review` takes a full-room screenshot and refuses a cropped one.
 - **Do not restart the MCP server because a tool has gone quiet.** A provider
   call that has said nothing for ten minutes is usually still running, and the
-  restart does not stop the charge — it only throws away the result.
+  restart does not stop the charge, it only throws away the result.
   `board_digest` reports `restart_cost` before you do it and `orphaned` after
   somebody already has.
 

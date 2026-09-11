@@ -1,11 +1,11 @@
-"""Godot workspace endpoints — the engine surface for the gameplay/tech seats.
+"""Godot workspace endpoints, the engine surface for the gameplay/tech seats.
 
 The native Godot editor can't be embedded in a web page, so this exposes the
 next best thing over the existing headless adapter: browse scenes/scripts,
 inspect a resource in-engine, run a GDScript, screenshot a scene, and build-check
 the project. project_dir defaults to <root>/game.
 
-The four engine calls are slow — an import can run for minutes — and used to
+The four engine calls are slow, an import can run for minutes, and used to
 block the request on a timeout read straight out of the body. Two things changed:
 every timeout is clamped to [5, 600] before it reaches the adapter, and each of
 those endpoints accepts ``?async=1`` (or ``{"async": true}``) to start a job and
@@ -38,12 +38,12 @@ _MAX_READ = 200_000
 
 # Everything readable is editable EXCEPT .import: the engine generates those on
 # scan and rewrites them without asking, so a hand edit is work that silently
-# disappears — which reads as "the editor did not save" rather than "that file
+# disappears, which reads as "the editor did not save" rather than "that file
 # was never yours".
 _WRITABLE_SUFFIXES = _CODE_SUFFIXES - {".import"}
 
 # A source file this size is machine-generated, and the editor could not have
-# been the thing that produced it — the read path caps at _MAX_READ, so anything
+# been the thing that produced it, the read path caps at _MAX_READ, so anything
 # past this arrived by another route.
 _MAX_WRITE = 1_000_000
 
@@ -62,7 +62,7 @@ def clamp_timeout(raw, default: int) -> int:
     """Never trust the timeout in the request body.
 
     It was passed to the adapter verbatim, so a client could pin an HTTP request
-    — and one of the server's threadpool workers — open for as long as it liked.
+, and one of the server's threadpool workers, open for as long as it liked.
     Anything unparseable falls back to the endpoint's own default rather than
     failing the call, since a bad timeout is not a reason to refuse the work.
     """
@@ -79,7 +79,7 @@ def _guard(call: Callable[[], dict]) -> dict:
         return call()
     except _godot.GodotNotFound as exc:
         # KEPT VERBATIM. This one is our own literal naming a missing external
-        # tool and how to install it — the whole reason this is an answer and
+        # tool and how to install it, the whole reason this is an answer and
         # not a 500. Withholding it leaves the panel with nothing to act on.
         return {"ok": False, "error": str(exc)}
     except Exception as exc:
@@ -93,7 +93,7 @@ def _staged(job_id: int, stage: str, timeout: int, call: Callable[[], dict]) -> 
 
     The adapter reports nothing until it returns, so the bar is time-based: it
     walks toward 0.9 over the operation's own timeout. That is not precision, but
-    it answers the question a spinner cannot — is this five seconds in or three
+    it answers the question a spinner cannot, is this five seconds in or three
     minutes in.
     """
     root_dir = root()
@@ -138,7 +138,7 @@ def _default_project(r: Path) -> Path:
 
     This used to be a hardcoded ``<root>/game``, which is right for a project
     `bgate init` scaffolded and wrong for every project `bgate adopt` took on,
-    whose project.godot sits at the root. On those, every endpoint here 404'd —
+    whose project.godot sits at the root. On those, every endpoint here 404'd -
     the workspace looked like Godot was missing rather than like the path was.
 
     Same resolution order as bgate_core.art.screenmap and scenewire._godot_dir, on
@@ -152,8 +152,25 @@ def _default_project(r: Path) -> Path:
     return hits[0] if hits else (r / "game")
 
 
+def _engine_of(r: Path) -> str:
+    try:
+        from bgate_core.store import project as _proj
+        return _proj.engine_of(r)
+    except Exception:
+        return "godot"
+
+
 def _project(project_dir: str | None) -> Path:
     r = root()
+    engine = _engine_of(r)
+    if engine != "godot" and not (_default_project(r) / "project.godot").is_file():
+        # SAY WHICH ENGINE, NOT "no godot project". A web project opening the
+        # Godot workspace used to 404 on a path, which reads as a missing
+        # install; the truth is that this surface belongs to another engine.
+        from bgate_core.runtime import engines as _engines
+        raise HTTPException(
+            409, f"this is a {_engines.label(engine)} project; the Godot "
+                 "workspace has nothing to open here")
     p = Path(project_dir).resolve() if project_dir else _default_project(r).resolve()
     try:
         p.relative_to(r.resolve())
@@ -174,7 +191,7 @@ def _tree(base: Path, root_dir: Path, want: set[str], depth: int = 0) -> list[di
         return out
     for e in entries:
         # .godot was EXPLICITLY allowed here, which meant the file tree walked
-        # the engine's import cache — ~2000 files on a real project, none of
+        # the engine's import cache, ~2000 files on a real project, none of
         # them yours, all of them .import/.md5 noise. It is the single biggest
         # directory in a Godot project and nothing in this workspace can open
         # anything inside it.
@@ -193,7 +210,15 @@ def _tree(base: Path, root_dir: Path, want: set[str], depth: int = 0) -> list[di
 
 @router.get("/api/godot/status")
 def godot_status() -> dict:
+    engine = _engine_of(root())
+    if engine != "godot":
+        from bgate_core.runtime import engines as _engines
+        return {"available": False, "engine": engine,
+                "engine_label": _engines.label(engine), "project": None,
+                "reason": f"this is a {_engines.label(engine)} project; the "
+                          "Godot workspace does not apply"}
     info = _godot.available()
+    info["engine"] = engine
     if info.get("available"):
         try:
             info["version"] = _godot.version().get("version", "")
@@ -204,6 +229,89 @@ def godot_status() -> dict:
     except HTTPException:
         info["project"] = None
     return info
+
+
+# ---------------------------------------------------------------------------
+# The engine-neutral pair the Tech pane reads: status and "does it still build"
+# ---------------------------------------------------------------------------
+# Same two questions as /api/godot/status and /api/godot/check, asked of
+# whichever engine the project records. The godot_ routes stay for the
+# workspace tabs that are Godot by nature (files, inspect, run, screenshot).
+@router.get("/api/engine/status")
+def engine_status() -> dict:
+    from bgate_core.runtime import engines as _engines
+    from bgate_core.store import project as _proj
+
+    r = root()
+    engine = _engine_of(r)
+    out: dict = {"engine": engine, "engine_label": _engines.label(engine),
+                 "supported": _engines.supported(engine), "project": None}
+    where, detected = _proj.engine_dir(r)
+    out["detected"] = detected
+    out["agrees"] = (not detected) or detected == engine
+    if not out["supported"]:
+        out["available"] = False
+        out["reason"] = (f"{out['engine_label']} projects are recognised but "
+                         "not driven: there is no adapter")
+        return out
+    if engine == "godot":
+        return {**godot_status(), **out}
+    adapter = _engines.adapter(engine)
+    probe = adapter.available()
+    info = {**probe, **(adapter.version() if probe.get("available") else {})}
+    if where is not None:
+        info["project"] = str(where)
+        if engine == "web":
+            info["installed"] = adapter.installed(where)
+        if engine == "unity":
+            info["project_version"] = adapter.project_version(where)
+            info["editor_open"] = adapter.editor_open(where)
+            info["version_matches"] = (bool(info["project_version"])
+                                       and info.get("version") == info["project_version"])
+    return {**out, **info}
+
+
+@router.post("/api/engine/check")
+def engine_check(request: Request, payload: dict | None = None,
+                 async_: int = Query(0, alias="async")):
+    """Build-check the project in its own engine. Godot: the headless import;
+    web: `npm run build`. Both are the slow case the job model exists for."""
+    from bgate_core.runtime import engines as _engines
+    from bgate_core.store import project as _proj
+
+    payload = payload or {}
+    r = root()
+    engine = _engine_of(r)
+    if engine == "godot":
+        return godot_check(request, payload, async_)
+    if not _engines.supported(engine):
+        return {"ok": False, "engine": engine,
+                "error": f"{_engines.label(engine)} projects have no adapter, "
+                         "so there is nothing to build-check"}
+    where = _proj.game_dir(r, engine=engine)
+    if where is None:
+        return {"ok": False, "engine": engine,
+                "error": f"no {_engines.label(engine)} project found under {r}"}
+    timeout = clamp_timeout(payload.get("timeout"), 600)
+    adapter = _engines.adapter(engine)
+
+    def call() -> dict:
+        got = adapter.check_project(str(where), timeout=timeout)
+        # The pane's Findings list reads `errors` and `output`. A Unity check
+        # already answers in that shape; a web build's findings are its
+        # stderr, one line each, and its output the stdout.
+        if "errors" in got:
+            return {**got, "engine": engine}
+        errors = [ln for ln in (got.get("stderr") or "").splitlines()
+                  if ln.strip()] if not got.get("ok") else []
+        return {**got, "engine": engine, "errors": errors,
+                "output": got.get("stdout") or ""}
+
+    if jobs_api.wants_async(payload, async_):
+        return _async_202("engine.check", "building project", timeout, call,
+                          request_body={"project_dir": str(where),
+                                        "timeout": timeout}, request=request)
+    return _guard(call)
 
 
 @router.get("/api/godot/files")
@@ -235,7 +343,7 @@ def _lock_holder(target: Path) -> dict | None:
     A human editing a file an agent has claimed is the exact collision the lock
     table exists to make visible, and a dashboard that writes straight through
     it would be the one caller in the system that ignores it. The lookup itself
-    lives in the core now — the scene editor and the MCP scene tools ask the
+    lives in the core now, the scene editor and the MCP scene tools ask the
     same question, and three copies of it is three chances for one to drift into
     answering "free" when it is not.
     """
@@ -271,7 +379,7 @@ def godot_file_write(payload: dict) -> dict:
     """Save one text file back into the game project.
 
     The dashboard has been able to READ every script and scene since the Godot
-    workspace shipped, and could not write a byte — which is the whole reason
+    workspace shipped, and could not write a byte, which is the whole reason
     the engine had to stay open next to it. Three things guard the write, in
     the order they can bite:
 
@@ -300,7 +408,7 @@ def godot_file_write(payload: dict) -> dict:
         # Creating a file is a different act with different consequences (an
         # empty .gd attached to nothing, a .tscn the engine will not import),
         # and nothing in this editor asks for it yet.
-        raise HTTPException(404, f"{rel} does not exist — this endpoint only edits")
+        raise HTTPException(404, f"{rel} does not exist, this endpoint only edits")
 
     # A browser hands back \r\n on a platform whose engine writes \n. Left
     # alone, the first save from the dashboard rewrites every line of the file
@@ -336,7 +444,7 @@ def godot_file_write(payload: dict) -> dict:
     # From the RESOLVED target, not the caller's `rel`. An absolute or
     # drive-qualified `rel` that still lands inside the project passes the
     # containment check above, and joining that raw string onto bdir would put
-    # the backup somewhere else entirely — or overwrite it.
+    # the backup somewhere else entirely, or overwrite it.
     backup = bdir / target.relative_to(p)
     backup.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(target, backup)
@@ -353,7 +461,7 @@ def godot_file_write(payload: dict) -> dict:
     except Exception:
         pass
     # The Atlas graph is derived from exactly the files this just wrote, and it
-    # is cached — without this, editing a script and switching to the map shows
+    # is cached, without this, editing a script and switching to the map shows
     # the map from before the edit, which reads as a failed save.
     try:
         from bgate_core.art import screenmap
@@ -405,7 +513,7 @@ def godot_run(payload: dict, request: Request,
 @router.post("/api/godot/check")
 def godot_check(request: Request, payload: dict | None = None,
                 async_: int = Query(0, alias="async")):
-    """Headless import/build — 'does it still compile'.
+    """Headless import/build, 'does it still compile'.
 
     The slowest thing here by far: a cold import of a project with any real asset
     count is the 90-second case the job model exists for.

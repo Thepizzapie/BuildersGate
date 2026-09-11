@@ -1,5 +1,5 @@
 /**
- * Builders Gate telemetry — the bridge between "it feels wrong" and a number.
+ * Builders Gate telemetry, the bridge between "it feels wrong" and a number.
  *
  * SAME WIRE CONTRACT AS THE GODOT AUTOLOAD, deliberately. A web game has no
  * environment variable and no file access, so it cannot be told which recording
@@ -15,7 +15,7 @@
  * reading, but the aligner uses `ts`.
  *
  * COSTS NOTHING WHEN NOBODY IS RECORDING. With no active session the poll is one
- * fetch every few seconds and every emit is a no-op — open the game normally and
+ * fetch every few seconds and every emit is a no-op, open the game normally and
  * this does not touch the network after the first miss.
  *
  *     import { telemetry } from "./bgate/telemetry";

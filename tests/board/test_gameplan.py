@@ -69,7 +69,7 @@ class TestStatus:
         after = gameplan.status(root)
         assert after["built"] == 2
         # BUILT IS NOT IN THE GAME. Nothing references these yet, so the slice
-        # is not complete and every row is still remaining — the whole point of
+        # is not complete and every row is still remaining, the whole point of
         # the wired/verified states (see TestWiredAndVerified).
         assert after["slice"]["complete"] is False
         assert {r["name"] for r in after["remaining"]} == {
@@ -101,7 +101,7 @@ class TestMultiParent:
         assert sorted(queue.parents(root, scene["id"])) == sorted(
             [art["id"], audio["id"]])
 
-        # The first parent landing is NOT enough — that was the old behaviour.
+        # The first parent landing is NOT enough, that was the old behaviour.
         queue.set_status(root, art["id"], "done", result="painted")
         held = queue.blocker(root, scene["id"])
         assert held is not None and held["id"] == audio["id"]
@@ -178,7 +178,7 @@ class TestWiredAndVerified:
         gate = queue.add(root, "qa", "QA gate: verify", source="qa-gate",
                          source_ref=str(target["id"]))
         queue.set_status(root, gate["id"], "done",
-                         result="VERDICT: PASS — screenshots attached")
+                         result="VERDICT: PASS, screenshots attached")
         assert gameplan.status(root)["verified"] == 1
 
     def test_a_gate_with_no_verdict_marker_does_not_verify(self, root):
@@ -207,7 +207,7 @@ class TestSliceCheck:
         filed = queue.get(root, got["item"])
         assert filed["seat"] == "qa"
         assert "godot_run" in filed["brief"] and "plan_status" in filed["brief"]
-        # And it names what is built but not referenced — the real finding.
+        # And it names what is built but not referenced, the real finding.
         assert "NOT REFERENCED" in filed["brief"]
 
     def test_it_does_not_file_twice_for_an_unchanged_slice(self, root):
@@ -266,6 +266,38 @@ class TestLayoutLanes:
         assert "**" not in lanes["tech"]
         assert "*.godot" in lanes["tech"]
 
+    def test_a_web_project_gets_lanes_in_its_own_layout(self, root):
+        # The default table is Godot vocabulary. Re-rooting scenes/** at a
+        # web project's root still owns nothing: the source is under src/.
+        from bgate_core.board import seats
+        from bgate_core.store import project
+        (root / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+        project.set_engine(root, "web")
+        layout = seats.detect_layout(root)
+        assert layout["engine"] == "web"
+        assert layout["prefix"] == ""
+        assert layout["matches"] is False
+        assert seats.lane_owners(root, "src/game.ts") == []
+        got = seats.apply_layout(root)
+        assert got["changed"] is True and got["engine"] == "web"
+        assert "gameplay" in seats.lane_owners(root, "src/game.ts")
+        assert "tech" in seats.lane_owners(root, "vite.config.ts")
+        assert "tech" in seats.lane_owners(root, "index.html")
+        assert "art" in seats.lane_owners(root, "public/assets/hero.png")
+        assert "qa" in seats.lane_owners(root, "src/game.test.ts")
+        assert "**" not in seats.lanes_for_layout("", "web")["tech"]
+        # Godot's own globs did not come along for the ride.
+        assert not any("scenes" in g for g in seats.lanes_for_layout("", "web")["gameplay"])
+
+    def test_a_web_project_under_game_is_still_relaned(self, root):
+        from bgate_core.board import seats
+        game = root / "game"
+        game.mkdir(exist_ok=True)
+        (game / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+        got = seats.apply_layout(root)
+        assert got["changed"] is True
+        assert "gameplay" in seats.lane_owners(root, "game/src/main.ts")
+
     def test_doctor_reports_a_layout_mismatch(self, root):
         from bgate_core.runtime import doctor
         (root / "project.godot").write_text("\n", encoding="utf-8")
@@ -275,7 +307,7 @@ class TestLayoutLanes:
 
 
 class TestDigest:
-    """The morning report — nothing else answered 'what happened overnight'."""
+    """The morning report, nothing else answered 'what happened overnight'."""
 
     def test_it_separates_finished_failed_and_awaiting_you(self, root):
         from bgate_core.design import gameplan as gp
@@ -336,7 +368,7 @@ class TestPaidPathsPreflightTheAccount:
 
     def test_there_is_no_spend_gate_left_to_call(self):
         """The ledger and its reservation gate are gone (db migration 0045).
-        A helper that came back would be a budget coming back with it — and so
+        A helper that came back would be a budget coming back with it, and so
         would the wrappers that existed only to consult one."""
         from bgate_mcp import server
 

@@ -15,7 +15,8 @@ so if they are on macOS rather than letting them find out.
 
 ## Ask two things first
 
-1. **Do they already have a Godot game?** This decides `adopt` vs `init` and it
+1. **Do they already have a game?** Godot, web (vite + TypeScript) or Unity;
+   `adopt` detects which. This decides `adopt` vs `init` and it
    is the single most common thing to get wrong. Scaffolding over someone's
    existing work is the one unrecoverable mistake available here.
 2. **Do they have an image API key?** `OPENAI_API_KEY` or `KREA_API_KEY`. If
@@ -36,12 +37,12 @@ are what the core loop requires. Blender, ffmpeg and whisper are for the 3D,
 playtest-capture and voice paths respectively; a red row there is not a blocker
 and you should say that instead of trying to fix it.
 
-The `art_key` row is green when **any** art provider is USABLE — keyed AND
+The `art_key` row is green when **any** art provider is USABLE, keyed AND
 with its adapter able to run. That is a narrower question than "is the
 variable set", deliberately: it read the second one and printed `4 of 4
 providers` on a machine whose generation gateway had exactly one live
 option. It now says `N of M providers usable`, and names how many are
-merely keyed when the two differ. `provider_status` is the live read — it
+merely keyed when the two differ. `provider_status` is the live read, it
 adds account balances and says which provider each job would actually
 route to.
 
@@ -58,23 +59,30 @@ Never scaffolds, never overwrites. Writes `.bgate/game.db`, appends a marked
 block to `.gitignore`, appends a marked block to `CLAUDE.md`. Running it twice is
 a no-op. It prints what it detected: Godot version, main scene, 2D or 3D, scene
 and script counts. **Read that back to the user.** If the dimension is wrong,
-pass `--kind`.
+pass `--kind`. It also records the engine it found (godot, web, unity, none);
+`project_set_engine` corrects it, and the engine decides which tools register.
+A Unity project is only ever adopted; after adopting, `unity_install_scripts`
+puts the telemetry script in `Assets/BGate/` and the editor must be closed
+before `engine_check` or `unity_test_run` (two editors cannot hold one project).
 
 New game:
 
 ```bash
-bgate init emberfall --kind 2d
+bgate init emberfall --kind 2d                # Godot
+bgate init emberfall --kind 2d --engine web   # vite + TypeScript; needs Node 20+
 ```
 
 Creates a NEW directory named after the project. It does not scaffold into the
-directory you are standing in, which surprises people.
+directory you are standing in, which surprises people. A web project needs
+`npm install` in it before anything runs; Builders Gate does not install
+dependencies on the user's behalf.
 
 Both `init` and `adopt` take `--without floor,music,...` to switch optional
 feature modules off (floor, brainstorm, music, cinematic, voice, playtest,
 three_d): their MCP tools are not registered, their panes leave the dashboard,
 and doctor stops grading their dependencies. The first-run card in the
 dashboard offers the same checklist, and Settings > Modules changes it later.
-Do not pre-emptively disable anything the user did not ask about — everything
+Do not pre-emptively disable anything the user did not ask about, everything
 on is the default and the right one.
 
 ## Keys
@@ -83,7 +91,7 @@ There are two places, and for a first-time setup you almost always want the
 second one:
 
 ```bash
-bgate key set openai --global     # ~/.bgate/.env — every project inherits it
+bgate key set openai --global     # ~/.bgate/.env, every project inherits it
 bgate key set openai              # this project's .env only
 bgate key                         # what is set, and which layer supplies it
 ```
@@ -98,7 +106,7 @@ which beats `~/.bgate/.env`.** `bgate key` prints which one is actually in force
 which is the question worth asking when a key is set and nothing works.
 
 The dashboard's Generators panel does the same thing with a tick box, and it is
-the only other place that can write one — this is deliberately not an MCP tool,
+the only other place that can write one, this is deliberately not an MCP tool,
 because an agent that can write credentials can hand itself a provider nobody
 paid for.
 
@@ -108,7 +116,7 @@ of these instructions caused a committed key. `~/.bgate` is not a repository, so
 the global store has nothing to leak into.
 
 Never write a key into a file you are about to commit, never echo one back in
-chat, and never put one on a command line — `bgate key set` prompts with echo
+chat, and never put one on a command line, `bgate key set` prompts with echo
 off for exactly that reason, and takes no key argument at all.
 
 ## Register the MCP server
@@ -165,7 +173,7 @@ It takes a loopback port the OS picks, so it does not fight a `bgate serve`
 that is already running.
 
 There is also a standalone `BuildersGate.exe` on the releases page for people
-who do not want Python at all — `python packaging/build_exe.py` builds it.
+who do not want Python at all, `python packaging/build_exe.py` builds it.
 
 The user must restart Claude Code before the MCP tools appear. Tell them that
 explicitly; a fresh session is the only thing that picks up a new server.

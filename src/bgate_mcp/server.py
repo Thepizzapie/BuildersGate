@@ -387,14 +387,14 @@ def _contained(root: str) -> str:
 
 
 def _contained_path(target, what: str = "path"):
-    """A RAW filesystem argument, allowed for this session — or a refusal.
+    """A RAW filesystem argument, allowed for this session, or a refusal.
 
     The seated-session mirror of :func:`_contained` for tools whose target is
     not ``project_dir``: a ``godot_project`` directory, an ``out_path``, a
     ``blend_file``, an ``out_dir``. The module comment at the top of this file
     names the exact attack these carried: ``scene_set_property`` against
     another game's scene, with ``project_dir`` omitted, resolved the PINNED
-    root, passed every gate, and wrote into the other game — because only the
+    root, passed every gate, and wrote into the other game, because only the
     project root was ever asked about, never the argument doing the writing.
 
     Same rules as _contained: seated sessions only, and a target outside
@@ -849,7 +849,7 @@ def _tool(fn: Optional[Callable] = None, *,
             annotation=Annotated[Optional[str],
                                  Field(default=None, description=_PROJECT_DIR_DOC)])])
     if not _module_registers(fn.__name__):
-        # A DISABLED MODULE'S TOOL IS NEVER REGISTERED — the whole point of
+        # A DISABLED MODULE'S TOOL IS NEVER REGISTERED, the whole point of
         # the switch: ~200 tool schemas ride in every agent's context on
         # every turn, and a project that turned cinematics off stops paying
         # for cinematic_* on every one of them. The function itself is
@@ -864,7 +864,7 @@ def _tool(fn: Optional[Callable] = None, *,
         # AND NEITHER IS ANOTHER ENGINE'S TOOL. The engine column existed since
         # the first migration and decided nothing: a project recorded as "none"
         # still advertised eighteen godot_ tools, nine scene_ tools and the
-        # whole level surface to every agent it dispatched — tools whose first
+        # whole level surface to every agent it dispatched, tools whose first
         # act is to open a project.godot that is not there. The failure is not
         # the error; it is the forty turns an agent spends believing the tool
         # is the right one and its arguments are wrong.
@@ -872,7 +872,7 @@ def _tool(fn: Optional[Callable] = None, *,
         # NOT PARKED, unlike a seat-scoped tool. tool_unlock exists so a seat
         # can take on work outside its craft mid-session; there is no
         # corresponding move for an engine, because the engine is not a
-        # question about who is working — it is a question about what the game
+        # question about who is working, it is a question about what the game
         # is written in. project_set_engine plus a fresh session is the way to
         # change it, and it says so in its own result.
         return wrapper
@@ -906,7 +906,7 @@ def _seat_scoped_off(tool_name: str) -> bool:
 # Which modules the PINNED project has switched off, resolved once: the tool
 # registry is built at import, one process per session, and the session is
 # pinned to one project (BGATE_ROOT at dispatch, cwd for a hand-started one).
-# A session no project claims — or any failure reading the choice — registers
+# A session no project claims, or any failure reading the choice, registers
 # everything: a missing feature must only ever be the result of a stored
 # decision, never of a broken read.
 _MODULES_OFF: Optional[set] = None
@@ -916,7 +916,7 @@ def _seat_registers(tool_name: str) -> bool:
     """Does the seat this process serves carry this tool?
 
     Resolved per call rather than cached, because it is a pure string test
-    against an env var that is fixed for the process anyway — and because the
+    against an env var that is fixed for the process anyway, and because the
     cached-set pattern above is what made the module gate hard to reason about.
 
     A session with no BGATE_SEAT is a human at a keyboard, and gets everything.
@@ -933,14 +933,14 @@ def _seat_registers(tool_name: str) -> bool:
 
 
 #: How much of a docstring rides on the wire. Everything up to the first blank
-#: line — which by this file's own convention is the one-line contract, and
+#: line, which by this file's own convention is the one-line contract, and
 #: occasionally a short second sentence finishing it.
 #:
 #: THE REST STAYS IN THE SOURCE, DELIBERATELY. These docstrings carry the most
 #: expensive knowledge in the product: which check caught what, the measurement
 #: that disproved the obvious fix, why a threshold is where it is. Deleting
 #: that to save tokens would be trading the reason for the price. But an agent
-#: re-reads the schema on all 200 turns of a run and needs it on none of them —
+#: re-reads the schema on all 200 turns of a run and needs it on none of them -
 #: it needs to know what the tool DOES and what it returns. So the full text
 #: stays where a person (or an agent that opens the file) can read it, and only
 #: the contract is billed.
@@ -959,8 +959,8 @@ def _wire_doc(fn: Callable) -> str:
         head = head[:_WIRE_DOC_MAX].rsplit(" ", 1)[0] + "…"
     rest = doc[len(head):].strip()
     if rest:
-        head += ("\n\nThe full note — what this caught, what it measured, and "
-                 "what it deliberately leaves out — is the docstring of "
+        head += ("\n\nThe full note, what this caught, what it measured, and "
+                 "what it deliberately leaves out, is the docstring of "
                  f"`{fn.__name__}` in the source. Read it before arguing with "
                  "a result.")
     return head
@@ -977,8 +977,8 @@ def _engine_registers(tool_name: str) -> bool:
     """Does this tool survive the project's engine?
 
     Same failure rule as the module and seat gates, stated once more because it
-    is the rule that keeps all three safe: a session no project claims — or any
-    failure reading the row — registers EVERYTHING. A missing tool must only
+    is the rule that keeps all three safe: a session no project claims, or any
+    failure reading the row, registers EVERYTHING. A missing tool must only
     ever be the result of a stored decision, never of a broken read.
     """
     global _ENGINE
@@ -1014,7 +1014,7 @@ def _module_registers(tool_name: str) -> bool:
     if _MODULES_OFF and not _modules.tool_enabled(tool_name, _MODULES_OFF):
         return False
     # THE SEAT'S CRAFT, on top of the project's modules. A dispatched seat
-    # registers only the craft surfaces it practises plus the shared spine —
+    # registers only the craft surfaces it practises plus the shared spine -
     # a gameplay agent stops carrying every blender_ and cinematic_ schema on
     # every turn. Scoped-off is per process and per seat, exactly like the
     # module gate; BGATE_SEAT_TOOLS=all is the escape hatch for a session
@@ -1311,7 +1311,7 @@ def project_set_engine(engine: str) -> dict:
     """Correct which engine this project is built in: godot | web | unity | none.
 
     Decides which tools an agent is handed, which doctor rows are graded, and
-    where the scaffolder looks for a template — so a wrong value quietly aims
+    where the scaffolder looks for a template, so a wrong value quietly aims
     the whole board at an engine the game is not written in. ``init`` wrote
     'godot' unconditionally and ``adopt`` wrote 'godot' or 'none'; until now
     nothing could change it afterwards except re-running ``project_init``, which
@@ -1330,10 +1330,8 @@ def project_set_engine(engine: str) -> dict:
     after = _project.set_engine(root, engine)
     now = after.get("engine")
     _log("project", f"engine {was or '(unset)'} -> {engine}")
-    detected, found_in = "", ""
     where, detected = _project.engine_dir(root)
-    if where is not None:
-        found_in = str(where)
+    found_in = str(where) if where is not None else ""
     return {"project": after, "was": was, "now": now, "changed": was != now,
             "supported": _engines.supported(now),
             # WHAT IS ON DISK, NEXT TO WHAT WAS JUST RECORDED. The whole class
@@ -1596,7 +1594,7 @@ def image_status() -> dict:
     except Exception as exc:
         legs["kie"] = {"available": False,
                        "reason": f"{type(exc).__name__}: {exc}"}
-    # RETRO DIFFUSION IS AN ART PROVIDER TOO, and this tool did not know —
+    # RETRO DIFFUSION IS AN ART PROVIDER TOO, and this tool did not know -
     # the same staleness krea hit, one provider later. It does not PAINT
     # (that is the kie/openai/krea leg); it animates a sheet that already
     # exists, which is its own credential and its own answer to "can this
@@ -1617,7 +1615,7 @@ def image_status() -> dict:
 
     # PAINTING AND ANIMATING ARE DIFFERENT ANSWERS. Every leg is REPORTED,
     # because "is my RD key working" is a real question and a missing leg
-    # reads as a broken one — but only the legs that can MINT an image
+    # reads as a broken one, but only the legs that can MINT an image
     # count toward `available`/`auto_picks`, which is what a caller asks
     # before generating art. Counting RD would tell a project holding only
     # an animation key that it can paint, and the first thing to notice
@@ -1723,8 +1721,8 @@ def _pinned_refs(root, spec: str) -> tuple[list[str], list[str]]:
 def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> dict:
     """One clean wall tile out of a generated wall sheet, toned to the floor.
 
-    Picks the most UNIFORM cell — a wall is a mass, and the least varied cell
-    is the one without a transition running through it — then scales its
+    Picks the most UNIFORM cell, a wall is a mass, and the least varied cell
+    is the one without a transition running through it, then scales its
     luminance to sit below the floor. Generated wall art came back at 1.97x
     the floor's brightness, which renders as lit paths around dark pits.
     """
@@ -1773,8 +1771,8 @@ _TEXTURE_STYLE = (
 #: How much of the painting one tile holds, as a multiple of the tile. Small
 #: means fine grain: the whole generation squeezed into roughly one tile, so a
 #: floor is a texture rather than a pattern of motifs. Raise it for a material
-#: whose features are meant to be legible individually — a brick wall, a plank
-#: floor — where reading one brick matters more than hiding the repeat.
+#: whose features are meant to be legible individually, a brick wall, a plank
+#: floor, where reading one brick matters more than hiding the repeat.
 _TEXTURE_ZOOM = 1.5
 
 
@@ -1842,16 +1840,16 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
             """One tile of material, painted by kie at canvas size.
 
             The tile is CUT from a 4x-tile downscale of the painting rather
-            than the whole frame squeezed into one tile — squeezing turns a
+            than the whole frame squeezed into one tile, squeezing turns a
             wall of bricks into noise; cutting keeps the material at a scale
             where a brick is still a brick. ``variants`` returns that many
             MORE tiles, which are the same tile modulated rather than other
-            crops of the painting — see `_cut`.
+            crops of the painting, see `_cut`.
             """
             raw = out_dir / f"{name}_{tag}_raw.png"
             # REUSE THE PAINTING IF IT IS ALREADY HERE. Every geometry change
-            # in this tool — the diamond carve, the panel masks, the sampling
-            # scale — was iterated by regenerating art that had not changed,
+            # in this tool, the diamond carve, the panel masks, the sampling
+            # scale, was iterated by regenerating art that had not changed,
             # which costs money, burns time and hands the provider another
             # chance to refuse a texture it already painted once. The raw
             # generation is kept beside the atlas precisely so it can be
@@ -1895,7 +1893,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
             for attempt in range(3):
                 # SEEDREAM FIRST, and the fallback is the interesting part.
                 # The nano-banana family shares Google's safety filter, which
-                # refuses plain material descriptions at random — the same
+                # refuses plain material descriptions at random, the same
                 # office carpet three times running, in words that had worked
                 # minutes before. A texture pipeline cannot rest on that, so
                 # the non-Google model leads and Google's is the second try.
@@ -1910,7 +1908,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
                 why = str(got.get("error"))[:200]
                 raise ValueError(
                     f"the {tag} texture failed three times: {why}"
-                    + (" — that is the provider's safety filter refusing a "
+                    + (", that is the provider's safety filter refusing a "
                        "plain material description, which it does "
                        "intermittently; the prompt is not the problem and "
                        "re-running usually is the fix."
@@ -1932,7 +1930,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
             """
             # SAMPLE THE PAINTING FINE, NOT BIG. At 4x the tile the crop held
             # a few large features, so the floor read as a handful of motifs
-            # repeating — and mirroring them to kill the diamond seams only
+            # repeating, and mirroring them to kill the diamond seams only
             # turned the motifs into butterflies. A floor material wants many
             # small features per tile: that is what carpet, concrete and
             # stone actually look like at a metre away, and it is what makes
@@ -1942,11 +1940,11 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
             # CROP the tile's real proportions out of the painting rather than
             # resizing a square into them. An isometric tile is 2:1, and
             # squashing a square crop to fit would halve the material's
-            # vertical scale — the brick would still be a brick, drawn by a
+            # vertical scale, the brick would still be a brick, drawn by a
             # bricklayer who had been stood on.
             ox0, oy0 = max(0, (span - tw) // 2), max(0, (span - th) // 2)
             # MIRROR-QUAD A HALF TILE, so the material is continuous across
-            # the diagonals where diamonds actually meet — see
+            # the diagonals where diamonds actually meet, see
             # tilemask.mirror_tile for why "seamless" from the model is not
             # the same question.
             patch = zoom.crop((ox0, oy0, ox0 + tw // 2, oy0 + th // 2))
@@ -1956,8 +1954,8 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
             # them from elsewhere in the painting gave visibly different
             # swatches whose edge pixels no longer agreed, so alternating them
             # across a room broke the material's own grid at every join and
-            # read as a patchwork quilt. drift_variant keeps the tile — grid,
-            # alpha and edges untouched — and moves only a wrapped
+            # read as a patchwork quilt. drift_variant keeps the tile, grid,
+            # alpha and edges untouched, and moves only a wrapped
             # low-frequency cast plus the flecks. See its docstring.
             extra = [_tilemask.drift_variant(
                 base, phase=ph, drift=dr, lift=lf)
@@ -1972,8 +1970,8 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
             # AN ISOMETRIC TILE'S BAND IS ITS OWN EDGE, NOT A NEIGHBOUR. In a
             # top-down level the void is a second terrain you genuinely see
             # between rooms, so it is worth painting. On a diamond the band is
-            # the lip where this tile falls away — the floor's own material in
-            # shadow — so deriving it costs nothing, cannot drift in hue from
+            # the lip where this tile falls away, the floor's own material in
+            # shadow, so deriving it costs nothing, cannot drift in hue from
             # the surface it edges, and removes a whole generation.
             #
             # It also removes a failure: asking a provider for "deep darkness,
@@ -2015,7 +2013,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
         wanted = (list(range(16)) if bits == 4
                   else _autotile.blob47_masks())
         # ONE EDGE INSET FOR THE WHOLE SET, same machinery the RD path used
-        # to repair its sheets — here it is not a repair, it is the whole
+        # to repair its sheets, here it is not a repair, it is the whole
         # construction: full-floor donor at (0,0), void donor at (1,0), and
         # every wanted mask carved between them. Coverage cannot be partial.
         #
@@ -2041,7 +2039,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
         # the single loudest generated-level tell, so the atlas carries the
         # variant crops as extra tiles after the mask set, and the level
         # generators scatter them over interior cells. The sidecar is how
-        # they learn which tiles those are — a .tres cannot say it.
+        # they learn which tiles those are, a .tres cannot say it.
         interior_at = table[15 if bits == 4 else 255]
         cols = max(1, sheet.width // tw)
         n0 = len(wanted)
@@ -2102,14 +2100,14 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
                   "skipped": "isometric: the tile rect's edges are the "
                              "diamond's transparent corners, so edge "
                              "continuity is not what holds an iso set "
-                             "together — the shared diamond outline is, and "
+                             "together, the shared diamond outline is, and "
                              "that is constructed rather than measured"}
                  if iso else
                  _tilemask.seam_report(sheet, table, tile_size=(tw, th),
                                        colours=colours))
 
         # WALLS, when asked for. A wall is a solid MASS whose shape comes
-        # from the level's wall ring, not a 16-mask terrain — so this needs
+        # from the level's wall ring, not a 16-mask terrain, so this needs
         # one clean tile, not a set, and it is attached as a second source in
         # the same resource (level_generate addresses floor and wall by
         # source id). Toned DOWN relative to the floor on purpose: generated
@@ -2117,13 +2115,13 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
         # paths around dark pits rather than as rooms with walls.
         wall_source = None
         if iso:
-            # AN ISOMETRIC LEVEL NEEDS ITS WALLS AS BLOCKS, always — there is
+            # AN ISOMETRIC LEVEL NEEDS ITS WALLS AS BLOCKS, always, there is
             # no flat wall tile that reads as a wall in this projection, only
             # a raised cell with its two camera-facing sides showing. So this
             # is built whether or not a wall material was asked for: without
             # `wall_prompt` the block is the floor's own stone, and the face
             # shading alone is what separates a wall from the ground it
-            # stands on (it is enough — the two planes are at different
+            # stands on (it is enough, the two planes are at different
             # angles to the light, which is the entire isometric illusion).
             lift = int(wall_lift) or th
             try:
@@ -2135,8 +2133,8 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
                     # own tile the block came back with a top face identical
                     # to the ground, so a filled wall region rendered as a
                     # plateau of flagstone and the rooms were legible only by
-                    # the shadow lines between them. The darkened material —
-                    # the same one the floor's edge band is cut from — makes
+                    # the shadow lines between them. The darkened material -
+                    # the same one the floor's edge band is cut from, makes
                     # the raised mass read as stone and the walkable floor
                     # read as floor, which is the distinction the square path
                     # already makes by toning its wall to 0.62 of the floor.
@@ -2158,7 +2156,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
                 # noise: a terrace top and a wall top at one altitude give
                 # the eye no profile to read, just two colours interleaved.
                 # A barrier is full height; something you walk up is half of
-                # it — which is also what makes the ramp a ramp rather than
+                # it, which is also what makes the ramp a ramp rather than
                 # a cliff with a slope painted on.
                 step = max(2, lift // 2)
                 parts = [("wall", _tilemask.iso_block(
@@ -2170,7 +2168,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
                     parts.append((f"ramp_{face}", _tilemask.iso_ramp(
                         floor_tile, face, tile_size=(tw, th), lift=step)))
                 # A WALL IN A BUILDING IS A PLANE, NOT A CUBE. The block
-                # above is right for terrain — a plateau, a ledge — and wrong
+                # above is right for terrain, a plateau, a ledge, and wrong
                 # for architecture: it eats the whole cell, so a floor built
                 # from one-cell partitions renders as a maze of corridors
                 # instead of rooms with walls between them. These are the
@@ -2218,8 +2216,8 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
 
         # EXTRA FLOOR MATERIALS, one atlas source each. A floor with one
         # surface everywhere is the single loudest thing about a generated
-        # level: real buildings change underfoot at every threshold — carpet
-        # to walkway to lino to the cold vinyl of a server room — and the
+        # level: real buildings change underfoot at every threshold, carpet
+        # to walkway to lino to the cold vinyl of a server room, and the
         # layout that is being dressed already knows where those lines are,
         # because it drew them with different tiles. This is what lets a
         # re-skin keep them.
@@ -2293,17 +2291,17 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
             # which is the kind of ordering a NameError is good at finding.
             sidecar["blocks"] = wall_source["blocks"]
             sidecar["lift"] = wall_source["lift"]
-            # The blocks' own source, the contract the level tools read —
+            # The blocks' own source, the contract the level tools read -
             # sources here are always floor 0 / wall strip 1.
             sidecar["wall_source"] = 1
 
-        # COLLISION, derived from the inset the tiles were rebuilt with —
+        # COLLISION, derived from the inset the tiles were rebuilt with -
         # not traced from pixels, because the walkable region is a rectangle
         # we chose and tracing would rediscover it with jitter and hand Godot
         # fifty points per tile. Verified by physics rather than by the file:
         # without it a body stood in the void on 223 of 280 sampled frames,
         # with it on 0.
-        # An ISOMETRIC floor gets NO colliders at all — walkable-by-omission,
+        # An ISOMETRIC floor gets NO colliders at all, walkable-by-omission,
         # the same rule the square path applies to interior tiles. The first
         # cut here put the full diamond on every mask, reasoning "the outline
         # is what stops the player"; but a TileSet physics polygon is a SOLID
@@ -2325,7 +2323,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
         # EVERY TILE IN THE ATLAS, not just the chosen terrain's table. The
         # table is the autotiling vocabulary for ONE terrain; the resource is
         # what Godot can paint with at all, and a coordinate missing from it
-        # cannot be placed by anything — level_generate refused a hand-picked
+        # cannot be placed by anything, level_generate refused a hand-picked
         # floor tile for exactly this reason, and the tile was sitting in the
         # atlas the whole time.
         all_tiles = sorted({
@@ -2347,7 +2345,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
                 # so twice: the region is the art's real size, and the origin
                 # puts the art's bottom edge on the diamond's bottom vertex so
                 # the top face lands exactly `lift` above the floor plane.
-                # ORIGINS, PLURAL — texture_origin is TileData, not source
+                # ORIGINS, PLURAL, texture_origin is TileData, not source
                 # data. Written at the source level Godot accepts the file,
                 # ignores the key and reports origin (0, 0), which drew every
                 # wall at half the height it was built with: plausible enough
@@ -2398,14 +2396,14 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
                   "view": view, "shape": "isometric" if iso else "square",
                   "colours": {"floor": [round(c) for c in colours[0]],
                               "void": [round(c) for c in colours[1]]},
-                  # Coverage is total BY CONSTRUCTION — every mask is carved
+                  # Coverage is total BY CONSTRUCTION, every mask is carved
                   # from the two textures, so there is no roll to fail and
                   # nothing to refuse. The seam report and the engine load
                   # are the gates that remain.
                   "coverage": {"have": len(table), "want": len(wanted),
                                "constructed": True},
                   "table": {str(m): list(c) for m, c in sorted(table.items())},
-                  # The tile that is SAFE AS A SOLID FILL — mask 15/255 is
+                  # The tile that is SAFE AS A SOLID FILL, mask 15/255 is
                   # "every neighbour is me", i.e. an interior. Surfaced because
                   # a caller picking atlas coordinates by eye picks an edge
                   # tile and paints a level entirely out of seams.
@@ -2445,7 +2443,7 @@ def tileset_generate(name: Annotated[str, Field(description='Tileset name; the a
             # A NEWLY COPIED PNG DOES NOT EXIST AS FAR AS GODOT IS CONCERNED.
             # Godot 4 loads textures through their .import metadata, so a
             # tileset whose ExtResource names a never-imported file fails to
-            # load with no useful error — measured: the engine gate caught
+            # load with no useful error, measured: the engine gate caught
             # exactly this on the first end-to-end run, and the resource was
             # perfectly well-formed. check_project already runs --import, so
             # the pass exists; it just was not on this path.
@@ -2600,7 +2598,7 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     out = _art_out(root, filename)
     from bgate_adapters import imagegen
     resolved = [_refs.resolve(root, r) for r in ref_images]
-    # WAS hardcoded "openai" with no parameter — the pin image_generate's
+    # WAS hardcoded "openai" with no parameter, the pin image_generate's
     # comment calls the defect, fixed in one tool out of five. A Krea-only
     # setup got "OPENAI_API_KEY not set" from every edit.
     result = _chroma.generate(prompt, str(out),
@@ -2729,7 +2727,7 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
         return {"ok": False, "name": spec["name"], "error": result.get("error"),
                 "alpha": result.get("alpha"), "prompt": spec["prompt"]}
 
-    # Project-palette conform, BEFORE the preview is archived — the preview a
+    # Project-palette conform, BEFORE the preview is archived, the preview a
     # human approves must be the pixels that ship. Advisory when it cannot run;
     # an item minted without a pinned palette is the pre-palette status quo.
     conform = None
@@ -3098,7 +3096,7 @@ def animation_generate(character: str, action: str,
     n_frames = int(frames or spec.get("frames") or 8)
     # RD only generates 4/6/8/10/12/16; the CONTRACT owns the sheet's
     # frame count. Generate the nearest count AT OR ABOVE and keep the
-    # first n_frames — a 2-frame hurt is the first two cells of a 4-frame
+    # first n_frames, a 2-frame hurt is the first two cells of a 4-frame
     # flinch, not a format the game has to bend for.
     eligible = [f for f in _rd.FRAME_COUNTS if f >= n_frames]
     rd_frames = min(eligible) if eligible else max(_rd.FRAME_COUNTS)
@@ -3126,7 +3124,7 @@ def animation_generate(character: str, action: str,
     if loop is None:
         loop = act not in _sprites.NO_LOOP
     # WHICH generated frames survive a trim is not "the first keep". A
-    # one-shot's payoff is its LAST frame — trimming a 4-frame collapse to
+    # one-shot's payoff is its LAST frame, trimming a 4-frame collapse to
     # its first 3 shipped a ko that never reached the floor. One-shots
     # sample evenly INCLUDING the endpoint; loops stride the cycle so the
     # wrap-around stays a genuine adjacent pair.
@@ -3142,7 +3140,7 @@ def animation_generate(character: str, action: str,
     for direction in drawn:
         # RESUME BEFORE YOU BUY. This tool blocks one MCP call across every
         # drawn direction, and the client aborts a silent tool at its idle
-        # ceiling — so a long run gets killed mid-loop routinely. The cells
+        # ceiling, so a long run gets killed mid-loop routinely. The cells
         # for directions that already finished are on disk; without this
         # check the next run re-extracts the start frames and RE-BUYS them.
         # MEASURED on night-shift: the identical motion prompt was charged
@@ -3237,14 +3235,14 @@ def animation_generate(character: str, action: str,
     motion_report = _spritekit.sheet_report(
         ordered, frame_files,
         no_loop=() if loop else tuple(name for name, _ in anims))
-    # THE CROSS-DIRECTION CHECK — the consistency the per-strip battery
+    # THE CROSS-DIRECTION CHECK, the consistency the per-strip battery
     # cannot see: every direction of this action must contain the same
     # character at the same scale on the same palette.
     drift = _spritekit.set_drift({
         f"{act}_{d}": [frame_files[p] for p in ordered
                        if p.startswith(f"{act}_{d}/")]
         for d in drawn})
-    # The .aseprite master, same as image_sprites builds — a contract
+    # The .aseprite master, same as image_sprites builds, a contract
     # sheet is exactly the thing somebody hand-fixes one frame of.
     ase = _ase_master_for(str(sheet_path), (cw, ch),
                           {name: rd_frames for name, _ in anims},
@@ -3338,7 +3336,7 @@ def _ase_anim_specs(animations: dict, timing: Optional[dict],
 
     ``animations`` is {anim: frame_count} in sheet order; ``timing`` is the
     animspec dict image_sprites already carries. Holds are relative, so a hold
-    of 2.0 at 8fps is 250ms — the master plays exactly what the .tres plays.
+    of 2.0 at 8fps is 250ms, the master plays exactly what the .tres plays.
     """
     from bgate_adapters.sprites import NO_LOOP
     specs = []
@@ -3362,7 +3360,7 @@ def _gif_previews(frame_map: dict, sheet: str, name: str,
     """One playable GIF per animation, beside the sheet. {} on any failure.
 
     ``frame_map`` is {pose: path} in sheet order, pose names "anim/idx" or
-    bare — the same grouping rule _group_frames uses. The first animation's
+    bare, the same grouping rule _group_frames uses. The first animation's
     GIF is also archived so the dashboard gallery shows motion, not a grid.
     """
     try:
@@ -3728,7 +3726,7 @@ def _ase_export_review(root: _Path, data: dict, sheet_path: _Path,
                               if str(t.get("name") or "default") == anim)
                     durs = [max(20, int(frames[lo + i].get("duration") or 100))
                             for i in range(len(paths))]
-                    # Scale by CELL size, not sheet size — a 12-frame strip is
+                    # Scale by CELL size, not sheet size, a 12-frame strip is
                     # 768px wide while its cells are still 64px sprites nobody
                     # can review unscaled.
                     first_rect = (frames[0].get("frame") or {}) if frames else {}
@@ -4209,7 +4207,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                                  f"a painted sprite set ({name!r})")
         if refused:
             return refused
-        # An unnamed provider is the preference, then the identity routing —
+        # An unnamed provider is the preference, then the identity routing -
         # the old default was the literal string "openai", which agents never
         # overrode, so the routing rule and the stored preference were both
         # unreachable from the most expensive tool here.
@@ -4299,7 +4297,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
         result: dict = {"poses_attempted": len(poses),
                         "profile_used": bool(profile)}
         # Rolled-up cost/latency for the WHOLE set (ref + every pose edit,
-        # retries included) — what the providers reported for this run, carried
+        # retries included), what the providers reported for this run, carried
         # on the sheet artifact so a reviewer sees what it cost.
         tally = {"usd": 0.0, "seconds": 0.0, "calls": 0}
 
@@ -4587,7 +4585,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
         # A palette PINNED IN THE BIBLE outranks the auto guess: pinning is the
         # project saying "these colours, everywhere", and it names the target
         # (the auto path can only lock to the reference's own colours). An
-        # explicit palette_lock="off" still wins — a human's off is an off.
+        # explicit palette_lock="off" still wins, a human's off is an off.
         pinned_palette = _artdirection.palette_pinned(str(root))
         if lock_mode in ("auto", ""):
             if pinned_palette:
@@ -4607,7 +4605,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
         def _assemble_and_gate():
             # ARITHMETIC BEFORE MONEY: a pure-scale outlier is the same
             # drawing at the wrong size, so it is scaled to the set median
-            # for free here — the re-roll loop below is for defects a
+            # for free here, the re-roll loop below is for defects a
             # resize cannot fix.
             fixed = _spritekit.normalise_heights(
                 [p for p, _ in pose_files], pose_path)
@@ -4628,7 +4626,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 fm = asm.get("frames", {})
                 cons = _vision_consistency(ref_path, [(p, fp) for p, fp in fm.items()])
                 # THE GEOMETRY RUNS EVEN WHEN THE JUDGE CANNOT. The vision
-                # judge is provider-gated and sits out without its key — and
+                # judge is provider-gated and sits out without its key, and
                 # for one whole build that meant NO gate ran and a walk with
                 # two 40%-oversized frames shipped as ok:True. facing_report
                 # is free and local: its height findings join the flag set,
@@ -4683,7 +4681,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 _edit_pose(pose_desc[pname], _rolling_refs(pname), pose_path[pname])
             asm2, cons2 = _assemble_and_gate()
             new_min = cons2.get("min") if cons2.get("ok") else None
-            # Better means: the judge's floor rose — or, when the judge sat
+            # Better means: the judge's floor rose, or, when the judge sat
             # out and there is no floor to compare, fewer flagged frames.
             # Without the second clause a geometry-only re-roll could never
             # be kept: min stays None, None never beats None, every fix
@@ -4868,7 +4866,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                             + cons_note + seq_note + motion_note,
                  ref=assembled["sheet"])
         # A MINT IS NOT MOTION. These frames are independently painted
-        # stills — identity holds, but there is no cycle, and a character
+        # stills, identity holds, but there is no cycle, and a character
         # shipped straight from here reads stiff as a board in the running
         # game. A screenshot cannot fail a motion check that never ran,
         # which is exactly how one shipped.
@@ -4876,7 +4874,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             "this sheet is the MINT: identity, anchors, a start frame per "
             "drawn direction. IF this character moves in-game, the motion "
             "comes from animation_generate (RD animates the character's own "
-            "frames into real cycles, ~$0.14/direction) — "
+            "frames into real cycles, ~$0.14/direction), "
             "sprite_contract_set first if the project has no contract. A "
             "character that never moves (portrait, static NPC) is done "
             "here. Watch the animation_previews GIF before shipping "
@@ -5031,7 +5029,7 @@ def godot_status() -> dict:
 # ---------------------------------------------------------------------------
 # THESE ARE ADDITIVE, NOT A RENAME, and that was measured rather than assumed.
 # Renaming godot_status/godot_check_project to the neutral names would have
-# touched 161 references across forty files — including built JS bundles, the
+# touched 161 references across forty files, including built JS bundles, the
 # decision records in docs/decisions (which describe what was true when they
 # were written and must not be rewritten), and templates/shared/CLAUDE.md, which
 # is STAMPED INTO EVERY USER'S GAME PROJECT. Existing projects would have gone
@@ -5041,12 +5039,10 @@ def godot_status() -> dict:
 # questions for whichever engine the project actually records. Seat briefs and
 # workflow nodes migrate onto them at their own pace.
 #
-# The other two the plan named — a neutral `run` and `screenshot` — are NOT
-# here, deliberately. `run` takes a script in the engine's own language, so a
-# neutral signature would be a lie; and a neutral screenshot has to inherit
-# godot_screenshot's gallery archiving and focus caveat, which is worth
-# extracting into a shared helper exactly once, when a second adapter exists to
-# call it. Phase 3.
+# A neutral `run` is NOT here, deliberately: it takes a script in the engine's
+# own language, so a neutral signature would be a lie. The neutral screenshot
+# lives in tools_web.engine_screenshot, beside the second adapter that
+# justified it.
 @_tool
 def engine_status() -> dict:
     """Is this project's engine installed and drivable? Check before engine work.
@@ -5085,7 +5081,7 @@ def engine_check(engine_project: str = "", timeout: int = 180) -> dict:
     """Does this project still build? The engine-neutral 'did I break it' check.
 
     engine_project defaults to wherever this project's engine actually lives
-    (`<root>/game` or `<root>`), so the common call takes no arguments at all —
+    (`<root>/game` or `<root>`), so the common call takes no arguments at all -
     the argument that godot_check_project most often gets wrong.
     """
     from bgate_core.runtime import engines as _engines
@@ -5102,7 +5098,7 @@ def engine_check(engine_project: str = "", timeout: int = 180) -> dict:
         if where is None:
             return {"ok": False, "engine": engine,
                     "error": f"no {_engines.label(engine)} project found under "
-                             f"{root} — looked for "
+                             f"{root}: looked for "
                              f"{', '.join(_engines.markers(engine))} in "
                              "<root>/game and <root>."}
         target = str(where)
@@ -5111,9 +5107,55 @@ def engine_check(engine_project: str = "", timeout: int = 180) -> dict:
             **_engines.adapter(engine).check_project(target, timeout=timeout)}
 
 
+@_tool
+def engine_templates(engine: str = "") -> dict:
+    """What project templates this engine can scaffold. Default: the project's engine."""
+    from bgate_core.runtime import engines as _engines
+
+    engine = (engine or _project.engine_of(_root())).strip().lower()
+    return {"engine": engine, "label": _engines.label(engine),
+            "templates": _scaffold.list_templates(engine)}
+
+
+@_tool
+def engine_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
+                    force: bool = False, replace: bool = False,
+                    engine: str = "") -> dict:
+    """Create a runnable game for this project's engine (godot | web) at dest.
+
+    The engine-neutral sibling of godot_scaffold: `engine` defaults to what the
+    project records, so a web project gets the vite + TypeScript slice and a
+    Godot project the .tscn one, and an engine with no template (unity) says so
+    instead of writing nothing. dest defaults to <project root>/game. Same
+    force/replace contract as godot_scaffold: force fills in what is missing
+    and skips files that differ, replace puts the template back over the top
+    with a .bak of each victim. The result's `next` names the first three
+    moves in the engine's own vocabulary.
+    """
+    from bgate_core.runtime import engines as _engines
+
+    root = _root()
+    engine = (engine or _project.engine_of(root)).strip().lower()
+    if not _engines.known(engine):
+        return {"ok": False, "error": f"engine must be one of {_engines.names()}, "
+                                      f"got {engine!r}"}
+    if not _engines.template_dir_name(engine):
+        return {"ok": False, "engine": engine,
+                "error": f"{_engines.label(engine)} projects are adopted, not "
+                         "scaffolded: there is no template. Point the project "
+                         "at an existing one."}
+    target = dest or str(_Path(root) / "game")
+    _contained_path(target, "dest")
+    result = _scaffold.new_project(target, name, kind=kind, force=force,
+                                   replace=replace, engine=engine)
+    _log("scaffold", f"scaffolded {engine} {kind} project {name!r}",
+         ref=result["path"])
+    return result
+
+
 def _script_source(script: str, godot_project: Optional[str]):
     """(source, path_it_came_from). A one-line argument that names a .gd file
-    on disk is a PATH, not a program — nothing else is treated as one.
+    on disk is a PATH, not a program, nothing else is treated as one.
 
     Deliberately narrow: multi-line input is source, always. The only thing
     that reads as a path is a single line ending in .gd, which no valid
@@ -5160,7 +5202,7 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     source, from_path = _script_source(script, godot_project)
     if from_path and source is None:
         return {"ok": False, "error": f"{script} looks like a path and is not "
-                                      "readable — pass the source itself, or a "
+                                      "readable: pass the source itself, or a "
                                       "path that exists"}
     got = _godot.run_script(source if source is not None else script,
                             project_dir=godot_project, timeout=timeout)
@@ -7994,7 +8036,7 @@ def greenlight_graybox_submit(scene: str, evidence: list,
     """Say the core loop is PLAYABLE in one ugly test room, with proof.
 
     The gameplay seat's move at the graybox stage. `scene` must be a real file
-    under the project and `evidence` must be something a person can look at —
+    under the project and `evidence` must be something a person can look at -
     a playtest recording, a screenshot, telemetry from an actual run. The
     director is about to be asked whether the interaction is interesting and
     cannot answer that from a scene path.
@@ -8016,7 +8058,7 @@ def greenlight_graybox_verdict(verdict: str, interesting: bool,
 
     THE DIRECTOR'S CALL, and the one that decides whether a whole production
     run happens. Play it. If the loop reduces to attack + dodge + hold
-    interact, fail it and say so — that is a cheap no now and an expensive one
+    interact, fail it and say so, that is a cheap no now and an expensive one
     after the assets exist.
 
     `why` is required in both directions. A pass with no reason is the rubber
@@ -8052,8 +8094,8 @@ def greenlight_advance(stage: str) -> dict:
 def greenlight_waive(seat: str, reason: str, withdraw: bool = False) -> dict:
     """Let ONE seat through the current stage hold, on the record.
 
-    For the true case — a tech seat building the graybox's own tooling, an art
-    seat making its placeholder blocks — not as the route around the gate. It
+    For the true case, a tech seat building the graybox's own tooling, an art
+    seat making its placeholder blocks, not as the route around the gate. It
     costs a sentence naming what this seat has to do before the loop is proven
     and why it cannot wait, and the waiver shows in greenlight_status forever.
 
@@ -8137,8 +8179,8 @@ def scale_record_3d(path: str, klass: str, longest_axis_m: float,
 def scale_check(path: str, klass: str, frames: int = 1) -> dict:
     """Measure one asset AT GAME SCALE and record the result on its revision.
 
-    Measures the opaque bounding box — the box, not the canvas, because a
-    512x512 sheet holding a 40px mug is a 40px mug — and divides by the
+    Measures the opaque bounding box, the box, not the canvas, because a
+    512x512 sheet holding a 40px mug is a 40px mug, and divides by the
     declared player height. `klass` is prop, furniture, door, ui or enemy.
     `frames` divides the width for a horizontal strip so a 6-frame sheet is
     graded as one sprite rather than a six-player-wide prop.
@@ -8191,14 +8233,14 @@ def room_override(scene: str, finding: str, reason: str) -> dict:
 @_tool
 def audio_listen_record(capture: str, cues: list, verdict: str,
                         notes: str) -> dict:
-    """Record an IN-GAME listening pass — the audio check metrics cannot make.
+    """Record an IN-GAME listening pass, the audio check metrics cannot make.
 
     Peaks, RMS, wiring and duplicate detection all pass on a cue that is wrong
     for the moment it fires, buried under the music, or three frames late. The
     only thing that catches those is hearing them in context.
 
     `capture` is a gameplay recording that exists on disk (video, or a capture
-    of the bus). `cues` are the event names you actually heard firing in it —
+    of the bus). `cues` are the event names you actually heard firing in it -
     that list is the coverage, and a release candidate does not close while a
     wired cue has never been heard.
     """
@@ -9046,6 +9088,7 @@ from bgate_mcp.tools_brainstorm import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_cinematic import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_level import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_web import *  # noqa: E402,F401,F403
+from bgate_mcp.tools_unity import *  # noqa: E402,F401,F403
 # THE TEST SEAMS THE STAR IMPORTS SKIP. A pile of tests stub the blender
 # adapter by mutating the MODULE OBJECT through this namespace
 # (`setattr(server._blender, "combine", ...)`) - that works from any module
@@ -9186,7 +9229,7 @@ _install_tool_index()
 def _report_orphans() -> None:
     """Say what the LAST server was holding when it died, before serving.
 
-    stdout is the MCP transport, so this goes to stderr — which is where the
+    stdout is the MCP transport, so this goes to stderr, which is where the
     client shows server logs, and the only channel available before a single
     tool has been called. The one moment this information exists is the first
     read after a restart: nothing else records that a provider call was in
@@ -9213,7 +9256,7 @@ def _report_orphans() -> None:
 # MEASURED. An agent meaning to run one test script called
 # `godot_test_run(only=["tests/door_test.gd"])`. The real parameter is `paths`.
 # FastMCP validates arguments against each tool's JSON schema, and pydantic
-# IGNORES properties the schema does not mention — so `only` was dropped on the
+# IGNORES properties the schema does not mention, so `only` was dropped on the
 # floor, the tool ran with its defaults, and all fifteen scripts executed. The
 # result came back green and said nothing about the argument it had discarded.
 #
@@ -9223,7 +9266,7 @@ def _report_orphans() -> None:
 # suite run plus the wrong conclusion drawn from it.
 #
 # WHY HERE AND NOT IN THE `_tool` WRAPPER. The wrapper never sees the extra
-# key — FastMCP has already stripped it by then. The check has to sit at the
+# key, FastMCP has already stripped it by then. The check has to sit at the
 # call boundary, before validation, which is the last place the caller's actual
 # words still exist.
 _ORIGINAL_CALL_TOOL = mcp.call_tool

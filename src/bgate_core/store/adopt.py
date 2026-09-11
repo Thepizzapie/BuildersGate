@@ -1,6 +1,6 @@
 """Point Builders Gate at a game that already exists.
 
-`bgate init` scaffolds — it unpacks a template into an EMPTY directory and
+`bgate init` scaffolds, it unpacks a template into an EMPTY directory and
 refuses (without force) to touch anything else. That is correct for a new game
 and useless for the person this tool keeps meeting: someone who already has a
 Godot project, months of work in it, and a question ("what's missing?") that
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -37,9 +38,9 @@ from .scaffold import TEMPLATES_DIR
 # Two flavours because the marker has to be a COMMENT in the host file: a `#`
 # line in a CLAUDE.md is an H1 heading, and an HTML comment in a .gitignore is
 # a pattern that matches nothing but reads as garbage.
-MARK_START = "# --- Builders Gate (managed block — edits here may be rewritten) ---"
+MARK_START = "# --- Builders Gate (managed block, edits here may be rewritten) ---"
 MARK_END = "# --- end Builders Gate ---"
-MD_MARK_START = "<!-- BEGIN builders-gate (managed block — edits here may be rewritten) -->"
+MD_MARK_START = "<!-- BEGIN builders-gate (managed block, edits here may be rewritten) -->"
 MD_MARK_END = "<!-- END builders-gate -->"
 
 # Directories that are never someone's source: skipping them keeps the size and
@@ -104,14 +105,15 @@ def detect(directory: str | os.PathLike[str]) -> dict:
         return out
 
     # WHICH ENGINE THIS DIRECTORY IS, asked before anything Godot-specific.
-    # detect() used to answer exactly one question — "is there a project.godot"
-    # — so a web or Unity project read as "not a game", which is the answer that
+    # detect() used to answer exactly one question, "is there a project.godot"
+    #, so a web or Unity project read as "not a game", which is the answer that
     # sends someone to file a bug rather than to the docs.
     engine_at, engine_found = project.engine_dir(base)
     out["engine"] = engine_found
     out["engine_dir"] = str(engine_at) if engine_at is not None else None
     out["engine_label"] = _engines.label(engine_found) if engine_found else ""
-    out["engine_supported"] = _engines.supported(engine_found) if engine_found         else False
+    out["engine_supported"] = (_engines.supported(engine_found)
+                               if engine_found else False)
 
     game_dir = project.game_dir(base)
     if game_dir is not None:
@@ -175,11 +177,11 @@ def detect(directory: str | os.PathLike[str]) -> dict:
     two = out["dimension_evidence"]["2d_nodes"]
     # A 3D game with a 2D HUD is the norm, so "any 3D at all" is the signal, and
     # 2d+3d is reserved for a project where both are load-bearing. Getting this
-    # wrong is cheap — it seeds a bible field the user can correct — but getting
+    # wrong is cheap, it seeds a bible field the user can correct, but getting
     # it silently wrong is not, hence dimension_evidence travels with the answer.
     # 2d+3d needs both sides to be substantial in ABSOLUTE terms as well as in
     # ratio. Ratio alone called a 3D game with a two-node menu "2d+3d", which is
-    # the wrong answer stated confidently — the shape of mistake this report
+    # the wrong answer stated confidently, the shape of mistake this report
     # exists to avoid.
     if min(three, two) >= 10 and min(three, two) >= max(three, two) * 0.4:
         out["dimension"] = "2d+3d"
@@ -220,26 +222,43 @@ def _merge_block(target: Path, body: str, start: str = MARK_START,
     return {"path": str(target), "action": "appended"}
 
 
-def stamp_gitignore(directory: str | os.PathLike[str]) -> dict:
+def stamp_gitignore(directory: str | os.PathLike[str],
+                    engine: str = "") -> dict:
     """Merge the template's ignore rules into <dir>/.gitignore.
 
     MERGE, not copy. An adopted project very likely already has a .gitignore
     that someone tuned, and replacing it to protect their API key while dropping
     their own rules is not a trade anyone asked for.
     """
-    source = TEMPLATES_DIR / "godot" / "shared" / ".gitignore"
+    source = _shared_dir(engine) / ".gitignore"
     body = source.read_text(encoding="utf-8") if source.is_file() else (
         ".env\n.env.*\n!.env.example\n.bgate/\n.bgate_out/\n.godot/\n")
     return _merge_block(Path(directory) / ".gitignore", body)
 
 
-def stamp_claude_md(directory: str | os.PathLike[str], name: str = "") -> dict:
+def _shared_dir(engine: str = "") -> Path:
+    """The shared/ tree whose .gitignore and CLAUDE.md this project gets.
+
+    The engine's own when it ships one, so an adopted web game is briefed on
+    npm and web_build rather than on project.godot. An engine with no shared
+    tree (none) falls back to Godot's, which is what every adopt stamped
+    before the engine axis existed, so nothing already adopted changes.
+    """
+    try:
+        name = _engines.shared_dir_name(engine) if engine else ""
+    except Exception:
+        name = ""
+    return TEMPLATES_DIR / (name or "godot") / "shared"
+
+
+def stamp_claude_md(directory: str | os.PathLike[str], name: str = "",
+                    engine: str = "") -> dict:
     """Merge the Builders Gate briefing into <dir>/CLAUDE.md.
 
     Same marked-block discipline as .gitignore, for the same reason: a project
     that already has a CLAUDE.md has one because someone wrote it.
     """
-    source = TEMPLATES_DIR / "godot" / "shared" / "CLAUDE.md"
+    source = _shared_dir(engine) / "CLAUDE.md"
     if not source.is_file():
         return {"path": "", "action": "skipped",
                 "error": f"template missing: {source}"}
@@ -269,7 +288,7 @@ def would_clobber(directory: str | os.PathLike[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# The telemetry autoload — the difference between a recording and evidence
+# The telemetry autoload, the difference between a recording and evidence
 # ---------------------------------------------------------------------------
 # WHY THIS IS NOT PART OF adopt(). scaffold overlays templates/shared/ onto
 # every project it CREATES, so a scaffolded game gets addons/bgate and its
@@ -350,6 +369,12 @@ def telemetry_status(directory: str | os.PathLike[str]) -> dict:
     game = project.game_dir(base)
     config = (game / "project.godot") if game else None
     if config is None or not config.is_file():
+        web = project.game_dir(base, engine="web")
+        if web is not None:
+            return _web_telemetry_status(web)
+        unity = project.game_dir(base, engine="unity")
+        if unity is not None:
+            return _unity_telemetry_status(unity)
         return {"ok": True, "reason": "", "installable": False,
                 "why": "no Godot project here, so there is nothing to instrument"}
     try:
@@ -370,6 +395,88 @@ def telemetry_status(directory: str | os.PathLike[str]) -> dict:
     }
 
 
+#: Where the web template keeps its telemetry module, relative to the game.
+WEB_TELEMETRY_REL = Path("src") / "bgate" / "telemetry.ts"
+
+
+def _web_telemetry_status(web: Path) -> dict:
+    """Is the web telemetry module present AND imported by the game?
+
+    The same two-part question the Godot answer asks of the autoload: a file
+    under src/bgate/ that nothing imports emits exactly as much as no file.
+    """
+    module = web / WEB_TELEMETRY_REL
+    if not module.is_file():
+        return {"ok": False, "installable": True, "path": str(module),
+                "reason": ("the game has no bgate telemetry module, so a "
+                           "recording captures picture and sound but no game "
+                           "events"),
+                "fix": "install the module (one file), then import it from "
+                       "your entrypoint"}
+    imported = False
+    try:
+        for item in (web / "src").rglob("*"):
+            if item.suffix.lower() not in (".ts", ".tsx", ".js", ".jsx", ".mts"):
+                continue
+            if item == module:
+                continue
+            if "bgate/telemetry" in item.read_text(encoding="utf-8",
+                                                   errors="replace"):
+                imported = True
+                break
+    except OSError:
+        pass
+    if imported:
+        return {"ok": True, "reason": "", "installable": False,
+                "path": str(module)}
+    return {"ok": False, "installable": False, "path": str(module),
+            "reason": ("src/bgate/telemetry.ts is there but nothing imports "
+                       "it, so no event is ever emitted"),
+            "fix": "import { telemetry } from \"./bgate/telemetry\" in your "
+                   "entrypoint and call telemetry.emit(kind, data)"}
+
+
+def _unity_telemetry_status(unity: Path) -> dict:
+    """Is BGateTelemetry.cs in Assets/BGate/? It boots itself, so present is
+    wired; there is no autoload line or import to check."""
+    from bgate_adapters import unity as _unity
+
+    have = _unity.scripts_installed(unity)
+    path = str(Path(have["dir"]) / _unity.TELEMETRY_FILE)
+    if have["telemetry"]:
+        return {"ok": True, "reason": "", "installable": False, "path": path}
+    return {"ok": False, "installable": True, "path": path,
+            "reason": ("the game has no BGateTelemetry.cs, so a recording "
+                       "captures picture and sound but no game events"),
+            "fix": "install the script (one file under Assets/BGate, no scene "
+                   "wiring; it boots on the first scene load)"}
+
+
+def _install_web_telemetry(web: Path) -> dict:
+    """Copy the template's telemetry module into an adopted web game.
+
+    One file, never overwritten: a project that already has one has edited
+    it or pinned it, and the import line is the author's to write, because
+    the entrypoint is theirs and this cannot know which file that is.
+    """
+    source = TEMPLATES_DIR / "web" / "shared" / WEB_TELEMETRY_REL
+    if not source.is_file():
+        return {"action": "skipped", "why": "the web telemetry module is "
+                                            "missing from this build"}
+    target = web / WEB_TELEMETRY_REL
+    if target.is_file():
+        return {"action": "unchanged", "path": str(target),
+                "next": "import it from your entrypoint if you have not"}
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    except OSError as exc:
+        return {"action": "failed", "path": str(target), "error": str(exc)}
+    return {"action": "installed", "path": str(target),
+            "next": "import { telemetry } from \"./bgate/telemetry\" in your "
+                    "entrypoint and call telemetry.emit(kind, data)"}
+
+
 def install_telemetry(directory: str | os.PathLike[str]) -> dict:
     """Put the BGate addon in the game and register its autoloads.
 
@@ -379,6 +486,19 @@ def install_telemetry(directory: str | os.PathLike[str]) -> dict:
     base = Path(directory).expanduser().resolve()
     game = project.game_dir(base)
     if game is None or not (game / "project.godot").is_file():
+        web = project.game_dir(base, engine="web")
+        if web is not None:
+            return _install_web_telemetry(web)
+        unity = project.game_dir(base, engine="unity")
+        if unity is not None:
+            from bgate_adapters import unity as _unity
+
+            got = _unity.install_scripts(unity, which=("telemetry",))
+            if got.get("written"):
+                got["path"] = got["written"][0]
+            elif got.get("unchanged"):
+                got["path"] = got["unchanged"][0]
+            return got
         return {"action": "skipped", "why": "no Godot project to install into"}
 
     source = TEMPLATES_DIR / "godot" / "shared" / "addons" / "bgate"
@@ -416,7 +536,7 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
     """
     base = Path(directory).expanduser().resolve()
     if not base.is_dir():
-        raise NotADirectoryError(f"{base} is not a directory — nothing to adopt")
+        raise NotADirectoryError(f"{base} is not a directory, nothing to adopt")
     project.refuse_harness(base, "adopt a project")
 
     blocked = would_clobber(base)
@@ -433,8 +553,8 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
     if dimension is None:
         dimension = found["dimension"]
     if engine == "godot" and not found["godot"]:
-        # No project.godot is not a refusal — plenty of people adopt the repo
-        # root before the engine files land — but recording engine=godot for a
+        # No project.godot is not a refusal, plenty of people adopt the repo
+        # root before the engine files land, but recording engine=godot for a
         # directory with no Godot in it makes every later godot_* tool fail
         # confusingly.
         #
@@ -456,8 +576,8 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
     record = project.init(base, name, pitch=pitch, engine=engine,
                           dimension=dimension)
     written = {
-        "gitignore": stamp_gitignore(base),
-        "claude_md": stamp_claude_md(base, name),
+        "gitignore": stamp_gitignore(base, engine),
+        "claude_md": stamp_claude_md(base, name, engine),
     }
     # LANES, POINTED AT THE REPO THAT IS ACTUALLY HERE. The default seat table
     # is written against <root>/game and <root>/design; an adopted repo has
@@ -465,7 +585,7 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
     # (src/, assets/, scenes/) NO seat owns anything. With the hook installed
     # that means every dispatched agent is refused on contact with the source
     # tree, and the refusal reads as "wrong seat" rather than "wrong layout".
-    # adopt already knew the layout — it computed top_dirs and threw it away.
+    # adopt already knew the layout, it computed top_dirs and threw it away.
     try:
         from ..board import seats as _seats
         lanes = _seats.apply_layout(base)
@@ -486,10 +606,10 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
         "written": written,
         "lanes": lanes,
         "next": [
-            "bgate doctor — check the toolchain (godot, blender, ...)",
-            "bgate hook-install . — make the lane rules bite (they are "
+            "bgate doctor: check the toolchain (godot, blender, ...)",
+            "bgate hook-install ., make the lane rules bite (they are "
             "advisory until you do)",
-            "bgate serve — the dashboard, on this project",
+            "bgate serve, the dashboard, on this project",
             "read CLAUDE.md, then fill in the bible with bible_add",
         ],
     }

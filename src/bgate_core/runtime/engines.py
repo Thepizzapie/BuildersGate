@@ -1,4 +1,4 @@
-"""Which engine a project is built in — the table every engine-bound surface asks.
+"""Which engine a project is built in, the table every engine-bound surface asks.
 
 THE COLUMN EXISTED AND MEANT NOTHING. ``project.engine`` has been in the schema
 since migration 0001 (``store/db.py``), but it had two legal values and exactly
@@ -12,7 +12,7 @@ So this is the table that gives the column teeth. It is DATA, not an interface:
 the house pattern for "a capability a project may or may not have" is already a
 dict of specs plus module functions (``store/modules.py``'s MODULES, CRAFTS,
 SPINE_GROUPS), and it is the right one here for a reason that an abstract base
-class would get wrong. Godot's adapter is ~6,000 lines across five modules —
+class would get wrong. Godot's adapter is ~6,000 lines across five modules -
 scene surgery, resource inspection, import freshness, in-engine animation
 capture, humanoid retargeting. A web engine implements maybe a dozen of those
 concepts and a Unity engine a different dozen. An ABC would demand every engine
@@ -23,23 +23,26 @@ absent from the rest, which is what ``ENGINE_TOOLS`` (phase 2) will read.
 WHAT A SPEC MEANS
 -----------------
 ``markers``   Relative paths that identify the engine's project directory. Read
-              by ``project.game_dir`` — the "where does the engine project
-              actually live" resolver — and by ``adopt.detect``.
+              by ``project.game_dir``, the "where does the engine project
+              actually live" resolver, and by ``adopt.detect``.
 ``adapter``   Dotted module path, imported lazily. ``None`` means DECLARED BUT
               NOT IMPLEMENTED: the engine is detected and named correctly, and
               every tool that would need it stays unregistered. Unity is here on
-              those terms deliberately — so ``bgate adopt`` on a Unity project
+              those terms deliberately, so ``bgate adopt`` on a Unity project
               says "Unity, unsupported" instead of "not a game", which is the
               answer that sends someone to the docs instead of to a bug report.
 ``binary_env``The environment override for the engine's executable, mirroring
               BGATE_GODOT. Named here so ``dispatch._toolchain_env`` can resolve
               whichever one this project needs without knowing the engines.
 ``template``  Subdirectory of ``src/templates`` holding the scaffold, under the
-              ``<engine>/<kind>`` layout. Phase 1 records it; the scaffolder
-              moves onto the axis in a later phase, so today only "godot"
-              resolves to a directory that exists.
+              ``<engine>/<kind>`` layout. Empty for an engine that is adopted
+              and never scaffolded (unity).
+``shared``    Subdirectory of ``src/templates`` whose ``shared/`` tree adopt
+              stamps (CLAUDE.md, .gitignore, the telemetry sources). Defaults
+              to ``template``; set separately when an engine has the second
+              without the first.
 ``doctor``    Doctor rows only this engine needs. A row named by an engine that
-              is not this project's is MARKED, not removed — the same rule, and
+              is not this project's is MARKED, not removed, the same rule, and
               for the same reason, as a disabled module's row.
 ``consumer_suffixes``
               File types that can REFERENCE an asset in this engine. ``.tscn``
@@ -51,7 +54,7 @@ WHAT A SPEC MEANS
 NOT HERE ON PURPOSE: anything about HOW an engine runs, screenshots or tests.
 That is the adapter's job and it belongs in ``bgate_adapters/<engine>.py``. This
 module knows only which engines exist, how to recognise one on disk, and where
-to find its adapter — so importing it is cheap and cannot drag Godot, Blender or
+to find its adapter, so importing it is cheap and cannot drag Godot, Blender or
 a browser driver into a process that only wanted to read a project row.
 """
 from __future__ import annotations
@@ -62,7 +65,7 @@ from pathlib import Path
 from typing import Optional
 
 #: What a project is recorded as when nothing said otherwise. Every existing
-#: project reads this already — the schema default is the same string — so
+#: project reads this already, the schema default is the same string, so
 #: widening the legal set costs no migration and changes no row.
 DEFAULT = "godot"
 
@@ -88,7 +91,7 @@ ENGINES: dict[str, dict] = {
         "blurb": "A TypeScript game that ships to a URL. Dev server for "
                  "running it, a headless browser for evidence, and a payload "
                  "budget so a build that nobody could download fails loudly.",
-        # package.json is a WEAK marker and is checked last for it — see
+        # package.json is a WEAK marker and is checked last for it, see
         # DETECT_ORDER. A Godot project with a tooling package.json at its root
         # is a real thing and must not read as a web game.
         "markers": ("package.json",),
@@ -100,20 +103,25 @@ ENGINES: dict[str, dict] = {
     },
     "unity": {
         "label": "Unity",
-        "blurb": "Detected and named, not driven. Builders Gate can hold the "
-                 "board, the canon and the art pipeline for a Unity project; "
-                 "it has no adapter, so nothing edits or runs the game.",
+        "blurb": "Unity, adopted rather than scaffolded. Batchmode compile "
+                 "checks, the Test Framework scored into the shared history, "
+                 "editor-rendered scene stills and a telemetry MonoBehaviour "
+                 "that needs no scene wiring.",
         "markers": ("ProjectSettings/ProjectVersion.txt",),
-        "adapter": None,            # declared so detection is honest; no code
+        "adapter": "bgate_adapters.unity",
         "binary_env": "BGATE_UNITY",
+        # No scaffold: a Unity project is made by the Hub with a version and a
+        # render pipeline the user chose. `shared` is what adopt stamps.
         "template": "",
-        "doctor": (),
-        "consumer_suffixes": (".cs", ".unity", ".prefab", ".asset"),
+        "shared": "unity",
+        "doctor": ("unity",),
+        "consumer_suffixes": (".cs", ".unity", ".prefab", ".asset", ".mat",
+                              ".asmdef", ".controller", ".anim"),
     },
     NONE: {
         "label": "No engine",
         "blurb": "A directory Builders Gate tracks that is not a game project "
-                 "— art, audio and canon work with nothing to run.",
+                 "- art, audio and canon work with nothing to run.",
         "markers": (),
         "adapter": None,
         "binary_env": "",
@@ -144,14 +152,14 @@ class EngineUnsupported(RuntimeError):
 # EXACT NAMES, NOT PREFIXES, and the choice is deliberate. `MODULES` matches
 # prefixes because a module owns a whole family (`music_`, `blender_`) and a new
 # member of that family should be gated the day it is written. Engine ownership
-# is the opposite shape: `godot_` looks like a family and is not one — three of
+# is the opposite shape: `godot_` looks like a family and is not one, three of
 # its members are the evidence spine every seat is asked for, and `scene_`,
 # `level_` and `tileset_` are engine-bound without carrying an engine's name at
 # all. A prefix rule here would be wrong in both directions at once, so each
 # tool is listed and a test guards the list against ghosts.
 #
 # THE TEST FOR MEMBERSHIP: can this tool do its job at all without the engine?
-# Not "does it mention the engine somewhere" — several tools finish by writing
+# Not "does it mention the engine somewhere", several tools finish by writing
 # an engine file and are useful long before they get there.
 ENGINE_TOOLS: dict[str, frozenset[str]] = {
     "godot": frozenset({
@@ -163,7 +171,7 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
         "godot_scaffold", "godot_scene_audit", "godot_screenshot",
         "godot_status", "godot_templates", "godot_test_run",
         # Scene surgery. `bgate_core.level.scenewire` parses .tscn as text, so
-        # these never touch the binary — and are no less Godot for it.
+        # these never touch the binary, and are no less Godot for it.
         "scene_attach_script", "scene_node_add", "scene_outline",
         "scene_rename_node", "scene_reparent_node", "scene_set_property",
         "scene_swap_resource", "scene_unwire", "scene_wire",
@@ -185,36 +193,39 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
         "web_status", "web_build", "web_payload", "web_dev", "web_dev_stop",
         "web_test_run", "web_run",
     }),
-    "unity": frozenset(),
+    "unity": frozenset({
+        "unity_status", "unity_check", "unity_test_run", "unity_execute",
+        "unity_install_scripts", "unity_screenshot",
+    }),
     NONE: frozenset(),
 }
 
 # WHAT IS DELIBERATELY NOT ENGINE-OWNED, having been looked at and left open:
 #
-# `playtest_*` — the launcher already has its own escape hatch (`game_cmd` in
+# `playtest_*`, the launcher already has its own escape hatch (`game_cmd` in
 #   bgate_core.qa.playtest), and eight of the nine tools are analysis: listing,
 #   promoting and dismissing findings that are already recorded. Gating the set
 #   would take the analysis away from a project that captured its playtests some
 #   other way, to prevent one tool from failing with a clear message.
-# `iteration_record_checks` / `iteration_status` — a ledger. They live in the
+# `iteration_record_checks` / `iteration_status`, a ledger. They live in the
 #   `engine` SPINE group because of which SEATS carry them, which is a different
 #   question from which engine can run them; neither touches a scene.
-# `evidence_assert` — records what a human or agent SAW in a file, with a digest.
+# `evidence_assert`, records what a human or agent SAW in a file, with a digest.
 #   The file came from an engine; the claim does not need one.
-# `level_plan` — lays out rooms and prints ascii. It is the half of the level
+# `level_plan`, lays out rooms and prints ascii. It is the half of the level
 #   pipeline that has no scene in it, and that is the whole point of it existing
 #   separately from `level_generate`.
-# `ui_concept` — paints concept frames and derives a palette and brief; the
+# `ui_concept`, paints concept frames and derives a palette and brief; the
 #   Theme .tres is the last of three outputs. The frames and the brief are the
 #   value and they are engine-free.
-# `room_review` / `scale_check` / `sprite_sheet_check` / `canon_check` — read
+# `room_review` / `scale_check` / `sprite_sheet_check` / `canon_check`: read
 #   images and records, never a scene.
 
 
 def tool_owner(tool_name: str) -> str:
     """Which engine owns this tool; '' when it belongs to none of them.
 
-    A tool nobody owns is engine-free and registers everywhere — the same
+    A tool nobody owns is engine-free and registers everywhere, the same
     default the module and craft tables use, and for the same reason: guessing
     that something is specialised when it is not breaks a workflow silently.
     """
@@ -328,6 +339,15 @@ def template_dir_name(engine: str) -> str:
         return ""
 
 
+def shared_dir_name(engine: str) -> str:
+    """Subdirectory of src/templates whose shared/ tree adopt stamps ('' = none)."""
+    try:
+        item = spec(engine)
+    except ValueError:
+        return ""
+    return item.get("shared") or item.get("template") or ""
+
+
 def consumer_suffixes(engine: str) -> tuple[str, ...]:
     """File types that can reference an asset in this engine."""
     try:
@@ -353,7 +373,7 @@ def marker_hit(directory: str | os.PathLike[str], engine: str) -> Optional[Path]
 
 
 def detect_engine(directory: str | os.PathLike[str]) -> str:
-    """Which engine's project this directory IS — '' when none of them.
+    """Which engine's project this directory IS, '' when none of them.
 
     Only the directory handed in; no recursion and no <root>/game fallback. The
     two-candidate search is ``project.game_dir``'s job and stays there, so this

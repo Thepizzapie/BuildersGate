@@ -2185,7 +2185,7 @@ Declare enemies as INTERACTIONS and tasks as COMMITMENT SHAPES.
 Two design failures this refuses, both of which look like finished work:
 
 ENEMIES AS A LIST OF STATE MACHINES. "melee / ranged / support" is a
-category table, not a design — three enemies that never change each
+category table, not a design, three enemies that never change each
 other's threat profile make fighting all three arithmetic on the same
 fight. Each roster row is {name, pressure, alters:[{enemy, effect}],
 role?, counterplay?}, and `alters` is the whole point: how does THIS enemy
@@ -2195,8 +2195,8 @@ TASKS THAT ARE ALL "STAND HERE FOR N SECONDS". A quota list can be long,
 varied in fiction and completely uniform in mechanics, and prose review
 will not catch it because the fiction is where the variety is. Each
 objective row is {name, shape, costs, notes?} where `shape` comes from a
-closed vocabulary — dwell, carry, escort, defend, route, timing, disarm,
-restrict, manipulate, spend, gather — and `costs` says what the player
+closed vocabulary, dwell, carry, escort, defend, route, timing, disarm,
+restrict, manipulate, spend, gather, and `costs` says what the player
 gives up for the duration. Call greenlight_status('encounter') for the
 vocabulary with its definitions.
 
@@ -2244,8 +2244,8 @@ platformer, and a barrel showing two side faces is right for an isometric
 game and wrong for both of the others.
 
 It was not declared anywhere until now, and the cost was measured: a prop
-batch prompted with "a high 3/4 top-down game view" came back ISOMETRIC —
-to an image model "three-quarter" means the standard product render — and
+batch prompted with "a high 3/4 top-down game view" came back ISOMETRIC -
+to an image model "three-quarter" means the standard product render, and
 every prop showed two side faces, to stand on a floor tileset drawn flat
 top-down. The prompt was the proximate cause. The real one was that the
 view lived in a prompt instead of in the project, so each agent re-derived
@@ -2600,7 +2600,7 @@ res_path must already be imported - godot_import_asset first.
 ```text
 Run a GDScript headless and capture its output.
 
-`script` is EITHER the source itself OR a path to a .gd file — this reads
+`script` is EITHER the source itself OR a path to a .gd file, this reads
 the file when you hand it one. Passing a path used to run the path AS
 GDSCRIPT: `res://tests/door_test.gd` is not a statement, so the engine
 reported a parse error on line 1 of a file the caller never wrote. The
@@ -2774,12 +2774,12 @@ reason lives.
 
 `section` narrows the read, because the whole thing is four gates:
   ''            stage, thesis, graybox, held seats, what blocks the next
-                stage — the default, and what a director wants
+                stage, the default, and what a director wants
   'encounter'   the enemy roster and objective shapes, with their findings
   'scale'       the reference scale contract and anything unmeasured
   'rooms'       full-room composition reviews and their thresholds
   'presentation' what a release candidate still owes (this gate takes no
-                waiver — see greenlight_advance)
+                waiver, see greenlight_advance)
 ```
 
 ## greenlight_supersede
@@ -2810,7 +2810,7 @@ greenlight_status(section='findings') lists what is there, with ids.
 ## greenlight_thesis_set
 
 ```text
-Settle the MECHANICAL THESIS — the one sentence the game is built on.
+Settle the MECHANICAL THESIS, the one sentence the game is built on.
 
 "What decision is the player repeatedly making that makes this game
 interesting?" A feature list is not an answer to that question, and this
@@ -2831,7 +2831,7 @@ other option. Say it here, before anything is built against it.
                      purpose so QA can go looking for it
   cadence            how often the decision comes round
 
-Settling a thesis does not advance the stage — greenlight_advance does.
+Settling a thesis does not advance the stage, greenlight_advance does.
 ```
 
 ## handoff_note
@@ -3176,7 +3176,7 @@ WHICH TILE GOES WHERE is decided by a neighbour bitmask, the same job the
 Godot editor's terrain sets do - and they only run in the editor, which is
 why it is redone here.
 
-`props=True` adds a third layer of DRESSING — wall torches, clutter against
+`props=True` adds a third layer of DRESSING, wall torches, clutter against
 the architecture, cover in the rooms you walk through, a feature in the dead
 ends. Placement is by what the room is for (see `bgate_core.art.props`) and every
 solid prop is refused if it would break the level into two regions, checked
@@ -3189,7 +3189,7 @@ that is about the LEVEL rather than about the sheet.
 EACH TYPE DECLARES ITS OWN CONSTRAINTS and the placer obeys them instead of
 assuming a prop goes anywhere. A wall mount occupies the WALL cell, so it is
 attached rather than floating in the room beside it. A side-view or angled
-sprite declares which walls it can be drawn on — `torch` is ("e", "w"), so it
+sprite declares which walls it can be drawn on, `torch` is ("e", "w"), so it
 never lands on a horizontal wall where a three-quarter view reads as pasted
 on. Nothing mounts on the wall south of a room, whose inner face points away
 from the camera, and nothing mounts on a corner, where the face it needs is
@@ -3209,7 +3209,7 @@ iterating on `seed` leaves one Floor and one Walls, not eight.
 
 godot_project: the directory holding project.godot.
 scene/tileset: res:// paths, or paths relative to that directory.
-tuning: the eight BSP partition knobs, all optional — min_leaf, min_room,
+tuning: the eight BSP partition knobs, all optional, min_leaf, min_room,
   margin, max_depth, corridor_width, room_fill, rooms, side_rooms. The
   same numbers `level_plan` takes, so preview there and pass the dict
   here. An unknown key is refused by name rather than ignored.
@@ -3255,14 +3255,14 @@ Knobs that actually change the shape:
 RE-BUILD AN EXISTING LEVEL'S LAYOUT against a different tileset.
 
 The layout is the expensive part and the art is not. A floor somebody
-designed by hand — where the rooms are, which cells are corridor, where
-the walls run — is worth keeping when the tile set under it changes, and
+designed by hand, where the rooms are, which cells are corridor, where
+the walls run, is worth keeping when the tile set under it changes, and
 re-drawing it by hand in the editor is how a re-skin never happens.
 
 So this reads the CELL SETS out of a scene's TileMapLayers and emits them
 again against a new tileset: the floor re-autotiled from its own shape, so
 every cell gets the edge its neighbours imply rather than the flat tile it
-had, and the walls placed as whatever the new set uses for a wall — in an
+had, and the walls placed as whatever the new set uses for a wall, in an
 isometric project that is the raised BLOCK, which is what turns a flat
 wall layer into a room you can see the inside of.
 
@@ -3271,7 +3271,7 @@ The source scene is never modified: a level carries props, scripts,
 spawns and quest wiring that this tool knows nothing about, and quietly
 rewriting the layers under them is not a re-skin, it is a demolition.
 
-`sunken` is "x,y,w,h" — a region that stays on the base plane while
+`sunken` is "x,y,w,h", a region that stays on the base plane while
 everything else rises one level, which is how you get a BASEMENT out of a
 generator that only knows how to raise things. The rim of the drop is
 ramped wherever the two heights actually touch, and because the walls of
@@ -3280,12 +3280,12 @@ are its doorways. Reachability is then checked the same way the
 side-scroller checks its jumps: if a walker cannot get from the high
 ground into the hole, that is refused rather than rendered.
 
-`doors` is "x,y x,y ..." — cells the WALL layer holds that are actually
+`doors` is "x,y x,y ...", cells the WALL layer holds that are actually
 openings. A designed floor does not have to leave gaps in its wall layer
 to have doorways: downsizing's tutorial floor draws a door tile inside
 the wall run and records the opening in its level data, which is a scene
 reader's blind spot. Without them the walkable set comes apart into one
-component per room — measured here, eighteen of them — and any question
+component per room, measured here, eighteen of them, and any question
 about reaching anything is answered wrongly rather than refused. Given
 them, the cells stop being walls and become floor, which is what a
 doorway looks like when the wall is a solid block.
@@ -3666,6 +3666,119 @@ call a tool that no longer existed. The godot_ names stay; this sits beside
 them and dispatches.
 ```
 
+## engine_scaffold
+
+```text
+Create a runnable game for this project's engine (godot | web) at dest.
+
+The engine-neutral sibling of godot_scaffold. `engine` defaults to what the
+project records, so a web project gets the vite + TypeScript slice and a
+Godot project the .tscn one; an engine with no template (unity) says so in
+the result instead of writing nothing. dest defaults to <project root>/game.
+
+Same force/replace contract as godot_scaffold: force fills in what is
+missing and skips files that differ, replace puts the template back over
+the top with a .bak of each victim. The result's `next` names the first
+three moves in the engine's own vocabulary: for web that is `npm install`,
+`engine_check`, then `web_dev` and `engine_screenshot`.
+
+A web scaffold stamps `package.json` with __PROJECT_SLUG__, not the display
+name: npm refuses spaces and capitals, and "Neon Drift" produced a manifest
+that died on "Invalid name" at the first command the scaffold recommends.
+```
+
+## engine_templates
+
+```text
+What project templates this engine can scaffold. `engine` defaults to the
+project's own. Each entry says whether it is actually on disk, so a build
+that dropped a template reads as "unavailable" rather than as a scaffold
+that mysteriously fails.
+```
+
+## unity_status
+
+```text
+Is the editor installed, which version, and does it match the project?
+
+Answers the questions that each fail differently: is an editor found at all
+(BGATE_UNITY, then the Hub's install roots), which versions the Hub has,
+which one the project was last opened in (ProjectSettings/ProjectVersion.txt),
+whether that exact one is installed, whether the editor currently holds the
+project (Temp/UnityLockfile), whether the Test Framework package is in the
+manifest, and whether the two BGate scripts are under Assets/BGate.
+
+A VERSION MISMATCH IS A WARNING FOR A REASON. Unity upgrades a project the
+moment a newer editor opens it, rewriting ProjectVersion.txt and every
+serialized asset it touches. A "check" that did that on the way would be
+the most expensive check available, so the adapter prefers the project's
+own version and says so when it cannot find it.
+```
+
+## unity_check
+
+```text
+Compile the project in batchmode: the Unity 'does it still build' check.
+
+`Unity -batchmode -nographics -quit -projectPath X -logFile <ours>`. The
+editor imports what changed, compiles every assembly, and exits. The exit
+code alone lies in both directions (0 with "Scripts have compiler errors"
+is a thing), so `errors` is read out of the log: file, line and CS code
+each, deduplicated. A first open imports every asset and can take minutes;
+raise `timeout` before reading a slow first run as a hang. Refused while
+the editor has the project open, because two editors cannot hold one.
+```
+
+## unity_test_run
+
+```text
+Run the Unity Test Framework and RECORD the score.
+
+`-runTests -testPlatform EditMode|PlayMode -testResults <xml>`, scored from
+the NUnit 3 XML into the same history godot_test_run and web_test_run
+write, so the Tests tab and the QA seat see it. PlayMode drops -nographics
+and is the slow case. `filter` reaches -testFilter. A truncated results
+file (the runner crashed mid-suite) still scores what ran. No results file
+with no compile errors usually means the Test Framework package is missing
+or no tests exist for the platform; that is `no_tests`, not a pass.
+```
+
+## unity_execute
+
+```text
+Run a static C# method the project ships: -executeMethod Ns.Class.Method.
+
+The nearest thing Unity has to godot_run. Nothing is written into the
+project to make it happen, so it can only call what already compiles
+there. `graphics=True` drops -nographics for a method that renders.
+```
+
+## unity_install_scripts
+
+```text
+Put Assets/BGate/BGateTelemetry.cs and Assets/BGate/Editor/BGateCapture.cs
+in place. Two files, never overwritten once present, no .meta files (the
+editor generates them on import; a hand-written GUID would collide the
+moment two projects held one). The telemetry MonoBehaviour boots itself on
+the first scene load through [RuntimeInitializeOnLoadMethod], so adopting a
+project needs no scene edit; the capture script is what engine_screenshot
+calls. Delete the folder and nothing else of Builders Gate is in the game.
+```
+
+## unity_screenshot
+
+```text
+Render a scene's camera to a PNG through the bundled editor script.
+
+A STILL OF THE SAVED SCENE, NOT A FRAME OF PLAY. Batchmode never enters
+play mode, so nothing has run Start() or Update(): the picture is the level
+as laid out and lit. That is exactly the evidence for "is the level laid
+out and lit" and exactly not the evidence for "does the player move",
+which a playtest recording provides. `scene` is a path under Assets/ or
+empty for the first enabled scene in Build Settings. The request travels in
+environment variables because -executeMethod takes no arguments.
+```
+
 ## project_set_engine
 
 ```text
@@ -3910,10 +4023,10 @@ QA agent is spawned to verify the claim; under the builder's gate it goes to
 chained behind it does not start until it reaches 'done'. Do not "fix" a
 'review' status by re-reporting: it is the gate working.
 
-`next_approach` — FAILURES ONLY, AND NOT A SUBSTITUTE FOR TRYING IT.
+`next_approach`, FAILURES ONLY, AND NOT A SUBSTITUTE FOR TRYING IT.
 
-Two failures wear the same word. BLOCKED — a missing key, a credit block, an
-asset that does not exist, a lane this seat cannot write to — fails
+Two failures wear the same word. BLOCKED, a missing key, a credit block, an
+asset that does not exist, a lane this seat cannot write to, fails
 identically however many times it runs; fail it fast, leave next_approach
 empty, and the item goes to a human on the first round. OUT OF IDEAS is the
 other kind: iterative work that NARROWED the problem and ran out of turns.
@@ -3925,7 +4038,7 @@ bypass: worth one round however many times it is named, and qa.max_rounds
 still ends the item.
 
 It does not buy you out of the work. If the thing you are about to name is in
-your lane and you can afford it, RUN IT BEFORE YOU CLOSE — handing the next
+your lane and you can afford it, RUN IT BEFORE YOU CLOSE, handing the next
 agent a suggestion you could have executed yourself pays for a whole cold
 start (a fresh session, a re-read of every file you already hold, a re-run of
 the probes you already paid for) to arrive where you were already standing.
@@ -3934,7 +4047,7 @@ weight-bleed → ankle non-manifold damage → that patch cleaned to zero
 non-manifold faces, seam remaining, and handed a human a diagnosis instead of
 an asset while holding a cheaper approach it had just written down.
 
-`premise_refuted` — THE BRIEF CONTAINED A MEASURED CLAIM THAT IS NOT TRUE.
+`premise_refuted`, THE BRIEF CONTAINED A MEASURED CLAIM THAT IS NOT TRUE.
 Pass {"claim": ..., "measured": ..., "did_instead": ...} and it becomes a
 structured outcome on the board rather than a paragraph nobody can search.
 
@@ -4076,7 +4189,7 @@ against the walls passed art QA on every individual prop.
 Alongside your judgement it MEASURES the scene tree and reports: empty
 floor, perimeter hugging, prop scale spread, whether any region holds the
 eye, and the lanes between obstacles. A pass is refused while any measured
-finding still stands — answer them one at a time with room_override, or
+finding still stands, answer them one at a time with room_override, or
 fail the room. `bounds` is [x0,y0,x1,y1] when the room is larger than what
 is placed in it.
 ```
@@ -4088,7 +4201,7 @@ Declare the REFERENCE SCALE every asset is measured against.
 
 Player height and tile size already existed; nothing fixed how big a door,
 a desk, a mug, a HUD icon or an enemy should be, so each was sized against
-whatever the generator felt like and reviewed on a contact sheet — the one
+whatever the generator felt like and reviewed on a contact sheet, the one
 presentation that cannot show a scale error, because it draws everything
 in the same box.
 
@@ -4106,12 +4219,12 @@ Record a 3D asset's ENGINE-MEASURED scale against the contract.
 THE AFFIRMATIVE HALF scale_check's 3D refusal left missing. scale_check
 correctly refuses to measure a mesh (or any world-space asset on a 3D
 project) in pixels, and its gate row says "measure with
-godot_inspect_resource and compare" — but nothing RECORDED that
+godot_inspect_resource and compare", but nothing RECORDED that
 comparison, so a 3D asset could never actually CLEAR the scale row; the
 only exit was a director retracting it by hand. That is the
 unclearable-row failure, one layer up.
 
-Pass the numbers the ENGINE gave you — godot_inspect_resource's
+Pass the numbers the ENGINE gave you, godot_inspect_resource's
 size_check.longest_axis_m, and the vertical extent as height_m. Never a
 pixel count. Grades against the same class band the 2D path uses
 (players = metres / player_height_m), records under the same key the
@@ -4279,7 +4392,7 @@ GENERATE A SIDE-SCROLLING LEVEL and write it into a scene.
 The platformer counterpart of `level_generate`, and a separate tool because
 it is a separate problem. `level_generate` partitions a SPACE into rooms and
 guarantees the floor is one connected region. Under gravity that guarantee
-is meaningless — you cannot walk upward — so this builds a SEQUENCE of
+is meaningless, you cannot walk upward, so this builds a SEQUENCE of
 segments left to right and guarantees something else entirely: that the
 goal can be REACHED, by a character with this exact jump.
 
@@ -4293,15 +4406,15 @@ they describe ONE thing, and four separate arguments invite three of them
 being right. An unknown key is refused by name rather than ignored.
 
 `player_scene` IS THE WAY TO PASS THEM. Point it at the player's .tscn and
-the tunables are read from the scene itself — its script's @export
-defaults, overridden by anything the scene sets — converted to cells by
+the tunables are read from the scene itself, its script's @export
+defaults, overridden by anything the scene sets, converted to cells by
 the tileset's own tile size, and the player is INSTANCED AT SPAWN in the
 written scene. `jump` is then ignored, because two sources of the same
 number is the drift this parameter closes: a level built for one jump and
 played with another is the failure the whole parameterisation exists to
 prevent. `fall_multiplier` is honoured by modelling with the fall gravity,
 so the error runs only in the safe direction. Without `player_scene` the
-`jump` numbers are trusted as given — then it is on you to keep the player
+`jump` numbers are trusted as given, then it is on you to keep the player
 scene agreeing with them.
 
 IT REFUSES AN UNPLAYABLE LEVEL rather than reporting one. The checks are
@@ -4315,7 +4428,7 @@ THE TILESET DESCRIBES ITSELF. Where the platform tiles live comes off the
 made, or by `tileset_describe` once for a hand-built one. This tool takes
 no atlas coordinates; without that file it refuses rather than guessing.
 
-`segments` is a comma list from flat, pit, stair, hop, blocks, pipe — "" for
+`segments` is a comma list from flat, pit, stair, hop, blocks, pipe, "" for
 all of them. `prop_manifest` is what `prop_generate` wrote; pass it and the
 props are placed and drawn, and the types come from the manifest too.
 `names` renames the layer nodes, {"solid": ..., "props": ...}.
@@ -4676,7 +4789,7 @@ at (0, 0).
 ## tileset_generate
 
 ```text
-GENERATE A GODOT TILESET — the bridge the level pipeline was missing.
+GENERATE A GODOT TILESET, the bridge the level pipeline was missing.
 
 levelgen, autotile, tilemap and wire_tilemap have all been real for a
 while and all blocked on the same thing: nothing here could WRITE a
@@ -4686,13 +4799,13 @@ the Godot editor. This makes one.
 THE PROVIDER DIVISION IS A HOUSE RULE, not a convenience: kie draws every
 static asset, Retro Diffusion only ever ANIMATES a sheet that already
 exists. An earlier build of this tool generated on RD's tile styles and
-its coverage varied 16/16 to 7/16 per roll — the kie path replaced it and
+its coverage varied 16/16 to 7/16 per roll, the kie path replaced it and
 removed the roll entirely.
 
 `prompt` names the FLOOR material, `void_prompt` what shows where there
 is no floor (default: featureless darkness). kie paints each as a
 material texture; the tile is cut from it and every mask tile is built
-GEOMETRICALLY from those two — the same `normalise_edges` inset a
+GEOMETRICALLY from those two, the same `normalise_edges` inset a
 hand-made autotile set has by construction. Coverage is total by
 construction, so the old partial-roll refusal has nothing to refuse; the
 seam report and the engine load are the gates that remain.
@@ -4702,7 +4815,7 @@ seam report and the engine load are the gates that remain.
 EIGHT IS THE DEFAULT BECAUSE FOUR HAS A VISIBLE DEFECT. A 4-bit mask cannot
 say "floor to the north and east, void at the north-east corner", so at every
 step in a room's outline there is no tile to draw and the shadow band along
-the wall breaks — a row of notches down the level that reads as broken art.
+the wall breaks, a row of notches down the level that reads as broken art.
 The corner tiles are a nibble out of the tile and pure geometry, so
 eight bits costs no extra image call and no extra money.
 `install=False` lands everything in .bgate_out/tiles/ for review; True also
@@ -4710,12 +4823,12 @@ writes into the Godot project and LOADS IT IN THE ENGINE to prove it.
 
 ISOMETRIC PROJECTS GET BLOCKS. The view's tiles are diamonds, its walls
 are raised cells showing two camera-facing sides, and both come from one
-primitive — a wall is a cell you may not enter and a terrace is one you
+primitive, a wall is a cell you may not enter and a terrace is one you
 may. `wall_lift` is that height in pixels (0 = one tile height); the
 resource carries the taller region and the texture_origin that lands the
 block's top face exactly that far above the floor plane.
 
-The atlas is also written as an Aseprite master — every AI-generated
+The atlas is also written as an Aseprite master, every AI-generated
 sheet goes through the Aseprite cleanup, tilesets included.
 ```
 
@@ -4729,26 +4842,26 @@ surfaces a building is mostly made of. A generated texture carries
 structure at roughly tile scale, so cropping one onto a diamond grid
 lays a visible lattice of motifs across the floor, and mirroring it to
 hide the diamond seams trades that lattice for symmetry. The tiles a
-real project ships are nearly featureless — near-black, a faint grain,
-at most one soft panel seam — and that is arithmetic's job: per-pixel
+real project ships are nearly featureless, near-black, a faint grain,
+at most one soft panel seam, and that is arithmetic's job: per-pixel
 noise cannot repeat, every value is a palette entry by construction, a
 variant is a different SEED rather than a different crop, and the whole
 set costs nothing and arrives in a second.
 
 Reach for `tileset_generate` when a material's features are meant to be
-read individually — terrazzo chips, a checkerboard lino, a poster wall.
+read individually, terrazzo chips, a checkerboard lino, a poster wall.
 Reach for this for carpet, concrete, vinyl, asphalt and every other
 surface whose job is to be quiet.
 
 `floors` and `walls` are semicolon lists of
-``name=#rrggbb[,grain][,seam][,speck]`` — one atlas source each, so a
+``name=#rrggbb[,grain][,seam][,speck]``, one atlas source each, so a
 level generator can put a different surface in every room.
 ```
 
 ## traversal_prove
 
 ```text
-DRIVE THE PLAYER and prove it arrives — settled, in the real volume.
+DRIVE THE PLAYER and prove it arrives, settled, in the real volume.
 
 FOUR OF SIX CLIMBING ROUTES PASSED AND WERE NOT TRAVERSABLE. The tests
 measured vertical rise against jump height. None measured the horizontal

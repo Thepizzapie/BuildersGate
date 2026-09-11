@@ -9,7 +9,7 @@ declare global {
   interface Window {
     /* Set by showFirstRun() in index.html immediately before it dispatches, so
        a card that mounts AFTER the decision still learns of it. See the comment
-       there — the module script is deferred and always loses that race. */
+       there, the module script is deferred and always loses that race. */
     __bgFirstRun?: { hint?: string };
   }
 }
@@ -19,8 +19,8 @@ declare global {
  * THIS IS A GUARD, NOT A TIDY-UP, and the bug it exists for cost a whole
  * release. Mantine's Select THROWS on a duplicate value rather than rendering
  * it twice, and an exception thrown during render unmounts the React tree
- * containing it. One folder registered under two names — which is what
- * renaming a project leaves behind — therefore did not produce a duplicate
+ * containing it. One folder registered under two names, which is what
+ * renaming a project leaves behind, therefore did not produce a duplicate
  * menu row. It produced a black window: the packaged app opened, painted
  * nothing, and sat there while the server behind it answered every request
  * perfectly, which is the hardest possible version of this to diagnose.
@@ -35,7 +35,7 @@ function oncePerValue<T extends { value: string }>(items: T[]): T[] {
     seen.has(value) ? false : (seen.add(value), true));
 }
 
-/* The first-run card — the one screen a new user is guaranteed to meet.
+/* The first-run card, the one screen a new user is guaranteed to meet.
  *
  * Two ways in, and OPENING COMES FIRST because it is the commoner act. This
  * screen could only create: someone with eight registered games who opened the
@@ -51,15 +51,27 @@ function oncePerValue<T extends { value: string }>(items: T[]): T[] {
  *
  * Both actions end in location.reload(). The dashboard token is minted per
  * project and this page was served without one, so every fetch the shell has
- * queued is carrying nothing — a re-render would leave a signed-out page. */
+ * queued is carrying nothing, a re-render would leave a signed-out page. */
 
-type ProjectInfo = { cwd?: string; known?: Record<string, string>; kinds?: string[] };
+type Template = { kind: string; engine: string; available: boolean; description: string };
+type Engine = { name: string; label: string; blurb: string; supported: boolean;
+                templates: Template[] };
+type ProjectInfo = { cwd?: string; known?: Record<string, string>; kinds?: string[];
+                     engines?: Engine[] };
 
-const KINDS = [
-  { id: "2d", label: "2D",
-    blurb: "Side-on platformer slice - player, ground, ledge, jump/land telemetry." },
-  { id: "3d", label: "3D",
-    blurb: "First-person slice - capsule player, ground, block, jump/land telemetry." },
+/* What renders before /api/project answers, and what an older backend without
+   `engines` still gets: the Godot templates, worded as the scaffolder words
+   them. Once the registry arrives the cards are driven by it, so a third
+   engine needs no edit here. */
+const FALLBACK_ENGINES: Engine[] = [
+  { name: "godot", label: "Godot", supported: true,
+    blurb: "Godot 4. Scene surgery, in-engine checks, screenshots and the telemetry autoload.",
+    templates: [
+      { kind: "2d", engine: "godot", available: true,
+        description: "Side-on platformer slice - player, ground, ledge, jump/land telemetry." },
+      { kind: "3d", engine: "godot", available: true,
+        description: "Third-person slice - controller, camera rig, prop kit, jump/land telemetry." },
+    ] },
 ];
 
 const slugify = (s: string) =>
@@ -78,10 +90,11 @@ export default function FirstRun() {
   const [name, setName] = useState("");
   const [pitch, setPitch] = useState("");
   const [kind, setKind] = useState("2d");
+  const [engine, setEngine] = useState("godot");
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
-  /* index.html shouts the reason when it puts this card up — "no .bgate project
+  /* index.html shouts the reason when it puts this card up, "no .bgate project
      at or above the cwd", or whatever the backend actually said. It is dispatched
      rather than passed because the shell has no handle on a React component. */
   useEffect(() => {
@@ -96,7 +109,7 @@ export default function FirstRun() {
 
   useEffect(() => {
     if (!armed) return;
-    // This endpoint answers before a project — and therefore before a token —
+    // This endpoint answers before a project, and therefore before a token -
     // exists, which is the whole reason it is separate from /api/state.
     readJSON<ProjectInfo>("/api/project", {}).then(setInfo);
     // The old card focused the name field as it opened; a hidden input cannot
@@ -106,8 +119,11 @@ export default function FirstRun() {
 
   const known = Object.entries(info.known || {}).sort((a, b) =>
     a[0].localeCompare(b[0]));
+  const engines = (info.engines && info.engines.length) ? info.engines : FALLBACK_ENGINES;
+  const current = engines.find((e) => e.name === engine) || engines[0];
+  const kinds = current.templates.filter((t) => t.available);
 
-  // Where a new project would land, said before you commit to it — the audit's
+  // Where a new project would land, said before you commit to it, the audit's
   // other complaint about project_init was that it never told you where.
   const sep = (info.cwd || "").includes("\\") ? "\\" : "/";
   const where = info.cwd && slugify(name)
@@ -127,7 +143,7 @@ export default function FirstRun() {
     if (!name.trim()) { setErr("give it a name first"); return; }
     setErr(""); setBusy("create");
     const r = await mutate("/api/project", {
-      quiet: true, body: { name: name.trim(), kind, pitch: pitch.trim() },
+      quiet: true, body: { name: name.trim(), kind, engine, pitch: pitch.trim() },
     });
     if (!r.ok) { setErr(r.error || "could not create that project"); setBusy(null); return; }
     location.reload();
@@ -136,7 +152,7 @@ export default function FirstRun() {
   return (
     /* MANTINE, like the rest of the shell.
      *
-     * This card was the last hand-rolled form in the app — bare <input>, <label>
+     * This card was the last hand-rolled form in the app, bare <input>, <label>
      * and eight fr-* classes, styled in app.css and drifting from every other
      * surface: its inputs had a different height, focus ring and disabled state
      * than the ones three clicks away in Settings. It is also the FIRST screen a
@@ -149,7 +165,7 @@ export default function FirstRun() {
      * the registry still comes from /api/project's `known`. */
     <Stack gap="md">
       {/* NO MARK AND NO TERMINAL FOOTER HERE. index.html renders both OUTSIDE
-          this island — the mark above it, the `bgate init` line below — the
+          this island, the mark above it, the `bgate init` line below, the
           latter deliberately, so it survives the bundle failing to load.
           Rendering them again put two of each on the card. */}
       <div>
@@ -159,7 +175,7 @@ export default function FirstRun() {
 
       {/* ONE CONTROL, NOT A LIST. Eight registered projects rendered as eight
           two-line rows made this card taller than the window, and the fix for
-          that is not a scroller inside a scroller — it is not spending 400px
+          that is not a scroller inside a scroller, it is not spending 400px
           on a list you pick one item from once. A Select is the same choice in
           40px, and it grows to fifty projects without the card changing size
           at all. */}
@@ -184,7 +200,7 @@ export default function FirstRun() {
                      placeholder="Ember Run" maxLength={80} autoComplete="off"
                      size="md" />
           <TextInput label="Pitch"
-                     description="optional — one line, what is this game?"
+                     description="optional, one line, what is this game?"
                      value={pitch} onChange={(e) => setPitch(e.currentTarget.value)}
                      placeholder="one line - what is this game?" maxLength={200}
                      autoComplete="off" size="md" />
@@ -192,15 +208,40 @@ export default function FirstRun() {
           {/* Cards rather than a SegmentedControl: each option carries a
               sentence describing the slice it scaffolds, and that does not fit
               in a segment. Still a radiogroup to a screen reader. */}
+          {/* The engine first, because it decides which templates exist and
+              which tools every seat is handed afterwards. One engine renders
+              no picker at all. */}
+          {engines.length > 1 && (
+            <div role="radiogroup" aria-label="Engine">
+              <Group grow align="stretch" gap="sm">
+                {engines.map((e) => (
+                  <Paper key={e.name} component="button" type="button" role="radio"
+                         aria-checked={e.name === engine} p="sm" withBorder
+                         className={e.name === engine ? "fr-kind on" : "fr-kind"}
+                         onClick={() => {
+                           setEngine(e.name);
+                           if (!e.templates.some((t) => t.kind === kind && t.available)) {
+                             const first = e.templates.find((t) => t.available);
+                             if (first) setKind(first.kind);
+                           }
+                         }}>
+                    <Text size="sm" fw={600} ta="left">{e.label}</Text>
+                    <Text size="xs" c="dimmed" mt={4} ta="left">{e.blurb}</Text>
+                  </Paper>
+                ))}
+              </Group>
+            </div>
+          )}
+
           <div role="radiogroup" aria-label="Starting template">
             <Group grow align="stretch" gap="sm">
-              {KINDS.map((k) => (
-                <Paper key={k.id} component="button" type="button" role="radio"
-                       aria-checked={k.id === kind} p="sm" withBorder
-                       className={k.id === kind ? "fr-kind on" : "fr-kind"}
-                       onClick={() => setKind(k.id)}>
-                  <Text size="sm" fw={600} ta="left">{k.label}</Text>
-                  <Text size="xs" c="dimmed" mt={4} ta="left">{k.blurb}</Text>
+              {kinds.map((k) => (
+                <Paper key={k.kind} component="button" type="button" role="radio"
+                       aria-checked={k.kind === kind} p="sm" withBorder
+                       className={k.kind === kind ? "fr-kind on" : "fr-kind"}
+                       onClick={() => setKind(k.kind)}>
+                  <Text size="sm" fw={600} ta="left">{k.kind.toUpperCase()}</Text>
+                  <Text size="xs" c="dimmed" mt={4} ta="left">{k.description}</Text>
                 </Paper>
               ))}
             </Group>

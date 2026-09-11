@@ -7,7 +7,7 @@ made, and [gotchas.md](gotchas.md) covers what went wrong on the way.
 Verified against the source on 2026-08-12.
 
 Two gates run throughout: the project boundary refuses a write into any other
-tree (lanes inside it are advisory by default — an out-of-lane write lands and
+tree (lanes inside it are advisory by default, an out-of-lane write lands and
 is reported), and watchdogs kill a wedged run. There is no money gate: Builders
 Gate keeps no ledger and holds no budget, and the only balance that exists is
 the one `provider_status` reads off your own provider account. Approval is human-only. An agent records a
@@ -67,15 +67,15 @@ with the token injected and `fetch` wrapped to send it same-origin only.
 [SECURITY.md](../.github/SECURITY.md).
 
 No CDN, and no build step for anyone installing a wheel or the `.exe`. The
-dashboard's source is `frontend/` — `frontend/public/` for the classic pages,
-stylesheet and modules, `frontend/src/` for the React parts — and `npm run
+dashboard's source is `frontend/`, `frontend/public/` for the classic pages,
+stylesheet and modules, `frontend/src/` for the React parts, and `npm run
 build` in that directory writes `src/bgate_ui/static/`: `public/` copied in
 verbatim, plus the React bundle under `dist/`. Only `dist/` is committed
 (`.gitignore` keeps the rest out, because it is a copy of `public/`). A source
 checkout needs no node either: `bgate serve` copies `public/` into `static/`
 at startup when `index.html` is missing. Building a wheel or the `.exe` from a
 checkout does need `npm run build` first, so the wheel carries the whole
-tree — `ci.yml`'s `wheel-smoke` job and `release-exe.yml` both run it before
+tree, `ci.yml`'s `wheel-smoke` job and `release-exe.yml` both run it before
 packaging. `src/bgate_ui/static/` is build output: editing it is editing a
 file the next build overwrites.
 
@@ -134,7 +134,7 @@ consumes it, named with the item that paid for it), and `freshness` (whether the
 engine is serving the bytes on disk or an older import). The release gate now
 runs it and refuses on those findings; it used to be a tool nobody called.
 Where a project builds resource paths at run time, `dynamic_load_sites` is
-non-zero and an unwired asset is reported as a **candidate**, not a verdict — no
+non-zero and an unwired asset is reported as a **candidate**, not a verdict, no
 static scan follows a path built at run time.
 
 ## The release gate
@@ -161,7 +161,7 @@ behind it. Rows come in four kinds and the distinction is about *who acts*:
 | `blocking` | ordinary work, and it names a runnable action | whoever owns the path |
 | `judgement` | a person has to look. Correct, not a defect | a human, or the QA seat |
 | `unfinished` | nobody has done it yet | backlog |
-| `impossible` | **no valid action clears it — a harness bug** | fix the tool, then supersede the row |
+| `impossible` | **no valid action clears it, a harness bug** | fix the tool, then supersede the row |
 
 The gate audits its own rows for satisfiability before it refuses anything. A
 row no correct action can clear is worse than no row: it teaches operators to
@@ -170,7 +170,7 @@ route around the gate.
 **Retracting a false finding.** `greenlight_supersede(finding_id, why, ...)`
 withdraws a row a later, authoritative measurement has disproved. The retraction
 is itself recorded: the finding stops blocking and stays readable, carrying what
-replaced it, with what tool, and why. Fixing the tool is not enough on its own —
+replaced it, with what tool, and why. Fixing the tool is not enough on its own -
 the bad finding is already in the ledger.
 `greenlight_status(section='findings')` lists them with ids.
 
@@ -454,13 +454,32 @@ rather than reported as a success.
 ## Templates
 
 ```bash
-bgate init emberfall --kind 2d                # or 3d
+bgate init emberfall --kind 2d                # or 3d; --engine web for vite + TypeScript
 godot_scaffold(name="Emberfall", kind="2d")   # the same slice, from an agent
+engine_scaffold(name="Emberfall", kind="2d")  # whichever engine the project records
 godot_check_project(godot_project)            # import + validate headless
+engine_check()                                # the same question, engine-neutral
 ```
 
-Both are runnable slices: a player, ground, something to jump onto, and the
-BGate autoloads registered.
+Templates live at `src/templates/<engine>/<kind>`. All four are runnable
+slices: a player, ground, something to jump onto, and the telemetry wired
+(the BGate autoloads for Godot; `src/bgate/telemetry.ts` for web, which
+reports through the dashboard's `/api/playtest` routes via the vite proxy).
+
+A web project's seats get lanes in its own layout (`src/**`, `public/**`,
+`index.html`, the config files), `playtest_start` launches the dev server
+and a browser tab, the Tests tab runs vitest, and the asset scan reads
+`.ts` and `.html` for references.
+
+A Unity project is adopted, never scaffolded: `bgate adopt` records
+`engine=unity`, stamps a Unity briefing, and `unity_install_scripts` puts
+the telemetry MonoBehaviour and the editor capture script under
+`Assets/BGate/`. `engine_check` is a batchmode compile, `unity_test_run` the
+Test Framework scored into the shared history, `engine_screenshot` an
+editor-rendered still of the scene, and `playtest_start` opens the editor
+with `BGATE_TELEMETRY` set so pressing Play records. Lanes land on
+`Assets/Scripts`, `Assets/Art`, `Assets/Tests` and so on, and the asset scan
+follows `.meta` GUIDs instead of filenames.
 
 The 2D slice is a side-on platformer reading exactly three actions: `move_left`
 (A or left arrow), `move_right` (D or right arrow), `jump` (Space). Anything

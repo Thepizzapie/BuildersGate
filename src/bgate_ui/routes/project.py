@@ -1,7 +1,7 @@
 """First run over HTTP: make a project from the dashboard.
 
 The audit's single blocker was that nothing in the product could CREATE a
-project — the shell assumed one that already existed, built by someone who had
+project, the shell assumed one that already existed, built by someone who had
 already registered an MCP server and knew to call project_init. This is the same
 two steps ``bgate init`` runs (scaffold a runnable game, then stamp the store)
 behind the one endpoint the first-run screen posts to.
@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from bgate_core.board import activity as _activity
 from bgate_core.board import gitwork as _gitwork
+from bgate_core.runtime import engines as _engines
 from bgate_core.store import modules as _modules
 from bgate_core.store import project as _project
 from bgate_core.store import scaffold as _scaffold
@@ -37,7 +38,7 @@ def _unsuitable(d: Path) -> bool:
     C:\\Windows\\system32. The first-run screen offered to unpack a Godot game
     into it, and the create failed with a raw PermissionError repr in a red box.
 
-    Being unwritable is not the only disqualifier — an elevated process CAN
+    Being unwritable is not the only disqualifier, an elevated process CAN
     write to system32, and that is worse than the failure, not better.
     """
     try:
@@ -69,7 +70,7 @@ def default_parent() -> Path:
     Beside the active project when there is one, the cwd when that is a real
     working directory, and ~/BuildersGate when it is not. A dashboard launched
     from a project must never scaffold the next game inside the current game.
-    The fallback is created lazily by the scaffolder, not here — reading the
+    The fallback is created lazily by the scaffolder, not here, reading the
     first-run form must not have side effects on disk.
     """
     try:
@@ -85,7 +86,7 @@ def default_parent() -> Path:
 
 
 def _target(name: str, dest: str) -> Path:
-    """Where a new project goes. A NEW directory under `default_parent()` —
+    """Where a new project goes. A NEW directory under `default_parent()` -
     unpacking a game into whatever directory the server happened to start in is
     a data-loss bug wearing a feature's hat."""
     if dest:
@@ -98,7 +99,7 @@ def project_read() -> dict:
     """The active project (or null), plus everything the create form needs.
 
     ``cwd`` is here so the form can tell the user the exact directory it is about
-    to write to before they commit — the audit's other complaint about
+    to write to before they commit, the audit's other complaint about
     project_init was that it never said where.
     """
     body: dict = {
@@ -109,8 +110,16 @@ def project_read() -> dict:
         "cwd": str(default_parent()),
         "templates": _scaffold.list_templates(),
         "kinds": list(_scaffold.KINDS),
+        # Every engine the scaffolder can stamp out, with its templates. An
+        # engine that is only adopted (unity) is not offered here: the card
+        # creates projects, and there is nothing to create for it.
+        "engines": [
+            {**item, "templates": _scaffold.list_templates(item["name"])}
+            for item in _engines.catalog()
+            if _engines.template_dir_name(item["name"])
+        ],
         "known": _project.known_projects(),
-        # The optional-feature checklist the first-run card renders — every
+        # The optional-feature checklist the first-run card renders, every
         # module with its blurb and the pip command that lights it up fully,
         # so "what gets installed" is a choice made where the choosing is.
         "modules": _modules.catalog(),
@@ -129,7 +138,7 @@ def project_create(request: Request, payload: dict) -> dict:
     """Scaffold a game and initialise its store. Returns the absolute root.
 
     Creating the studio's project is a human act, not something an agent may do
-    on its own initiative — same rule as editing the bible that bounds it.
+    on its own initiative, same rule as editing the bible that bounds it.
     """
     api.require_human(api.current_actor(request), "create a project")
 
@@ -140,13 +149,21 @@ def project_create(request: Request, payload: dict) -> dict:
     if kind not in _scaffold.KINDS:
         raise api.bad_request(
             f"kind must be one of {'|'.join(_scaffold.KINDS)}", kind=kind)
+    engine = (payload.get("engine") or _engines.DEFAULT).strip().lower()
+    if not _engines.known(engine):
+        raise api.bad_request(
+            f"engine must be one of {'|'.join(_engines.names())}", engine=engine)
+    if not _engines.template_dir_name(engine):
+        raise api.bad_request(
+            f"{_engines.label(engine)} projects are adopted, not scaffolded: "
+            "point the dashboard at an existing one instead", engine=engine)
 
     root = _target(name, (payload.get("path") or "").strip())
     try:
-        made = _scaffold.new_project(root, name, kind=kind,
+        made = _scaffold.new_project(root, name, kind=kind, engine=engine,
                                      force=bool(payload.get("force")))
     except FileExistsError as exc:
-        # Not a bad request — the request was fine, the directory is occupied.
+        # Not a bad request, the request was fine, the directory is occupied.
         # `force` is offered in the detail so the UI can render the choice.
         raise api.conflict(str(exc), path=str(root), force_available=True)
     except PermissionError as exc:
@@ -154,7 +171,7 @@ def project_create(request: Request, payload: dict) -> dict:
         # any path into the form. Say where and what to do instead of leaking
         # "[WinError 5] Access is denied: 'C:\\\\Windows\\\\System32\\\\...'".
         raise api.bad_request(
-            f"cannot write to {root.parent} — choose somewhere you own, "
+            f"cannot write to {root.parent}, choose somewhere you own, "
             f"such as {Path.home() / 'BuildersGate'}",
             path=str(root), suggested=str(Path.home() / "BuildersGate"),
         ) from exc
@@ -162,7 +179,7 @@ def project_create(request: Request, payload: dict) -> dict:
         raise api.bad_request(str(exc))
 
     project = _project.init(root, name, pitch=(payload.get("pitch") or "").strip(),
-                            engine="godot", dimension=kind)
+                            engine=engine, dimension=kind)
     repository = _gitwork.initialize(root)
     # LANES POINTED AT THE LAYOUT JUST LAID DOWN. The scaffold writes scenes/
     # and scripts/ straight into <root>; the default seat table is written
@@ -194,7 +211,9 @@ def project_create(request: Request, payload: dict) -> dict:
     off_set = _modules.machine_defaults()
     off_set |= {str(m).strip() for m in (payload.get("modules_off") or [])
                 if str(m).strip()}
-    if kind == "2d":
+    # Same two rules bgate init applies: a 2D game does not open Blender, and
+    # a web game has no Godot import pipeline for blender_* to deliver into.
+    if kind == "2d" or engine == "web":
         off_set.add("three_d")
     off = sorted(off_set)
     if off:
@@ -204,11 +223,11 @@ def project_create(request: Request, payload: dict) -> dict:
             # The project exists and works; a failed preference write must not
             # roll that back. Say so instead.
             _activity.log(root, "project",
-                          f"could not store module choices ({exc}) — "
+                          f"could not store module choices ({exc}), "
                           "set them in Settings", seat="director")
 
     # Point the RUNNING server at what it just made. _root() reads BGATE_ROOT
-    # first and otherwise walks up from the cwd — and the new project is a
+    # first and otherwise walks up from the cwd, and the new project is a
     # directory below the cwd, which walking up will never find. Without this
     # the dashboard would create a project and then keep reporting none.
     os.environ["BGATE_ROOT"] = str(root)
@@ -231,7 +250,7 @@ def project_create(request: Request, payload: dict) -> dict:
         "repository": repository,
         "lanes": lanes,
         # The dashboard token is minted per project, and this page was served
-        # before the project existed — the client has to reload to get one.
+        # before the project existed, the client has to reload to get one.
         "reload": True,
     })
 
@@ -241,7 +260,7 @@ def project_select(request: Request, payload: dict) -> dict:
     """Point the running dashboard at a project that already exists.
 
     THE FIRST-RUN SCREEN COULD ONLY CREATE. Every other route into this product
-    — `bgate use`, `bgate adopt`, the MCP project_select tool — has always been
+, `bgate use`, `bgate adopt`, the MCP project_select tool, has always been
     able to pick up a project already on disk, but the one screen a new user
     actually meets offered a name field and a Create button, so someone with six
     registered games who opened the dashboard from the wrong directory was told
@@ -256,7 +275,7 @@ def project_select(request: Request, payload: dict) -> dict:
 
     · ``BGATE_ROOT`` in this process, because deps.root() reads it first and
       otherwise WALKS UP FROM THE CWD. Without it a server started inside one
-      project — or inside this repository, which has a .bgate of its own —
+      project, or inside this repository, which has a .bgate of its own -
       would keep serving that one however hard the user clicked, since the walk
       wins over the remembered pointer. Same reason project_create sets it.
     · the machine-wide active pointer, so `bgate use` agrees and the choice
@@ -281,7 +300,7 @@ def project_select(request: Request, payload: dict) -> dict:
     try:
         target = target.resolve()
     except OSError as exc:
-        raise api.bad_request(f"cannot resolve {raw} — {exc}")
+        raise api.bad_request(f"cannot resolve {raw}, {exc}")
 
     try:
         _project.set_active(target)
