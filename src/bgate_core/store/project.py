@@ -1,4 +1,4 @@
-"""Project identity — the single row every other table hangs off."""
+"""Project identity, the single row every other table hangs off."""
 from __future__ import annotations
 
 import json
@@ -14,7 +14,7 @@ from .util import slugify
 # ("godot", "none") and it was the reason the column could not grow: a second
 # engine had to be added here, in adopt, in doctor and in the dispatch prose,
 # and nothing tied the four together. bgate_core.runtime.engines is now the one
-# place that knows, and it costs no migration — the schema default is still
+# place that knows, and it costs no migration, the schema default is still
 # 'godot' and every existing row already reads it.
 ENGINES = _engines.names()
 
@@ -24,7 +24,7 @@ class HarnessCheckoutError(ValueError):
 
 
 def harness_checkout(path: str | os.PathLike[str]) -> Optional[Path]:
-    """The Builders Gate checkout that `path` is, or sits inside — else None.
+    """The Builders Gate checkout that `path` is, or sits inside, else None.
 
     A game scaffolded into the tool's own repository is the mistake this
     exists to refuse: it happened once (a `.bgate/`, a stamped `.gitignore`
@@ -64,7 +64,7 @@ DIMENSIONS = ("2d", "3d", "2d+3d")
 def user_dir() -> Path:
     """The user-scoped Builders Gate directory (``~/.bgate`` unless overridden).
 
-    BGATE_HOME exists so a test — or a user with two unrelated fleets — can
+    BGATE_HOME exists so a test, or a user with two unrelated fleets, can
     point the registry and the active-project pointer somewhere else. It is NOT
     a project root; nothing game-shaped ever lands here.
     """
@@ -82,11 +82,11 @@ ACTIVE_FILENAME = "active.json"
 def _registry_path() -> Path:
     """Machine-wide registry of every project ever init'ed/selected, so a session
     whose cwd is NOWHERE NEAR the project (e.g. an MCP server spawned from a
-    different repo) can still find and select it by name. Best-effort JSON —
+    different repo) can still find and select it by name. Best-effort JSON -
     losing it only costs rediscovery, never data.
 
     Resolved through :func:`user_dir` rather than ``Path.home()`` so BGATE_HOME
-    moves the registry with everything else — a module-level constant that
+    moves the registry with everything else, a module-level constant that
     baked in the home directory used to sit here and silently ignored it.
     """
     return user_dir() / "projects.json"
@@ -108,14 +108,14 @@ def _read_registry() -> dict[str, str]:
 def set_active(root: str | os.PathLike[str]) -> Path:
     """Remember ``root`` as the project to assume when nothing else says.
 
-    Refuses a directory that is not a project — a pointer at nothing is worse
+    Refuses a directory that is not a project, a pointer at nothing is worse
     than no pointer, because it makes every later tool call fail somewhere far
     from the mistake.
     """
     resolved = Path(root).expanduser().resolve()
     if not (resolved / db.DB_DIRNAME / db.DB_FILENAME).exists():
         raise LookupError(
-            f"{resolved} is not a Builders Gate project — no "
+            f"{resolved} is not a Builders Gate project, no "
             f"{db.DB_DIRNAME}/{db.DB_FILENAME}. Run `bgate adopt` (existing "
             "game) or `bgate init` (new one) there first.")
     path = _active_path()
@@ -130,7 +130,7 @@ def set_active(root: str | os.PathLike[str]) -> Path:
 
 
 def active_root() -> Optional[Path]:
-    """The remembered project, or None. Never raises — a corrupt or stale
+    """The remembered project, or None. Never raises, a corrupt or stale
     pointer degrades to 'no preference', which is the pre-existing behaviour."""
     try:
         data = json.loads(_active_path().read_text(encoding="utf-8"))
@@ -171,8 +171,8 @@ def known_projects() -> dict[str, str]:
     """{name: root} for every registered project THAT STILL EXISTS ON DISK.
 
     The docstring said this before the code did: it returned the raw registry,
-    dead entries and all. A registry entry is a breadcrumb, not a promise — the
-    folder can be deleted, renamed or on a drive that is not plugged in — and
+    dead entries and all. A registry entry is a breadcrumb, not a promise, the
+    folder can be deleted, renamed or on a drive that is not plugged in, and
     the project switcher offers this list as things you can open, so a stale
     row is a menu item that fails when clicked.
 
@@ -182,7 +182,7 @@ def known_projects() -> dict[str, str]:
 
     ONE ENTRY PER FOLDER. The keys here are names and are unique by
     construction; the VALUES are not, and two names pointing at one folder is
-    ordinary — renaming a project registers the new name without retiring the
+    ordinary, renaming a project registers the new name without retiring the
     old one, so the same root arrives twice under two labels. Every caller
     turns this into a list of choices keyed by root, and a repeated root is a
     repeated key.
@@ -310,7 +310,7 @@ def get(root: str | os.PathLike[str]) -> dict:
     conn = db.connect(root)
     row = conn.execute("SELECT * FROM project WHERE id = 1").fetchone()
     if row is None:
-        raise LookupError(f"no Builders Gate project at {root} — run init first")
+        raise LookupError(f"no Builders Gate project at {root}: run init first")
     return dict(row)
 
 
@@ -321,15 +321,15 @@ def set_dimension(root: str | os.PathLike[str], dimension: str) -> dict:
     and ``adopt`` detects it, and after that there was no way to change it: a 2D
     prototype that grew a 3D scene kept reporting ``dimension: "2d"`` in
     project_status forever, with no tool on any surface that could fix it. It
-    reads as cosmetic and is not — the field steers scaffolding templates and the
+    reads as cosmetic and is not, the field steers scaffolding templates and the
     wording of seat briefs, so a wrong value quietly aims the whole board at the
     wrong kind of game.
 
     Re-running ``init`` would have done it, and that is exactly why this exists
     instead: init also rewrites name, pitch and engine from its own defaults, so
     the available workaround was to overwrite four fields to correct one. The
-    2d+3d value is there for the common real case — a 3D game with a 2D HUD, or a
-    prototype mid-port — and is not a compromise between the other two.
+    2d+3d value is there for the common real case, a 3D game with a 2D HUD, or a
+    prototype mid-port, and is not a compromise between the other two.
     """
     if dimension not in DIMENSIONS:
         raise ValueError(f"dimension must be one of {DIMENSIONS}, "
@@ -356,7 +356,7 @@ def engine_of(root: str | os.PathLike[str]) -> str:
     Called from tool registration and from doctor, both of which run before
     anyone has checked that a project exists. A directory with no game.db, an
     unreadable row or a value the registry no longer knows all answer with the
-    default — the same rule the module and seat gates already state: a missing
+    default, the same rule the module and seat gates already state: a missing
     capability must only ever come from a stored decision, never a failed read.
     """
     try:
@@ -372,8 +372,8 @@ def set_engine(root: str | os.PathLike[str], engine: str) -> dict:
     The sibling of set_dimension, and it exists for the sharper version of the
     same problem. ``init`` wrote 'godot' unconditionally and ``adopt`` wrote
     'godot' or 'none'; after that no surface on any client could change it, so a
-    project adopted before its engine could be detected — or one that was never
-    a Godot project at all — carried a wrong engine forever. Re-running init
+    project adopted before its engine could be detected, or one that was never
+    a Godot project at all, carried a wrong engine forever. Re-running init
     would have fixed it by overwriting name, pitch and dimension as well, which
     is the workaround this replaces.
 
@@ -404,15 +404,15 @@ def engine_dir(root: str | os.PathLike[str]) -> tuple[Optional[Path], str]:
     Two entrypoints disagree about the layout: godot_scaffold (MCP) writes into
     ``<root>/game``, while ``bgate init`` and the dashboard's new-project route
     write straight into ``<root>``. Everything downstream that hardcoded one of
-    the two silently did nothing for projects made the other way — the web
+    the two silently did nothing for projects made the other way, the web
     export was unreachable for every CLI-created project for exactly that
     reason. Ask here instead of guessing.
 
     THE DIRECTORY IS ASKED, NOT THE ROW. A project whose engine has not been
     recorded yet (adopt runs detection before it writes anything) still gets the
     right answer, and a row that disagrees with the files on disk loses to the
-    files. Candidate order is unchanged — ``<root>/game`` still wins over
-    ``<root>`` — and within a candidate the registry's DETECT_ORDER decides, so
+    files. Candidate order is unchanged, ``<root>/game`` still wins over
+    ``<root>``, and within a candidate the registry's DETECT_ORDER decides, so
     a Godot project carrying a tooling package.json is still a Godot project.
     """
     base = Path(root)
@@ -428,7 +428,7 @@ def game_dir(root: str | os.PathLike[str],
     """Where this project's <engine> project lives, or None.
 
     DELIBERATELY STILL GODOT BY DEFAULT, and this is not an oversight. Thirty
-    call sites ask this question and then do Godot things with the answer —
+    call sites ask this question and then do Godot things with the answer -
     ``adopt`` parses ``project.godot`` out of it, ``webbuild`` runs a Godot
     export in it, ``enginetests`` looks for ``.gd`` files under it. Widening the
     walk to every engine's marker would hand all thirty a directory for a
@@ -447,7 +447,7 @@ def game_dir(root: str | os.PathLike[str],
 
 
 # ---------------------------------------------------------------------------
-# The scratch project — somewhere for work that belongs to no game
+# The scratch project, somewhere for work that belongs to no game
 # ---------------------------------------------------------------------------
 # The names a caller can use to ASK for it, rather than falling into it. Passing
 # `project_dir="scratch"` is how you say "this one is not about any of my games"
@@ -458,19 +458,19 @@ SCRATCH_LABEL = "Scratch"
 
 
 def scratch_root(create: bool = True) -> Path:
-    """``~/.bgate/scratch`` — the drop point for generations with no game.
+    """``~/.bgate/scratch``, the drop point for generations with no game.
 
     WHY A REAL PROJECT AND NOT A LOOSE DIRECTORY. Everything downstream of a
     generation needs a root that is a project: the artifact registry, the spend
     ledger, the activity log, ``.bgate_out``. A bare output folder would mean a
     second, thinner code path for "generations that are not part of anything",
-    and the first thing anyone would ask of one is what it cost — which is a
+    and the first thing anyone would ask of one is what it cost, which is a
     question only the ledger can answer. So the scratch drop point is an
     ordinary project that happens to live in the user-scoped directory, and
     every tool that writes into it does so through the code it already uses.
 
-    It carries no game. ``init`` creates the database and nothing else — no
-    Godot project, no scaffold — because this is a place to put an image, not a
+    It carries no game. ``init`` creates the database and nothing else, no
+    Godot project, no scaffold, because this is a place to put an image, not a
     place to build. A tool that needs an engine will say so in its own words.
 
     Created on demand rather than at install time: a user who never generates
@@ -512,7 +512,7 @@ def require_root(start: Optional[str | os.PathLike[str]] = None, *,
     """Find the enclosing project or explain how to make one.
 
     ``scratch=True`` puts the scratch project at the BOTTOM of the chain instead
-    of raising — for callers whose work has somewhere to go even when no game
+    of raising, for callers whose work has somewhere to go even when no game
     does. It is deliberately last, below the remembered active project, so it
     only ever catches someone who has no project at all: anyone who has run
     `bgate init`, `bgate adopt` or `bgate use` keeps landing in their own work,

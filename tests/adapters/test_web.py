@@ -1,4 +1,4 @@
-"""The web engine adapter — phase 3.
+"""The web engine adapter, phase 3.
 
 The payload budget is the assertion that matters most here. A finished Godot 3D
 game exported to the web at 661 MB is what it exists to catch, and nothing in
@@ -90,6 +90,14 @@ class TestPayloadBudget:
         assert big["bytes"] < 100_000
         assert got["within_budget"] is True
 
+    def test_the_bundlers_own_bookkeeping_is_not_a_download(self, tmp_path):
+        dist = self._dist(tmp_path)
+        (dist / ".vite").mkdir()
+        (dist / ".vite" / "manifest.json").write_text(
+            '{"x": "' + "y" * 500_000 + '"}', encoding="utf-8")
+        got = web.payload(dist)
+        assert not any(".vite" in f["file"] for f in got["biggest"])
+
     def test_already_compressed_files_are_not_double_counted(self, tmp_path):
         dist = self._dist(tmp_path)
         blob = os.urandom(2_000_000)
@@ -133,7 +141,7 @@ class TestBrowser:
         """Package present and browser absent is a REAL state on a fresh box.
 
         Reporting "playwright: yes" off the import alone promises screenshots on
-        a machine that cannot take one — the same mistake the art_key doctor row
+        a machine that cannot take one, the same mistake the art_key doctor row
         had to unlearn.
         """
         got = web.browser_available()
@@ -158,13 +166,33 @@ class TestDevServerBookkeeping:
 
     def test_a_stale_pidfile_is_cleaned_rather_than_obeyed(self, tmp_path):
         # A killed server that leaves its file behind would otherwise make
-        # dev_start refuse forever — the bug the engine lock's TTL prevents.
+        # dev_start refuse forever, the bug the engine lock's TTL prevents.
         (tmp_path / web._PIDFILE).write_text(
             json.dumps({"pid": 999_999_999, "port": 5173}), encoding="utf-8")
         got = web.dev_status(tmp_path)
         assert got["running"] is False
         assert got["stale"] is True
         assert not (tmp_path / web._PIDFILE).exists()
+
+    def test_a_live_pid_that_is_not_ours_is_stale(self, tmp_path, monkeypatch):
+        # Pids are recycled: a pidfile from a dead server can name whatever the
+        # OS handed that number to next, and dev_stop kills the tree under it.
+        monkeypatch.setattr(web, "_image_name", lambda pid: "explorer.exe")
+        (tmp_path / web._PIDFILE).write_text(
+            json.dumps({"pid": 4242, "port": 5173}), encoding="utf-8")
+        assert web.dev_status(tmp_path)["running"] is False
+        assert not (tmp_path / web._PIDFILE).exists()
+
+    def test_our_own_process_reads_as_ours_by_image_name(self):
+        # Asked of a real pid so the tasklist/ps parsing is exercised, not
+        # stubbed: this interpreter is python, which is deliberately NOT in the
+        # allowed set, and its name must still come back.
+        import os
+
+        name = web._image_name(os.getpid())
+        assert name.startswith("python"), name
+        assert web._alive(os.getpid()) is False
+        assert web._image_name(999_999_999) == ""
 
     def test_starting_without_a_dev_script_refuses(self, tmp_path):
         (tmp_path / "package.json").write_text('{"name":"x"}', encoding="utf-8")
@@ -179,6 +207,23 @@ class TestRunScript:
         got = web.run_script("console.log('hi')", project_dir=str(tmp_path))
         assert got["ok"] is False
         assert "takes a path, not source" in got["error"]
+
+    def test_a_file_outside_the_project_is_refused(self, tmp_path):
+        outside = tmp_path / "elsewhere" / "x.js"
+        outside.parent.mkdir()
+        outside.write_text("console.log(1)", encoding="utf-8")
+        project = tmp_path / "game"
+        project.mkdir()
+        for given in (str(outside), "../elsewhere/x.js"):
+            got = web.run_script(given, project_dir=str(project))
+            assert got["ok"] is False
+            assert "outside" in got["error"]
+
+    def test_typescript_is_refused_before_node_sees_it(self, tmp_path):
+        (tmp_path / "a.ts").write_text("const x: number = 1;", encoding="utf-8")
+        got = web.run_script("a.ts", project_dir=str(tmp_path))
+        assert got["ok"] is False
+        assert "TypeScript" in got["error"]
 
     @pytest.mark.skipif(not web.available()["available"], reason="needs node")
     def test_it_runs_a_real_file(self, tmp_path):
@@ -284,7 +329,7 @@ class TestDevServerBinding:
 
     MEASURED, on this machine: vite's default host is the string "localhost",
     which on Windows binds ::1 ONLY. The server was up and serving, and every
-    probe of http://127.0.0.1:<port>/ failed for the full 90-second timeout —
+    probe of http://127.0.0.1:<port>/ failed for the full 90-second timeout -
     and the timeout path then killed the npm shim, orphaning the vite child that
     held the port, so every later start failed on --strictPort for a server
     nothing was tracking and nobody could stop.
@@ -308,3 +353,51 @@ class TestDevServerBinding:
         import inspect
 
         assert "_kill_tree(pid)" in inspect.getsource(web.dev_stop)
+
+
+class TestWebTelemetryStatus:
+    """playtest_check on a web project asks about telemetry.ts, not an autoload."""
+
+    def _web(self, tmp_path):
+        (tmp_path / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+        (tmp_path / "src").mkdir()
+        return tmp_path
+
+    def test_a_missing_module_is_installable(self, tmp_path):
+        from bgate_core.store import adopt
+        root = self._web(tmp_path)
+        got = adopt.telemetry_status(root)
+        assert got["ok"] is False and got["installable"] is True
+        put = adopt.install_telemetry(root)
+        assert put["action"] == "installed"
+        assert (root / "src" / "bgate" / "telemetry.ts").is_file()
+        # Present but unimported is still not ok, and says so.
+        again = adopt.telemetry_status(root)
+        assert again["ok"] is False and "imports" in again["reason"]
+        assert adopt.install_telemetry(root)["action"] == "unchanged"
+
+    def test_an_imported_module_is_ok(self, tmp_path):
+        from bgate_core.store import adopt
+        root = self._web(tmp_path)
+        adopt.install_telemetry(root)
+        (root / "src" / "main.ts").write_text(
+            'import { telemetry } from "./bgate/telemetry";\n', encoding="utf-8")
+        assert adopt.telemetry_status(root)["ok"] is True
+
+    def test_playtest_hints_and_launch_target_come_from_index_html(self, tmp_path):
+        from bgate_core.qa import playtest
+        root = self._web(tmp_path)
+        (root / "index.html").write_text(
+            "<html><head><title>Neon Drift</title></head></html>", encoding="utf-8")
+        assert playtest.game_window_hints(root) == ["Neon Drift"]
+        assert playtest._web_project_dir(root) == root
+        # A Godot project with a tooling package.json is still Godot.
+        (root / "project.godot").write_text("\n", encoding="utf-8")
+        assert playtest._web_project_dir(root) is None
+
+    def test_preflight_names_the_web_toolchain(self, tmp_path, monkeypatch):
+        from bgate_core.qa import playtest
+        root = self._web(tmp_path)
+        got = playtest.preflight(root=str(root), native=True)["checks"]["native_game"]
+        assert got["engine"] == "web"
+        assert got["ok"] is False and "npm install" in got["reason"]

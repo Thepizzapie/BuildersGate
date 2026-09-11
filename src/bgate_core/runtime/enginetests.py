@@ -1,4 +1,4 @@
-"""What the engine itself was asked to prove, and when — kept, not thrown away.
+"""What the engine itself was asked to prove, and when, kept, not thrown away.
 
 ``godot_test_run`` runs this project's ``tests/*.gd`` headless and scores them,
 and then returns the score TO ITS CALLER AND NOWHERE ELSE. That is fine for an
@@ -10,7 +10,7 @@ had nothing to draw and said so.
 
 THE RUN LIVES HERE, NOT IN THE MCP TOOL. Both callers want the same thing, and
 the recording has to happen wherever the run happens or it does not happen at
-all — a tool that returns a result and a dashboard that re-runs it separately
+all, a tool that returns a result and a dashboard that re-runs it separately
 would produce two histories that disagree. ``run()`` is the whole runner;
 ``godot_test_run`` can delegate to it in one line.
 
@@ -19,7 +19,7 @@ HISTORY IS A JSONL FILE, not a table. Same reason cinecheck's watch log is:
 appending a line is the one write that cannot lose earlier lines to a crash.
 
 A PROJECT WITH NO TEST SCRIPTS IS NOT A PASS, and that judgement is inherited
-from the tool verbatim — `no_tests` is a distinct outcome from `ok`, because
+from the tool verbatim, `no_tests` is a distinct outcome from `ok`, because
 zero failures out of nothing run is the most misleading number available here.
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _log_path(root: str | os.PathLike[str]) -> Path:
 #: IS THE POINT.
 #:
 #: MEASURED on one agent's log while it debugged a single failing assertion:
-#: 68% of 8 MB was tool results echoed back — 366 entries averaging 15 KB
+#: 68% of 8 MB was tool results echoed back, 366 entries averaging 15 KB
 #: each. That, and not model quality, is what consumed the turn ceiling and
 #: then the clock ceiling, and then bought a retry of work that was already
 #: nearly done. A test runner that returns everything every time turns an
@@ -59,7 +59,7 @@ def _log_path(root: str | os.PathLike[str]) -> Path:
 #:   failures_only  DEFAULT. summary + the failing assertions and stderr,
 #:                  excerpted, plus a path to the full log.
 #:   changed        failures_only, restricted to scripts whose verdict MOVED
-#:                  since the last recorded run — the iterative-debug shape.
+#:                  since the last recorded run, the iterative-debug shape.
 #:   full           everything, including passing scripts' output.
 MODES = ("summary", "failures_only", "changed", "full")
 DEFAULT_MODE = "failures_only"
@@ -73,7 +73,7 @@ EXCERPT_CHARS = 1200
 RUN_LOG_DIR = "engine-test-runs"
 
 #: Names the test discovery skips. Agents leave scratch inside test directories
-#: — `tests/.orig_player.gd`, temp probe scripts — and `Path.glob("*.gd")`
+#:, `tests/.orig_player.gd`, temp probe scripts, and `Path.glob("*.gd")`
 #: matches leading dots (unlike a shell glob), so the runner picked them up as
 #: suite members and scored them. A backup of a broken file is not a test.
 SKIP_PREFIXES = (".", "_", "~")
@@ -93,6 +93,155 @@ def tests_dir(root: str | os.PathLike[str]) -> Optional[Path]:
     return None if base is None else Path(base) / "tests"
 
 
+# ---------------------------------------------------------------------------
+# The web engine's half: vitest, discovered and scored into the same history
+# ---------------------------------------------------------------------------
+# Same log, same row shape, because the Tests tab draws one history and the
+# QA seat asks one question of it. A vitest run has no per-script assertion
+# counts the way a SceneTree script prints PASS/FAIL, so the row carries the
+# suite totals vitest prints and one entry per test file it reports.
+_WEB_TEST_GLOBS = ("src/**/*.test.ts", "src/**/*.test.js", "src/**/*.spec.ts",
+                   "src/**/*.spec.js", "tests/**/*.test.ts", "tests/**/*.test.js")
+_ANSI = re.compile(chr(27) + r"\[[0-9;]*[A-Za-z]")
+_VITEST_TESTS = re.compile(r"^\s*Tests\s+(?:(\d+) failed\s*\|\s*)?(\d+) passed",
+                           re.MULTILINE)
+_VITEST_FILES = re.compile(r"^\s*Test Files\s+(?:(\d+) failed\s*\|\s*)?(\d+) passed",
+                           re.MULTILINE)
+_VITEST_FILE_LINE = re.compile(r"^\s*([✓×❯✗])\s+(\S+\.(?:test|spec)\.[tj]sx?)"
+                               r"(?:\s+\((\d+) tests?(?:\s*\|\s*(\d+) failed)?\))?",
+                               re.MULTILINE)
+
+
+def _web_dir(root: str | os.PathLike[str]) -> Optional[Path]:
+    """This project's web game, or None. Godot wins when both markers exist."""
+    if _project.game_dir(root) is not None:
+        return None
+    return _project.game_dir(root, engine="web")
+
+
+def _unity_dir(root: str | os.PathLike[str]) -> Optional[Path]:
+    if _project.game_dir(root) is not None:
+        return None
+    return _project.game_dir(root, engine="unity")
+
+
+def _unity_discover(base: Path) -> dict:
+    from bgate_adapters import unity as _unity
+
+    scripts = _unity.test_scripts(base)
+    return {
+        "engine": "unity", "tests_dir": str(base / "Assets"),
+        "godot_project": "", "unity_project": str(base), "scripts": scripts,
+        "why": ("" if scripts else
+                f"no [Test] or [UnityTest] under {base / 'Assets'}: a "
+                "regression gate with nothing in it looks exactly like a "
+                "green one"),
+    }
+
+
+def _unity_run(root, base: Path, *, timeout: int, actor: str,
+               platform: str = "EditMode", filter: str = "") -> dict:
+    from bgate_adapters import unity as _unity
+
+    got = _unity.test_run(str(base), platform=platform or "EditMode",
+                          timeout=timeout, filter=filter)
+    cases = got.pop("cases", []) or []
+    per_case = [{"script": c["name"], "ok": bool(c["ok"]), "ran": True,
+                 "assertions_ok": bool(c["ok"]), "process_ok": True,
+                 "passed": 1 if c["ok"] else 0, "failed": 0 if c["ok"] else 1,
+                 "error": "" if c["ok"] else c.get("result", "")}
+                for c in cases]
+    out = {
+        **got,
+        "engine": "unity", "unity_project": str(base),
+        "scripts": per_case, "scripts_run": len(per_case),
+        "scripts_failed": sum(1 for c in per_case if not c["ok"]),
+        "assertions_passed": int(got.get("passed") or 0),
+        "assertions_failed": int(got.get("failed") or 0),
+        "no_tests": bool(got.get("no_tests")),
+        "engine_error_scripts": 1 if got.get("errors") else 0,
+        "output_tail": (got.get("output") or "")[-4000:],
+    }
+    return {**out, "recorded": record(root, {**out, "by": actor})}
+
+
+def _web_scripts(base: Path) -> list[str]:
+    found: set[str] = set()
+    for pattern in _WEB_TEST_GLOBS:
+        try:
+            for item in base.glob(pattern):
+                if item.is_file() and "node_modules" not in item.parts:
+                    found.add(item.relative_to(base).as_posix())
+        except OSError:
+            continue
+    return sorted(found)
+
+
+def _web_discover(base: Path) -> dict:
+    scripts = _web_scripts(base)
+    return {
+        "engine": "web", "tests_dir": str(base / "src"),
+        "godot_project": "", "web_project": str(base), "scripts": scripts,
+        "why": ("" if scripts else
+                f"no *.test.ts under {base / 'src'}: a regression gate with "
+                "nothing in it looks exactly like a green one"),
+    }
+
+
+def _web_run(root, base: Path, *, timeout: int, actor: str) -> dict:
+    from bgate_adapters import web as _web
+
+    started = time.monotonic()
+    scripts = _web_scripts(base)
+    if not scripts:
+        out = {"ok": False, "no_tests": True, "engine": "web", "scripts": [],
+               "scripts_run": 0, "web_project": str(base), "failures": [],
+               "assertions_passed": 0, "assertions_failed": 0,
+               "error": f"no test files under {base / 'src'}: this project has "
+                        "no regression baseline to check. Write one "
+                        "(*.test.ts beside the code, vitest runs it)"}
+        return {**out, "recorded": record(root, {**out, "by": actor})}
+    got = _web.test_run(str(base), timeout=timeout)
+    # vitest colours its summary even without a TTY; the counts are under
+    # the escapes, so they come off first.
+    text = _ANSI.sub("", (got.get("stdout") or "") + chr(10)
+                     + (got.get("stderr") or ""))
+    tests = _VITEST_TESTS.search(text)
+    files = _VITEST_FILES.search(text)
+    passed = int(tests.group(2)) if tests else 0
+    failed = int(tests.group(1) or 0) if tests else 0
+    files_failed = int(files.group(1) or 0) if files else 0
+    per_file: list[dict] = []
+    seen: set[str] = set()
+    for mark, name, count, bad in _VITEST_FILE_LINE.findall(text):
+        name = name.replace("\\", "/")
+        if name in seen:
+            continue
+        seen.add(name)
+        per_file.append({"script": name, "ok": mark == "✓" and not bad,
+                         "ran": True, "assertions_ok": mark == "✓" and not bad,
+                         "process_ok": True,
+                         "passed": (int(count) - int(bad or 0)) if count else None,
+                         "failed": int(bad or 0) if count else None})
+    if not per_file:
+        per_file = [{"script": name, "ok": bool(got.get("ok")), "ran": True,
+                     "assertions_ok": bool(got.get("ok")), "process_ok": True}
+                    for name in scripts]
+    out = {
+        "ok": bool(got.get("ok")) and failed == 0,
+        "no_tests": False, "engine": "web", "web_project": str(base),
+        "scripts": per_file, "scripts_run": len(per_file),
+        "scripts_failed": files_failed or sum(1 for r in per_file if not r["ok"]),
+        "assertions_passed": passed, "assertions_failed": failed,
+        "exit_code": got.get("exit_code"),
+        "seconds": round(time.monotonic() - started, 2),
+        "error": "" if got.get("ok") else str(got.get("error") or
+                                            f"vitest exited {got.get('exit_code')}"),
+        "output_tail": text[-4000:],
+    }
+    return {**out, "recorded": record(root, {**out, "by": actor})}
+
+
 def discover(root: str | os.PathLike[str]) -> dict:
     """The test scripts that exist on disk, before anybody runs anything.
 
@@ -102,6 +251,12 @@ def discover(root: str | os.PathLike[str]) -> dict:
     """
     base = _project.game_dir(root)
     if base is None:
+        web = _web_dir(root)
+        if web is not None:
+            return _web_discover(web)
+        unity = _unity_dir(root)
+        if unity is not None:
+            return _unity_discover(unity)
         return {"tests_dir": "", "scripts": [], "godot_project": "",
                 "why": "no project.godot was found, so there is no test suite to run"}
     d = Path(base) / "tests"
@@ -112,7 +267,7 @@ def discover(root: str | os.PathLike[str]) -> dict:
     return {
         "tests_dir": str(d), "godot_project": str(base), "scripts": scripts,
         "why": ("" if scripts else
-                f"no *.gd in {d} — a regression gate with nothing in it looks "
+                f"no *.gd in {d}, a regression gate with nothing in it looks "
                 "exactly like a green one"),
     }
 
@@ -140,7 +295,7 @@ def history(root: str | os.PathLike[str], *, limit: int = 20) -> list[dict]:
 
 
 def record(root: str | os.PathLike[str], result: dict) -> dict:
-    """Append one run to the history. Best-effort — never raises at a caller.
+    """Append one run to the history. Best-effort, never raises at a caller.
 
     Only the summary is kept. A green suite's stdout is thousands of lines of
     engine boot chatter and storing it per run turns the log into a liability
@@ -184,13 +339,13 @@ def record(root: str | os.PathLike[str], result: dict) -> dict:
 
 def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
         timeout: int = 180, godot_project: str = "", actor: str = "",
-        mode: str = DEFAULT_MODE) -> dict:
+        mode: str = DEFAULT_MODE, platform: str = "", filter: str = "") -> dict:
     """Run the suite headless, score it, and RECORD the score.
 
     TWO SIGNALS, KEPT APART. Exit code alone is not the verdict: Godot prints
     SCRIPT ERROR and still exits 0. But collapsing "assertions failed" into
-    "the process reported errors" produced a result that read as nonsense —
-    ``ok: false`` with ``0`` failed assertions — and it was dismissed as
+    "the process reported errors" produced a result that read as nonsense -
+    ``ok: false`` with ``0`` failed assertions, and it was dismissed as
     harness noise by two separate readers for a full session.
 
     IT WAS NOT NOISE. The engine error in question was
@@ -198,7 +353,7 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
     project's own tests: a still-parented node being freed, and ``quit()``
     racing the RenderingServer's RID release. So the two signals are now
     DISTINGUISHABLE (``assertions_ok`` vs ``process_ok``) and the second is
-    NOT made easier to ignore — it gets its own count, its own top-level
+    NOT made easier to ignore, it gets its own count, its own top-level
     field and its own sentence, because "the engine complained" is the shape a
     real defect arrives in.
 
@@ -212,6 +367,14 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     started = time.monotonic()
     base = Path(godot_project) if godot_project else _project.game_dir(root)
+    if base is None and not godot_project:
+        web = _web_dir(root)
+        if web is not None:
+            return _web_run(root, web, timeout=timeout, actor=actor)
+        unity = _unity_dir(root)
+        if unity is not None:
+            return _unity_run(root, unity, timeout=timeout, actor=actor,
+                              platform=platform, filter=filter)
     if base is None or not (Path(base) / "project.godot").is_file():
         out = {"ok": False, "no_tests": True, "scripts": [], "scripts_run": 0,
                "godot_project": "", "failures": [], "assertions_passed": 0,
@@ -245,7 +408,7 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
             "missing": missing, "failures": [], "assertions_passed": 0,
             "assertions_failed": 0,
             "error": (f"none of {missing} exist" if missing else
-                      f"no test scripts in {base / 'tests'} — this project has "
+                      f"no test scripts in {base / 'tests'}, this project has "
                       "no regression baseline to check. Write one (extends "
                       "SceneTree, print PASS/FAIL per assertion, call quit())"),
         }
@@ -277,7 +440,7 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
         # report. Scoring it 0 passed / 0 failed WAS THE BUG: the autoload gate
         # refused seven healthy scripts and each came back zero-and-zero, which
         # reads as "this file contains nothing" rather than "I declined to look
-        # at it" — and behind those empty scores sat 441 passing assertions and
+        # at it", and behind those empty scores sat 441 passing assertions and
         # 2 that genuinely failed.
         #
         # None, not 0, for the counts. A number invites arithmetic; there is no
@@ -293,7 +456,7 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
                 "passed": None, "failed": None,
                 "error": str(got.get("error") or ""),
                 "hint": str(got.get("hint") or ""),
-                "why_not_run": ("the harness refused to run this script — it "
+                "why_not_run": ("the harness refused to run this script, it "
                                 "has NOT been checked. This is not a pass and "
                                 "not a failure, and no count in this result "
                                 "includes it."),
@@ -343,7 +506,7 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
         "scripts_refused": refused,
         "refused_note": ("" if not refused else
                          f"{refused} of {len(results)} script(s) were NOT RUN "
-                         "— the harness refused them before the engine "
+                         "- the harness refused them before the engine "
                          "started. They are UNCHECKED: not passing, not "
                          "failing, and absent from every count above. Read "
                          "`error` and `hint` on each; the fix is usually the "
@@ -387,7 +550,7 @@ def _why(assertions_ok: bool, process_ok: bool, fails: int,
     """One sentence naming WHICH signal failed. They are not the same fault."""
     if not assertions_ok and not process_ok:
         return (f"{fails} FAIL marker(s) AND the engine reported "
-                f"{len(errors)} error(s) — two independent faults")
+                f"{len(errors)} error(s), two independent faults")
     if not assertions_ok:
         return f"{fails} FAIL marker(s): assertions in this script did not hold"
     return ("ASSERTIONS PASSED; the ENGINE reported "
@@ -421,7 +584,7 @@ def shape(result: dict, mode: str) -> dict:
     """Trim a full result to what ``mode`` asked for. Pure.
 
     Separate from :func:`run` so the recorded history is always the complete
-    one — a concise ANSWER must not become a concise RECORD.
+    one, a concise ANSWER must not become a concise RECORD.
     """
     scripts = result.get("scripts") or []
     if mode == "full":

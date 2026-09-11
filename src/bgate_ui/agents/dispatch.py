@@ -312,6 +312,8 @@ def _verify_rule(root: str) -> str:
     except Exception:
         pass
     godot = engine == "godot" or (root_path / "game" / "project.godot").is_file()
+    web = engine == "web" and not godot
+    unity = engine == "unity" and not godot
     # THE EYES RULE, verbatim in both branches because it is the check agents
     # skip. Observed on a real board: an agent measured a level's geometry
     # (walkable cells, connectivity, flood-fill - all green), declared the
@@ -326,6 +328,28 @@ def _verify_rule(root: str) -> str:
             "green checks are supporting evidence, never the verdict; an "
             "agent that reports numbers about an image it never opened is "
             "the single most common way broken work gets marked done")
+    if unity:
+        unity_eyes = eyes.replace("godot_screenshot for a scene",
+                                  "engine_screenshot for a scene, a still "
+                                  "the editor renders")
+        return ("engine_check after any change to Assets/ (a batchmode "
+                "compile; its `errors` are file and line); unity_test_run "
+                "when the code a test covers moved - every test passes or "
+                f"you report exactly why. {unity_eyes}. Close the editor "
+                "before either call: two editors cannot hold one project.")
+    if web:
+        # The same three moves in the web engine's vocabulary: build, the
+        # project's own tests, and a look at the running page. engine_check is
+        # the build; a web build that passes typecheck and never produced the
+        # bundle says so in its result, so read `checked`.
+        web_eyes = eyes.replace("godot_screenshot for a scene",
+                                "engine_screenshot for the running game")
+        return ("engine_check after any change to src/ (it runs the build, "
+                "and web_build measures the payload the build ships); "
+                "web_test_run when the code a test covers moved - every test "
+                f"passes or you report exactly why. {web_eyes}. Read "
+                "console_errors and failed_requests on the screenshot result "
+                "before believing the picture.")
     if not godot:
         return ("run the narrowest real check that proves the change does "
                 "what the item asked - a build, the affected script, opening "
@@ -373,8 +397,15 @@ def _toolchain_env() -> dict[str, str]:
     from bgate_adapters.blender import find_blender
     from bgate_adapters.godot import find_godot
     from bgate_adapters.recorder import find_ffmpeg
+    from bgate_adapters.unity import find_unity
+    from bgate_adapters.web import find_node
 
+    # One finder per engine binary the registry names (engines.binary_env),
+    # plus the two toolchains every engine shares. A finder that raises
+    # resolves nothing and the agent is told to ask bgate_doctor instead.
     finders = (("BGATE_GODOT", find_godot),
+               ("BGATE_NODE", find_node),
+               ("BGATE_UNITY", find_unity),
                ("BGATE_BLENDER", find_blender),
                ("BGATE_FFMPEG", find_ffmpeg))
     with _TOOLCHAIN_LOCK:
@@ -492,7 +523,7 @@ def _persona_line(root: str, seat: str) -> str:
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 _SECTION_RE = re.compile(r"^\[\[([a-z_]+)\]\]\n", re.M)
 # What may appear in a per-seat template's filename. No dot, no separator, no
-# drive letter — see _override_path.
+# drive letter, see _override_path.
 _SEAT_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 
 
@@ -509,7 +540,7 @@ def _prompt_sections(path: Path) -> dict[str, str]:
 
 
 def _override_path(seat: str) -> Optional[Path]:
-    """``prompts/dispatch.<seat>.txt``, or None — LOOKED UP, NEVER BUILT.
+    """``prompts/dispatch.<seat>.txt``, or None, LOOKED UP, NEVER BUILT.
 
     The seat is a column on a work item, and a work item is filed by an agent
     through queue_add: `..\\..\\..\\Users\\me\\.ssh\\id_rsa` is a seat name as
@@ -522,7 +553,7 @@ def _override_path(seat: str) -> Optional[Path]:
     from the filesystem and the untrusted string only ever reaches a string
     equality. Validating the name and then containing the result was the first
     fix and it was not enough: it left a path built out of the value, which is
-    a shape a later edit can quietly widen — and CodeQL kept flagging it,
+    a shape a later edit can quietly widen, and CodeQL kept flagging it,
     correctly, for exactly that reason. The charset check stays as the cheap
     first refusal.
     """
@@ -780,8 +811,8 @@ def dispatch(root: str, item_id: int, **kwargs) -> dict:
         return _spawn(root, item_id, **kwargs)
     except Exception:
         # Every ANTICIPATED refusal inside _spawn releases its own reservation
-        # (_refused). This is the unanticipated one — _git raising instead of
-        # returning unavailable, a prompt builder blowing up — which used to
+        # (_refused). This is the unanticipated one, _git raising instead of
+        # returning unavailable, a prompt builder blowing up, which used to
         # strand the item in 'dispatched' with no process: refused by future
         # dispatches ("not queued"), invisible to the watchdog, unstuck only by
         # the next restart's reconcile(). release() is conditional
@@ -855,7 +886,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                            running=running, max_concurrent=cap)
 
     # The wall-clock ceiling: the item's own override wins, then this call's,
-    # then the project default. There is no money ceiling — a dollar cap on a
+    # then the project default. There is no money ceiling, a dollar cap on a
     # run was always a guess multiplied by a guess, and what actually stopped
     # runaway work in every benchmark was the clock.
     ceiling_s = int(max_runtime_s or _runlimits.runtime_ceiling(root, item) or 0)
@@ -958,7 +989,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # int() at the boundary means no separator, traversal or wildcard can reach
     # a filename, whatever a future caller passes.
     log_path = log_dir / f"item-{int(item_id)}.log"
-    # The log appends across every re-dispatch of this item FOREVER — nothing
+    # The log appends across every re-dispatch of this item FOREVER, nothing
     # rotated it, and a bounced item's log is documented at 10MB per run. One
     # rolled generation at spawn keeps the previous rounds readable (the QA
     # brief points at the path) without the file growing for the project's
@@ -1011,7 +1042,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         # Reconciled with the stored preference: the machine env still wins,
         # then art.model WHEN it names an openai model (this variable is read
         # only by the gpt-image adapter, so a krea/kie preference does not
-        # belong in it — those reach the adapters through chroma.generate's
+        # belong in it, those reach the adapters through chroma.generate's
         # model seam instead), then the ban's default.
         "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL")
         or (_art_model_pref(root)
@@ -1131,7 +1162,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     except OSError:
         log_handle.close()
         return _refused("spawn_failed",
-                        f"could not start the agent CLI {args[0]!r} — is it "
+                        f"could not start the agent CLI {args[0]!r}, is it "
                         "installed and on PATH?")
     except Exception:
         # An unanticipated raise with no process yet: close the handle and let
@@ -1324,8 +1355,8 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
     _kill_tree(entry["proc"].pid)
     entry["stop_reason"] = reason
     # THE RUN'S OWN LAST WORDS. A kill replaced the result note wholesale, so
-    # an agent that had already diagnosed its own problem correctly — "the
-    # export template is missing, I cannot build" — had that sentence deleted
+    # an agent that had already diagnosed its own problem correctly, "the
+    # export template is missing, I cannot build", had that sentence deleted
     # and replaced with the harness's guess about why it stopped. The harness
     # knows why IT intervened; only the agent knows what it was doing.
     said = _last_words(root, item_id)
@@ -1435,7 +1466,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         silent = _last_output_age_s(root, entry)
         if silent is not None and silent >= STALL_S:
             # THE IN-FLIGHT-TOOL GRACE. With peers live, the age above is the
-            # run's own log only — and a log goes quiet for the whole of a
+            # run's own log only, and a log goes quiet for the whole of a
             # long atomic MCP call. The tool_use event at issue time is the
             # run's own proof it is working, so an open call defers to the
             # hard runtime ceiling instead of reading as a hang.
@@ -1448,7 +1479,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
 
                         _act.log(root, "dispatch",
                                  f"item {item_id}: silent {silent // 60}m but "
-                                 f"inside a {tool} call — letting it run",
+                                 f"inside a {tool} call, letting it run",
                                  ref=str(item_id))
                     except Exception:
                         pass
@@ -1597,7 +1628,7 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
         if isinstance(cost, (int, float)) and cost > 0:
             # WHAT THE RUNNER SAID THIS RUN COST, on the run's own row and on
             # the item, and nowhere else. Set, not accumulated: one run, one
-            # number. Nothing sums it across runs — this product keeps no
+            # number. Nothing sums it across runs, this product keeps no
             # ledger and holds no budget, and what the account was actually
             # charged is the provider's to report.
             _queue.set_run_fields(root, item_id, total_cost_usd=float(cost))
@@ -2107,7 +2138,7 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
     except Exception as exc:
         errors.append(f"brainstorm partners: {type(exc).__name__}: {exc}")
 
-    # The console's director session too — and with more reason than the
+    # The console's director session too, and with more reason than the
     # brainstorm partner: that one can only talk, this one can act.
     try:
         from bgate_ui.agents import directorsession as _directorsession
@@ -2332,7 +2363,7 @@ def _scan_steer_echoes(entry: dict) -> None:
     Under _feed_lock, which the module header already promised for these
     cursors: status() runs on request threads for /api/agents AND
     /api/console/state, which poll independently, and two interleaved scans
-    double-advanced log_scan_pos — steers falsely marked consumed (echo lost
+    double-advanced log_scan_pos, steers falsely marked consumed (echo lost
     in the other scan's chunk) and corrupted latency numbers."""
     import time as _time
     pending = [s for s in entry.get("steers", ()) if isinstance(s, dict)
@@ -2364,12 +2395,12 @@ def _last_output_age_s(root: str, entry: dict) -> Optional[int]:
 
     Two signals, and the second is the fix for two opposite bugs:
 
-    * the run's own log mtime — every event the CLI emits touches it, so a
+    * the run's own log mtime, every event the CLI emits touches it, so a
       working agent moves it constantly;
     * the project's file mtimes (.bgate_out, game assets), counted ONLY WHILE
       THIS RUN IS THE PROJECT'S ONLY LIVE ONE. Long atomic MCP calls (a 30-min
       image_sprites batch) log nothing until they return, which made healthy
-      agents look hung and got them manually killed — file mtimes are the real
+      agents look hung and got them manually killed, file mtimes are the real
       heartbeat there. But the mtimes are project-global: with two agents
       live, one worker's writes reset EVERY run's silence clock, so a wedged
       peer held its concurrency slot for the 2h hard ceiling instead of
@@ -2416,7 +2447,7 @@ def _in_flight_tool(root: str, item_id: int) -> str:
     """The name of a tool call this run has ISSUED and not yet heard back, or
     "". The per-run replacement for the global-mtime heartbeat when several
     agents are live: an agent inside a long atomic MCP call is working, not
-    hung, and its own log proves it — the tool_use event is written at issue
+    hung, and its own log proves it, the tool_use event is written at issue
     time and the matching tool_result only on return."""
     try:
         feed = read_activity(root, item_id, limit=0)
@@ -2573,7 +2604,7 @@ def _absorb(state: dict, raw: bytes) -> None:
 
 
 def _is_running(item_id: int, root: str = "") -> bool:
-    """Is this item's agent alive — INCLUDING one this process did not spawn.
+    """Is this item's agent alive, INCLUDING one this process did not spawn.
 
     `_live` holds Popen handles and is therefore per-dashboard-process. A
     restart empties it while every dispatched agent keeps running in its own
@@ -2585,7 +2616,7 @@ def _is_running(item_id: int, root: str = "") -> bool:
     fallback: an open agent_runs row whose pid still exists AND still matches
     the recorded process start (agentreg._matches, which refuses to promote a
     recycled pid). An unknowable probe answers None there, and an agent we
-    cannot disprove is treated as running — the opposite reading is what put
+    cannot disprove is treated as running, the opposite reading is what put
     "finished" under a working agent.
     """
     entry = _live.get(item_id)

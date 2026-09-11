@@ -107,7 +107,7 @@ function frame(now: number): void {
   player.rotation.y = state.yaw;
 
   // Framerate-independent smoothing. A raw lerp(a, b, lag) per frame makes the
-  // camera stiffer at 144 Hz than at 60, so the feel changes with the monitor —
+  // camera stiffer at 144 Hz than at 60, so the feel changes with the monitor -
   // the kind of bug that gets reported as "it is different on my laptop" and
   // never reproduces on the machine it was written on.
   const want = cameraTarget(state);

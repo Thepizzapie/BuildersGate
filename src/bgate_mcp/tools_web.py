@@ -1,8 +1,8 @@
-"""Web engine MCP tools — the second engine's surface.
+"""Web engine MCP tools, the second engine's surface.
 
 Carved out as its own module for the same reason tools_level and tools_blender
 are: a domain that never touches the others lives apart. The contract is
-unchanged — the shared plumbing (_tool, _root, the gates) stays in server, this
+unchanged, the shared plumbing (_tool, _root, the gates) stays in server, this
 module imports it back, and server star-imports this at its BOTTOM.
 
 EVERY TOOL HERE IS ENGINE-OWNED (bgate_core.runtime.engines.ENGINE_TOOLS["web"]),
@@ -11,7 +11,7 @@ a Godot agent should not be carrying seven schemas for an engine its game is not
 written in, and a web agent should not be offered scene_wire.
 
 THE ODD ONE OUT IS web_build, and it is the reason this engine exists at all. A
-finished Godot 3D game exported to the web at 661 MB — it ran, and no player
+finished Godot 3D game exported to the web at 661 MB, it ran, and no player
 would ever have waited for it. Nothing in the pipeline had asked what a build
 weighed, because for a desktop export nobody cares. web_build asks, every time,
 and fails when the answer is too big.
@@ -22,7 +22,7 @@ from bgate_adapters import web as _web
 from bgate_core.runtime import engines as _engines
 from bgate_mcp.server import (  # noqa: F401
     Optional, _archive_preview, _contained_path, _log, _note_tool_write,
-    _project, _root, _run_tag, _tool,
+    _actor, _project, _root, _run_tag, _tool,
 )
 
 
@@ -43,7 +43,7 @@ def _need_project(given: str = "") -> tuple[str, Optional[dict]]:
     target = _project_dir(given)
     if not target:
         return "", {"ok": False, "error":
-                    f"no web project found under {_root()} — looked for "
+                    f"no web project found under {_root()}: looked for "
                     f"{_web.MANIFEST} in <root>/game and <root>. Pass "
                     "web_project explicitly, or check project_set_engine."}
     _contained_path(target, "web_project")
@@ -52,7 +52,7 @@ def _need_project(given: str = "") -> tuple[str, Optional[dict]]:
 
 @_tool
 def web_status(web_project: str = "") -> dict:
-    """Is the web toolchain usable here — node, the install, and the browser?
+    """Is the web toolchain usable here, node, the install, and the browser?
 
     Answers the four questions that each fail differently: is node on PATH, is
     there a package.json, has `npm install` been run, and is Playwright's
@@ -69,7 +69,7 @@ def web_status(web_project: str = "") -> dict:
             out["next"] = f"run `npm install` in {target}"
     else:
         out["installed"] = False
-        out["error"] = "no web project found — is this project's engine 'web'?"
+        out["error"] = "no web project found, is this project's engine 'web'?"
     out["ok"] = bool(out["node"].get("available") and target and out["installed"])
     return out
 
@@ -81,7 +81,7 @@ def web_build(web_project: str = "", budget_mb: float = 0,
 
     THE TWO HALVES ARE NOT SEPARABLE HERE ON PURPOSE. A build whose payload
     nobody looked at is exactly what shipped at 661 MB. `budget_mb` overrides
-    the 25 MB default; when the payload is over it, read `payload.biggest` —
+    the 25 MB default; when the payload is over it, read `payload.biggest` -
     it is almost always one texture, one model or an uncompressed audio file.
 
     Sizes are the COMPRESSED transfer, not bytes on disk: every static host
@@ -121,18 +121,26 @@ def web_payload(web_project: str = "", budget_mb: float = 0,
 
 @_tool
 def web_test_run(web_project: str = "", timeout: int = 300) -> dict:
-    """Run the project's own test script (vitest in the templates)."""
+    """Run the project's own test script (vitest in the templates) and RECORD it.
+
+    Scored into the same history godot_test_run writes, so the dashboard's
+    Tests tab and the QA seat see an agent's run beside the human's. A suite
+    with no test files is `no_tests`, not a pass: zero failures out of nothing
+    run is the most misleading number available here.
+    """
+    from bgate_core.runtime import enginetests as _tests
+
     target, refused = _need_project(web_project)
     if refused:
         return refused
-    return _web.test_run(target, timeout=timeout)
+    return _tests.run(_root(), timeout=timeout, actor=_actor())
 
 
 @_tool
 def web_run(script: str, web_project: str = "", timeout: int = 120) -> dict:
     """Run a JavaScript file under node, inside the project.
 
-    TAKES A PATH, NEVER SOURCE — narrower than godot_run and deliberately so. A
+    TAKES A PATH, NEVER SOURCE, narrower than godot_run and deliberately so. A
     GDScript snippet has nowhere else to live, but a node script that needs the
     project's modules must be a file inside the project for its imports to
     resolve; accepting source would only ever produce a script that cannot
@@ -150,7 +158,7 @@ def web_dev(web_project: str = "", port: int = 5173, timeout: int = 60) -> dict:
 
     RETURNS ONLY ONCE THE PORT ANSWERS. Returning as soon as the process spawned
     would hand back a URL that is not up yet, and a screenshot taken against it
-    photographs a connection error — which then gets read as "the game is
+    photographs a connection error, which then gets read as "the game is
     broken". Idempotent: an already-running server is reported, not restarted.
     """
     target, refused = _need_project(web_project)
@@ -172,12 +180,12 @@ def web_dev_stop(web_project: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The neutral screenshot — now that there is a second adapter to justify it
+# The neutral screenshot, now that there is a second adapter to justify it
 # ---------------------------------------------------------------------------
 # THE PLAN DEFERRED THIS TO PHASE 3 RATHER THAN RENAMING godot_screenshot IN
 # PHASE 2, and the deferral was the right call for a measured reason: the rename
 # touched 161 references across forty files, including built JS bundles, the
-# decision records in docs/decisions, and templates/shared/CLAUDE.md — which is
+# decision records in docs/decisions, and templates/shared/CLAUDE.md, which is
 # stamped into every user's game project, so existing games would have gone on
 # instructing their agents to call a tool that no longer existed.
 #
@@ -194,7 +202,8 @@ def engine_screenshot(at: float = 1.0, label: str = "", url: str = "",
 
     Godot runs the actual game and captures the viewport; web loads the dev
     server in a headless browser and captures the page, starting the server
-    first if it is not already up. `at` means the same thing on both: a game
+    first if it is not already up; Unity renders the saved scene in the editor
+    (a still, not a frame of play). `at` means the same thing on the first two: a game
     that has not finished its first frame photographs blank, and waiting is the
     honest fix rather than retrying until a frame happens to land.
 
@@ -216,6 +225,12 @@ def engine_screenshot(at: float = 1.0, label: str = "", url: str = "",
         return {"engine": engine,
                 **_shot(str(where), at=at, scene=scene or None, label=label,
                         timeout=timeout)}
+    if engine == "unity":
+        from bgate_mcp.tools_unity import unity_screenshot as _still
+
+        return {"engine": engine,
+                **_still(scene=scene, label=label, timeout=timeout,
+                         width=width, height=height)}
     if engine != "web":
         return {"ok": False, "engine": engine,
                 "error": f"EngineUnsupported: {_engines.label(engine)} projects "

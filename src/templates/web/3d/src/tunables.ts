@@ -1,5 +1,5 @@
 /**
- * The feel knobs, in one module, exported — the join that makes "the movement
+ * The feel knobs, in one module, exported, the join that makes "the movement
  * feels wrong" actionable.
  *
  * Emitted once at boot by main.ts so a recording knows which numbers produced
@@ -7,7 +7,7 @@
  * video three weeks later.
  *
  * Metres and seconds throughout. gravity is 18 rather than 9.81 because a
- * real-gravity character in a game-scale world reads as slow motion — the
+ * real-gravity character in a game-scale world reads as slow motion, the
  * number that matches physics is almost never the number that feels right,
  * and pretending otherwise is how a jump ends up "floaty" with nobody able to
  * say why.

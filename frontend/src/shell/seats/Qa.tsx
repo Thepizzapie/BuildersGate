@@ -8,12 +8,12 @@ import type { SeatBodyProps } from "./types";
 import "./cineqa.css";
 import "./qa.css";
 
-/* QA — the verdict, and the contract the probe is allowed to assert against.
+/* QA, the verdict, and the contract the probe is allowed to assert against.
  *
  * THREE STATES, AND THE PANEL'S ONE JOB IS TO KEEP THEM APART:
  *
  *   PASS       a VERDICT line was written and evidence is attached to it
- *   FAIL       a VERDICT line was written and it was no — and a FAIL that
+ *   FAIL       a VERDICT line was written and it was no, and a FAIL that
  *              cannot be sent back is a complaint, so the reopen is on the card
  *   UNDECIDED  it FINISHED and nobody wrote one
  *
@@ -30,7 +30,7 @@ import "./qa.css";
  * gate run's own transcript (`verdict.detail`), the id of that run
  * (`verdict.gate_item`), and the closing agent's own words (`result`). All
  * three were on the wire and none were on screen, which made every card an
- * assertion the reader had to take on faith — from the panel whose doctrine is
+ * assertion the reader had to take on faith, from the panel whose doctrine is
  * that a pass is a written verdict WITH EVIDENCE.
  *
  * THE CONTRACT IS EDITED HERE, IN A TEXTAREA, because the seat's brief says
@@ -41,7 +41,7 @@ import "./qa.css";
  * document, so a second tab's save is a 409 rather than a silent overwrite.
  *
  * BOTS: `unknown` is not `fail`. A bot that asserted nothing did not find the
- * game innocent and did not find it guilty — reporting either as a FAIL of
+ * game innocent and did not find it guilty, reporting either as a FAIL of
  * somebody's item sends a maker seat chasing a bug in this harness.
  *
  * RUNS ARE JOBS. Both run buttons POST to endpoints that answer 202 and a
@@ -91,10 +91,10 @@ const stateOf = (v?: Verdict): State => {
   if (k === "error") return "harness";
   if (k === "reviewing" || k === "awaiting") return "pending";
   // `ungated` and `na` are both "no independent check exists", and the second
-  // is the honest one — a cancelled item was decided by whoever cancelled it.
+  // is the honest one, a cancelled item was decided by whoever cancelled it.
   if (k === "ungated") return "ungated";
   if (k === "na" || k === "none") return "ungated";
-  // `unknown` — a gate run finished and wrote no VERDICT line. The loud one.
+  // `unknown`, a gate run finished and wrote no VERDICT line. The loud one.
   return "undecided";
 };
 
@@ -110,7 +110,7 @@ const CARD: Record<State, string> = {
   harness: "t-warn", human: "t-warn", pending: "t-off",
 };
 
-/* NOBODY DECIDED — the wide set, for the note's emphasis. */
+/* NOBODY DECIDED, the wide set, for the note's emphasis. */
 const UNDECIDED = new Set<State>(["undecided", "ungated", "harness"]);
 /* Reopenable: it is closed, and nothing independent ever said it was right. */
 const CLOSED = new Set(["done", "failed", "cancelled"]);
@@ -123,12 +123,13 @@ type Run = {
               error?: string }[];
 };
 type Engine = {
-  tests_dir?: string; godot_project?: string; scripts?: string[]; why?: string;
+  tests_dir?: string; godot_project?: string; web_project?: string; engine?: string;
+  scripts?: string[]; why?: string;
   runs?: Run[]; last?: Run | null;
 };
 
 /* The bot-run history row as /api/qa-bots/runs really shapes it. There is no
-   `ok` and no `note` on it — the component used to read both, which made every
+   `ok` and no `note` on it, the component used to read both, which made every
    PASS render with a red tag, and dropped `failures` (the reasons), the
    expectation count (zero of them being the green-for-free this seat exists to
    end) and the baseline marker. */
@@ -145,7 +146,7 @@ const BOT_TONE = (v?: string): "good" | "warn" | "bad" | "off" =>
 const BOT_WHY: Record<string, string> = {
   pass: "every expectation held against the samples the probe printed",
   fail: "an expectation was checked against a real sample and did not hold",
-  error: "the probe never got hold of the scene or an actor — this says nothing about the work under review",
+  error: "the probe never got hold of the scene or an actor, this says nothing about the work under review",
   unknown: "the bot asserted nothing. A run with no expectations is not a pass",
 };
 
@@ -166,12 +167,12 @@ async function awaitJob(id: number, onStage: (s: string) => void,
   for (let i = 0; i < 500; i++) {
     if (!alive())
       return { state: "detached", terminal: true,
-               error: "stopped watching — the job continues on the server" };
+               error: "stopped watching, the job continues on the server" };
     const j = await readJSON<Job>(`/api/jobs/${id}`, {});
     if (j.__error) return { state: "failed", terminal: true, error: j.__error };
     if (!alive())
       return { state: "detached", terminal: true,
-               error: "stopped watching — the job continues on the server" };
+               error: "stopped watching, the job continues on the server" };
     onStage(j.stage || j.state || "running");
     if (j.terminal) return j;
     await new Promise((r) => window.setTimeout(r, 1400));
@@ -180,7 +181,7 @@ async function awaitJob(id: number, onStage: (s: string) => void,
 }
 
 export function Qa({ seat, active, tab }: SeatBodyProps) {
-  /* awaitJob's leash — see its docstring. */
+  /* awaitJob's leash, see its docstring. */
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -210,7 +211,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
   const engine = useJSON<Engine>(`/api/engine-tests?n=${nonce}`, { runs: [] },
                                  20000, active && tab === "tests");
   /* Both enveloped, both unwrapped by the page: the contract arrives as
-     itself, and the run list arrives as a bare array — hence useList. */
+     itself, and the run list arrives as a bare array, hence useList. */
   const contract = useJSON<Contract>(
     `/api/qa-bots/contract?n=${nonce}`, {}, 20000, active && tab === "contract");
   const runs = useList<BotRun>(
@@ -226,7 +227,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
   const unknown = items.filter((it) => states.get(it.id) === "undecided");
   const ungated = items.filter((it) => states.get(it.id) === "ungated");
   const passed = items.filter((it) => states.get(it.id) === "pass");
-  /* A FAIL REOPENS THE ITEM WITH A RANKED NITPICK LIST — that is the gate's own
+  /* A FAIL REOPENS THE ITEM WITH A RANKED NITPICK LIST, that is the gate's own
      protocol (bgate_ui/qa_gate.py). The list itself is prose in the item's
      brief and nothing counts its lines, so what is published is what IS
      countable: the items standing rejected. */
@@ -238,7 +239,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
       icon: "help-octagon",
       label: `${unknown.length} UNKNOWN`,
       color: unknown.length ? "var(--bad)" : "var(--text-3)",
-      title: "gate runs that finished without writing a VERDICT line — they decided nothing",
+      title: "gate runs that finished without writing a VERDICT line, they decided nothing",
     }, {
       icon: "checks",
       label: `${passed.length} passed`,
@@ -262,7 +263,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
   }
 
   /** POST something that answers 202, then WATCH it. Returns the job's result,
-   *  or null if it never got that far — and says which, out loud, either way. */
+   *  or null if it never got that far, and says which, out loud, either way. */
   async function runJob(path: string, label: string, body: Record<string, unknown>):
     Promise<Record<string, unknown> | null> {
     setBusy(label);
@@ -280,7 +281,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
     setNonce((n) => n + 1);
     if (job.state === "cancelled") { toast(`${label} was cancelled`, "warn"); return null; }
     if (job.state !== "done") {
-      toast(job.error || `${label} failed — the job did not finish`, "bad");
+      toast(job.error || `${label} failed, the job did not finish`, "bad");
       return null;
     }
     const out = job.result || {};
@@ -295,7 +296,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
     /* BY NAMING CONVENTION, said as such. A control is a test written to go RED
        on purpose, and the seat's fourth rule is that an expectation which has
        never been red has never been tested. Nothing in the file format marks
-       one, so the only honest signal available is the name — and a suite with
+       one, so the only honest signal available is the name, and a suite with
        zero of them is worth saying out loud even on a heuristic. */
     const controls = scripts.filter((s) => /control|negative/i.test(s));
 
@@ -340,7 +341,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
               {scripts.map((s) => (
                 <span className={`s run${/control|negative/i.test(s) ? " ctl" : ""}`} key={s}
                       role="button" tabIndex={0}
-                      title={`run only ${s} — the runner takes a path list, so one red script does not cost a whole suite`}
+                      title={`run only ${s}, the runner takes a path list, so one red script does not cost a whole suite`}
                       onClick={() => { if (!busy) void runSuite([`tests/${s}`]); }}
                       onKeyDown={(e) => { if (e.key === "Enter" && !busy) void runSuite([`tests/${s}`]); }}>
                   {s}
@@ -349,7 +350,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
             </div>
             <p className="bgq-note">
               {controls.length
-                ? `${controls.length} of ${scripts.length} are named as controls (dashed) — read by name, which is the only marker the format has.`
+                ? `${controls.length} of ${scripts.length} are named as controls (dashed), read by name, which is the only marker the format has.`
                 : <>
                     <b>no script here is named as a control.</b> An expectation
                     that has never been red has never been tested; a suite of
@@ -362,13 +363,17 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
           /* Only when the read SUCCEEDED and came back empty. A failed read
              rendering "no Godot project" is the empty-state bug this component
              set out to stop making. */
-          <Nothing what={engine.tests_dir ? `no *.gd in ${engine.tests_dir}` : "no Godot project"}
+          <Nothing what={engine.tests_dir
+                           ? (engine.engine === "web" ? `no *.test.ts under ${engine.tests_dir}`
+                              : engine.engine === "unity" ? `no [Test] under ${engine.tests_dir}`
+                              : `no *.gd in ${engine.tests_dir}`)
+                           : "no engine project"}
                    how={engine.why || "a regression gate with nothing in it looks exactly like a green one"} />
         )}
 
         {!rows.length && !!scripts.length && (
           <Nothing what="no run has been recorded against this suite"
-                   how="run the suite here, or call godot_test_run — a green suite nobody has run since the change proves nothing" />
+                   how={`run the suite here, or call ${engine.engine === "web" ? "web_test_run" : engine.engine === "unity" ? "unity_test_run" : "godot_test_run"}: a green suite nobody has run since the change proves nothing`} />
         )}
         {rows.map((r, i) => {
           /* A RUN THAT ASSERTED NOTHING IS NOT A PASS. Scripts booted, the
@@ -376,7 +381,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
              the same shape as a gate run with no VERDICT line and it must not
              be drawn in the same green as a suite that actually checked
              something. `no_tests` (nothing to run) was already separated; this
-             is the one after it — something ran and proved nothing. */
+             is the one after it, something ran and proved nothing. */
           const mute = !r.no_tests && r.ok && !r.passed;
           const bad = r.no_tests || !r.ok || mute;
           const fails = (r.scripts || []).filter((s) => !s.ok);
@@ -384,7 +389,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
             <div key={`${r.at}-${i}`}>
               <div className={`bgs-run${bad ? " bad" : ""}`}>
                 <Tag tone={r.no_tests || mute ? "bad" : r.ok ? "good" : "bad"}
-                     title={mute ? "the suite ran and printed no PASS marker at all — it asserted nothing"
+                     title={mute ? "the suite ran and printed no PASS marker at all, it asserted nothing"
                                  : r.no_tests ? "there was nothing on disk to run" : ""}>
                   {r.no_tests ? "NOTHING RUN" : mute ? "ASSERTED NOTHING" : r.ok ? "PASS" : "FAIL"}
                 </Tag>
@@ -399,7 +404,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
               </div>
               {/* THE REASON, NOT THE NAME. The failing scripts used to be
                   concatenated into the summary line as bare filenames, which
-                  says which one to open and nothing about what went wrong —
+                  says which one to open and nothing about what went wrong -
                   while the run recorded the error text all along. */}
               {fails.map((s) => (
                 <div className="bgq-fail" key={s.script}>
@@ -426,7 +431,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
     try {
       parsed = JSON.parse(draft);
     } catch (err) {
-      setDraftErr(`that is not JSON — ${(err as Error).message}`);
+      setDraftErr(`that is not JSON, ${(err as Error).message}`);
       return;
     }
     setDraftErr("");
@@ -434,7 +439,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
     if (r.ok) {
       setDraft(null);
       setNonce((n) => n + 1);
-      toast("contract declared — it will not be re-guessed", "ok");
+      toast("contract declared, it will not be re-guessed", "ok");
     } else {
       setDraftErr(r.error || "the save was refused");
     }
@@ -443,7 +448,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
   /** One bot, driven against the real build. The old button POSTed `{}` to
    *  /run-all, which requires a non-empty `bots` list and answered 400 every
    *  single time: there is no stored roster to run, so "run every bot" was a
-   *  button for a feature that does not exist. A bot is defined AT THE CALL —
+   *  button for a feature that does not exist. A bot is defined AT THE CALL -
    *  so the panel hands over a real spec, seeded from this project's own
    *  contract keys and its own InputMap actions, and runs that. */
   async function runBot() {
@@ -452,14 +457,14 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
     try {
       parsed = JSON.parse(spec) as Record<string, unknown>;
     } catch (err) {
-      toast(`that is not JSON — ${(err as Error).message}`, "bad");
+      toast(`that is not JSON, ${(err as Error).message}`, "bad");
       return;
     }
     const out = await runJob("/api/qa-bots/run", "bot", parsed);
     if (!out) return;
     setLastBot(out);
     const v = String(out.verdict || "unknown");
-    toast(`${String(parsed.bot || "bot")} — ${v}`, v === "pass" ? "ok" : v === "fail" ? "bad" : "warn");
+    toast(`${String(parsed.bot || "bot")}, ${v}`, v === "pass" ? "ok" : v === "fail" ? "bad" : "warn");
   }
 
   if (tab === "contract") {
@@ -469,13 +474,13 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
     const keys = c.sample_keys || samples.map((s) => s.key);
     const actions = acts.actions || [];
     /* The reference's rows, and every one of them is a field of the real
-       contract — not a summary written beside it. */
+       contract, not a summary written beside it. */
     const kv: [string, string][] = [
-      ["scene", c.scene || "—"],
+      ["scene", c.scene || "-"],
       ["actors", (c.actors || []).map((a) => a.key).join(", ") || "none"],
-      ["advance", c.tick?.method ? `${c.tick.method}() — named method`
-                                 : (c.tick?.mode || "—")],
-      ["shape", c.shape || "—"],
+      ["advance", c.tick?.method ? `${c.tick.method}(), named method`
+                                 : (c.tick?.mode || "-")],
+      ["shape", c.shape || "-"],
       ["source", c.source || "unknown"],
     ];
     const template = JSON.stringify({
@@ -514,7 +519,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
                 expectations checked SERVER-SIDE against the samples the probe
                 printed. Every expectation may only name a declared sample key
                 (the rail lists them). Before you trust a green one, invert the
-                comparator and make it go red — an expectation that has never
+                comparator and make it go red, an expectation that has never
                 been red has never been tested.
                 {acts.source === "none" && (
                   <> <b style={{ color: "var(--warn)" }}>This project's
@@ -553,7 +558,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
               </div>
               <div className="note">
                 {BOT_WHY[String(lastBot.verdict || "")] || ""}
-                {lastBot.error ? ` — ${String(lastBot.error)}` : ""}
+                {lastBot.error ? `, ${String(lastBot.error)}` : ""}
               </div>
               {((lastBot.failures as { label?: string; reason?: string }[]) || []).map((f, i) => (
                 <div className="bgq-fail" key={i}>
@@ -571,7 +576,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
 
           {!runs.rows.length && !runs.error && (
             <Nothing what="no bot has run"
-                     how="run a bot here — it drives the real build headless and judges it against the contract on the right" />
+                     how="run a bot here, it drives the real build headless and judges it against the contract on the right" />
           )}
           {runs.rows.map((r) => {
             const v = String(r.verdict || "unknown");
@@ -589,7 +594,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
                     : ""}
                 </span>
                 {r.is_baseline && (
-                  <Tag tone="off" title="the run the next one is diffed against — this is what 'when did this start failing' compares to">
+                  <Tag tone="off" title="the run the next one is diffed against, this is what 'when did this start failing' compares to">
                     baseline
                   </Tag>)}
                 <span className="by">{ago(r.created_at)}</span>
@@ -617,7 +622,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
               other scenes the derivation considered:{" "}
               {(c.alternatives || []).map((a) =>
                 typeof a === "string" ? a : (a.scene || "")).filter(Boolean).join(", ")}
-              {" — if the probe is watching the wrong one, edit the contract."}
+              {", if the probe is watching the wrong one, edit the contract."}
             </div></div>
           )}
         </div>
@@ -628,7 +633,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
             <span className="lb">Probe contract</span>
             <button className="bgs-btn" style={{ marginLeft: "auto" }}
                     disabled={!!busy || draft !== null}
-                    title="the whole document, editable — saving marks it declared, and a declared contract stops being re-guessed"
+                    title="the whole document, editable, saving marks it declared, and a declared contract stops being re-guessed"
                     onClick={() => { setDraftErr(""); setDraft(JSON.stringify(c, null, 2)); }}>
               edit
             </button>
@@ -642,7 +647,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
 
           {draft !== null ? (
             /* THE DOCUMENT ITSELF. It was a one-line prompt with the JSON as
-               placeholder text before — grey hint text, gone on the first
+               placeholder text before, grey hint text, gone on the first
                keystroke, which made "editable" mean "retype it from memory". */
             <div className="bgq-edit">
               <div className="why">
@@ -690,7 +695,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
           <div className="bgs-keys" style={{ display: "block" }}>
             {!keys.length && (
               <Nothing what="no keys declared"
-                       how="every expectation names one of these and nothing else; an undeclared property cannot be probed, and asking for one reads as 'the probe never sampled X' — which is a broken test, not a broken game" />
+                       how="every expectation names one of these and nothing else; an undeclared property cannot be probed, and asking for one reads as 'the probe never sampled X', which is a broken test, not a broken game" />
             )}
             {/* THE KEY AND WHAT IT ADDRESSES. A bare list of names does not say
                 what a key is a measurement OF, which is the first thing anyone
@@ -702,7 +707,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
                   <b>{k}</b>
                   <span className={s ? "" : "miss"}>
                     {s ? `${s.actor || "?"}.${s.property || "?"}`
-                       : "declared with no actor or property — the probe cannot produce it"}
+                       : "declared with no actor or property, the probe cannot produce it"}
                   </span>
                 </div>
               );
@@ -717,7 +722,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
 
   /** A FAIL YOU ONLY WROTE DOWN IS A COMPLAINT, NOT A FIX ROUND. The reopen
    *  appends the reason to the item's own brief, so the next agent reads what
-   *  to fix — which is why an empty one is refused here rather than spending
+   *  to fix, which is why an empty one is refused here rather than spending
    *  another run on a guess. */
   async function reopen(it: Item) {
     const reason = await askText({
@@ -761,7 +766,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
         <Banner icon="shield-off" tone="warn">
           <div className="t">
             <b>This project runs with no gate.</b> {ungated.length} of the
-            newest {items.length} closed on their author's own word — no
+            newest {items.length} closed on their author's own word, no
             independent check was ever filed against them. Nothing below that is
             not a written PASS is a pass.
           </div>
@@ -778,9 +783,9 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
           then nothing else on it matters, so the key is on the screen. */}
       {!!items.length && (
         <div className="bgq-legend">
-          <span className="l"><i className="sw pass" /><span>PASS — a verdict was written, with evidence</span></span>
-          <span className="l"><i className="sw fail" /><span>FAIL — a verdict was written, and it was no</span></span>
-          <span className="l"><i className="sw none" /><span>no verdict — it finished and decided nothing</span></span>
+          <span className="l"><i className="sw pass" /><span>PASS, a verdict was written, with evidence</span></span>
+          <span className="l"><i className="sw fail" /><span>FAIL, a verdict was written, and it was no</span></span>
+          <span className="l"><i className="sw none" /><span>no verdict, it finished and decided nothing</span></span>
         </div>
       )}
 
@@ -808,7 +813,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
       {!items.length && <Nothing what="nothing has closed yet" how="every finished work item gets a verdict row here" />}
       {!!items.length && !shown.length && (
         <Nothing what={`nothing in the newest ${items.length} is ${filter}`}
-                 how="load more, or clear the filter — this counts only what is loaded" />
+                 how="load more, or clear the filter, this counts only what is loaded" />
       )}
 
       {shown.map((it) => {
@@ -817,7 +822,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
         const isOpen = open === it.id;
         /* Evidence that EXISTS. The gate's transcript is only there when a gate
            run exists at all, and the agent's own closing words are only worth
-           showing where nobody checked them — that is the text that looks like
+           showing where nobody checked them, that is the text that looks like
            a pass and is not one. */
         const claim = (it.result || "").trim();
         const canReopen = CLOSED.has(it.status) && s !== "pass" && s !== "pending";
@@ -856,7 +861,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
 
             <div className="bgq-acts">
               {/* THE EVIDENCE, ON THE CARD. `detail` is the gate run's own
-                  result text — the VERDICT line and the nitpick list under it —
+                  result text, the VERDICT line and the nitpick list under it -
                   and `result` is what the closing agent claimed. Both were
                   fetched and neither was drawn. */}
               {(v?.detail || claim) && (
@@ -866,7 +871,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
                 </button>)}
               {v?.gate_item ? (
                 <button className="bgs-btn"
-                        title="open the QA agent's own run — its transcript is the evidence for this verdict"
+                        title="open the QA agent's own run, its transcript is the evidence for this verdict"
                         onClick={() => watchAgent(v.gate_item as number)}>
                   gate run #{v.gate_item}
                 </button>) : null}
@@ -874,7 +879,7 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
                       onClick={() => watchAgent(it.id)}>log</button>
               {canReopen && (
                 <button className="bgs-btn" disabled={busy === `reopen${it.id}`}
-                        title="send it back with a ranked nitpick list — a FAIL you only wrote down is a complaint"
+                        title="send it back with a ranked nitpick list, a FAIL you only wrote down is a complaint"
                         onClick={() => void reopen(it)}>
                   {busy === `reopen${it.id}` ? "…" : "reopen"}
                 </button>)}
@@ -884,17 +889,17 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
               <div className="bgq-ev">
                 <span className="cap">the gate run's own words{v.at ? ` · ${ago(v.at)} ago` : ""}</span>
                 {v.detail}
-                {v.detail.length >= 600 && <span className="more">{"\n… truncated at 600 chars — open the gate run for the rest"}</span>}
+                {v.detail.length >= 600 && <span className="more">{"\n… truncated at 600 chars, open the gate run for the rest"}</span>}
               </div>
             )}
             {isOpen && claim && (
               <div className="bgq-ev">
                 <span className="cap">
-                  what the agent claimed{UNDECIDED.has(s) ? " — and nobody checked" : ""}
+                  what the agent claimed{UNDECIDED.has(s) ? ", and nobody checked" : ""}
                 </span>
                 {claim}
                 {(it.result_len || 0) > claim.length &&
-                  <span className="more">{`\n… ${it.result_len} chars in full — open the log`}</span>}
+                  <span className="more">{`\n… ${it.result_len} chars in full, open the log`}</span>}
               </div>
             )}
           </div>

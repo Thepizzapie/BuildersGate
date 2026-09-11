@@ -1,7 +1,7 @@
-"""Optional feature modules — what a project can switch OFF.
+"""Optional feature modules, what a project can switch OFF.
 
 The product grew every feature into every install: 200+ MCP tools in every
-agent's context, a studio-floor pane, a music pipeline, a brainstorm room —
+agent's context, a studio-floor pane, a music pipeline, a brainstorm room -
 whether or not a project wanted them. For someone shipping a small 2D game,
 half of that is bloat they never asked for; for every dispatched agent it is
 paid context on every single turn for tools it will never call.
@@ -10,7 +10,7 @@ So features that are genuinely severable are MODULES, chosen at setup (the
 first-run card, `bgate init --without ...`) and changeable later in Settings
 (``modules.disabled``). A disabled module:
 
-  * does not register its MCP tools (the token win — the registry is built
+  * does not register its MCP tools (the token win, the registry is built
     per process, and the pinned project's choice decides what an agent sees);
   * hides its panes in the dashboard shell (delivered in the page bootstrap);
   * stops being graded by doctor, so a missing ffmpeg on a project that
@@ -19,7 +19,7 @@ first-run card, `bgate init --without ...`) and changeable later in Settings
     `pip install builders-gate[...]` buys back.
 
 WHAT IS DELIBERATELY NOT A MODULE: the board, seats, the bible/lore/dialogue
-canon, image generation and the Godot tools. Those are the product — a
+canon, image generation and the Godot tools. Those are the product, a
 "module" nobody can meaningfully ship without is a checkbox that only exists
 to be mis-unchecked. The seat table also stays universal: a project that
 disables cinematic keeps the cinematic SEAT defined (an empty chair costs
@@ -35,7 +35,7 @@ MODULES: dict[str, dict] = {
     "floor": {
         "label": "Studio floor",
         "blurb": "The animated office-floor view of your agents. Pure "
-                 "spectacle — the board shows the same facts as a list. Its "
+                 "spectacle, the board shows the same facts as a list. Its "
                  "art and ambience are the optional assets pack (~30MB).",
         "tools": (), "extras": ("floor",), "doctor": (),
     },
@@ -47,7 +47,7 @@ MODULES: dict[str, dict] = {
     },
     "music": {
         "label": "Music",
-        "blurb": "Suno music generation through kie.ai — candidates, "
+        "blurb": "Suno music generation through kie.ai, candidates, "
                  "audition, keep/discard. Needs a KIE key.",
         "tools": ("music_",), "extras": (), "doctor": (),
     },
@@ -97,7 +97,7 @@ def catalog() -> list[dict]:
 
 
 def machine_defaults() -> set[str]:
-    """The MACHINE's default switched-off modules — what the installer wrote.
+    """The MACHINE's default switched-off modules, what the installer wrote.
 
     The setup wizard's component page is where "install only what I need"
     is decided, and its answer lands in ``~/.bgate/modules.json`` (BGATE_HOME
@@ -121,11 +121,11 @@ def machine_defaults() -> set[str]:
 
 def disabled(root) -> set[str]:
     """The project's switched-off modules. Unknown names are dropped rather
-    than obeyed — a typo in a stored list must not silently disable the
+    than obeyed, a typo in a stored list must not silently disable the
     nearest real feature, and must not survive a rename as a ghost.
 
-    A project that has never stored a choice takes the machine defaults —
-    the installer's component page — so an install that declined music is
+    A project that has never stored a choice takes the machine defaults -
+    the installer's component page, so an install that declined music is
     music-less on every project until a project says otherwise.
     """
     try:
@@ -153,7 +153,7 @@ def tool_enabled(tool_name: str, off: set[str]) -> bool:
 def doctor_row_enabled(row_name: str, off: set[str]) -> bool:
     """Is this doctor row still anyone's requirement?
 
-    A row is dropped only when EVERY module that needs it is off — ffmpeg is
+    A row is dropped only when EVERY module that needs it is off, ffmpeg is
     named by both cinematic and playtest, and turning one of them off must
     not un-grade the other's dependency.
     """
@@ -164,19 +164,19 @@ def doctor_row_enabled(row_name: str, off: set[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Seat tool surfaces — which CRAFT a dispatched seat actually practises
+# Seat tool surfaces, which CRAFT a dispatched seat actually practises
 # ---------------------------------------------------------------------------
 # Modules trim the registry per PROJECT; crafts trim it per SEAT. A gameplay
 # agent carried every cinematic_, blender_ and music_ schema in its
-# context on every turn — tools it has no lane, no brief step and no business
+# context on every turn, tools it has no lane, no brief step and no business
 # calling. Craft groups are the unambiguous generation/authoring surfaces;
 # everything outside them (queue, seats, bible, lore, godot, scene, assets,
 # refs, checks) is the SHARED SPINE and stays universal, because guessing
 # wrong about the spine breaks a workflow silently.
 CRAFTS: dict[str, tuple[str, ...]] = {
     "image": ("image_", "item_", "cutout_", "vfx_animate",
-              # animation_contacts is its sibling — same files, same
-              # question one layer down — so it is held by both crafts for
+              # animation_contacts is its sibling, same files, same
+              # question one layer down, so it is held by both crafts for
               # the same reason sprite_sheet_check is.
               "animation_curves", "animation_contacts",
               "art_tournament_standings",
@@ -187,13 +187,13 @@ CRAFTS: dict[str, tuple[str, ...]] = {
               # (`sprite_contract_` is not `sprite_`) and so fell through to
               # the spine, which meant every audio, narrative and gameplay
               # agent carried 870 words of sheet-slicing docstring it can
-              # never act on. sprite_sheet_check is ALSO a verdict below —
+              # never act on. sprite_sheet_check is ALSO a verdict below -
               # a tool may hold several crafts.
               "sprite_plan", "sprite_sheet_check", "sprite_sheet_slice",
               # The local generator board: 2D and 3D on this machine.
               "local_status",
               # Scale and room composition are the art seat's own checks
-              # before it hands anything over — see `verdicts`.
+              # before it hands anything over, see `verdicts`.
               "scale_check", "room_review", "room_override",
               # The screen concepts ARE image work: ui_concept paints a frame
               # per screen off the project's pins and derives the palette and
@@ -201,7 +201,7 @@ CRAFTS: dict[str, tuple[str, ...]] = {
               # .tres; the art seat is who makes it.
               "ui_concept"),
     "three_d": ("blender_", "character_generate", "godot_retarget_check",
-                # "THE STEP THE 3D PATH WAS MISSING" by its own docstring —
+                # "THE STEP THE 3D PATH WAS MISSING" by its own docstring -
                 # it takes a finished .glb into the engine. `godot_` is not a
                 # craft prefix (most godot_ tools really are spine), so these
                 # two had to be named one at a time.
@@ -211,12 +211,12 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                 # photographs those clips in-engine rather than in Blender, and
                 # clip_retarget maps a pack onto the rig through Godot's own
                 # BoneMap. All three are the 3D seat finishing its own handoff,
-                # and all three fell through for the reason named above — the
+                # and all three fell through for the reason named above, the
                 # `godot_` prefix is not a craft.
                 "godot_character_wire", "godot_clip_capture",
                 "godot_clip_retarget",
                 # THE TWO RIG GATES THAT CARRY NO `blender_` PREFIX, because
-                # neither one spawns Blender — both read a .glb directly. That
+                # neither one spawns Blender, both read a .glb directly. That
                 # is why they fell through: the prefix above is a proxy for
                 # "3D rig work", and it stopped being one the moment a gate
                 # answered the question without the engine. skin_dominance
@@ -282,7 +282,7 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  "room_review", "room_override", "scale_check", "scale_record_3d",
                  "audio_listen_record",
                  # THE TWO THE PRESENTATION GATE GAINED. `evidence_assert` is
-                 # the verdict a captured frame never had — recording what
+                 # the verdict a captured frame never had, recording what
                  # somebody SAW, which is the half that let a two-tailed
                  # character ship past a folder full of renders. `traversal_prove`
                  # is the verdict on a route: it drives the real controller and
@@ -328,6 +328,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # The web_ trio mirrors godot_run/godot_status one engine over.
         "engine_status", "engine_screenshot",
         "web_status", "web_dev", "web_dev_stop", "web_run",
+        "unity_status", "unity_install_scripts", "unity_screenshot",
         "handoff_note", "handoff_read",
         # kie_status STAYS CORE: kie is one key over three capabilities, so
         # filing it under `image` would hide it from the audio seat whose
@@ -364,8 +365,9 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # engine_check is godot_check_project's engine-neutral sibling and
         # carries the same seat scoping: audio and narrative never build.
         # web_build / web_payload / web_test_run are that engine's build half.
-        "engine_check",
+        "engine_check", "engine_scaffold", "engine_templates",
         "web_build", "web_payload", "web_test_run",
+        "unity_check", "unity_test_run", "unity_execute",
         "godot_check_project", "godot_inspect_resource", "godot_scaffold",
         "godot_templates", "godot_test_run",
         "iteration_record_checks", "iteration_status",
@@ -420,13 +422,13 @@ DIRECTOR_ONLY: frozenset[str] = frozenset({
     "project_set_dimension", "project_set_engine", "seat_configure",
     # THE STAGE IS THE DIRECTOR'S TO MOVE. A dispatched seat that could pass
     # its own graybox, waive its own hold, or advance the project past the
-    # gate holding it is not gated at all — the whole mechanism reduces to a
+    # gate holding it is not gated at all, the whole mechanism reduces to a
     # note. greenlight_status stays open to every seat (it is the answer to
     # "why am I held"); these four are the arbitration.
     "greenlight_thesis_set", "greenlight_graybox_verdict",
     "greenlight_advance", "greenlight_waive",
     # RETRACTING A GATE FINDING IS ARBITRATION. A seat that could withdraw the
-    # row blocking its own work has not been gated, it has been asked nicely —
+    # row blocking its own work has not been gated, it has been asked nicely -
     # the same reduction the four above exist to prevent. The evidence for a
     # retraction (a better measurement) is anybody's to produce; the decision
     # to accept it is not.
@@ -463,13 +465,13 @@ SEAT_CRAFTS: dict[str, tuple[str, ...]] = {
     DIRECTOR: ("verdicts", "brainstorm", "playtest", "quest", "dialogue"),
     "art": ("image", "three_d"),
     # gameplay gets `verdicts` for traversal_prove and nothing else would be
-    # the wrong trade — a seat that builds routes and cannot prove one drives
+    # the wrong trade, a seat that builds routes and cannot prove one drives
     # the QA seat for every jump it places. The rest of the craft is cheap.
     "gameplay": ("playtest", "level", "quest", "verdicts"),
     "tech": ("level", "three_d"),
     "audio": ("music", "voice", "sfx"),
-    # narrative holds `cinematic` for the storyboard half — scripts and
-    # boards are writing work — not for shot generation, which spends — and
+    # narrative holds `cinematic` for the storyboard half, scripts and
+    # boards are writing work, not for shot generation, which spends, and
     # `brainstorm`, because a room with nobody in it was reachable by no seat.
     "narrative": ("dialogue", "quest", "cinematic", "brainstorm"),
     "qa": ("playtest", "verdicts"),
@@ -497,7 +499,7 @@ def effective_seat(seat: str) -> str:
 
 
 def hidden_crafts(seat: str) -> list[str]:
-    """Crafts this seat does NOT hold — what `tool_unlock` could add."""
+    """Crafts this seat does NOT hold, what `tool_unlock` could add."""
     held = SEAT_CRAFTS.get(effective_seat(seat))
     if held is None:
         return []
@@ -507,11 +509,11 @@ def hidden_crafts(seat: str) -> list[str]:
 def seat_tool_enabled(tool_name: str, seat: str) -> bool:
     """Does this seat's registry include this tool?
 
-    Fail open two ways on purpose: an unknown seat (a project invented one —
+    Fail open two ways on purpose: an unknown seat (a project invented one -
     its surface is unknowable, so it gets everything), and any tool outside
     every table. A wrongly-hidden tool is a silently broken workflow; a
     wrongly-shown one costs only context. The seatless session is the
-    director and is scoped like any seat — `tool_unlock` is its way out.
+    director and is scoped like any seat, `tool_unlock` is its way out.
     """
     if (seat or "").strip() and tool_name in DIRECTOR_ONLY:
         # Before the craft lookup, and gated on ANY seat rather than a known
@@ -527,7 +529,7 @@ def seat_tool_enabled(tool_name: str, seat: str) -> bool:
     # A TOOL MAY BELONG TO SEVERAL CRAFTS, and it is enabled if the seat holds
     # ANY of them. This used to return on the first craft whose prefix matched,
     # so a shared tool resolved to whichever craft happened to be declared
-    # first in CRAFTS — `game_view_` is in both `image` and `level`, and
+    # first in CRAFTS, `game_view_` is in both `image` and `level`, and
     # gameplay (which holds `level`, not `image`) was refused it because
     # `image` is written higher in the dict. Dict order is not a permission
     # model.

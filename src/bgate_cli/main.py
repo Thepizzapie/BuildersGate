@@ -1,4 +1,4 @@
-"""bgate — the console entrypoint.
+"""bgate, the console entrypoint.
 
     bgate init NAME [--kind 2d|3d] [--engine godot|web] [--dir DIR] [--pitch TEXT] [--without floor,music,...]
                     [--force] [--replace]
@@ -76,7 +76,7 @@ HOOK_MATCHER = ("Bash|Write|Edit|MultiEdit|NotebookEdit"
 
 # `python -m`, never sys.executable. This file is COMMITTED into the game repo,
 # so an absolute interpreter path bakes one machine's venv into everyone else's
-# checkout — where it silently fails to run and enforcement quietly stops.
+# checkout, where it silently fails to run and enforcement quietly stops.
 HOOK_COMMAND = "python -m bgate_cli.hook"
 
 HOOK_CONFIG = {
@@ -86,7 +86,7 @@ HOOK_CONFIG = {
 
 # SessionStart carries what `instructions` structurally cannot: the MCP field is
 # fixed when the stdio server boots, so it can state the role and never the
-# situation — which board items are queued, whether the dashboard is even up to
+# situation, which board items are queued, whether the dashboard is even up to
 # run them, which files another live session is already holding. A director that
 # must ask three questions before it can act will skip them.
 #
@@ -113,12 +113,12 @@ def _is_bgate_hook(entry: dict, needle: str = "bgate_cli.hook") -> bool:
 
 
 def _pin(config: dict) -> dict:
-    """The same entry with the interpreter pinned — user scope only.
+    """The same entry with the interpreter pinned, user scope only.
 
     The configs above say `python -m` because the project copy is COMMITTED, and
     an absolute interpreter path would bake this machine's venv into everyone
     else's checkout. ~/.claude/settings.json is committed nowhere and shared with
-    nobody, so that argument does not apply — and the opposite hazard does. A
+    nobody, so that argument does not apply, and the opposite hazard does. A
     bare `python` resolves against whatever is first on PATH when the hook fires,
     which is routinely not the environment bgate was installed into; the hook
     then dies on ModuleNotFoundError, fails open, and enforcement stops with no
@@ -135,7 +135,7 @@ def uninstall_hook(project_dir: str, scope: str = "project") -> dict:
     """Remove OUR PreToolUse entry, and nothing else.
 
     There was no way back out. Installing wrote into a settings.json the user
-    may share with other tooling, and backing it out meant hand-editing JSON —
+    may share with other tooling, and backing it out meant hand-editing JSON -
     which is a poor answer to "can I cleanly remove this", and the first
     question anyone careful asks before installing anything.
 
@@ -143,7 +143,7 @@ def uninstall_hook(project_dir: str, scope: str = "project") -> dict:
     command mentions ``bgate_cli.hook`` are dropped, an entry that ends up with
     no hooks left is dropped with it, and a settings file we did not write into
     is reported untouched rather than rewritten. `hooks` and `PreToolUse` keys
-    are left in place even when empty — removing structure we did not create is
+    are left in place even when empty, removing structure we did not create is
     the same overreach in the other direction.
     """
     if scope not in ("project", "user"):
@@ -152,17 +152,17 @@ def uninstall_hook(project_dir: str, scope: str = "project") -> dict:
                      else Path(project_dir) / ".claude" / "settings.json")
     if not settings_path.exists():
         return {"ok": True, "removed": 0, "path": str(settings_path),
-                "note": "no settings file here — nothing was installed"}
+                "note": "no settings file here, nothing was installed"}
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {"ok": False,
-                "error": f"{settings_path} is not valid JSON — refusing to "
+                "error": f"{settings_path} is not valid JSON, refusing to "
                          "rewrite it; remove the bgate_cli.hook entry by hand"}
     groups = (settings.get("hooks") or {}).get("PreToolUse")
     if not isinstance(groups, list):
         return {"ok": True, "removed": 0, "path": str(settings_path),
-                "note": "no PreToolUse hooks here — nothing to remove"}
+                "note": "no PreToolUse hooks here, nothing to remove"}
     removed = 0
     kept_groups = []
     for group in groups:
@@ -180,14 +180,14 @@ def uninstall_hook(project_dir: str, scope: str = "project") -> dict:
     settings_path.write_text(json.dumps(settings, indent=2) + "\n",
                              encoding="utf-8")
     return {"ok": True, "removed": removed, "path": str(settings_path),
-            "note": "lane and lock enforcement is OFF here now — agents can "
+            "note": "lane and lock enforcement is OFF here now, agents can "
                     "write anywhere their tools reach"}
 
 
 def install_hook(project_dir: str, scope: str = "project") -> dict:
     """Merge the enforcement hook into a settings.json.
 
-    scope="project" writes <project>/.claude/settings.json — the committed,
+    scope="project" writes <project>/.claude/settings.json, the committed,
     per-repo gate. scope="user" writes ~/.claude/settings.json ONCE and covers
     every Builders Gate project on the machine, including ones that do not exist
     yet.
@@ -197,11 +197,11 @@ def install_hook(project_dir: str, scope: str = "project") -> dict:
     file being written (hook.py `db.resolve_root(target_path.parent)`) and
     returns ALLOW when that finds nothing, so a write outside any game project
     is untouched. The per-project install was therefore never enforcing
-    anything the user-scope one cannot — it was only ever a per-repo switch, and
+    anything the user-scope one cannot, it was only ever a per-repo switch, and
     a switch you must remember to flip in each new project is a switch that is
     off exactly when a fresh project needs it most.
 
-    Merges rather than overwrites — a game project may already carry its own
+    Merges rather than overwrites, a game project may already carry its own
     hooks, and clobbering them is exactly the kind of stomp this tool polices.
     An entry we wrote on an earlier version IS rewritten, because a stale
     matcher (or an absolute interpreter path from another machine) is a gate
@@ -221,7 +221,7 @@ def install_hook(project_dir: str, scope: str = "project") -> dict:
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return {"ok": False,
-                    "error": f"{settings_path} exists but is not valid JSON — "
+                    "error": f"{settings_path} exists but is not valid JSON, "
                              "fix it by hand; refusing to overwrite"}
 
     hooks = settings.setdefault("hooks", {})
@@ -303,7 +303,7 @@ def hook_status(project_dir: str = "", as_json: bool = False) -> int:
         mark = "ok  " if probe.get("ok") else "FAIL"
         print(f"{mark}  {probe['probe']}: {probe.get('error') or probe.get('got')}")
     if report["recent_failures"]:
-        print(f"\n{len(report['recent_failures'])} recent FAIL-OPEN event(s) — "
+        print(f"\n{len(report['recent_failures'])} recent FAIL-OPEN event(s), "
               "writes went through unchecked:")
         for row in report["recent_failures"]:
             print(f"  {row.get('ts', '?')}  {row.get('detail', '')[:120]}")
@@ -319,7 +319,7 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
 
     The first-run gap the audit named: the only way to make a project was an MCP
     session calling project_init, which never printed the directory it wrote to.
-    One command, one absolute path on stdout — that path is the whole point, so
+    One command, one absolute path on stdout, that path is the whole point, so
     it is printed even when the scaffold had nothing new to write.
     """
     from bgate_core.runtime import engines as _engines
@@ -333,14 +333,14 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         return 2
     if not _engines.template_dir_name(engine):
         print(f"error: {_engines.label(engine)} projects are adopted, not "
-              f"scaffolded — there is no template. Point bgate at an existing "
+              f"scaffolded, there is no template. Point bgate at an existing "
               f"one with `bgate adopt`.")
         return 2
     if kind not in scaffold.KINDS:
         print(f"error: --kind must be one of {'|'.join(scaffold.KINDS)}, got {kind!r}")
         return 2
     if not name.strip():
-        print("error: a project needs a name — bgate init <name>")
+        print("error: a project needs a name, bgate init <name>")
         return 2
 
     # Default to a NEW directory under the cwd rather than the cwd itself: a
@@ -360,7 +360,7 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         return 2
 
     project.init(root, name, pitch=pitch, engine=engine, dimension=kind)
-    # A 2D project defaults the 3D pipeline OFF — cutout/sprite work never
+    # A 2D project defaults the 3D pipeline OFF, cutout/sprite work never
     # opens Blender, and the default should match the kind just chosen. A WEB
     # project defaults it off at both dimensions: blender_* delivers .glb into
     # a Godot import pipeline that a web project does not have, so leaving the
@@ -388,16 +388,16 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     except Exception:
         pass
 
-    print(f"created {name} ({kind}) — {len(made['files'])} files")
+    print(f"created {name} ({kind}), {len(made['files'])} files")
     # SAY WHAT WAS PROTECTED, or a careful run reads as a broken one. `force`
     # now fills in what is missing and leaves anything the user has edited
-    # alone, so a top-up over a live project legitimately writes nothing —
+    # alone, so a top-up over a live project legitimately writes nothing -
     # and "created 0 files" with no further word looks like the command
     # failed rather than like it declined to overwrite someone's work.
     if made.get("note"):
         print(made["note"])
     for entry in made.get("skipped") or []:
-        print(f"  kept your {entry['file']} — {entry['reason']}")
+        print(f"  kept your {entry['file']}, {entry['reason']}")
     for entry in made.get("replaced") or []:
         print(f"  replaced {entry['file']} (backup: {entry['backup']})")
     print(str(root))
@@ -415,7 +415,7 @@ def _store_modules_off(root, without: str) -> str:
     The CLI half of the first-run card's checklist: the same
     ``modules.disabled`` setting, written at creation so the very first
     dashboard open and the very first agent session already respect it.
-    Unknown names warn and are dropped — a typo must not silently disable the
+    Unknown names warn and are dropped, a typo must not silently disable the
     nearest real feature.
     """
     from bgate_core.store import modules, settings
@@ -423,12 +423,12 @@ def _store_modules_off(root, without: str) -> str:
     names = [w.strip() for w in (without or "").split(",") if w.strip()]
     known = [n for n in names if n in modules.MODULES]
     unknown = [n for n in names if n not in modules.MODULES]
-    # The machine defaults — the setup wizard's component page — seed every
+    # The machine defaults, the setup wizard's component page, seed every
     # new project; --without adds to them for this one.
     seeded = sorted(modules.machine_defaults() | set(known))
     lines = []
     if unknown:
-        lines.append(f"warning: no module named {', '.join(unknown)} — "
+        lines.append(f"warning: no module named {', '.join(unknown)}, "
                      f"modules are: {', '.join(modules.names())}")
     if seeded:
         try:
@@ -436,7 +436,7 @@ def _store_modules_off(root, without: str) -> str:
             lines.append("switched off: " + ", ".join(seeded)
                          + "  (change later in Settings > Modules)")
         except Exception as exc:
-            lines.append(f"warning: could not store module choices ({exc}) — "
+            lines.append(f"warning: could not store module choices ({exc}), "
                          "set modules.disabled in Settings instead")
     return "\n".join(lines)
 
@@ -487,19 +487,32 @@ def adopt_project(directory: str = "", name: str = "", pitch: str = "",
     verb = "re-adopted" if report["already_adopted"] else "adopted"
     if off_note:
         print(off_note)
-    print(f"{verb} {proj['name']} — {report['path']}")
+    print(f"{verb} {proj['name']}, {report['path']}")
     print()
     if found["godot"]:
         version = f" {found['godot_version']}" if found["godot_version"] else ""
         print(f"  godot{version}      {found['godot_dir']}")
         if found["main_scene"]:
             print(f"  main scene    {found['main_scene']}")
+    elif found.get("engine"):
+        # A game in another engine. Say which, and whether Builders Gate can
+        # drive it, instead of reporting the absence of Godot as the finding.
+        label = found.get("engine_label") or found["engine"]
+        print(f"  engine        {label}  {found.get('engine_dir') or ''}")
+        if found.get("engine_supported"):
+            print(f"                recorded as '{found['engine']}'; its engine "
+                  "tools register in place of the godot_* ones.")
+        else:
+            print(f"                recorded as '{found['engine']}'. Detected "
+                  "and named, not driven: the board, canon and")
+            print("                art pipeline work; no tool edits or runs "
+                  "the game.")
     else:
-        print("  godot         NOT FOUND — no project.godot at or under this "
-              "directory,")
-        print("                so engine was recorded as 'none' and the godot_* "
-              "tools")
-        print("                will stay unavailable until one exists.")
+        print("  engine        NOT FOUND: no project.godot, package.json or "
+              "Unity ProjectSettings at or")
+        print("                under this directory, so engine was recorded as "
+              "'none' and every")
+        print("                engine tool stays unavailable until one exists.")
     evidence = found["dimension_evidence"]
     print(f"  dimension     {proj['dimension']}  "
           f"({evidence['3d_nodes']} 3D nodes / {evidence['2d_nodes']} 2D nodes "
@@ -522,7 +535,7 @@ def adopt_project(directory: str = "", name: str = "", pitch: str = "",
     # THE LANES, WHEN THEY HAD TO MOVE. The default seat table is written
     # against <root>/game; a repo laid out any other way has no seat owning its
     # source tree, and every dispatched agent is refused on contact with it.
-    # Say so — a silent remap is a surprise the first time someone reads
+    # Say so, a silent remap is a surprise the first time someone reads
     # seat_list and finds globs they did not write.
     lanes = report.get("lanes") or {}
     if lanes.get("changed"):
@@ -531,7 +544,7 @@ def adopt_project(directory: str = "", name: str = "", pitch: str = "",
               "(the default lanes assume <root>/game)")
     print()
     if not proj.get("pitch"):
-        print("no pitch recorded — the bible starts empty without one. Set it:")
+        print("no pitch recorded, the bible starts empty without one. Set it:")
         print(f'  bgate adopt "{report["path"]}" --pitch "what this game is"')
         print()
     print("next:")
@@ -671,7 +684,7 @@ def preview(out: str, port: int = 8000) -> int:
 
     root = Path(out).resolve()
     if not (root / "index.html").is_file():
-        print(f"error: nothing to serve — {root} has no index.html "
+        print(f"error: nothing to serve, {root} has no index.html "
               "(run bgate publish first)")
         return 1
 
@@ -688,7 +701,7 @@ def preview(out: str, port: int = 8000) -> int:
 
         def guess_type(self, path):
             # Content-Type has to come from the rule rather than end_headers,
-            # or the response carries two of them — the base handler already
+            # or the response carries two of them, the base handler already
             # emitted its guess by the time end_headers runs.
             return self._rules().get("Content-Type") or super().guess_type(path)
 
@@ -721,7 +734,7 @@ def publish(out: str = "", projects: list[str] | None = None,
     """Build the arcade and say what shipped, what did not, and why.
 
     The "what did not, and why" half is the point. A publish that silently drops
-    a game — no Godot project, hidden, export failed — looks identical to a
+    a game, no Godot project, hidden, export failed, looks identical to a
     publish that worked, and you find out from a player.
     """
     import bgate_site
@@ -790,14 +803,14 @@ def panic(project_dir: str = "", as_json: bool = False) -> int:
 
     This exists as a CLI command and not only as a button because the moment
     you need it is exactly the moment the dashboard may be the thing that is
-    wedged — or not running at all, while the agents it spawned very much are.
+    wedged, or not running at all, while the agents it spawned very much are.
     The pid ledger lives in the project (``.bgate/agents/``), so this works
     against a dashboard that is already gone.
 
     Turns auto-deploy off first (otherwise the loop dispatches a replacement
     into the gap), kills each agent's whole process tree, reaps anything the
     ledger knows about, and settles the items so the board stops claiming work
-    is running. Exit 0 even when nothing was running — this is the command you
+    is running. Exit 0 even when nothing was running, this is the command you
     hammer, and "nothing to kill" is a success.
     """
     from bgate_ui.agents import dispatch as _dispatch
@@ -808,7 +821,7 @@ def panic(project_dir: str = "", as_json: bool = False) -> int:
             from bgate_core.store import project
             root = str(project.require_root())
         except Exception:
-            print("no project here — run this inside a game project, "
+            print("no project here, run this inside a game project, "
                   "or pass the directory: bgate panic <DIR>")
             return 2
 
@@ -821,7 +834,7 @@ def panic(project_dir: str = "", as_json: bool = False) -> int:
           + (f": {', '.join('#' + str(i) for i in stopped)}" if stopped else ""))
     print(f"reaped  {len(orphans)} orphaned process(es)")
     if result.get("autopilot"):
-        print("auto-deploy is now OFF — turn it back on from the console")
+        print("auto-deploy is now OFF, turn it back on from the console")
     settled = result.get("settled") or []
     if settled:
         print(f"settled {len(settled)} item(s) that were stuck 'dispatched'")
@@ -853,7 +866,7 @@ def connect(targets: list[str], *, check: bool = False, show: bool = False,
     server to finish an install, and nobody should get a different answer from
     the two places.
 
-    WITH NO ARGUMENT IT WRITES NOTHING. A bare `bgate connect` is the report —
+    WITH NO ARGUMENT IT WRITES NOTHING. A bare `bgate connect` is the report -
     every client, whether it is installed, and whether its registration is the
     good one. Registering is a named target or `--all`, because it changes what
     every future session of that client can do on this whole machine.
@@ -951,7 +964,7 @@ def _print_connect(data: dict, *, show: bool = False) -> None:
         print("any other MCP client:")
         print(_indent(data.get("generic_block") or ""))
     print()
-    print("restart the client after wiring it — a running session does not "
+    print("restart the client after wiring it, a running session does not "
           "pick up a new MCP server.")
 
 
@@ -1003,9 +1016,9 @@ def doctor(project_dir: str = "", as_json: bool = False) -> int:
         core = [n for n in ("python", "godot")
                 if not report.get(n, {}).get("available")]
         print("core loop needs python + godot" + (
-            f" — MISSING: {', '.join(core)}" if core else ": both present")
+            f", MISSING: {', '.join(core)}" if core else ": both present")
             + ". blender (3D), ffmpeg/ffprobe (video), whisper (voice) and "
-              "an art key (image generation) are optional — a red row there "
+              "an art key (image generation) are optional, a red row there "
               "is not a blocker.")
         # Project-level faults: lanes that match no directory here, and a hook
         # that was never installed. Neither is a missing binary, so neither can
@@ -1020,7 +1033,7 @@ def doctor(project_dir: str = "", as_json: bool = False) -> int:
                     print(f"      fix: {row['fix']}")
         # The other half of "why is this board not doing what I told it": an env
         # var in a shell profile silently winning over what the panel shows.
-        # AFTER the summary and deliberately outside the exit code — a setting
+        # AFTER the summary and deliberately outside the exit code, a setting
         # that is merely non-default is not a missing dependency.
         print()
         _doctor.print_settings(root or None)
@@ -1068,8 +1081,8 @@ def keys(action: str = "", provider_id: str = "", project_dir: str = "",
                               "providers": rows}, indent=2))
             return 0
         width = max(len(row["id"]) for row in rows)
-        # `source` is the column that answers the only hard question here —
-        # which of three layers is actually supplying the value — so it is
+        # `source` is the column that answers the only hard question here -
+        # which of three layers is actually supplying the value, so it is
         # spelled out rather than abbreviated to a tick.
         where = {"env_file": "project .env", "global_file": "~/.bgate/.env",
                  "environment": "shell", "shadowed": "SHADOWED", "unset": "-"}
@@ -1082,12 +1095,12 @@ def keys(action: str = "", provider_id: str = "", project_dir: str = "",
                   f"{where.get(row['source'], row['source']).ljust(14)} "
                   f"{tail}{note}")
         print()
-        print(f"project: {root or '(none — the machine-wide store still applies)'}")
+        print(f"project: {root or '(none, the machine-wide store still applies)'}")
         print(f"global:  {_providers.envfile.global_path()}")
         return 0
 
     if action not in ("set", "clear"):
-        print(f"unknown key action {action!r} — set, clear, or list")
+        print(f"unknown key action {action!r}, set, clear, or list")
         return 2
     if not provider_id:
         print("which provider? one of: " + ", ".join(_providers.ids()))
@@ -1101,7 +1114,7 @@ def keys(action: str = "", provider_id: str = "", project_dir: str = "",
             import getpass
 
             one = _providers.by_id(provider_id)
-            print(f"{one.label} — {one.key_url}")
+            print(f"{one.label}, {one.key_url}")
             value = getpass.getpass(f"paste {one.env} (input hidden): ").strip()
             if not value:
                 print("nothing pasted; no change")
@@ -1138,7 +1151,7 @@ def _writable_console() -> None:
     """Stop the Windows console mangling our own prose.
 
     Reason strings carry em dashes like every other string in this codebase, and
-    a stock Windows console is cp1252 — so `bgate doctor` printed its advice as
+    a stock Windows console is cp1252, so `bgate doctor` printed its advice as
     mojibake, which is a poor first impression for the command people run when
     something is already wrong. Best-effort: a stream that cannot be
     reconfigured is left alone rather than crashing the CLI over punctuation.
@@ -1229,7 +1242,7 @@ def main() -> int:
                             dest=opt("--dir"), pitch=opt("--pitch"),
                             # --replace is the only way to overwrite from the
                             # command line. --force stopped meaning that when it
-                            # was found destroying customised files in place —
+                            # was found destroying customised files in place -
                             # export_presets.cfg is gitignored by the template
                             # this ships, so for anyone with custom export
                             # targets it was unrecoverable. Deliberate
@@ -1340,7 +1353,7 @@ def main() -> int:
         positional = [a for a in rest if not a.startswith("-")]
         action = positional[0] if positional else "list"
         # `bgate key openai` reads as a request about that provider, not as a
-        # bad verb — accept it as a listing rather than a usage error.
+        # bad verb, accept it as a listing rather than a usage error.
         if action not in ("list", "status", "show", "set", "clear"):
             action, provider_id = "list", ""
             directory = ""
@@ -1385,14 +1398,14 @@ def main() -> int:
         target = Path(positional[0] if positional else ".").expanduser().resolve()
         marker = target / ".bgate"
         if not marker.is_dir():
-            print(f"{target} is not an adopted project — nothing to undo")
+            print(f"{target} is not an adopted project, nothing to undo")
             return 1
         if "--yes" not in args:
-            print(f"This will DELETE {marker} — the board, the bible, the lore, "
+            print(f"This will DELETE {marker}, the board, the bible, the lore, "
                   "and the artifact ledger for this project.")
             print("Your game files are untouched, and so are the marked blocks "
                   "in .gitignore and CLAUDE.md (delete those by hand if you "
-                  "want them gone — they are marker-delimited).")
+                  "want them gone, they are marker-delimited).")
             print(f"Re-run with --yes to confirm:  bgate un-adopt {target} --yes")
             return 1
         import shutil

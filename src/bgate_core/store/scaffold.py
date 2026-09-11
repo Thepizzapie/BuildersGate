@@ -1,6 +1,6 @@
 """Stamp out a Godot project wired for playtesting.
 
-Templates are real, runnable slices — not empty shells. Each ships a player whose
+Templates are real, runnable slices, not empty shells. Each ships a player whose
 "feel" tunables (gravity, fall_multiplier, coyote_time) are exported AND emitted
 as telemetry, so the very first playtest already produces the join that makes
 "the jump feels floaty" actionable.
@@ -23,7 +23,7 @@ KINDS = ("2d", "3d")
 # TEMPLATES ARE NOW <engine>/<kind>, not <kind>. The dimension WAS the template
 # key, which made a second engine impossible to express: "3d" cannot mean both a
 # Godot third-person slice and a Three.js one. templates/{2d,3d,shared} moved
-# under templates/godot/ and nothing else about the copy changed — the engine's
+# under templates/godot/ and nothing else about the copy changed, the engine's
 # own shared/ tree is still overlaid on top of its kind tree, so there is still
 # exactly one copy of the telemetry code per engine rather than one per
 # dimension.
@@ -34,7 +34,7 @@ _NAME_TOKEN = "__PROJECT_NAME__"
 
 # THE SECOND TOKEN EXISTS BECAUSE npm REFUSES THE FIRST ONE. A package.json
 # "name" must be lowercase with no spaces, so a project called "Neon Drift"
-# stamped through __PROJECT_NAME__ produces a manifest npm rejects outright —
+# stamped through __PROJECT_NAME__ produces a manifest npm rejects outright -
 # `npm install` fails on "Invalid name" before a single dependency is fetched,
 # on a project the scaffolder just reported as created. The display name still
 # belongs in <title> and in CLAUDE.md's heading; only machine identifiers take
@@ -55,7 +55,7 @@ def engine_dir(engine: str) -> Path:
     name = _engines.template_dir_name(engine)
     if not name:
         raise ValueError(
-            f"there is no scaffold template for engine {engine!r} — "
+            f"there is no scaffold template for engine {engine!r}, "
             f"{_engines.label(engine)} projects are adopted, not scaffolded")
     return TEMPLATES_DIR / name
 
@@ -85,7 +85,7 @@ def _backup(out: Path) -> Path:
     """Copy out to <name>.bak, never onto an existing backup.
 
     A second replace run that reused the same .bak would destroy the rescue copy
-    taken by the first one — the exact loss the backup exists to prevent.
+    taken by the first one, the exact loss the backup exists to prevent.
     """
     bak = out.with_name(out.name + ".bak")
     n = 1
@@ -159,7 +159,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
                 engine: str = "") -> dict:
     """Create an engine project at dest from the given template.
 
-    Refuses to write into a non-empty directory unless force — a scaffolder that
+    Refuses to write into a non-empty directory unless force, a scaffolder that
     quietly overwrites someone's work is a data-loss bug wearing a feature's hat.
 
     force used to be that bug. It meant "write every template file over whatever
@@ -172,7 +172,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
     So force now means FILL IN WHAT IS MISSING. A file that already matches what
     we would write is left alone; a file that differs is the user's and is
     skipped, not overwritten. replace=True is the separate, explicit "yes, put
-    the template back" — and even that copies each victim to <name>.bak first.
+    the template back", and even that copies each victim to <name>.bak first.
     Both the skips and the replacements come back in the result so the caller
     can say what happened instead of the user finding out in a diff.
     """
@@ -190,14 +190,14 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
     shared = base / "shared"
     if not template.is_dir():
         raise FileNotFoundError(
-            f"template not found: {template} — {_engines.label(engine)} has no "
+            f"template not found: {template}, {_engines.label(engine)} has no "
             f"{kind} scaffold")
 
     target = Path(dest)
     project.refuse_harness(target, "scaffold a game")
     if target.exists() and any(target.iterdir()) and not (force or replace):
         raise FileExistsError(
-            f"{target} is not empty — pass force=True to scaffold into it anyway"
+            f"{target} is not empty: pass force=True to scaffold into it anyway"
         )
     target.mkdir(parents=True, exist_ok=True)
 
@@ -231,7 +231,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
                         # agent gets it from godot_scaffold and needs the
                         # argument. Naming only the Python kwarg told someone
                         # standing at a shell to pass something they cannot.
-                        "reason": "differs from the template — kept your version; "
+                        "reason": "differs from the template, kept your version; "
                                   "overwrite it with `bgate init --replace` (or "
                                   "replace=True from the API). A .bak is taken "
                                   "first",
@@ -241,7 +241,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
 
             out.parent.mkdir(parents=True, exist_ok=True)
             # .md is in here for templates/shared/CLAUDE.md, which greets the
-            # user's Claude session by the project's real name — a briefing that
+            # user's Claude session by the project's real name, a briefing that
             # says __PROJECT_NAME__ reads as a broken tool on first contact.
             if item.suffix in _TEXT_SUFFIXES:
                 out.write_text(_rendered(item, name), encoding="utf-8")
@@ -257,7 +257,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
     # THE ROOT ABOVE THE GODOT PROJECT GETS ONE TOO, AND IT IS THE ONE THAT
     # MATTERS. This template stamps a well-written .gitignore into the Godot
     # project directory, including the line about `.bgate/` holding the
-    # dashboard's auth token — and `.bgate/` does not live in the Godot project.
+    # dashboard's auth token, and `.bgate/` does not live in the Godot project.
     # It lives in the Builders Gate root ABOVE it, which was stamped with
     # nothing.
     #
@@ -276,7 +276,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
         bgate_root = _db.resolve_root(target) or (
             target.parent if (target.parent / ".bgate").is_dir() else None)
         if bgate_root and Path(bgate_root).resolve() != target.resolve():
-            root_ignore = _adopt.stamp_gitignore(bgate_root)
+            root_ignore = _adopt.stamp_gitignore(bgate_root, engine)
     except Exception as exc:
         root_ignore = {"action": "failed", "error": f"{type(exc).__name__}: {exc}"}
 

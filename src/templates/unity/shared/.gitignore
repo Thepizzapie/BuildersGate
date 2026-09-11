@@ -1,0 +1,28 @@
+# Builders Gate, stamped by `bgate adopt`. Edit freely; the marked block below
+# is refreshed on re-adopt and anything outside it is left alone.
+
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+*.csproj
+*.sln
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+.vs/
+.idea/
+crashlytics-build.properties
+
+# --- builders gate ---
+.bgate/
+.bgate_out/
+.env
+# --- end builders gate ---

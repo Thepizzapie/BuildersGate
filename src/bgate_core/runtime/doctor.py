@@ -2,7 +2,7 @@
 
 Answering "is ffmpeg on this machine" used to mean calling five different status
 tools, and the playtest preflight answered it by OPENING THE MICROPHONE for 1.5s
-and spawning a whisper probe subprocess — every 15 seconds, forever, for a
+and spawning a whisper probe subprocess, every 15 seconds, forever, for a
 question no microphone can answer. So the cheap capability probes live here,
 split away from anything that touches hardware: nothing in this module opens an
 audio device, renders a frame, launches an engine, or downloads a model.
@@ -14,7 +14,7 @@ overrides them; doctor calls those and normalises the answers into one shape:
     {available, path, version, min_required, reason}   per dependency
 
 Every probe is wall-clock bounded and returns a row instead of raising. A health
-check that hangs is worse than one that says "unknown" — the caller is asking
+check that hangs is worse than one that says "unknown", the caller is asking
 BECAUSE something might be broken, and it must still get an answer.
 
 Results are cached for a few seconds (CACHE_SECONDS) because the honest usage
@@ -28,7 +28,7 @@ doing what I told it" is not a missing binary, it is an env var in a shell
 profile silently winning over what the panel shows. Nothing else in the tool
 answers "what is this project actually configured to do" in one line, and it is
 kept OUT of :func:`check` so the exit code keeps meaning "a dependency is
-missing" — a setting that is merely non-default is not a failure.
+missing", a setting that is merely non-default is not a failure.
 """
 from __future__ import annotations
 
@@ -47,12 +47,12 @@ from . import engines, ffmpegbin as _ffmpegbin
 # Windows: never flash a console window out of a background health check.
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
-# The order is the report order — cheap/local first, subprocess-spawning last.
+# The order is the report order, cheap/local first, subprocess-spawning last.
 #
 # `art_key` REPLACED `openai_key`, and the rename is the fix rather than a
 # tidy-up. The old row probed OPENAI_API_KEY and nothing else, so a project
-# whose only credential was KREA_API_KEY — a key `.env.example` and the setup
-# docs both tell people to set, and which every art tool will happily use — got
+# whose only credential was KREA_API_KEY, a key `.env.example` and the setup
+# docs both tell people to set, and which every art tool will happily use, got
 # `MISS openai_key` and a NON-ZERO EXIT while its setup was completely fine.
 # That was documented as a known wart in CLAUDE.md and in three doc pages, which
 # is what a wrong health check costs: everybody downstream writes a paragraph
@@ -61,7 +61,7 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 # edit here.
 CHECKS = ("python", "art_key", "local_runtimes", "agent_cli", "ffmpeg",
           "ffprobe", "blender", "godot", "godot_web_templates",
-          "node", "playwright", "whisper",
+          "node", "playwright", "unity", "whisper",
           "imageto3d", "local_image", "aseprite", "anim_library")
 
 # Rows that SUMMARISE A REGISTRY rather than probe one binary on PATH.
@@ -92,8 +92,8 @@ MIN_REQUIRED = {
     # first-time user reads before anything else works.
     "python": "3.11",
     "art_key": "",
-    # Next to art_key on purpose: the two answer one question between them —
-    # "can this project generate anything" — from the two directions it can be
+    # Next to art_key on purpose: the two answer one question between them -
+    # "can this project generate anything", from the two directions it can be
     # answered from. art_key asks whether something is rented; this asks whether
     # something is running here. A project needs one of them, not both, and a
     # red row here is not a fault on a machine that never wanted local
@@ -115,10 +115,12 @@ MIN_REQUIRED = {
     # fails on syntax rather than on a version check.
     "node": "20",
     "playwright": "",
+    # 2021 LTS is where -testResults and the batchmode log shape settled.
+    "unity": "2021",
     "godot_web_templates": "",
     "whisper": "0.10",
     # No floor. A red row here means image-to-3D is unavailable and every
-    # other path still works — same status as ffmpeg or whisper. It reports a
+    # other path still works, same status as ffmpeg or whisper. It reports a
     # GPU, not a binary, and it asks nvidia-smi rather than torch: this
     # machine's default interpreter carries torch 2.8.0+cpu, so a torch probe
     # would call a perfectly good RTX 3060 "no GPU" and never recover.
@@ -143,7 +145,7 @@ CACHE_SECONDS = 5.0
 # Per-probe wall clock. The underlying subprocess calls carry their own (shorter)
 # timeouts; this is the backstop for a binary that ignores SIGTERM or a network
 # filesystem that stalls a stat(). A probe over budget reports "timed out" and
-# the aggregate still returns — the worker thread is abandoned, not awaited.
+# the aggregate still returns, the worker thread is abandoned, not awaited.
 PROBE_BUDGET = 20.0
 
 # A short timeout for `--version`: any binary that cannot print its own version
@@ -172,7 +174,7 @@ def _as_tuple(text: str) -> tuple[int, ...]:
 
 
 def _too_old(name: str, version: str) -> str:
-    """'' when the version is fine (or unreadable — never fail on a parse miss)."""
+    """'' when the version is fine (or unreadable, never fail on a parse miss)."""
     floor = MIN_REQUIRED.get(name, "")
     if not floor:
         return ""
@@ -198,7 +200,7 @@ def _missing(name: str, reason: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The probes. One per dependency, each independent of every other — checking
+# The probes. One per dependency, each independent of every other, checking
 # ffmpeg must never drag in the mic, and checking whisper must never load a model.
 # ---------------------------------------------------------------------------
 def _banner(exe: str) -> str:
@@ -226,7 +228,7 @@ def _probe_python() -> dict:
 def _probe_art_key() -> dict:
     """Is ANY art-generation provider configured?
 
-    Presence only. Never print, hash, or validate a key against the API — a
+    Presence only. Never print, hash, or validate a key against the API, a
     health check that spends money is a health check nobody runs, and one that
     prints the thing it is checking is worse than not having it.
 
@@ -252,7 +254,7 @@ def _probe_art_key() -> dict:
                   else ", ".join(names[:-1]) + " or " + names[-1])
         return _missing(
             "art_key",
-            f"no art-generation key set — put one of {listed} in the project's "
+            f"no art-generation key set, put one of {listed} in the project's "
             ".env (it is loaded from the project root) or the environment; "
             "local generation still works without any of them")
 
@@ -281,7 +283,7 @@ def _probe_art_key() -> dict:
         return _missing(
             "art_key",
             f"{len(have)} art key(s) are SET ({', '.join(have)}) and none is "
-            "usable — the adapter behind each refuses (missing package, empty "
+            "usable, the adapter behind each refuses (missing package, empty "
             "value, or unreachable). provider_status names which and why; "
             "nothing will generate until one of them answers")
     # The NAMES of the usable variables, never their values or lengths.
@@ -296,7 +298,7 @@ def _probe_ffmpeg() -> dict:
     exe = _ffmpegbin.resolve()
     if not exe:
         return _missing("ffmpeg",
-                        "ffmpeg not found on PATH — needed for screen capture, "
+                        "ffmpeg not found on PATH, needed for screen capture, "
                         "frame extraction and playtest recording")
     banner = _banner(exe)  # "ffmpeg version 7.1-full_build-www.gyan.dev ..."
     match = re.search(r"version\s+(\S+)", banner)
@@ -305,25 +307,25 @@ def _probe_ffmpeg() -> dict:
     # WHICH ffmpeg, NOT JUST WHETHER. libtheora is an OPTIONAL build flag and
     # several distributions ship an ffmpeg without it. Such a build passes every
     # check above, records playtests perfectly, and then fails at the one thing
-    # cutscenes need — writing the Ogg Theora that is the only format Godot
-    # plays — after a whole sequence has been generated and paid for.
+    # cutscenes need, writing the Ogg Theora that is the only format Godot
+    # plays, after a whole sequence has been generated and paid for.
     #
     # IT DOES NOT TURN THE ROW RED, and it does not add a column. Screen
     # capture, frame extraction and recording are what this row has always
     # meant and all of them work without libtheora, so a red row would tell a
     # project that ships no cutscenes that its setup is broken. And every
-    # dependency answers in exactly _row's shape — a `theora` key here would be
+    # dependency answers in exactly _row's shape, a `theora` key here would be
     # one row wider than the other eleven, which every consumer of this report
     # would have to special-case. So it rides in the version string, where it is
     # visible in the doctor table and costs nothing.
     #
     # A BROKEN libtheora IS THE OTHER CASE AND IT DOES GO RED, which is not an
-    # inconsistency with the paragraph above — it is the same rule applied to a
+    # inconsistency with the paragraph above, it is the same rule applied to a
     # different fact. An ABSENT libtheora removes a capability this row never
     # promised, and it announces itself: the encode fails loudly with "Unknown
     # encoder". A libtheora that is present and writes files nothing can decode
     # announces nothing at all. It exits 0, the file is the right size, and the
-    # cutscene is flat green rectangles in the shipped game — which is exactly
+    # cutscene is flat green rectangles in the shipped game, which is exactly
     # what happened, for the entire life of this product, while this row was
     # green (GyanD/codexffmpeg issue #200; cinematic.ffmpeg_status carries the
     # measurement and the remedy). Silent corruption is the one thing a health
@@ -334,10 +336,10 @@ def _probe_ffmpeg() -> dict:
         encoder = _cine.ffmpeg_status()
         # Only when the probe actually RAN. A binary that could not be executed
         # tells us nothing about its build, and "no libtheora" is a claim, not a
-        # default — asserting it about an encoder we never reached would send a
+        # default, asserting it about an encoder we never reached would send a
         # user to fix something that is not broken.
         if encoder.get("probed") and not encoder.get("theora"):
-            version += " (no libtheora — cannot write the Ogg Theora Godot " \
+            version += " (no libtheora, cannot write the Ogg Theora Godot " \
                        "plays, so generated cutscenes cannot be delivered)"
         elif encoder.get("theora") and not encoder.get("ok") \
                 and (encoder.get("roundtrip") or {}).get("ran"):
@@ -347,7 +349,7 @@ def _probe_ffmpeg() -> dict:
             errors = int((encoder.get("roundtrip") or {}).get("errors") or 0)
             return _row(
                 available=False, path=exe,
-                version=f"{version} (libtheora present but BROKEN — "
+                version=f"{version} (libtheora present but BROKEN, "
                         f"{errors} decode error(s) round-tripping one second of "
                         "video)",
                 min_required=MIN_REQUIRED.get("ffmpeg", ""),
@@ -361,7 +363,7 @@ def _probe_ffprobe() -> dict:
     exe = shutil.which("ffprobe")
     if not exe:
         return _missing("ffprobe",
-                        "ffprobe not found on PATH — recordings can be made but "
+                        "ffprobe not found on PATH, recordings can be made but "
                         "their duration cannot be read back")
     banner = _banner(exe)
     match = re.search(r"version\s+(\S+)", banner)
@@ -385,11 +387,11 @@ def _probe_blender() -> dict:
 
 
 def _probe_aseprite() -> dict:
-    """Aseprite — .aseprite masters, hand-edit round trips, palette derivation.
+    """Aseprite, .aseprite masters, hand-edit round trips, palette derivation.
 
     Optional in the same sense as blender: a red row costs the features that
     need it and nothing else. It is also a PAID product, so unlike ffmpeg
-    there is no fetch button — the fix is an install or BGATE_ASEPRITE.
+    there is no fetch button, the fix is an install or BGATE_ASEPRITE.
     """
     from bgate_adapters import aseprite
 
@@ -423,7 +425,7 @@ def _probe_godot() -> dict:
 
 
 def _probe_godot_web_templates() -> dict:
-    """The Web export templates — what stands between a finished game and a URL.
+    """The Web export templates, what stands between a finished game and a URL.
 
     Separate from the `godot` row because they are a separate ~1GB download and
     a separate failure: the editor runs fine, `bgate publish` produces nothing,
@@ -440,7 +442,7 @@ def _probe_godot_web_templates() -> dict:
 
 
 def _probe_node() -> dict:
-    """Node.js — everything the web engine does starts here.
+    """Node.js, everything the web engine does starts here.
 
     No search globs and no 0-byte-stub check, unlike the godot row: node
     installs itself onto PATH on every platform it supports, so `which` is the
@@ -460,7 +462,7 @@ def _probe_playwright() -> dict:
     """The headless browser the web engine photographs a running game with.
 
     GREEN ONLY WHEN IT IS USABLE, which is a narrower question than "is the
-    package importable" — and it is narrower for the reason the art_key row
+    package importable", and it is narrower for the reason the art_key row
     already had to learn. Playwright is TWO installs: `pip install playwright`
     puts the package there, and `playwright install chromium` downloads the
     browser as a separate few-hundred-MB step a fresh environment has NOT done.
@@ -474,6 +476,22 @@ def _probe_playwright() -> dict:
     if not probe.get("available"):
         return _missing("playwright", probe.get("reason", "not usable"))
     return _row(available=True, path=probe.get("path", ""))
+
+
+def _probe_unity() -> dict:
+    """The Unity editor, found through the Hub's install roots or BGATE_UNITY.
+
+    Never launched: an editor start is a licence check and twenty seconds.
+    The version is read off the Hub's directory name, which is how the Hub
+    itself tells them apart.
+    """
+    from bgate_adapters import unity
+
+    probe = unity.available()
+    if not probe.get("available"):
+        return _missing("unity", probe.get("reason", "Unity editor not found"))
+    found = unity.version(probe.get("path"))
+    return _finish("unity", found.get("path", ""), found.get("version", ""))
 
 
 def _probe_whisper() -> dict:
@@ -523,7 +541,7 @@ def _probe_local_image() -> dict:
         return _missing("local_image", f"adapter unavailable: {exc}")
     row = localgen.doctor_row()
     ok = bool(row.get("available"))
-    # `path` is what IS there, never what is missing — an unavailable row that
+    # `path` is what IS there, never what is missing, an unavailable row that
     # puts its reason in the path column reads as a found binary to every caller
     # that only checks whether the column is empty.
     return _row(available=ok, path=row.get("detail", "") if ok else "",
@@ -552,7 +570,7 @@ def _probe_local_runtimes() -> dict:
     here means every local generator is either unset or not running; the hosted
     paths are untouched, which is why the reason says so.
 
-    Root is not passed — like every probe here it reads the environment
+    Root is not passed, like every probe here it reads the environment
     ``check()`` has already loaded the project's .env into.
     """
     try:
@@ -561,7 +579,7 @@ def _probe_local_runtimes() -> dict:
         return _missing("local_runtimes", f"registry unavailable: {exc}")
     row = localruntimes.doctor_row()
     ok = bool(row.get("available"))
-    # `path` is what IS there, never what is missing — same rule as
+    # `path` is what IS there, never what is missing, same rule as
     # _probe_local_image, for the same reason.
     return _row(available=ok, path=row.get("detail", "") if ok else "",
                 min_required=MIN_REQUIRED["local_runtimes"],
@@ -578,7 +596,7 @@ def _probe_agent_cli() -> dict:
 
     ``bgate_ui.agents.agentcli`` lives on the UI side because it reads
     ``bgate_ui.agents.runners``, which is where "which CLIs exist" is answered. The
-    import is lazy and guarded — the same shape ``brainstorm`` and
+    import is lazy and guarded, the same shape ``brainstorm`` and
     ``workflows`` already use to reach the UI layer from core, and neither that
     module nor ``runners`` pulls in FastAPI, so this costs a doctor run nothing.
     """
@@ -605,6 +623,7 @@ _PROBES: dict[str, Callable[[], dict]] = {
     "godot_web_templates": _probe_godot_web_templates,
     "node": _probe_node,
     "playwright": _probe_playwright,
+    "unity": _probe_unity,
     "whisper": _probe_whisper,
     "imageto3d": _probe_imageto3d,
     "anim_library": _probe_anim_library,
@@ -651,7 +670,7 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
         if cached and now - cached[0] < CACHE_SECONDS:
             return {name: dict(row) for name, row in cached[1].items()}
 
-    # Probes are independent, so run them together — the aggregate then costs
+    # Probes are independent, so run them together, the aggregate then costs
     # the slowest one rather than the sum. Threads are abandoned on budget
     # overrun (each underlying subprocess carries its own timeout and will die
     # on its own); waiting on a wedged probe is the failure being fixed here.
@@ -667,7 +686,7 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
                 report[name] = future.result(timeout=remaining)
             except Exception:
                 report[name] = _missing(
-                    name, f"probe did not answer within {PROBE_BUDGET:.0f}s — "
+                    name, f"probe did not answer within {PROBE_BUDGET:.0f}s, "
                           "treat as unavailable")
     finally:
         pool.shutdown(wait=False)
@@ -677,7 +696,7 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
 
     # A DISABLED MODULE'S DEPENDENCY IS NOT A FAULT. A project that switched
     # playtest capture and 3D off must not open doctor to red rows about
-    # ffmpeg and Blender — a report that grades features you deliberately
+    # ffmpeg and Blender, a report that grades features you deliberately
     # declined teaches you to ignore the report. Rows are marked, not
     # removed, so "why isn't blender listed" has an answer on the row itself;
     # a row two modules share stays graded while either is on.
@@ -692,7 +711,7 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
                     # true); the marker says nobody here needs it.
                     row["module_disabled"] = True
                     row["reason"] = ((row.get("reason") or "")
-                                     + " (module disabled — not required for "
+                                     + " (module disabled, not required for "
                                        "this project)").strip()
         except Exception:
             pass
@@ -720,7 +739,7 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
 
 
 def project_report(root: Optional[str] = None) -> list[dict]:
-    """Project-level configuration faults — the ones no binary probe can see.
+    """Project-level configuration faults, the ones no binary probe can see.
 
     SEPARATE FROM ``CHECKS`` ON PURPOSE. Every row there answers "is this
     executable on this machine", is cached per machine, and has a test contract
@@ -731,7 +750,7 @@ def project_report(root: Optional[str] = None) -> list[dict]:
     lanes that describe a directory layout the project does not have (every
     dispatched agent then refused on contact with the source tree), and lane
     rules that are not being enforced at all because the hook was never
-    installed — adopt does not install it, so that is the out-of-box state.
+    installed, adopt does not install it, so that is the out-of-box state.
 
     Returns [{name, ok, detail, fix}]. Never raises: a diagnostic that dies
     takes the whole doctor run with it.
@@ -742,7 +761,10 @@ def project_report(root: Optional[str] = None) -> list[dict]:
     try:
         from ..board import seats as _seats
         layout = _seats.detect_layout(root)
-        owned = _seats.lane_owners(root, layout["prefix"] + "scenes/x.tscn")
+        # The file a gameplay agent writes first, in this engine's layout.
+        probe = {"web": "src/x.ts", "unity": "Assets/Scripts/x.cs"}.get(
+            layout.get("engine") or "", "scenes/x.tscn")
+        owned = _seats.lane_owners(root, layout["prefix"] + probe)
         ok = bool(owned)
         out.append({
             "name": "seat_lanes",
@@ -750,7 +772,7 @@ def project_report(root: Optional[str] = None) -> list[dict]:
             "detail": (
                 f"lanes cover this project's layout (game lives at "
                 f"{layout['prefix'] or 'the project root'})" if ok else
-                f"NO SEAT owns {layout['prefix'] or ''}scenes/** — the seat "
+                f"NO SEAT owns {layout['prefix'] or ''}{probe.rsplit('/', 1)[0]}/**, the seat "
                 "lanes describe a layout this project does not have, so every "
                 "dispatched agent is refused on contact with the source tree"),
             "fix": ("" if ok else
@@ -770,7 +792,7 @@ def project_report(root: Optional[str] = None) -> list[dict]:
             "ok": live,
             "detail": ("lane and lock enforcement is live" if live else
                        "the PreToolUse hook is not installed here, so lanes "
-                       "and locks are advisory — agents can write anywhere"),
+                       "and locks are advisory, agents can write anywhere"),
             "fix": "" if live else f"bgate hook-install {root}",
         })
     except Exception as exc:
@@ -788,7 +810,7 @@ def summary(report: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Effective settings — the other half of "why is it behaving like that"
+# Effective settings, the other half of "why is it behaving like that"
 # ---------------------------------------------------------------------------
 def settings_report(root: Optional[str] = None) -> list[dict]:
     """Every registered setting as ``{key, group, value, default, source, env,
@@ -803,7 +825,7 @@ def settings_report(root: Optional[str] = None) -> list[dict]:
         rows_out: list[dict] = []
         # Passing "" is deliberate rather than skipped: every store read in the
         # registry is individually guarded, so with no project the answer is
-        # defaults plus whatever the environment forces — which is exactly what
+        # defaults plus whatever the environment forces, which is exactly what
         # somebody running `bgate doctor` outside a project needs to see.
         live = _settings.effective(root or "")
         for one in _settings.SETTINGS:
@@ -837,7 +859,7 @@ def settings_lines(root: Optional[str] = None) -> list[str]:
     """The printable settings block: one line per setting, grouped.
 
     An overridden or non-default value is marked, because a wall of thirty rows
-    in which everything looks the same is a wall nobody reads — the two facts
+    in which everything looks the same is a wall nobody reads, the two facts
     worth finding here are "the environment took this away from you" and "this
     is not what ships by default".
     """

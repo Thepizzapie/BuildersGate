@@ -130,7 +130,7 @@ class TestProviderTruth:
 
 
 def _item(root, seat: str = "art", title: str = "work") -> int:
-    """A real work item — a made-up id makes a foreign key roll the INSERT back,
+    """A real work item, a made-up id makes a foreign key roll the INSERT back,
     which would make a test measure nothing while passing."""
     from bgate_core.board import queue
 
@@ -351,6 +351,21 @@ class TestUnwiredAssets:
             'var tex = load("res://assets/projectile.png")\n', encoding="utf-8")
         got = assets.integration(root)
         assert got["ok"]
+
+    def test_a_web_game_is_read_through_its_own_source(self, root):
+        """A web game's references live in .ts and .html. Scanned as Godot,
+        every sprite it shipped was an orphan and the only wired one was a
+        coincidence."""
+        (root / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+        (root / "public" / "assets").mkdir(parents=True)
+        (root / "src").mkdir()
+        (root / "public" / "assets" / "hero.png").write_bytes(bytes([0x89]) + b"PNG")
+        (root / "public" / "assets" / "unused.png").write_bytes(bytes([0x89]) + b"PNG")
+        (root / "src" / "game.ts").write_text(
+            'const hero = new Image(); hero.src = "/assets/hero.png";' + chr(10),
+            encoding="utf-8")
+        got = assets.integration(root)
+        assert got["unreferenced"] == ["public/assets/unused.png"]
 
     def test_a_templated_path_is_a_family_not_a_dangling_reference(self, root):
         """`load("res://assets/%s.png" % unit)` is a real and common shape. The

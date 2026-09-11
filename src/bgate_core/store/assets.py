@@ -1,20 +1,20 @@
-"""Asset registry — content hashes and locks for the files git can't merge.
+"""Asset registry, content hashes and locks for the files git can't merge.
 
 Two agents editing one .blend is the failure mode this module exists for. Text
 merges; binary doesn't. A conflicted .tscn is an afternoon; a conflicted .blend
 is a lost asset. So binaries LOCK, they never merge:
 
-  * track()   — register a file under a content hash (sha256)
-  * lock()    — claim a path for one seat; anyone else's lock attempt fails
-  * verify()  — compare disk against the registry; catches silent clobbers
-  * release() — free the lock, re-hash, record the new content
+  * track(), register a file under a content hash (sha256)
+  * lock(), claim a path for one seat; anyone else's lock attempt fails
+  * verify(), compare disk against the registry; catches silent clobbers
+  * release(), free the lock, re-hash, record the new content
 
 Text paths get the same treatment one notch softer: an ADVISORY path lease (see
 the bottom of this module). Two agents in overlapping lanes editing one .gd is
-last-write-wins with no warning — the same lost work as a conflicted .blend,
+last-write-wins with no warning, the same lost work as a conflicted .blend,
 just quieter. A lease says who is in there right now.
 
-The registry is advisory at this layer — enforcement (blocking a write tool on a
+The registry is advisory at this layer, enforcement (blocking a write tool on a
 locked path) belongs to the seat/hook layer, same as Orbit's PreToolUse lanes.
 But verify() makes violations VISIBLE even without enforcement: a changed hash
 with no lock held names the file that was stomped and when.
@@ -44,7 +44,7 @@ _SUFFIX_KINDS = {
     ".tscn": "scene", ".tres": "resource", ".gd": "script",
     # VIDEO, AND .ogv IS NOT .ogg. Ogg is a container: the same extension family
     # carries Vorbis audio and Theora video, and the engine treats them as
-    # completely different resources — .ogg imports as an AudioStream, .ogv as a
+    # completely different resources, .ogg imports as an AudioStream, .ogv as a
     # VideoStream. Mapping .ogv to "audio" by family resemblance would file every
     # shipped cutscene as a sound effect in the registry, in the audio seat's
     # listings, and in every kind-filtered query downstream.
@@ -92,17 +92,17 @@ def lease_seconds(operation: str = "", lease_s: Optional[int] = None) -> int:
 
 def normalize_path(root: str | os.PathLike[str],
                    path: str | os.PathLike[str]) -> str:
-    """Registry key: repo-root-relative, forward slashes — stable across OSes.
+    """Registry key: repo-root-relative, forward slashes, stable across OSes.
 
     SEPARATORS ARE NORMALISED BEFORE THE CONTAINMENT CHECK, NOT AFTER, and the
     order is a security property rather than tidiness.
 
     This used to resolve the path as given, verify it sat inside the project,
     and THEN rewrite backslashes to forward slashes on the way out. On Windows
-    that is harmless — both characters are separators, so `resolve()` already
+    that is harmless, both characters are separators, so `resolve()` already
     saw the traversal. On POSIX a backslash is an ORDINARY FILENAME CHARACTER,
     so `..\\..\\outside\\secret.png` is one legal filename, resolves to a
-    non-existent child of the project, passes containment — and is then handed
+    non-existent child of the project, passes containment, and is then handed
     back as `../../outside/secret.png`, which every caller joins to the root and
     follows straight out of the project.
 
@@ -189,7 +189,7 @@ def list_assets(root: str | os.PathLike[str], kind: Optional[str] = None,
 
 
 # ---------------------------------------------------------------------------
-# Expiry — the clock comparison the audit found missing
+# Expiry, the clock comparison the audit found missing
 # ---------------------------------------------------------------------------
 def reap_expired(root: str | os.PathLike[str]) -> list[str]:
     """Drop every claim whose lease ran out. Agents die mid-flight; a lock that
@@ -197,7 +197,7 @@ def reap_expired(root: str | os.PathLike[str]) -> list[str]:
 
     Deliberately does NOT re-hash: nobody knows what the dead agent left behind,
     so verify() should keep reporting the file as drifted until a human looks.
-    A lock with no lease at all (pre-0011 rows) is left alone — force_release is
+    A lock with no lease at all (pre-0011 rows) is left alone, force_release is
     still the way to break those.
     """
     now = _now()
@@ -221,7 +221,7 @@ def reap_expired(root: str | os.PathLike[str]) -> list[str]:
         return []  # a reaping failure must never break the caller's real work
     for row in expired:
         activity.log(root, "lease_expired",
-                     f"lease on {row['path']} expired — lock released",
+                     f"lease on {row['path']} expired, lock released",
                      seat=row["lock_seat"] or "", ref=row["path"],
                      actor=row["lock_owner"] or "")
     return [row["path"] for row in expired]
@@ -235,7 +235,7 @@ def lock_holder(root: str | os.PathLike[str],
     """The seat currently holding ``path``, or None. NEVER RAISES.
 
     Every writer that is not `lock()` itself needs this same question answered
-    before it touches a file — the dashboard's code editor, its scene editor,
+    before it touches a file, the dashboard's code editor, its scene editor,
     and the scene tools on the MCP surface. They each used to answer it their
     own way or not at all, and "not at all" is how an agent mid-edit and a human
     at the keyboard end up writing the same .tscn a second apart.
@@ -271,7 +271,7 @@ def lock(root: str | os.PathLike[str], path: str | os.PathLike[str],
     ``wait_s`` turns the failure into a wait: the caller is registered in
     asset_waiter (so 'who is blocked on this .blend' is answerable) and polls
     until the holder releases or its lease expires. ``operation`` sizes the
-    lease to the job — 'bake' is not 'import'.
+    lease to the job, 'bake' is not 'import'.
     """
     if not seat or not seat.strip():
         raise ValueError("a lock needs a seat name")
@@ -334,7 +334,7 @@ def _claim(root: str | os.PathLike[str], rel: str, seat: str, owner: str,
                 f"{rel} is locked by seat {holder!r}"
                 + (f" ({held_owner})" if held_owner else "")
                 + f" since {row['lock_at']}, lease until "
-                f"{row['lease_expires_at'] or 'forever'} — "
+                f"{row['lease_expires_at'] or 'forever'}, "
                 "binary assets don't merge; wait for release or re-plan"
                 + (f" ({len(blocked)} already waiting)" if blocked else "")
             )
@@ -347,7 +347,7 @@ def _claim(root: str | os.PathLike[str], rel: str, seat: str, owner: str,
 
 
 # ---------------------------------------------------------------------------
-# Waiters — a blocked agent that nobody can see is a scheduling bug
+# Waiters, a blocked agent that nobody can see is a scheduling bug
 # ---------------------------------------------------------------------------
 def _waiter_key(seat: str, owner: str) -> str:
     return owner or f"seat:{seat}"
@@ -427,7 +427,7 @@ def release(root: str | os.PathLike[str], path: str | os.PathLike[str],
 
 
 def force_release(root: str | os.PathLike[str], path: str | os.PathLike[str]) -> dict:
-    """Break a lock regardless of holder — for dead agents. A human's call."""
+    """Break a lock regardless of holder, for dead agents. A human's call."""
     rel = _norm(root, path)
     get(root, rel)  # raise if untracked
     with db.tx(root) as conn:
@@ -442,7 +442,7 @@ def force_release(root: str | os.PathLike[str], path: str | os.PathLike[str]) ->
 
 def heartbeat(root: str | os.PathLike[str], owner: str,
               lease_s: Optional[int] = None, *, operation: str = "") -> dict:
-    """Refresh every claim held by one dispatched execution — locks and leases.
+    """Refresh every claim held by one dispatched execution, locks and leases.
 
     The path leases go up with the asset locks: a run that is still alive keeps
     everything it holds, and a run that dies loses all of it at once.
@@ -466,7 +466,7 @@ def heartbeat(root: str | os.PathLike[str], owner: str,
 
 
 # ---------------------------------------------------------------------------
-# Advisory path leases — the text-file half of the problem
+# Advisory path leases, the text-file half of the problem
 # ---------------------------------------------------------------------------
 def acquire_path_lease(root: str | os.PathLike[str],
                        path: str | os.PathLike[str], seat: str, owner: str,
@@ -522,7 +522,7 @@ def list_path_leases(root: str | os.PathLike[str]) -> list[dict]:
 
 
 def release_path_leases(root: str | os.PathLike[str], owner: str) -> int:
-    """Drop everything one execution leased — called when its run ends."""
+    """Drop everything one execution leased, called when its run ends."""
     owner = owner.strip()
     if not owner:
         return 0
@@ -610,6 +610,48 @@ def _walk(root: Path, suffixes: tuple[str, ...]) -> list[str]:
                 rel = os.path.relpath(os.path.join(dirpath, name), root)
                 out.append(rel.replace("\\", "/"))
     return out
+
+
+def _unity_guid_names(root: Path, consumers: list[str]) -> set[str]:
+    """Basenames of every asset whose .meta GUID some consumer mentions."""
+    import re
+
+    guid_re = re.compile(r"^guid:\s*([0-9a-f]{32})\s*$", re.MULTILINE)
+    ref_re = re.compile(r"guid:\s*([0-9a-f]{32})")
+    by_guid: dict[str, str] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS
+                       and d not in ("Library", "Temp", "Logs", "obj")]
+        for name in filenames:
+            if not name.endswith(".meta"):
+                continue
+            asset = name[:-len(".meta")]
+            if not asset.lower().endswith(SHIPPED_SUFFIXES):
+                continue
+            try:
+                text = (Path(dirpath) / name).read_text(encoding="utf-8",
+                                                        errors="replace")
+            except OSError:
+                continue
+            got = guid_re.search(text)
+            if got:
+                by_guid[got.group(1)] = asset.lower()
+    if not by_guid:
+        return set()
+    used: set[str] = set()
+    for rel in consumers:
+        target = root / rel
+        try:
+            if target.stat().st_size > _MAX_SCAN_BYTES:
+                continue
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for guid in ref_re.findall(text):
+            hit = by_guid.get(guid)
+            if hit:
+                used.add(hit)
+    return used
 
 
 def _references(root: Path, consumers: list[str]) -> tuple[set[str], set[str], int]:
@@ -715,13 +757,41 @@ def integration(root: str | os.PathLike[str]) -> dict:
     """
     base = Path(root)
     engine = base
+    which = "godot"
     if not (base / "project.godot").exists():
         found = sorted(base.glob("*/project.godot"))
         if found:
             engine = found[0].parent
+        else:
+            # NOT A GODOT PROJECT. Ask the registry which engine's files can
+            # name an asset here: a web game's references live in .ts and
+            # .html, and a scan that only read .gd reported every sprite it
+            # shipped as an orphan.
+            try:
+                from . import project as _project
+                where, which = _project.engine_dir(base)
+                if where is not None:
+                    engine = where
+                which = which or "godot"
+            except Exception:
+                which = "godot"
+    consumer_suffixes = CONSUMER_SUFFIXES
+    try:
+        from ..runtime import engines as _engines
+        extra = tuple(sfx for sfx in _engines.consumer_suffixes(which)
+                      if sfx not in consumer_suffixes)
+        consumer_suffixes = consumer_suffixes + extra
+    except Exception:
+        pass
     shipped = _walk(engine, SHIPPED_SUFFIXES)
-    consumers = _walk(engine, CONSUMER_SUFFIXES)
+    consumers = _walk(engine, consumer_suffixes)
     names, paths, dynamic = _references(engine, consumers)
+    if which == "unity":
+        # UNITY REFERENCES BY GUID, NOT BY NAME. A .unity or .prefab names a
+        # texture as `guid: 3f2a...`, and the .meta beside the texture is the
+        # only place that GUID meets a path. A filename scan over Unity YAML
+        # finds nothing and reports every asset as an orphan.
+        names |= _unity_guid_names(engine, consumers)
 
     # A PATH WITH A HOLE IN IT IS A REFERENCE TO A WHOLE FAMILY. Godot code
     # legitimately writes `load("res://assets/sprites/%s.png" % unit)`, and the
@@ -833,11 +903,11 @@ def verify(root: str | os.PathLike[str]) -> dict:
     """Compare every tracked asset against disk. Names what changed and how.
 
     States:
-      clean      — hash matches the registry
-      locked     — held by a seat; changes are expected, not drift
-      modified   — content changed with NO lock held: someone stomped it
-      missing    — tracked but gone from disk
-      untracked_hash — registered by lock() but never written/released
+      clean, hash matches the registry
+      locked, held by a seat; changes are expected, not drift
+      modified, content changed with NO lock held: someone stomped it
+      missing, tracked but gone from disk
+      untracked_hash, registered by lock() but never written/released
     """
     clean, locked, modified, missing, pending = [], [], [], [], []
     for entry in list_assets(root):
@@ -864,7 +934,7 @@ def verify(root: str | os.PathLike[str]) -> dict:
             modified.append({
                 "path": entry["path"],
                 "registered": entry["updated_at"],
-                "detail": "content changed with no lock held — an unlocked write "
+                "detail": "content changed with no lock held, an unlocked write "
                           "or an outside edit; re-track if intentional",
             })
 

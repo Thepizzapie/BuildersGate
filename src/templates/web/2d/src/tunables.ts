@@ -1,5 +1,5 @@
 /**
- * The feel knobs, in one module, exported — the join that makes "the jump feels
+ * The feel knobs, in one module, exported, the join that makes "the jump feels
  * floaty" actionable.
  *
  * THEY ARE HERE RATHER THAN INLINE FOR ONE REASON: a recording has to be able to
@@ -13,7 +13,7 @@
 export interface Tunables {
   /** Pixels per second squared. */
   gravity: number;
-  /** Extra gravity while falling — the difference between floaty and crisp. */
+  /** Extra gravity while falling, the difference between floaty and crisp. */
   fall_multiplier: number;
   /** Upward pixels per second at the moment of a jump. */
   jump_velocity: number;
