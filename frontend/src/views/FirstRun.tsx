@@ -55,7 +55,7 @@ function oncePerValue<T extends { value: string }>(items: T[]): T[] {
 
 type Template = { kind: string; engine: string; available: boolean; description: string };
 type Engine = { name: string; label: string; blurb: string; supported: boolean;
-                templates: Template[] };
+                templates: Template[]; adopt_only?: boolean };
 type ProjectInfo = { cwd?: string; known?: Record<string, string>; kinds?: string[];
                      engines?: Engine[] };
 
@@ -91,6 +91,7 @@ export default function FirstRun() {
   const [pitch, setPitch] = useState("");
   const [kind, setKind] = useState("2d");
   const [engine, setEngine] = useState("godot");
+  const [adoptPath, setAdoptPath] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
@@ -122,6 +123,9 @@ export default function FirstRun() {
   const engines = (info.engines && info.engines.length) ? info.engines : FALLBACK_ENGINES;
   const current = engines.find((e) => e.name === engine) || engines[0];
   const kinds = current.templates.filter((t) => t.available);
+  // An engine with no template is adopted, never scaffolded: the form points
+  // at the project the engine's own tooling made.
+  const adopting = !!current.adopt_only;
 
   // Where a new project would land, said before you commit to it, the audit's
   // other complaint about project_init was that it never told you where.
@@ -138,8 +142,20 @@ export default function FirstRun() {
     location.reload();
   }
 
+  async function adopt(e: React.FormEvent) {
+    e.preventDefault();
+    if (!adoptPath.trim()) { setErr("point at the project folder first"); return; }
+    setErr(""); setBusy("adopt");
+    const r = await mutate("/api/project/adopt", {
+      quiet: true, body: { path: adoptPath.trim(), name: name.trim(), pitch: pitch.trim() },
+    });
+    if (!r.ok) { setErr(r.error || "could not adopt that project"); setBusy(null); return; }
+    location.reload();
+  }
+
   async function create(e: React.FormEvent) {
     e.preventDefault();
+    if (adopting) return adopt(e);
     if (!name.trim()) { setErr("give it a name first"); return; }
     setErr(""); setBusy("create");
     const r = await mutate("/api/project", {
@@ -233,7 +249,14 @@ export default function FirstRun() {
             </div>
           )}
 
-          <div role="radiogroup" aria-label="Starting template">
+          {adopting && (
+            <TextInput label={`${current.label} project folder`}
+                       description="the directory the engine's own tooling created; adopted as it stands, nothing is overwritten"
+                       value={adoptPath} onChange={(e) => setAdoptPath(e.currentTarget.value)}
+                       placeholder={"C:\\games\\my-unity-game"} autoComplete="off" size="md" />
+          )}
+
+          {!adopting && <div role="radiogroup" aria-label="Starting template">
             <Group grow align="stretch" gap="sm">
               {kinds.map((k) => (
                 <Paper key={k.kind} component="button" type="button" role="radio"
@@ -245,15 +268,15 @@ export default function FirstRun() {
                 </Paper>
               ))}
             </Group>
-          </div>
+          </div>}
 
-          {where && (
+          {where && !adopting && (
             <Text size="xs" c="dimmed" ff="var(--mono)">{where}</Text>
           )}
 
-          <Button type="submit" size="md" loading={busy === "create"}
+          <Button type="submit" size="md" loading={busy === "create" || busy === "adopt"}
                   disabled={busy !== null}>
-            Create project
+            {adopting ? "Adopt project" : "Create project"}
           </Button>
 
           {err && (
