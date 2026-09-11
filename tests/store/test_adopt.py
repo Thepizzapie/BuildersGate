@@ -279,7 +279,7 @@ class TestStampedBriefing:
     """The CLAUDE.md is the deliverable, not a nice-to-have — it is the only
     thing a first-time user reads before their session starts guessing."""
 
-    SOURCE = Path(__file__).resolve().parents[2] / "src" / "templates" / "shared" / "CLAUDE.md"
+    SOURCE = Path(__file__).resolve().parents[2] / "src" / "templates" / "godot" / "shared" / "CLAUDE.md"
 
     def test_the_template_exists(self):
         assert self.SOURCE.is_file()
@@ -323,7 +323,7 @@ class TestStampedBriefing:
 class TestTheTelemetryAutoload:
     """An adopted game never got the addon, so it recorded nothing.
 
-    scaffold overlays templates/shared onto every project it CREATES, so a
+    scaffold overlays templates/godot/shared onto every project it CREATES, so a
     scaffolded game has addons/bgate and its autoloads. Adoption did not, and
     nothing else installed them - a real project reached 28 sessions and 59
     pieces of feedback with zero rows in playtest_event, while its review screen

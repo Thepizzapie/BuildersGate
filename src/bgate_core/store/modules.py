@@ -206,6 +206,15 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                 # craft prefix (most godot_ tools really are spine), so these
                 # two had to be named one at a time.
                 "godot_deliver_asset", "godot_import_asset",
+                # THE SAME STEP, GROWN. godot_character_wire takes an animated
+                # .glb to a proven-playable CharacterBody3D scene; clip_capture
+                # photographs those clips in-engine rather than in Blender, and
+                # clip_retarget maps a pack onto the rig through Godot's own
+                # BoneMap. All three are the 3D seat finishing its own handoff,
+                # and all three fell through for the reason named above — the
+                # `godot_` prefix is not a craft.
+                "godot_character_wire", "godot_clip_capture",
+                "godot_clip_retarget",
                 # THE TWO RIG GATES THAT CARRY NO `blender_` PREFIX, because
                 # neither one spawns Blender — both read a .glb directly. That
                 # is why they fell through: the prefix above is a proxy for
@@ -313,6 +322,12 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "asset_lock", "asset_release", "asset_status", "asset_track",
         "asset_verify", "bgate_doctor", "board_digest",
         "godot_run", "godot_screenshot", "godot_status",
+        # engine_status and engine_screenshot are the same answers for
+        # whichever engine the project records, and belong in core for the same
+        # reason their godot_ siblings do: every seat is asked for evidence.
+        # The web_ trio mirrors godot_run/godot_status one engine over.
+        "engine_status", "engine_screenshot",
+        "web_status", "web_dev", "web_dev_stop", "web_run",
         "handoff_note", "handoff_read",
         # kie_status STAYS CORE: kie is one key over three capabilities, so
         # filing it under `image` would hide it from the audio seat whose
@@ -320,7 +335,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "kie_status",
         "pending_decisions", "plan_status", "profile_get", "profile_set",
         "project_init", "project_select", "project_set_dimension",
-        "project_status", "provider_status", "queue_add",
+        "project_set_engine", "project_status", "provider_status", "queue_add",
         "queue_add_chain", "queue_add_dependency", "queue_claim_next",
         "queue_complete", "queue_cut_dependency", "queue_get",
         "queue_list", "queue_next", "queue_reopen", "queue_update",
@@ -346,6 +361,11 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "lore_update", "not_building_add", "not_building_list",
     }),
     "engine": frozenset({
+        # engine_check is godot_check_project's engine-neutral sibling and
+        # carries the same seat scoping: audio and narrative never build.
+        # web_build / web_payload / web_test_run are that engine's build half.
+        "engine_check",
+        "web_build", "web_payload", "web_test_run",
         "godot_check_project", "godot_inspect_resource", "godot_scaffold",
         "godot_templates", "godot_test_run",
         "iteration_record_checks", "iteration_status",
@@ -393,7 +413,11 @@ def spine_group(tool_name: str) -> str:
 DIRECTOR_ONLY: frozenset[str] = frozenset({
     "agent_activity", "agent_steer", "agent_steer_all",
     "decision_settle", "project_init", "project_select",
-    "project_set_dimension", "seat_configure",
+    # project_set_engine sits beside project_set_dimension for the same reason
+    # and a sharper one: the engine decides which tools every OTHER seat is
+    # handed, so a worker that could rewrite it could hand itself a surface the
+    # director never opened.
+    "project_set_dimension", "project_set_engine", "seat_configure",
     # THE STAGE IS THE DIRECTOR'S TO MOVE. A dispatched seat that could pass
     # its own graybox, waive its own hold, or advance the project past the
     # gate holding it is not gated at all — the whole mechanism reduces to a

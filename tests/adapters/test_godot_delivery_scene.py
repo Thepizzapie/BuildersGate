@@ -285,7 +285,7 @@ class TestRedeliveryKeepsTheHumansScene:
 # The template script has to survive the node this change removed
 # ---------------------------------------------------------------------------
 
-PLAYER_GD = (Path(__file__).resolve().parents[2] / "src" / "templates" / "3d" / "scripts" / "player.gd"
+PLAYER_GD = (Path(__file__).resolve().parents[2] / "src" / "templates" / "godot" / "3d" / "scripts" / "player.gd"
              ).read_text(encoding="utf-8")
 # The comments explaining the fix necessarily QUOTE the spelling the fix
 # removed, so the code has to be read without them.

@@ -1,6 +1,6 @@
 """bgate — the console entrypoint.
 
-    bgate init NAME [--kind 2d|3d] [--dir DIR] [--pitch TEXT] [--without floor,music,...]
+    bgate init NAME [--kind 2d|3d] [--engine godot|web] [--dir DIR] [--pitch TEXT] [--without floor,music,...]
                     [--force] [--replace]
                                 create a project + a runnable game, and print where
     bgate adopt [DIR] [--name N] [--pitch TEXT] [--kind 2d|3d|2d+3d] [--json] [--without floor,music,...]
@@ -314,7 +314,7 @@ def hook_status(project_dir: str = "", as_json: bool = False) -> int:
 
 def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
                  force: bool = False, replace: bool = False,
-                 without: str = "") -> int:
+                 without: str = "", engine: str = "") -> int:
     """Create the project store AND a runnable game, then say where it landed.
 
     The first-run gap the audit named: the only way to make a project was an MCP
@@ -322,9 +322,20 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     One command, one absolute path on stdout — that path is the whole point, so
     it is printed even when the scaffold had nothing new to write.
     """
+    from bgate_core.runtime import engines as _engines
     from bgate_core.store import project, scaffold
     from bgate_core.store.util import slugify
 
+    engine = (engine or _engines.DEFAULT).strip().lower()
+    if not _engines.known(engine):
+        print(f"error: --engine must be one of "
+              f"{'|'.join(_engines.names())}, got {engine!r}")
+        return 2
+    if not _engines.template_dir_name(engine):
+        print(f"error: {_engines.label(engine)} projects are adopted, not "
+              f"scaffolded — there is no template. Point bgate at an existing "
+              f"one with `bgate adopt`.")
+        return 2
     if kind not in scaffold.KINDS:
         print(f"error: --kind must be one of {'|'.join(scaffold.KINDS)}, got {kind!r}")
         return 2
@@ -340,7 +351,7 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
 
     try:
         made = scaffold.new_project(root, name, kind=kind, force=force,
-                                    replace=replace)
+                                    replace=replace, engine=engine)
     except FileExistsError as exc:
         print(f"error: {exc}")
         return 1
@@ -348,11 +359,18 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         print(f"error: {exc}")
         return 2
 
-    project.init(root, name, pitch=pitch, engine="godot", dimension=kind)
+    project.init(root, name, pitch=pitch, engine=engine, dimension=kind)
     # A 2D project defaults the 3D pipeline OFF — cutout/sprite work never
-    # opens Blender, and the default should match the kind just chosen.
+    # opens Blender, and the default should match the kind just chosen. A WEB
+    # project defaults it off at both dimensions: blender_* delivers .glb into
+    # a Godot import pipeline that a web project does not have, so leaving the
+    # module on would advertise 48 tools whose last step cannot land.
     # Re-enable any time in Settings > Modules; an explicit --without wins.
-    if kind == "2d" and "three_d" not in (without or ""):
+    if engine == "web" and "three_d" not in (without or ""):
+        without = (without + ",three_d") if without else "three_d"
+        print("3D pipeline switched off - blender delivery targets Godot; "
+              "re-enable in Settings > Modules if you want it anyway")
+    elif kind == "2d" and "three_d" not in (without or ""):
         without = (without + ",three_d") if without else "three_d"
         print("3D pipeline switched off for a 2D project - re-enable in "
               "Settings > Modules if you want Blender work here")
@@ -1197,7 +1215,7 @@ def main() -> int:
                     return rest[index]
             return default
 
-        flagged = {"--kind", "--dir", "--pitch", "--without"}
+        flagged = {"--kind", "--dir", "--pitch", "--without", "--engine"}
         skip: set[int] = set()
         for i, token in enumerate(rest):
             if token in flagged:
@@ -1219,7 +1237,8 @@ def main() -> int:
                             # asked for, and it takes a .bak first.
                             force="--force" in rest or "--replace" in rest,
                             replace="--replace" in rest,
-                            without=opt("--without"))
+                            without=opt("--without"),
+                            engine=opt("--engine"))
 
     if cmd == "adopt":
         rest = args[1:]
