@@ -385,3 +385,35 @@ class TestDimension:
             "Camera:\n  orthographic: 1\nSpriteRenderer:\n  m_Sprite: {}\n"
             "Rigidbody2D:\n  m_Mass: 1\n", encoding="utf-8")
         assert adopt.detect(base)["dimension"] == "2d"
+
+
+class TestFirstRunAdopt:
+    def test_the_card_offers_unity_as_an_adopt_path(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        from bgate_ui.app import app
+        monkeypatch.setenv("BGATE_ROOT", str(tmp_path / "nowhere"))
+        client = TestClient(app)
+        got = client.get("/api/project").json()
+        body = got.get("data", got)
+        engines = {e["name"]: e for e in body["engines"]}
+        # Unity is offered, with nothing to scaffold: the card adopts it.
+        assert engines["unity"]["adopt_only"] is True
+        assert engines["unity"]["templates"] == []
+        assert engines["godot"]["adopt_only"] is False
+        assert "none" not in engines
+
+    def test_adopting_through_the_card_records_unity(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        from bgate_ui import api as _api
+        from bgate_ui.app import app
+        from bgate_core.store import project
+        base = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("BGATE_ROOT", str(tmp_path / "nowhere"))
+        monkeypatch.setattr(_api, "current_actor", lambda request: "human")
+        monkeypatch.setattr(_api, "require_human", lambda actor, what: None)
+        client = TestClient(app)
+        got = client.post("/api/project/adopt", json={"path": str(base), "name": "Hot Cargo"})
+        assert got.status_code == 200, got.text
+        body = got.json().get("data", got.json())
+        assert body["engine"] == "unity" and body["engine_supported"] is True
+        assert project.get(base)["engine"] == "unity"

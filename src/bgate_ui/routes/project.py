@@ -110,13 +110,14 @@ def project_read() -> dict:
         "cwd": str(default_parent()),
         "templates": _scaffold.list_templates(),
         "kinds": list(_scaffold.KINDS),
-        # Every engine the scaffolder can stamp out, with its templates. An
-        # engine that is only adopted (unity) is not offered here: the card
-        # creates projects, and there is nothing to create for it.
+        # Every driven engine, with its templates. An engine with none
+        # (unity) is offered as an ADOPT path: the card points at the project
+        # the Hub made instead of stamping one out.
         "engines": [
-            {**item, "templates": _scaffold.list_templates(item["name"])}
+            {**item, "templates": _scaffold.list_templates(item["name"]),
+             "adopt_only": not _engines.template_dir_name(item["name"])}
             for item in _engines.catalog()
-            if _engines.template_dir_name(item["name"])
+            if item["supported"]
         ],
         "known": _project.known_projects(),
         # The optional-feature checklist the first-run card renders, every
@@ -251,6 +252,49 @@ def project_create(request: Request, payload: dict) -> dict:
         "lanes": lanes,
         # The dashboard token is minted per project, and this page was served
         # before the project existed, the client has to reload to get one.
+        "reload": True,
+    })
+
+
+@router.post("/api/project/adopt")
+def project_adopt(request: Request, payload: dict) -> dict:
+    """Adopt an existing game directory and make it the active project.
+
+    The card's path for an engine that is never scaffolded (Unity), and for
+    any game that already exists. Same rules as `bgate adopt`: additive
+    only, never overwrites, records the engine it detects. A human act, like
+    creating one.
+    """
+    from bgate_core.store import adopt as _adopt
+
+    api.require_human(api.current_actor(request), "adopt a project")
+    raw = str(payload.get("path") or "").strip()
+    if not raw:
+        raise api.bad_request("a directory to adopt is required")
+    target = Path(raw).expanduser()
+    try:
+        target = target.resolve()
+    except OSError as exc:
+        raise api.bad_request(f"cannot resolve {raw}, {exc}")
+    if not target.is_dir():
+        raise api.bad_request(f"{target} is not a directory", path=str(target))
+    try:
+        _project.refuse_harness(target, "adopt")
+    except Exception as exc:                                     # noqa: BLE001
+        raise api.bad_request(str(exc), path=str(target))
+    try:
+        report = _adopt.adopt(target, name=(payload.get("name") or "").strip(),
+                              pitch=(payload.get("pitch") or "").strip())
+    except (ValueError, OSError) as exc:
+        raise api.bad_request(str(exc), path=str(target))
+    os.environ["BGATE_ROOT"] = str(target)
+    found = report.get("detected") or {}
+    return api.ok({
+        "root": str(target),
+        "project": report.get("project"),
+        "engine": found.get("engine"),
+        "engine_label": found.get("engine_label"),
+        "engine_supported": found.get("engine_supported"),
         "reload": True,
     })
 
