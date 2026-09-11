@@ -613,7 +613,9 @@ surfaces through `/api/scene/mesh` (positions and indices; both the
 compressed and float32 layouts). Orbit, click to select, W/E/R for the
 move/rotate/scale gizmo; a drag stages a write in the spelling the node
 already uses (`transform =`, or position/rotation/scale) and nothing touches
-the file until `apply`. Two conventions are pinned by tests because they
+the file until `apply`. Frames are drawn on demand (only when something
+changed) unless `live` is on; `stop` releases the GPU entirely and `start`
+rebuilds from the server's cache. Two conventions are pinned by tests because they
 were measured wrong: the twelve numbers of a `Transform3D` are the basis
 ROWS then the origin, and `rotation` is YXZ euler in radians.
 
