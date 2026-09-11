@@ -68,6 +68,10 @@ window.SceneView3D = (() => {
   const opts = {
     grid: true, wire: true, showHidden: false, lights: true, gameCam: false,
     mode: "translate", snap: false,
+    // "demand": a frame only when something changed (the default; the GPU
+    // idles while you read the inspector). "live": sixty a second, for
+    // anything that animates. Stopped is a state, not an option: see stop().
+    render: "demand",
   };
   try {
     const saved = JSON.parse(localStorage.getItem("bgate-sceneview3d") || "{}");
@@ -98,6 +102,7 @@ window.SceneView3D = (() => {
       ".sv3-pending .dot{width:8px;height:8px;border-radius:50%;background:var(--warn)}",
       ".sv3-lock{padding:6px 10px;border:1px solid var(--bad);border-radius:9px;background:var(--surface-2);font-size:11.5px}",
       ".sv3-hover{position:absolute;padding:3px 7px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);font-size:10.5px;pointer-events:none;transform:translate(10px,10px)}",
+      ".sv3-stopped{position:absolute;inset:0;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;background:var(--bg);color:var(--text-3);font-size:12px}",
     ].join("\n");
     document.head.appendChild(s);
   }
@@ -108,7 +113,7 @@ window.SceneView3D = (() => {
     // its panel rather than by unmount(): release the GPU before building
     // a second renderer, and start the new one from "not yet framed".
     if (renderer) teardown();
-    fitted = false;
+    fitted = false; stopped = false;
     injectStyle();
     host = el; scene = sceneId;
     host.innerHTML = `
@@ -127,6 +132,10 @@ window.SceneView3D = (() => {
           <button class="sv3-b ${opts.lights?'on':''}" id="sv3-lights" onclick="SceneView3D.toggle('lights')" title="The scene's own lights. Off is a flat, structural read.">${I("lighting")}</button>
           <button class="sv3-b ${opts.gameCam?'on':''}" id="sv3-cam" onclick="SceneView3D.toggle('gameCam')" title="Look through the scene's Camera3D">${I("camera")}<span>game cam</span></button>
           <span style="flex:1 1 auto;min-width:8px"></span>
+          <button class="sv3-b ${opts.render==='live'?'on':''}" id="sv3-live" onclick="SceneView3D.toggle('render')"
+                  title="Render continuously (live) or only when something changes (on demand, the default). On demand leaves the GPU idle between edits.">${I("run")}<span id="sv3-live-l">${opts.render === "live" ? "live" : "on demand"}</span></button>
+          <button class="sv3-b" id="sv3-stop" onclick="SceneView3D.stop()"
+                  title="Stop rendering and release the GPU. The scene stays loaded server-side; start rebuilds it from cache.">${I("close")}<span>stop</span></button>
           <button class="sv3-b" id="sv3-undo" onclick="SceneView3D.undo()" title="Undo the last staged change (Ctrl+Z)">${I("undo")}</button>
           <button class="sv3-b" id="sv3-redo" onclick="SceneView3D.redo()" title="Redo (Ctrl+Shift+Z)">${I("redo")}</button>
           <button class="sv3-b" onclick="SceneView3D.snapshot()" title="Save this view as a PNG under .bgate_out/scene_shots">${I("export_image")}</button>
@@ -145,6 +154,10 @@ window.SceneView3D = (() => {
           <div class="sv3-hud" id="sv3-hud"></div>
           <div class="sv3-tip">drag = orbit · right drag = pan · wheel = zoom · click = select · W/E/R = gizmo</div>
           <div class="sv3-hover" id="sv3-hover" hidden></div>
+          <div class="sv3-stopped" id="sv3-stopped" hidden>
+            <div>rendering stopped</div>
+            <button class="sv3-b go" onclick="SceneView3D.start()">${I("run")}<span>start</span></button>
+          </div>
         </div>
       </div>`;
     initThree();
@@ -172,7 +185,7 @@ window.SceneView3D = (() => {
   let keep = null;        // {renderer, camera, orbit, gizmo}
 
   function teardown(){
-    cancelAnimationFrame(raf); raf = 0;
+    cancelAnimationFrame(raf); raf = 0; dirty = false;
     if (ro){ ro.disconnect(); ro = null; }
     if (gizmo) gizmo.detach();
     if (renderer && renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
@@ -198,6 +211,16 @@ window.SceneView3D = (() => {
       giz.size = 0.75;
       giz.addEventListener("dragging-changed", e => { orb.enabled = !e.value; if (!e.value) onGizmoEnd(); });
       giz.addEventListener("mouseDown", () => { gizmoStart = snapshotOf(giz.object); });
+      // Anything that moves the picture asks for a frame; the loop draws
+      // one only when asked (or every frame in live mode). OrbitControls
+      // keeps emitting "change" while its damping settles, so a fling still
+      // eases to a stop.
+      // A frame drawn while the context is lost draws nothing; ask again
+      // once the browser hands the context back.
+      r.domElement.addEventListener("webglcontextrestored", () => setTimeout(requestRender, 0));
+      orb.addEventListener("change", requestRender);
+      giz.addEventListener("change", requestRender);
+      giz.addEventListener("objectChange", requestRender);
       r.domElement.addEventListener("pointerdown", onDown);
       r.domElement.addEventListener("pointerup", onUp);
       r.domElement.addEventListener("pointermove", onMove);
@@ -217,17 +240,59 @@ window.SceneView3D = (() => {
       const w = stage.clientWidth || 640, h = stage.clientHeight || 400;
       renderer.setSize(w, h, false);
       camera.aspect = w / h; camera.updateProjectionMatrix();
+      requestRender();
     };
     ro = new ResizeObserver(resize); ro.observe(stage); resize();
     window.addEventListener("keydown", onKey);
     const tick = () => {
-      raf = requestAnimationFrame(tick); orbit.update();
+      raf = requestAnimationFrame(tick);
+      if (stopped) return;
+      orbit.update();
+      if (!dirty && opts.render !== "live") return;
+      let lost = false;
+      try { lost = renderer.getContext().isContextLost(); } catch (e) {}
+      if (lost) return;                      // stay dirty until it is back
+      dirty = false;
       const key = world.getObjectByName("__key");
       if (key){ key.position.copy(camera.position); key.target.position.copy(orbit.target); }
       renderer.render(world, camera);
     };
     tick();
   }
+
+  let dirty = true, stopped = false;
+  function requestRender(){ dirty = true; }
+
+  /* STOP releases the GPU: the loop idles, the objects are dropped, and the
+     context is lost on purpose so the driver frees its memory; START builds
+     the scene again from the server's cached draw list. This is what "I am
+     done looking" means on a laptop, and what a tab you have forgotten
+     about should cost: nothing. */
+  function stop(){
+    if (stopped || !host) return;
+    stopped = true;
+    if (gizmo) gizmo.detach();
+    if (outline){ world.remove(outline); outline = null; }
+    clearWorld();
+    try { renderer.forceContextLoss(); } catch (e) {}
+    const veil = host.querySelector("#sv3-stopped"); if (veil) veil.hidden = false;
+    paintHud();
+  }
+  async function start(){
+    if (!stopped || !host) return;
+    stopped = false;
+    const veil = host.querySelector("#sv3-stopped"); if (veil) veil.hidden = true;
+    // A lost context is restored by three on the next render; the scene
+    // objects were dropped, so rebuild them from the list already in hand.
+    try { renderer.forceContextRestore(); } catch (e) {}
+    if (list){ build(); setSelection([...multi], sel); }
+    else await reload();
+    requestRender();
+  }
+  // Hidden tab: no frames until it is visible again. Deck switch: the
+  // builder's deactivate() calls suspend(), which does the same.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) requestRender(); });
+  function suspend(){ dirty = false; }
 
   function applySnap(){
     if (!gizmo) return;
@@ -273,6 +338,7 @@ window.SceneView3D = (() => {
   function build(){
     clearWorld();
     litCount = 0;
+    requestRender();
     const grid = new THREE.GridHelper(40, 40, cssColor("--line"), cssColor("--line-soft"));
     grid.name = "__grid"; grid.visible = opts.grid; world.add(grid);
     const axes = new THREE.AxesHelper(1.5); axes.name = "__axes"; axes.visible = opts.grid; world.add(axes);
@@ -382,7 +448,7 @@ window.SceneView3D = (() => {
           tex.colorSpace = THREE.SRGBColorSpace;
           const w = tex.image.width * (d.pixel_size || 0.01), h = tex.image.height * (d.pixel_size || 0.01);
           m.geometry.dispose(); m.geometry = new THREE.PlaneGeometry(w, h);
-          m.material.map = tex; m.material.needsUpdate = true;
+          m.material.map = tex; m.material.needsUpdate = true; requestRender();
         });
         return m;
       }
@@ -458,7 +524,7 @@ window.SceneView3D = (() => {
       const m = new THREE.Mesh(geo, materialFor(item, { color: d.color }));
       m.material.side = THREE.DoubleSide;
       m.userData.path = item.path; meshes.push(m);
-      g.add(m);
+      g.add(m); requestRender();
     }).catch(() => { box.userData.reason = "mesh failed to load"; });
     return g;
   }
@@ -473,7 +539,7 @@ window.SceneView3D = (() => {
       const obj = src.clone(true);
       g.remove(placeholder);
       obj.traverse(o => { if (o.isMesh){ o.userData.path = item.path; meshes.push(o); } });
-      g.add(obj);
+      g.add(obj); requestRender();
     }).catch(() => { placeholder.userData.reason = "model failed to load"; });
     return g;
   }
@@ -547,6 +613,7 @@ window.SceneView3D = (() => {
     if (!any && list.bounds){
       box.set(new THREE.Vector3(...list.bounds.min), new THREE.Vector3(...list.bounds.max)); any = true;
     }
+    requestRender();
     if (!any){ camera.position.set(8, 6, 10); orbit.target.set(0, 0, 0); return; }
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3()).length() || 4;
@@ -568,6 +635,7 @@ window.SceneView3D = (() => {
     camera.fov = cam.fov || 75; camera.updateProjectionMatrix();
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
     orbit.target.copy(pos.clone().add(fwd.multiplyScalar(10))); orbit.update();
+    requestRender();
   }
 
   /* ── picking ───────────────────────────────────────────────────────────── */
@@ -637,7 +705,7 @@ window.SceneView3D = (() => {
     const obj = sel && objects.get(sel);
     if (!obj) { paintHud(); return; }
     outline = new THREE.BoxHelper(obj, cssColor("--accent"));
-    world.add(outline);
+    world.add(outline); requestRender();
     const item = obj.userData.item;
     // Inside an instance: shown, outlined, not dragged. Godot selects the
     // instance; the insides belong to the other file.
@@ -676,6 +744,7 @@ window.SceneView3D = (() => {
   function restore(path, snap){
     const obj = objects.get(path); if (!obj) return;
     obj.position.copy(snap.p); obj.quaternion.copy(snap.q); obj.scale.copy(snap.s);
+    requestRender();
     // Back at the file's own placement? Then there is nothing pending for it.
     const orig = originalOf(path);
     if (orig && orig.p.equals(snap.p) && orig.q.equals(snap.q) && orig.s.equals(snap.s)) pending.delete(path);
@@ -775,7 +844,7 @@ window.SceneView3D = (() => {
     const hud = host && host.querySelector("#sv3-hud"); if (!hud || !list) return;
     const item = sel && list.items.find(i => i.path === sel);
     const obj = sel && objects.get(sel);
-    let line = `${list.items.length} nodes · ${list.lights} light(s)${list.lights > LIGHT_BUDGET ? ` (${LIGHT_BUDGET} lit)` : ""}${list.camera ? " · camera " + list.camera.path : " · no camera"}`;
+    let line = `${list.items.length} nodes · ${list.lights} light(s)${list.lights > LIGHT_BUDGET ? ` (${LIGHT_BUDGET} lit)` : ""}${list.camera ? " · camera " + list.camera.path : " · no camera"}${stopped ? " · STOPPED" : opts.render === "live" ? " · live" : ""}`;
     if (item && obj){
       const e = new THREE.Euler().setFromQuaternion(obj.quaternion, "YXZ");
       line += `\n${item.name}  pos ${[obj.position.x, obj.position.y, obj.position.z].map(num).join(", ")}`
@@ -791,6 +860,7 @@ window.SceneView3D = (() => {
     for (const [k, q] of Object.entries(map)){
       const b = host && host.querySelector(q); if (b) b.classList.toggle("on", !!opts[k]);
     }
+    const live = host && host.querySelector("#sv3-live"); if (live) live.classList.toggle("on", opts.render === "live");
     for (const m of ["translate", "rotate", "scale"]){
       const b = host && host.querySelector(`#sv3-m-${m[0]}`); if (b) b.classList.toggle("on", opts.mode === m);
     }
@@ -798,10 +868,16 @@ window.SceneView3D = (() => {
 
   /* ── toolbar actions ───────────────────────────────────────────────────── */
   function toggle(key){
+    if (key === "render"){
+      opts.render = opts.render === "live" ? "demand" : "live"; persist(); paintToggles();
+      const l = host && host.querySelector("#sv3-live-l"); if (l) l.textContent = opts.render === "live" ? "live" : "on demand";
+      requestRender(); return;
+    }
     opts[key] = !opts[key]; persist(); paintToggles();
     if (key === "gameCam"){ if (opts.gameCam) lookThroughGameCamera(); else fit(); return; }
     if (key === "snap"){ applySnap(); return; }
     const grid = world.getObjectByName("__grid"), axes = world.getObjectByName("__axes"), fill = world.getObjectByName("__fill");
+    requestRender();
     if (key === "grid"){ if (grid) grid.visible = opts.grid; if (axes) axes.visible = opts.grid; return; }
     if (key === "lights" && fill){ fill.intensity = opts.lights ? 0.9 : 1.8; }
     // wire / hidden / lights change what is built; rebuild keeps staged moves
@@ -836,13 +912,13 @@ window.SceneView3D = (() => {
   return {
     mount, unmount, reload, fit, select, setSelection, escape,
     apply: applyPending, discard: discardPending, hasPending, undo, redo,
-    toggle, setMode, snapshot, reshoot,
+    toggle, setMode, snapshot, reshoot, stop, start, requestRender,
     frame: p => fit(p ? [p] : null),
     removeSelected: notHere("delete"), duplicateSelected: notHere("duplicate"),
     placeMenu: notHere("place"), pasteClones: notHere("paste"),
     raise: () => {}, nudge: () => {}, gameScale: () => fit(), zoom: () => {},
     setSnap: () => {}, stageVisible: () => {}, setVisibleBatch: () => {},
-    togglePlay: notHere("play"), rebuild: notHere("rebuild"), suspend: () => {},
+    togglePlay: notHere("play"), rebuild: notHere("rebuild"), suspend,
     toggleLayer: () => {}, layerClick: () => {}, layerEye: () => {}, isolateLayer: () => {},
     showAllLayers: () => {}, repaintLayers: () => {}, nextBlank: () => {}, realView: reshoot,
     arm: () => {}, cancelPlacing: () => {}, setScene: s => { scene = s; },
