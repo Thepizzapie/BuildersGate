@@ -200,6 +200,12 @@ EASES = {"inout": ease_inout, "linear": ease_linear}
 # The rig, as measured
 # ---------------------------------------------------------------------------
 
+# THE ARMS CLEAR THE BODY. Set by the animate script from the skin: the
+# trunk's widest half-width against the shoulders and the arm's length gives
+# the smallest hang angle whose path misses the body. A big-headed mascot
+# needs 30 degrees where a person needs 8; every clip below honours it.
+ARM_OUT_MIN = 0.0
+
 LEFT, RIGHT = "Left", "Right"
 SIDES = (LEFT, RIGHT)
 
@@ -476,16 +482,19 @@ class Pose:
         self._invalidate()
 
     # -- IK -----------------------------------------------------------------
-    def leg_ik(self, side, ankle, pole=None, foot_dir=None, margin=0.995):
-        """Two-bone IK: put the ankle at `ankle` (armature space) with the knee
-        toward `pole` (default: forward). Returns the shortfall in metres when
-        the target was out of reach — a number, not a silent clamp."""
-        up_n, lo_n, foot_n = side + "UpperLeg", side + "LowerLeg", side + "Foot"
-        if not self.rig.has(up_n, lo_n):
+    def chain_ik(self, upper, lower, target, pole=None, end=None,
+                 end_dir=None, margin=0.995):
+        """Two-bone IK on ANY chain: put `lower`'s tail at `target` (armature
+        space) with the middle joint toward `pole` (default: forward). `end`
+        (a foot, a paw, a hand) is re-aimed along `end_dir` afterwards when
+        both are given. Returns the shortfall in metres when the target was
+        out of reach — a number, not a silent clamp. The humanoid leg_ik and
+        every quadruped leg run through this one solver."""
+        if not self.rig.has(upper, lower):
             return 0.0
-        l1, l2 = self.rig.lengths[up_n], self.rig.lengths[lo_n]
-        _, hip = self.world(up_n)
-        d = v_sub(ankle, hip)
+        l1, l2 = self.rig.lengths[upper], self.rig.lengths[lower]
+        _, root = self.world(upper)
+        d = v_sub(target, root)
         dist = v_len(d)
         reach = (l1 + l2) * margin
         short = max(0.0, dist - reach)
@@ -498,13 +507,21 @@ class Pose:
         perp = v_norm(perp)
         cos_a = (l1 * l1 + dist * dist - l2 * l2) / (2.0 * l1 * dist)
         a = math.acos(max(-1.0, min(1.0, cos_a)))
-        thigh = v_add(v_scale(dn, math.cos(a)), v_scale(perp, math.sin(a)))
-        self.aim(up_n, thigh)
-        knee = v_add(hip, v_scale(thigh, l1))
-        self.aim(lo_n, v_sub(ankle, knee))
-        if foot_dir is not None and foot_n in self.rig.bones:
-            self.aim(foot_n, foot_dir)
+        first = v_add(v_scale(dn, math.cos(a)), v_scale(perp, math.sin(a)))
+        self.aim(upper, first)
+        mid = v_add(root, v_scale(first, l1))
+        self.aim(lower, v_sub(target, mid))
+        if end and end_dir is not None and end in self.rig.bones:
+            self.aim(end, end_dir)
         return short
+
+    def leg_ik(self, side, ankle, pole=None, foot_dir=None, margin=0.995):
+        """Two-bone IK: put the ankle at `ankle` (armature space) with the knee
+        toward `pole` (default: forward). Returns the shortfall in metres when
+        the target was out of reach — a number, not a silent clamp."""
+        return self.chain_ik(side + "UpperLeg", side + "LowerLeg", ankle,
+                             pole=pole, end=side + "Foot", end_dir=foot_dir,
+                             margin=margin)
 
     # -- baking -------------------------------------------------------------
     def quaternions(self):
@@ -542,6 +559,7 @@ def stand(rig: RigFrame, *, hips=(0.0, 0.0, 0.0), lean=0.0, twist=0.0,
     """
     p = Pose(rig)
     p.set_hips(hips)
+    arm_out = max(float(arm_out), float(ARM_OUT_MIN))
     # THE SPINE BENDS CUMULATIVELY. Each bone takes a share of the total and
     # inherits the ones below it, which is what a bend is.
     for name, share in (("Spine", 0.35), ("Chest", 0.35), ("UpperChest", 0.30)):

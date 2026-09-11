@@ -251,6 +251,14 @@ by nothing except a clip authored for it alone.
 Related mesh gates: `blender_weights`, `blender_silhouette`,
 `blender_template_deviation`, `animation_curves`, `blender_turnaround`.
 
+## Four legs
+
+`blender_rig(kind="quadruped")` measures leg columns, spine line, neck and
+tail off the mesh and builds `QUADRUPED_BONES` on them; `blender_animate`
+reads the front legs off the bones and switches to the four-legged gaits
+(walk, trot, gallop, plus sit / alert / pounce and keyed clips). Same proof
+sheets, same support gate, `animation_contacts(feet=[...Foot])` for the paws.
+
 ## Putting clips on it
 
 `blender_animate` is the step after the rig proves out. It authors clips ON
@@ -274,6 +282,39 @@ blender_animate(model="out/hero_rigged.glb", out_path="out/hero_anim.glb")
                        bones about forward. `refused` True is this gate; pass
                        facing="repair" to re-aim the foot bones to the skin
    → strays            unbound meshes found inside the rig, dropped
+```
+
+## Putting it in the game
+
+`godot_character_wire` is the step nothing did: it writes
+`scenes/characters/<name>.tscn` (body + model + fitted capsule + an
+AnimationTree running `scripts/character_animator.gd`), resolves the clips
+to idle / walk / run / jump / fall / land / actions by name, forces the
+locomotion clips to loop, and PROVES the state machine in the engine.
+
+```text
+godot_character_wire(godot_project="game", glb="out/hero_anim.glb")
+   → scene              res://scenes/characters/hero_anim.tscn
+   → resolved           {locomotion: [idle, walk, run], jump, fall, land, actions}
+   → probe.steps        the state reached after stop / walk / run / jump /
+                        fall / touchdown / one action - read it
+   → warnings           roles with no clip; clips forced to loop
+   → probe.ik           each foot's distance from the ramp under it
+```
+
+`godot_clip_retarget` puts a whole pack on the character through Godot's
+own retarget (BoneMaps, silhouette fix, saved AnimationLibrary, every clip
+played back as proof; root motion kept), and `godot_clip_capture`
+photographs every clip in the real renderer - the sheet a human judges.
+
+```text
+godot_clip_retarget(godot_project="game", character_res="res://assets/hero_anim.glb",
+                    source="quaternius-ual", clips=["Walk_Loop", "Roll_RM"])
+   → library            res://assets/anim/quaternius-ual.res  (+ .res.json)
+   → drives / dead      which clips moved the limbs when played
+godot_character_wire(..., libraries=["res://assets/anim/quaternius-ual.res"])
+godot_clip_capture(godot_project="game", scene="res://scenes/characters/hero.tscn")
+   → sheets[]           one PNG per clip, side + two three-quarters. LOOK.
 ```
 
 Do not hand-write a bpy pose script for a humanoid. It was done once: every

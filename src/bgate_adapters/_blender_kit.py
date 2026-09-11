@@ -562,6 +562,51 @@ def bg_bone_chain(name, bones):
     return arm
 
 
+def bg_harden_weights(mesh, bones=("Head",), threshold=0.35, limit=3):
+    """Make rigid regions rigid. A heat bind spreads Neck/Spine weight across a
+    head, a cap, glasses, a club - and the texture SMEARS as they turn. Any
+    vertex carrying at least `threshold` of a bone in `bones` becomes that
+    bone's alone; then every vertex keeps at most `limit` influences and is
+    renormalised. Returns {hardened: {bone: count}, limited: bool}."""
+    out = {"hardened": {}, "limited": False}
+    if mesh is None or mesh.type != "MESH":
+        return out
+    names = {vg.index: vg.name for vg in mesh.vertex_groups}
+    wanted = {vg.name: vg for vg in mesh.vertex_groups if vg.name in set(bones)}
+    for bone_name, vg in wanted.items():
+        hits = []
+        for v in mesh.data.vertices:
+            w = 0.0
+            for g in v.groups:
+                if g.group == vg.index:
+                    w = g.weight
+            if w >= threshold:
+                hits.append(v.index)
+        if not hits:
+            continue
+        for other in mesh.vertex_groups:
+            if other.name == bone_name:
+                continue
+            other.remove(hits)
+        vg.add(hits, 1.0, "REPLACE")
+        out["hardened"][bone_name] = len(hits)
+    if limit and mesh.vertex_groups:
+        try:
+            bg_only(mesh)
+            bpy.ops.object.mode_set(mode="WEIGHT_PAINT")
+            bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=int(limit))
+            bpy.ops.object.vertex_group_normalize_all(group_select_mode="ALL", lock_active=False)
+            bpy.ops.object.mode_set(mode="OBJECT")
+            out["limited"] = True
+        except Exception as exc:
+            out["limit_error"] = str(exc)[:160]
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:
+                pass
+    return out
+
+
 def bg_finish(obj, colour=None, material="layer", unwrap=True, clean=True):
     """The four things every layer owes the pipeline, in the right order:
     clean, apply transforms, unwrap, material. Call it last in a layer script."""

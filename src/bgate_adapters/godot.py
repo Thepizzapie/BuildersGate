@@ -1378,6 +1378,9 @@ def _read_subresources(body: str) -> tuple[dict, str]:
         return {}, ""
     _start, value_start, end = span
     raw = body[value_start:end].strip()
+    # Fold `Resource("res://x")` into a marked string first - see _gd_literal.
+    raw = re.sub(r'Resource\("([^"]+)"\)', lambda m: '"%s%s"' % (_RES_MARK, m.group(1)),
+                 raw)
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError) as exc:
@@ -1386,7 +1389,23 @@ def _read_subresources(body: str) -> tuple[dict, str]:
         {}, f"_subresources is a {type(parsed).__name__}, not a dictionary")
 
 
+class RawLiteral(str):
+    """A `[params]` value written VERBATIM - `Resource("res://x.tres")`,
+    `Vector3(0, 1, 0)` - where the default quoting would make it a string."""
+
+
+_RES_MARK = "__bgate_res__:"
+
+
 def _gd_literal(value) -> str:
+    if isinstance(value, RawLiteral):
+        return str(value)
+    if isinstance(value, str) and value.startswith(_RES_MARK):
+        # A Resource("res://...") the parser folded into a string so the
+        # dictionary could be read as JSON and MERGED; back to the engine's
+        # form on the way out. Without this every rewrite of an asset carrying
+        # a retarget block REPLACED its node settings instead of merging.
+        return 'Resource("%s")' % value[len(_RES_MARK):]
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
@@ -1485,6 +1504,7 @@ def _purge_import_cache(project: Path, asset: Path,
 def write_import_settings(project_dir: str, asset_rel: str, *,
                           physics_nodes: Optional[dict] = None,
                           params: Optional[dict] = None,
+                          node_params: Optional[dict] = None,
                           purge: bool = True) -> dict:
     """Rewrite an asset's sibling `.import` file, preserving what we don't set.
 
@@ -1492,6 +1512,11 @@ def write_import_settings(project_dir: str, asset_rel: str, *,
     physics_nodes  {node_path: {"body_type": "static", "shape_type": "trimesh"}}
                    — collider generation, per mesh node. This is the whole point.
     params         extra flat `[params]` overrides ("animation/import": True, ...).
+    node_params    {node_path: {key: value}} - ANY per-node import option, merged
+                   the same way. This is where the importer keeps the retarget
+                   block (`retarget/bone_map`, `retarget/rest_fixer/*` on the
+                   Skeleton3D node), which is why writing those as flat params
+                   changed nothing: the engine never reads them there.
 
     "Preserving what we don't set" was true of the flat `[params]` keys and a
     LIE about `_subresources`: the value was rendered fresh from physics_nodes
@@ -1530,6 +1555,10 @@ def write_import_settings(project_dir: str, asset_rel: str, *,
             entry["physics/body_type"] = BODY_TYPES[body_type]
         if shape in SHAPE_TYPES:
             entry["physics/shape_type"] = SHAPE_TYPES[shape]
+        nodes[node_path] = entry
+    for node_path, opts in (node_params or {}).items():
+        entry = dict(nodes.get(node_path) or {})
+        entry.update(opts or {})
         nodes[node_path] = entry
 
     existing, merge_error = _read_subresources(body)
