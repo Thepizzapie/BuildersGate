@@ -24,6 +24,9 @@ from bgate_mcp.server import (  # noqa: F401
 
 def _project_dir(given: str = "") -> str:
     if given.strip():
+        # Contained even for unity_status: it lists test files and reads the
+        # project's settings, which is a question about any path otherwise.
+        _contained_path(given.strip(), "unity_project")
         return given.strip()
     where = _project.game_dir(_root(), engine="unity")
     return str(where) if where is not None else ""
