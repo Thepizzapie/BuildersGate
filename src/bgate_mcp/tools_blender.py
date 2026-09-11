@@ -445,15 +445,20 @@ def blender_humanoid_template() -> dict:
 
 
 @_tool
-def blender_rig(model: Annotated[str, Field(description='The generated mesh (.glb/.gltf/.blend) to adopt and bind.')], out_path: Annotated[str, Field(description='Where the rigged .glb is written; keep it inside the project.')], kind: Annotated[str, Field(description='humanoid (reads a front from foot reach) or none (refuses to guess; orientation never established). Default humanoid.')] = "humanoid",
+def blender_rig(model: Annotated[str, Field(description='The generated mesh (.glb/.gltf/.blend) to adopt and bind.')], out_path: Annotated[str, Field(description='Where the rigged .glb is written; keep it inside the project.')], kind: Annotated[str, Field(description='humanoid (reads a front from foot reach), quadruped (four legs under a horizontal trunk: legs, spine, neck and tail measured off the mesh, head end read from where the mass sits high; height = crown to floor), or none (refuses to guess). Default humanoid.')] = "humanoid",
                 height: Annotated[float, Field(description='Height in metres the mesh is scaled to. Default 1.8.')] = 1.8, budget: Annotated[int, Field(description='Post-decimation face count; 0 leaves density alone. 45-60k was clean, 8k shattered a character.')] = 0, orient: Annotated[bool, Field(description='Face the mesh +Y and ground it before binding. Default True.')] = True,
                 armature_name: Annotated[str, Field(description='Name of the armature object written. Default Skeleton.')] = "Skeleton", symmetrize: Annotated[str, Field(description="auto mirrors skin weights only when the body's sides are within 2% of height; off skips; force runs on an asymmetric body.")] = "auto",
+                rigid_bones: Annotated[Optional[list[str]], Field(description='Bones whose region is made RIGID after the bind: any vertex carrying 35% of one becomes its alone, then every vertex keeps at most 3 influences. Default ["Head"] - a heat bind smears a big head, cap or glasses across Neck/Spine and the texture stretches on every turn. Add "LeftHand"/"RightHand" for held props, [] to skip.')] = None,
                 timeout: Annotated[int, Field(description='Seconds for the Blender session. Default 900.')] = 900) -> dict:
     """Take a GENERATED mesh to a bound, weighted character an engine can move.
 
     Adopts the mesh, fits a skeleton to its measured height, binds it, and
     PROVES the bind with `unweighted`; `rigged` False is a refusal. kind:
-    "humanoid" reads a front from foot reach; "none" refuses to guess. budget
+    "humanoid" reads a front from foot reach; "quadruped" builds the
+    four-legged skeleton (QUADRUPED_BONES: <Left|Right><Front|Back>{Upper,
+    Lower}Leg/Foot, Hips..Head, Tail1/2) on leg columns, spine line, neck
+    and tail MEASURED off the mesh, and refuses when a leg column is
+    missing; "none" refuses to guess. budget
     0 leaves density alone; 45-60k faces was clean. symmetrize: auto (mirror
     weights only when the body is symmetric) | off | force. Read
     `audit.shells` first - a fragmented mesh guarantees a bad bind. Then run
@@ -464,7 +469,9 @@ def blender_rig(model: Annotated[str, Field(description='The generated mesh (.gl
     result = _blender.rig(model, out_path, kind=kind, height=height,
                           budget=budget, orient=orient,
                           armature_name=armature_name,
-                          symmetrize=symmetrize, timeout=timeout)
+                          symmetrize=symmetrize,
+                          rigid_bones=tuple(rigid_bones) if rigid_bones is not None else ("Head",),
+                          timeout=timeout)
     if result.get("ok"):
         coverage = result.get("coverage") or {}
         note = ""
@@ -1401,9 +1408,9 @@ def _proof_sheet_paths(result: dict) -> list[str]:
 
 
 @_tool(images=_proof_sheet_paths)
-def blender_animate(model: Annotated[str, Field(description='The RIGGED humanoid .glb (what blender_rig wrote) to author clips on.')],
+def blender_animate(model: Annotated[str, Field(description='The RIGGED .glb (what blender_rig wrote) to author clips on. Humanoid or quadruped - read off the bones.')],
                     out_path: Annotated[str, Field(description='Where the animated .glb is written; keep it inside the project.')],
-                    clips: Annotated[Optional[list[dict]], Field(description='[{"name", "kind", ...}]. kind: idle | walk | run | sneak | crouch_idle | pickup | look_around | wave | hit | jump | keyed, OR a LIBRARY clip {"clip": "Walk_Loop", "name": "walk", "pack": "quaternius-ual"} retargeted from a fetched CC0 pack (animation_library lists them) - prefer these where the pack has the motion. Omitted: procedural idle, walk, run, crouch_idle, pickup, look_around. A "keyed" clip carries {"keys": [{"t": s, "lean": deg, "hips_up": m, "reach_r": deg, ...}], "loop": bool} in CHARACTER terms - never bone rotations. Gaits take "overrides" ({"stride": 0.4, "lean": 10, ...}, fractions of leg length where they are distances).')] = None,
+                    clips: Annotated[Optional[list[dict]], Field(description='[{"name", "kind", ...}]. Humanoid kinds: idle | walk | run | sneak | crouch_idle | pickup | look_around | wave | hit | jump | keyed. Quadruped kinds (a rig with front legs): idle | walk | trot | gallop | sit | alert | pounce | keyed; omitted ships idle, walk, trot, gallop, alert. Humanoid kinds OR a LIBRARY clip {"clip": "Walk_Loop", "name": "walk", "pack": "quaternius-ual"} retargeted from a fetched CC0 pack (animation_library lists them) - prefer these where the pack has the motion. Omitted: procedural idle, walk, run, crouch_idle, pickup, look_around. A "keyed" clip carries {"keys": [{"t": s, "lean": deg, "hips_up": m, "reach_r": deg, ...}], "loop": bool} in CHARACTER terms - never bone rotations. Gaits take "overrides" ({"stride": 0.4, "lean": 10, ...}, fractions of leg length where they are distances).')] = None,
                     fps: Annotated[int, Field(description='Keys per second. Default 30.')] = 30,
                     out_dir: Annotated[str, Field(description='Where the proof frames and sheets go. Default: anim_proof/ beside out_path.')] = "",
                     stem: Annotated[str, Field(description='File stem for the proof images. Default proof.')] = "proof",
@@ -1413,13 +1420,17 @@ def blender_animate(model: Annotated[str, Field(description='The RIGGED humanoid
                     loop_suffix: Annotated[bool, Field(description="Name looping clips '<name>-loop' so Godot's importer marks them looping on import. Default False.")] = False,
                     orient: Annotated[bool, Field(description="Turn a character whose measured forward is -Y to the pipeline's +Y (Godot's -Z) before authoring, so the game does not play it backwards. Default True.")] = True,
                     timeout: Annotated[int, Field(description='Seconds for the Blender session. Default 900.')] = 900) -> dict:
-    """Put gameplay clips on a rigged humanoid, export the .glb, and SHOW them.
+    """Put gameplay clips on a rigged character, export the .glb, and SHOW them.
 
     The animation layer the 3D path was missing: walk, run, idle, crouch,
     pickup and the rest are AUTHORED ON THE RIG IT IS GIVEN - forward, left,
     leg length and hip height are measured off the bones, feet are solved by
     IK so they stay where they are put, the spine bends cumulatively and the
-    arms counter-swing. Do not write a bpy pose script by hand; it was done
+    arms counter-swing. A QUADRUPED rig (blender_rig kind=quadruped) gets
+    the four-legged gaits instead - walk (lateral sequence), trot (diagonal
+    pairs), gallop (with flight) - elbows bending back and stifles forward,
+    the body height derived per frame. Then godot_character_wire puts the
+    result in a playable scene. Do not write a bpy pose script by hand; it was done
     once and every clip walked backwards with every gate green. THE PROOF
     SHEETS COME BACK AS IMAGES - look at them; `support` is the foot-contact
     gate per clip judged against what the clip was MEANT to be. `refused`
@@ -1456,13 +1467,163 @@ def blender_animate(model: Annotated[str, Field(description='The RIGGED humanoid
     if result.get("ok"):
         made = [c["action"] for c in (result.get("clips") or []) if c.get("ok")]
         failed = (result.get("support") or {}).get("failed") or []
+        collided = (result.get("collisions") or {}).get("failed") or []
         _log("blender",
              f"animated {model} -> {len(made)} clips ({', '.join(made)})"
-             + (f"; support FAILED on {', '.join(failed)}" if failed else ""),
+             + (f"; support FAILED on {', '.join(failed)}" if failed else "")
+             + (f"; SELF-COLLIDING: {', '.join(collided)}" if collided else ""),
              ref=str(out_path))
     elif result.get("refused"):
         _log("blender", f"blender_animate REFUSED {model}: skin and skeleton "
                         "disagree about forward", ref=str(model))
+    return result
+
+
+from bgate_adapters import godot_character as _godot_character  # noqa: E402
+
+
+@_tool
+def godot_character_wire(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+                         glb: Annotated[str, Field(description='The ANIMATED .glb (what blender_animate wrote).')],
+                         name: Annotated[str, Field(description='Scene and node name; empty derives it from the .glb filename.')] = "",
+                         clips: Annotated[Optional[dict], Field(description='Pin clip roles by name when the names do not say: {"idle": "Idle_Loop", "walk": ..., "run": ..., "jump": ..., "fall": ..., "land": ..., "actions": [...]}. Omitted: resolved from the clip names (walk/trot/gallop and jog/run/sprint land in speed order; anything else is an action).')] = None,
+                         controller: Annotated[str, Field(description='third_person (the template controller: camera-relative, jump, sprint, interact; needs the move_*/jump/sprint actions every scaffold has) | player (first-person template) | none (an NPC - the animator alone; set velocity yourself). Default third_person.')] = "third_person",
+                         script_res: Annotated[str, Field(description='res:// script to attach to the body instead of a template controller.')] = "",
+                         scene_rel: Annotated[str, Field(description='Directory under the project the .tscn is written into. Default scenes/characters.')] = "scenes/characters",
+                         overwrite: Annotated[bool, Field(description='Rewrite an existing <name>.tscn (hand edits are lost). Default False: an existing scene is a refusal.')] = False,
+                         probe: Annotated[bool, Field(description='Drive the animator through every state in the engine and report what it reached. Default True; False only writes.')] = True,
+                         libraries: Annotated[Optional[list[str]], Field(description='res:// AnimationLibrary files from godot_clip_retarget; their clips join the roles as "<stem>/<clip>" and load at runtime.')] = None,
+                         ik: Annotated[bool, Field(description='Add character_ik.gd: feet placed on the ground by ray + SkeletonIK3D with the pelvis following the lower foot, head tracking via LookAtModifier3D when look_target is set. The probe stands the character on a 15-degree ramp and measures each foot. Default True.')] = True,
+                         timeout: Annotated[int, Field(description='Seconds for the import and the probe. Default 300.')] = 300) -> dict:
+    """3D: put an ANIMATED character into a scene that actually plays its clips.
+
+    blender_animate ends at a .glb; godot_deliver_asset wraps a body around
+    it; nothing then plays a clip, and a T-pose statue slides across the
+    floor with every gate green. This writes scenes/characters/<name>.tscn:
+    CharacterBody3D + the model + a capsule fitted to it + an AnimationTree
+    running scripts/character_animator.gd (installed from the template when
+    absent), which builds the state machine at runtime - Locomotion as a
+    speed blend over idle/walk/run(/trot/gallop) at the body's own speeds,
+    Jump/Fall/Land from floor contact, every other clip a one-shot behind
+    play_action(name). Locomotion clips are forced to loop. THEN IT PROVES
+    IT: the scene is instanced headless and driven through stop, walk, run,
+    jump, fall, touchdown and one action, and `probe.steps` says which
+    state the machine reached each time; `ok` False with the scene written
+    means the engine did not confirm it - read `probe.issues`. Missing
+    roles are `warnings`, not failures: a character with no jump clip
+    simply never leaves Locomotion. Instance the scene into a level (it
+    is the player when controller=third_person; pair with camera_rig.gd as
+    a SIBLING) or drive `velocity` yourself for an NPC.
+    Full notes: docs/tools.md#godot_character_wire
+    """
+    _contained_path(godot_project, "godot_project")
+    result = _godot_character.wire_character(
+        godot_project, glb, name=name, clips=clips, controller=controller,
+        script_res=script_res, scene_rel=scene_rel, overwrite=overwrite,
+        probe=probe, libraries=libraries, ik=ik, timeout=timeout)
+    if result.get("scene"):
+        probe_rec = result.get("probe") or {}
+        _log("godot",
+             f"wired {_Path(glb).name} -> {result.get('scene')} "
+             f"({len((result.get('resolved') or {}).get('locomotion') or [])} locomotion, "
+             f"states {probe_rec.get('states')})"
+             + ("" if result.get("ok") else f"; NOT PROVEN: {result.get('error')}"),
+             ref=str(result.get("scene")))
+    return result
+
+
+from bgate_adapters import godot_capture as _godot_capture  # noqa: E402
+from bgate_adapters import godot_retarget as _godot_retarget  # noqa: E402
+
+
+@_tool
+def godot_clip_retarget(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+                        character_res: Annotated[str, Field(description='res:// path of the imported character (godot_character_wire / godot_import_asset put it in assets/).')],
+                        source: Annotated[str, Field(description='A fetched animlib pack name (quaternius-ual; animation_library lists them) or a .gltf/.glb of clips on a humanoid skeleton (Mixamo names are read).')],
+                        clips: Annotated[Optional[list[str]], Field(description='Clip names to keep (the pack\'s: Walk_Loop, Jog_Fwd_Loop, Roll_RM...; the "_Loop" suffix is optional). Omitted keeps every clip.')] = None,
+                        name: Annotated[str, Field(description='Library file stem: assets/anim/<name>.res. Default: the source stem.')] = "",
+                        timeout: Annotated[int, Field(description='Seconds for the imports and the probe. Default 300.')] = 300) -> dict:
+    """3D: retarget a clip pack onto a character IN THE ENGINE and keep the library.
+
+    Godot's own retarget, driven end to end: a BoneMap for each side, the
+    rest fixer (silhouette fix + overwrite_axis) on BOTH imports so an
+    A-posed rig and a T-posed pack share the profile's frame, then the
+    wanted clips are copied onto the character's skeleton and saved as
+    res://assets/anim/<name>.res - no Blender, every pack clip, root motion
+    kept on Root (`root_motion` lists the _RM clips). THEN IT PLAYS EACH
+    CLIP ON THE CHARACTER: `drives` are the clips that moved the hands and
+    feet, `dead` the ones that did not (paths resolving to nothing play
+    happily). Hand `library` to godot_character_wire(libraries=[...]) - its
+    clips resolve as "<name>/<clip>" - and LOOK at godot_clip_capture: the
+    first run here drove every limb and put the arms straight up, which
+    only the picture said. Pack clips are humanoid; a quadruped takes
+    blender_animate's gaits.
+    Full notes: docs/tools.md#godot_clip_retarget
+    """
+    _contained_path(godot_project, "godot_project")
+    result = _godot_retarget.retarget_library(
+        godot_project, character_res, source, clips=clips, name=name, timeout=timeout)
+    if result.get("library"):
+        _log("godot",
+             f"retargeted {source} -> {result.get('library')} "
+             f"({len(result.get('drives') or [])} drive, {len(result.get('dead') or [])} dead)",
+             ref=str(result.get("library")))
+    return result
+
+
+def _capture_sheet_paths(result: dict) -> list[str]:
+    return [s["path"] for s in (result.get("sheets") or [])
+            if isinstance(s, dict) and s.get("path")]
+
+
+@_tool(images=_capture_sheet_paths)
+def godot_clip_capture(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+                       scene: Annotated[str, Field(description='res:// path of the wired character scene (godot_character_wire\'s).')],
+                       clips: Annotated[Optional[list[str]], Field(description='Clip names as the AnimationPlayer has them ("walk", "ual/Walk"). Omitted captures every clip.')] = None,
+                       samples: Annotated[int, Field(description='Frames per clip per view, spread over the clip. Default 5.')] = 5,
+                       out_dir: Annotated[str, Field(description='Where frames and sheets go. Default .bgate_out/3d/clips/<scene stem>.')] = "",
+                       timeout: Annotated[int, Field(description='Seconds for the engine run. Default 240.')] = 240) -> dict:
+    """3D: photograph every clip IN THE ENGINE - the proof a human judges.
+
+    blender_animate's sheets are Blender's renders of Blender's scene; the
+    player sees Godot's import under Godot's skeleton (a retarget is a new
+    rest), materials and lights, and every defect between the two was
+    invisible by construction. This runs the real renderer with a window
+    (needs a display), stands the character on a lit floor, plays each
+    clip through its AnimationPlayer with the AnimationTree off, and saves
+    `samples` frames from the side, front three-quarter and back
+    three-quarter - one sheet per clip, RETURNED AS IMAGES. Look at them:
+    that is the acceptance. Run it after godot_character_wire and after
+    every godot_clip_retarget.
+    Full notes: docs/tools.md#godot_clip_capture
+    """
+    _contained_path(godot_project, "godot_project")
+    stem = _Path(str(scene)).stem
+    out = out_dir or str(_Path(_root()) / ".bgate_out" / "3d" / "clips" / _run_tag(stem))
+    _contained_path(out, "out_dir")
+    result = _godot_capture.capture_clips(godot_project, scene, out, clips=clips,
+                                          samples=samples, timeout=timeout)
+    registered = []
+    for sheet in (result.get("sheets") or []):
+        path = sheet.get("path")
+        if not path:
+            continue
+        label = f"engine-{stem}-{str(sheet.get('clip', 'clip')).replace('/', '-')}"
+        archived = _archive_preview(path, label)
+        if archived:
+            sheet["preview"] = archived
+        artifact = _register_artifact(
+            label, path, producer="godot_clip_capture",
+            metadata={"scene": str(scene), "clip": sheet.get("clip"),
+                      "preview": archived or ""})
+        if artifact:
+            sheet["artifact_id"] = artifact["id"]
+            registered.append(artifact["id"])
+    if registered:
+        result["artifact_ids"] = registered
+    if result.get("ok"):
+        _log("godot", f"captured {len(result.get('clips') or [])} clips of {scene} in engine",
+             ref=str(scene))
     return result
 
 

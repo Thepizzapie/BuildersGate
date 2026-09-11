@@ -75,7 +75,9 @@ datas += [
                  # blender.animate splices this one in the same way _measured
                  # splices bodymeasure: by source, so a test and Blender run
                  # the same bytes. Frozen without it, every clip fails.
-                 "humanpose.py")
+                 "humanpose.py",
+                 # the four-legged half, spliced after humanpose.
+                 "quadpose.py")
 ]
 # Pillow ships binary plugins it loads dynamically.
 datas += collect_data_files("PIL", include_py_files=False)

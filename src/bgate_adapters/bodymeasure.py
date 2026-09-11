@@ -1,3 +1,4 @@
+import math
 """Where a body's landmarks are, measured from its points and nothing else.
 
 TWO WORLDS, ONE COPY OF THE SOURCE. These functions run inside Blender, spliced
@@ -182,10 +183,10 @@ def arm_landmarks(points, sgn, lo, h):
     step = h / float(ARM_BANDS)
     creases, reach = side_creases(points, sgn, lo, h)
     if not creases or not reach:
-        return {"why": "no band separates an arm from the torso"}
+        return arm_by_tube(points, sgn, lo, h, "no band separates an arm from the torso")
     tip_band = max(reach, key=lambda b: reach[b])
     if tip_band not in creases:
-        return {"why": "the outermost point's band is not creased"}
+        return arm_by_tube(points, sgn, lo, h, "the outermost point's band is not creased")
     run, band = {tip_band}, tip_band
     while True:
         # A crease may vanish for a band or two on a decimated surface without
@@ -223,6 +224,81 @@ def arm_landmarks(points, sgn, lo, h):
     return {"shoulder": shoulder, "tip": list(tip), "torso_w": body_edge,
             "arm_verts": len(arm), "shoulder_z": shoulder[2],
             "armpit_z": lo + step * (min(run) + 0.5)}
+
+
+# THE SECOND WAY TO FIND A SHOULDER. The crease finder needs an armpit; a
+# pauldron, a big round body or a sleeve that meets the torso in a smooth
+# curve has none, and on those the arm bones stayed at template positions,
+# the arm skin bound to whatever bone was nearest, and the character walked
+# with its arms inside its chest (measured on a plate-armoured knight and on
+# a tomato). An arm held out horizontally is a TUBE: walking inward from the
+# fingertip, the vertical thickness of the material at arm height stays at
+# the arm's own diameter until the torso, where it jumps. That jump is the
+# body's edge and the joint sits a third of a tube inside it.
+TUBE_JUMP = 2.2          # thickness ratio that says "this band is torso"
+TUBE_BANDS = 40          # x-bands across the half-width
+TUBE_HAND_FRACTION = 0.85  # outermost share of half-width read as hand
+
+
+def arm_by_tube(points, sgn, lo, h, crease_why):
+    side = [p for p in points if sgn * p[0] > 0.0]
+    if len(side) < 30:
+        return {"why": crease_why + "; and no material on this side for the tube scan"}
+    xc = 0.0
+    half = max(abs(p[0]) for p in points)
+    tip = max(side, key=lambda p: sgn * p[0])
+    hands = [p for p in side if abs(p[0] - xc) > half * TUBE_HAND_FRACTION]
+    if len(hands) < 4:
+        return {"why": crease_why + "; and no hand at the reach for the tube scan"}
+    arm_z = sum(p[2] for p in hands) / len(hands)
+    arm_y = sum(p[1] for p in hands) / len(hands)
+    step = half / float(TUBE_BANDS)
+    prof = []
+    x = tip[0]
+    for _ in range(TUBE_BANDS):
+        seg = [p for p in side if abs(p[0] - x) < step and abs(p[2] - arm_z) < h * 0.25]
+        if seg:
+            prof.append((x, max(q[2] for q in seg) - min(q[2] for q in seg)))
+        x -= sgn * step
+    if len(prof) < 12:
+        return {"why": crease_why + "; and the tube scan found under 12 bands"}
+    inner = sorted(t for _, t in prof[2:10])
+    tube = inner[len(inner) // 2]
+    if tube <= 0.0:
+        return {"why": crease_why + "; and the arm has no thickness"}
+    shoulder_x = None
+    for xb, t in prof[3:]:
+        if t > tube * TUBE_JUMP:
+            shoulder_x = xb
+            break
+    if shoulder_x is None:
+        return {"why": crease_why + "; and the tube never met a torso"}
+    # THE JOINT IS INSIDE THE TORSO, NOT AT THE EDGE OF WHATEVER SITS ON THE
+    # SHOULDER. The tube-to-body jump lands on a pauldron, a puffed sleeve or
+    # a round belly; a joint placed there leaves the UpperArm bone short and
+    # hands the upper arm's skin to the clavicle, and the arms stay out
+    # sideways while the forearms fold (measured on a plate-armoured knight:
+    # jump at 0.42, real joint ~0.23). The torso's own half-width just below
+    # the arm, where no arm material exists, bounds the joint.
+    # The NARROWEST band between the armpit and four tubes down: a pauldron
+    # or a breastplate flare reaches below the arm, the ribcage under it
+    # does not.
+    widths = []
+    z0 = arm_z - 1.1 * tube
+    while z0 > arm_z - 4.5 * tube and z0 > lo + h * 0.45:
+        band_pts = [abs(p[0] - xc) for p in side
+                    if z0 - tube * 0.5 < p[2] <= z0 and abs(p[0] - xc) < abs(shoulder_x - xc)]
+        if len(band_pts) >= 6:
+            widths.append(max(band_pts))
+        z0 -= tube * 0.5
+    torso_hw = min(widths) if widths else abs(shoulder_x - xc)
+    joint_r = min(abs(shoulder_x - xc) - tube * 0.35, torso_hw * 1.05)
+    joint_x = xc + sgn * max(joint_r, tube * 0.6)
+    return {"shoulder": [joint_x, arm_y, arm_z], "tip": list(tip),
+            "torso_w": abs(shoulder_x), "arm_verts": len(side),
+            "shoulder_z": arm_z, "armpit_z": arm_z - tube * 0.5,
+            "method": "tube", "tube": tube, "torso_below_arm": torso_hw,
+            "crease_why": crease_why}
 
 
 def crotch_height(points, lo, h, bands=ARM_BANDS):
@@ -549,3 +625,265 @@ def derive_parameters(marks, heads_pin=None):
     out["complete"] = all(out[a]["measured"] or out[a].get("value")
                           for a in DERIVED_AXES)
     return out
+
+
+# ---------------------------------------------------------------------------
+# QUADRUPEDS. Four legs, a horizontal trunk, a head at one end and maybe a
+# tail at the other. Nothing above applies: there is no crotch to find, no
+# arm crease, and the height is not the axis the body lies along.
+#
+# CONVENTION: the points are post-adopt (welded, scaled, grounded), Z up, and
+# the animal's LENGTH runs along Y with its head toward +Y. The Blender rig
+# script turns the mesh to that before calling; quadruped_front_sign is the
+# reading it turns by.
+# ---------------------------------------------------------------------------
+
+QUAD_LEG_ZONE = 0.40       # fraction of height below which points are legs
+QUAD_PAW_ZONE = 0.06       # fraction of height that is paw
+QUAD_HIGH_ZONE = 0.60      # above this, mass is head/neck (or a raised tail)
+QUAD_END_SLAB = 0.25       # fraction of length either end the front test reads
+QUAD_FRONT_RATIO = 1.3     # high-mass ratio that makes an end readably the head
+QUAD_JOINT_FRACTION = 0.45  # shoulder/hip joint height inside the chest depth
+QUAD_SPINE_FRACTION = 0.78  # the spine line inside the trunk depth (near the back)
+QUAD_MIN_APPENDAGE = 0.12  # fraction of length a neck or tail must reach
+QUAD_COLUMN_SPREAD = 0.2   # a leg column longer than this fraction of the body is not a leg
+
+
+def _pct(values, q):
+    vals = sorted(values)
+    if not vals:
+        return 0.0
+    k = (len(vals) - 1) * q
+    lo, hi = int(math.floor(k)), int(math.ceil(k))
+    return vals[lo] + (vals[hi] - vals[lo]) * (k - lo)
+
+
+def quadruped_front_sign(points):
+    """+1 when the head is toward +Y, -1 toward -Y, 0 when it cannot tell.
+
+    The head and neck rise above the back; the tail, when there is one, is
+    thin. So the end of the animal with more points high up is the front.
+    Read as a RATIO and refused under QUAD_FRONT_RATIO — a giraffe reads at
+    20x, a dachshund at 2x, a symmetric blob at 1x and gets 0."""
+    if not points:
+        return {"sign": 0, "ratio": 0.0, "why": "no points"}
+    zs = [p[2] for p in points]
+    ys = [p[1] for p in points]
+    lo, h = min(zs), max(zs) - min(zs)
+    y0, L = min(ys), max(ys) - min(ys)
+    if h <= 0 or L <= 0:
+        return {"sign": 0, "ratio": 0.0, "why": "flat"}
+    high = lo + h * QUAD_HIGH_ZONE
+    plus = sum(1 for p in points if p[2] > high and p[1] > y0 + L * (1 - QUAD_END_SLAB))
+    minus = sum(1 for p in points if p[2] > high and p[1] < y0 + L * QUAD_END_SLAB)
+    ratio = max(plus, minus) / max(min(plus, minus), 1)
+    if ratio < QUAD_FRONT_RATIO or max(plus, minus) < 8:
+        return {"sign": 0, "ratio": round(ratio, 3), "plus": plus, "minus": minus,
+                "why": "both ends carry the same mass above %.0f%% height "
+                       "(%d vs %d points)" % (QUAD_HIGH_ZONE * 100, plus, minus)}
+    return {"sign": 1 if plus >= minus else -1, "ratio": round(ratio, 3),
+            "plus": plus, "minus": minus,
+            "why": "the %s end carries %.1fx the high mass"
+                   % ("+Y" if plus >= minus else "-Y", ratio)}
+
+
+def _split_two(values, lo, hi):
+    """Two-means along one axis, seeded at the quarter points. Returns the
+    threshold between the clusters, or None when one is empty."""
+    a, b = lo + (hi - lo) * 0.25, lo + (hi - lo) * 0.75
+    for _ in range(12):
+        left = [v for v in values if abs(v - a) <= abs(v - b)]
+        right = [v for v in values if abs(v - a) > abs(v - b)]
+        if not left or not right:
+            return None
+        a, b = sum(left) / len(left), sum(right) / len(right)
+    return (a + b) * 0.5
+
+
+def quadruped_landmarks(points):
+    """Where a four-legged body is: four paws, four leg tops, the spine line,
+    a neck base and head, a tail when there is one. Every entry that could
+    not be measured says so in `why` and is placed from the trunk instead.
+
+    Returns {"floor", "height", "length", "y_min", "y_max", "legs": {leg:
+    {"paw", "top", "mid", "why"}}, "hips", "shoulders", "neck", "head",
+    "nose", "tail", "measured": int, "why": []}."""
+    out = {"why": [], "legs": {}}
+    if len(points) < 50:
+        out["why"].append("too few points (%d)" % len(points))
+        return out
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    zs = [p[2] for p in points]
+    lo, hi = min(zs), max(zs)
+    h = hi - lo
+    y0, y1 = min(ys), max(ys)
+    L = y1 - y0
+    xc = sum(xs) / len(xs)
+    out.update(floor=lo, top=hi, height=h, length=L, y_min=y0, y_max=y1,
+               half_width=max(abs(x - xc) for x in xs), x_centre=xc)
+    if h <= 1e-6 or L <= 1e-6:
+        out["why"].append("degenerate bounds")
+        return out
+
+    # LEGS: everything low is leg; split fore/aft along the length, then by
+    # side. A body lying on its belly has no leg zone and refuses here.
+    low = [p for p in points if p[2] < lo + h * QUAD_LEG_ZONE]
+    cut = _split_two([p[1] for p in low], y0, y1) if len(low) >= 20 else None
+    if cut is None:
+        out["why"].append("no fore/aft leg clusters below %.0f%% height"
+                          % (QUAD_LEG_ZONE * 100))
+        return out
+    columns = {}
+    for leg_name, front, left in (("LeftFront", True, True), ("RightFront", True, False),
+                                  ("LeftBack", False, True), ("RightBack", False, False)):
+        col = [p for p in low if (p[1] > cut) == front and ((p[0] - xc) < 0) == left]
+        columns[leg_name] = col
+    # Left is -X, the pipeline's convention after orient.
+    for leg_name, col in columns.items():
+        entry = {"why": ""}
+        if len(col) < 6:
+            entry["why"] = "no column of points (%d)" % len(col)
+            out["legs"][leg_name] = entry
+            continue
+        # A LEG IS A COLUMN. A body lying on its belly, or a trunk with no
+        # legs under it, puts its underside in the leg zone and reads as two
+        # fore/aft clusters that each span half the body.
+        ys_col = [p[1] for p in col]
+        spread = max(ys_col) - min(ys_col)
+        if spread > L * QUAD_COLUMN_SPREAD:
+            entry["why"] = ("the low zone here spans %.0f%% of the body - a "
+                            "trunk, not a leg" % (100.0 * spread / L))
+            out["legs"][leg_name] = entry
+            continue
+        paw_pts = [p for p in col if p[2] < lo + h * QUAD_PAW_ZONE] or \
+            sorted(col, key=lambda p: p[2])[:max(3, len(col) // 10)]
+        entry["paw"] = _mean(paw_pts)
+        mid_pts = [p for p in col if lo + h * 0.12 < p[2] < lo + h * 0.32] or col
+        entry["mid"] = _mean(mid_pts)
+        out["legs"][leg_name] = entry
+
+    # TRUNK DEPTH at the fore and aft leg lines: the chest/pelvis underside
+    # and the back, read above the leg zone in a slab around each leg line.
+    def slab(y_at, width=0.08):
+        return [p for p in points if abs(p[1] - y_at) < L * width
+                and p[2] >= lo + h * QUAD_LEG_ZONE]
+
+    fronts = [out["legs"][l] for l in ("LeftFront", "RightFront") if "mid" in out["legs"][l]]
+    backs = [out["legs"][l] for l in ("LeftBack", "RightBack") if "mid" in out["legs"][l]]
+    if not fronts or not backs:
+        out["why"].append("a leg pair is missing: fronts %d, backs %d"
+                          % (len(fronts), len(backs)))
+        return out
+    y_front = sum(e["mid"][1] for e in fronts) / len(fronts)
+    y_back = sum(e["mid"][1] for e in backs) / len(backs)
+    lines = {}
+    for label, y_at in (("front", y_front), ("back", y_back)):
+        pts = slab(y_at)
+        if len(pts) < 10:
+            pts = slab(y_at, 0.15)
+        if len(pts) < 10:
+            out["why"].append("no trunk above the %s legs" % label)
+            belly, back = lo + h * QUAD_LEG_ZONE, hi
+        else:
+            zz = [p[2] for p in pts]
+            belly, back = _pct(zz, 0.05), _pct(zz, 0.95)
+        lines[label] = {"y": y_at, "belly": belly, "back": back,
+                        "joint": belly + (back - belly) * QUAD_JOINT_FRACTION,
+                        "spine": belly + (back - belly) * QUAD_SPINE_FRACTION}
+    out["shoulders"] = lines["front"]
+    out["hips"] = lines["back"]
+    for leg_name, entry in out["legs"].items():
+        if "mid" in entry:
+            line = lines["front" if "Front" in leg_name else "back"]
+            entry["top"] = [entry["mid"][0], entry["mid"][1], line["joint"]]
+
+    # NECK AND HEAD: whatever lies ahead of the shoulder line, above the belly.
+    ahead = [p for p in points if p[1] > y_front + L * 0.05
+             and p[2] > lines["front"]["belly"] - h * 0.1]
+    reach = (max(p[1] for p in ahead) - y_front) if ahead else 0.0
+    if ahead and reach > L * QUAD_MIN_APPENDAGE:
+        nose_y = max(p[1] for p in ahead)
+        head_pts = [p for p in ahead if p[1] > nose_y - reach * 0.45]
+        head_c = _mean(head_pts)
+        out["neck"] = {"base": [xc, y_front + L * 0.02, lines["front"]["spine"]],
+                       "top": [xc, head_c[1] - reach * 0.22, head_c[2]],
+                       "measured": True}
+        out["head"] = {"centre": [xc, head_c[1], head_c[2]], "measured": True}
+        out["nose"] = [xc, nose_y, head_c[2]]
+    else:
+        out["why"].append("nothing reaches ahead of the shoulders; neck and "
+                          "head placed from the trunk")
+        sp = lines["front"]["spine"]
+        out["neck"] = {"base": [xc, y_front + L * 0.02, sp],
+                       "top": [xc, y_front + L * 0.14, sp + h * 0.12],
+                       "measured": False}
+        out["head"] = {"centre": [xc, y_front + L * 0.24, sp + h * 0.14],
+                       "measured": False}
+        out["nose"] = [xc, y_front + L * 0.32, sp + h * 0.13]
+
+    # TAIL: whatever lies behind the hip line.
+    behind = [p for p in points if p[1] < y_back - L * 0.05
+              and p[2] > lo + h * QUAD_LEG_ZONE]
+    reach = (y_back - min(p[1] for p in behind)) if behind else 0.0
+    if behind and reach > L * QUAD_MIN_APPENDAGE:
+        tip_y = min(p[1] for p in behind)
+        tip_pts = [p for p in behind if p[1] < tip_y + reach * 0.25]
+        tip = _mean(tip_pts)
+        mid_pts = [p for p in behind
+                   if abs(p[1] - (y_back + tip_y) * 0.5) < reach * 0.2] or behind
+        mid = _mean(mid_pts)
+        out["tail"] = {"base": [xc, y_back - L * 0.02, lines["back"]["spine"]],
+                       "mid": [xc, mid[1], mid[2]], "tip": [xc, tip[1], tip[2]],
+                       "measured": True}
+    else:
+        out["tail"] = {"measured": False, "why": "nothing reaches behind the hips"}
+
+    out["measured"] = (sum(1 for e in out["legs"].values() if "top" in e)
+                       + (1 if out["neck"]["measured"] else 0)
+                       + (1 if out["tail"]["measured"] else 0))
+    return out
+
+
+def quadruped_chain(marks, root_name="Root"):
+    """The bone rows bg_bone_chain takes, from quadruped_landmarks: [(name,
+    head, tail, parent, roll), ...]. Pure, so a test can build the skeleton
+    a mesh would get without Blender."""
+    if not marks.get("hips") or not marks.get("shoulders"):
+        raise ValueError("landmarks carry no trunk: %s"
+                         % "; ".join(marks.get("why") or ["unmeasured"]))
+    hips, sh = marks["hips"], marks["shoulders"]
+    xc = marks.get("x_centre", 0.0)
+    floor = marks.get("floor", 0.0)
+    y_h, y_s = hips["y"], sh["y"]
+    z_h, z_s = hips["spine"], sh["spine"]
+    rows = [(root_name, (xc, y_h, floor), (xc, y_h, z_h), None, 0.0)]
+
+    def along(t):
+        return (xc, y_h + (y_s - y_h) * t, z_h + (z_s - z_h) * t)
+    rows += [("Hips", along(0.0), along(0.32), root_name, 0.0),
+             ("Spine", along(0.32), along(0.66), "Hips", 0.0),
+             ("Chest", along(0.66), along(1.0), "Spine", 0.0)]
+    neck = marks["neck"]
+    rows += [("Neck", tuple(neck["base"]), tuple(neck["top"]), "Chest", 0.0),
+             ("Head", tuple(neck["top"]), tuple(marks["nose"]), "Neck", 0.0)]
+    tail = marks.get("tail") or {}
+    if tail.get("measured"):
+        rows += [("Tail1", tuple(tail["base"]), tuple(tail["mid"]), "Hips", 0.0),
+                 ("Tail2", tuple(tail["mid"]), tuple(tail["tip"]), "Tail1", 0.0)]
+    for leg_name, entry in marks["legs"].items():
+        if "top" not in entry:
+            continue
+        front = "Front" in leg_name
+        top, paw = entry["top"], entry["paw"]
+        span = top[2] - paw[2]
+        # Elbows sit back of the shoulder, stifles forward of the hip, so the
+        # rest already bends the way IK will send it.
+        bend = (-1.0 if front else 1.0) * marks["length"] * 0.06
+        mid = (top[0] * 0.5 + paw[0] * 0.5, top[1] + bend, paw[2] + span * 0.5)
+        toe = (paw[0], paw[1] + marks["length"] * 0.05, floor)
+        parent = "Chest" if front else "Hips"
+        rows += [(leg_name + "UpperLeg", tuple(top), mid, parent, 0.0),
+                 (leg_name + "LowerLeg", mid, tuple(paw), leg_name + "UpperLeg", 0.0),
+                 (leg_name + "Foot", tuple(paw), toe, leg_name + "LowerLeg", 0.0)]
+    return rows

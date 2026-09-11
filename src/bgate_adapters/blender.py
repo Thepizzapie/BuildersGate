@@ -2987,7 +2987,8 @@ def fit_bones(arm, mesh):
         d = L.get(side) or {}
         arms[side] = {k: v for k, v in d.items()
                       if k in ("shoulder", "tip", "torso_w", "armpit_z",
-                               "shoulder_z", "arm_verts", "why")}
+                               "shoulder_z", "arm_verts", "why", "method",
+                               "tube", "torso_below_arm", "crease_why")}
     return {"moved": moved, "arms": arms, "trunk": trunk,
             "landmarks": {k: v for k, v in L.items()
                           if not isinstance(v, dict)}}
@@ -3384,6 +3385,13 @@ else:
             out["unweighted_pct"] = round(
                 100.0 * after / max(len(mesh.data.vertices), 1), 3)
             out["symmetrised"] = report
+    # RIGID REGIONS STAY RIGID. Measured on a mascot: Neck and Spine weight
+    # bleeding into a head the size of the torso smeared its texture on
+    # every turn while the unweighted count read 0.
+    if out.get("rigged") and PAY.get("rigid_bones"):
+        out["hardened"] = bg_harden_weights(mesh, bones=tuple(PAY["rigid_bones"]),
+                                            threshold=float(PAY.get("rigid_threshold", 0.35)),
+                                            limit=int(PAY.get("influence_limit", 3)))
     # TO A FILE. This report grew past run_script's 4000-character stdout
     # window the moment the trunk fit and its anchors joined it, and the mark
     # at the start of its line went with the head of the string — so a rig that
@@ -3396,12 +3404,220 @@ else:
 '''.replace("__MARK__", _RIG_MARK)
 
 
+
+# ---------------------------------------------------------------------------
+# The quadruped rig. Same session, same bind, same proof as the humanoid -
+# only the skeleton comes from four-legged landmarks (bodymeasure.
+# quadruped_landmarks) instead of a fitted template.
+# ---------------------------------------------------------------------------
+_QUAD_RIG_SCRIPT = '''
+import bpy, json, math
+from mathutils import Vector, Matrix
+
+PAY = json.loads(r"""__PAYLOAD__""")
+
+def _points(mesh):
+    return [tuple(mesh.matrix_world @ v.co) for v in mesh.data.vertices]
+
+def _turn(mesh, degrees):
+    # The glTF importer leaves objects in QUATERNION rotation mode, where
+    # rotation_euler is ignored by matrix_basis and bg_apply bakes nothing.
+    # Measured: a 90-degree turn that reported itself done and moved no vertex.
+    mesh.rotation_mode = "XYZ"
+    mesh.rotation_euler = (0.0, 0.0, math.radians(degrees))
+    bg_apply(mesh, location=False, rotation=True, scale=False)
+    bpy.context.view_layer.update()
+
+def _ground(mesh):
+    bpy.context.view_layer.update()
+    low = min((mesh.matrix_world @ v.co).z for v in mesh.data.vertices)
+    mesh.location.z -= low
+    bg_apply(mesh, location=True, rotation=False, scale=False)
+    bpy.context.view_layer.update()
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+bpy.ops.import_scene.gltf(filepath=PAY["model"])
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+out = {"ok": True, "kind": "quadruped", "imported_objects": len(meshes)}
+if not meshes:
+    out.update(ok=False, error="no mesh in " + PAY["model"])
+else:
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    for stray in [x for x in bpy.context.scene.objects if x is not mesh]:
+        bpy.data.objects.remove(stray, do_unlink=True)
+    # Adopt without orienting: bg_orient reads a FOOT and a quadruped has
+    # four paws pointing the same way. The turn is decided below from the
+    # head end instead.
+    out["adopt"] = bg_adopt(mesh, kind="none", height=PAY["height"],
+                            budget=PAY["budget"], orient=False)
+    bpy.context.view_layer.update()
+    orient = {"turned_deg": 0}
+    if PAY["orient"]:
+        # LENGTH ALONG Y. A generated animal arrives roughly axis-aligned and
+        # either way round; the long horizontal axis is the body.
+        d = mesh.dimensions
+        if d.x > d.y * 1.05:
+            _turn(mesh, 90.0)
+            orient["turned_deg"] += 90
+            orient["long_axis_was"] = "x"
+        read = quadruped_front_sign(_points(mesh))
+        orient["front"] = read
+        sign = PAY.get("assume") if PAY.get("assume") in (1, -1) else read["sign"]
+        if sign == -1:
+            _turn(mesh, 180.0)
+            orient["turned_deg"] += 180
+        elif sign == 0:
+            orient["note"] = ("could not read which end is the head (%s); left "
+                              "as is - pass assume=+1/-1 if you know"
+                              % read.get("why"))
+            out.setdefault("warnings", []).append(orient["note"])
+    _ground(mesh)
+    # Centre on X so the two sides split on the midline.
+    xs = [(mesh.matrix_world @ v.co).x for v in mesh.data.vertices]
+    mesh.location.x -= (max(xs) + min(xs)) * 0.5
+    bg_apply(mesh, location=True, rotation=False, scale=False)
+    bpy.context.view_layer.update()
+    out["orient"] = orient
+    pts = _points(mesh)
+    marks = quadruped_landmarks(pts)
+    out["landmarks"] = {k: v for k, v in marks.items() if k != "legs"}
+    out["landmarks"]["legs"] = {k: {a: b for a, b in v.items() if a in ("paw", "top", "why")}
+                                for k, v in (marks.get("legs") or {}).items()}
+    try:
+        rows = quadruped_chain(marks, root_name="Root")
+    except ValueError as exc:
+        out.update(ok=False, error="THE BODY COULD NOT BE MEASURED: %s. A "
+                   "quadruped rig needs four leg columns under a horizontal "
+                   "trunk; check the plate is a standing side/three-quarter "
+                   "view and the mesh is one animal." % exc)
+        rows = None
+    if rows is not None:
+        arm = bg_bone_chain(PAY["armature_name"], rows)
+        arm.data.bones["Root"].use_deform = False
+        out["bones"] = len(arm.data.bones)
+        out["bone_names"] = [b.name for b in arm.data.bones]
+        out["anatomy"] = {"legs_measured": sum(1 for e in marks["legs"].values() if "top" in e),
+                          "neck_measured": bool(marks["neck"]["measured"]),
+                          "tail_measured": bool(marks["tail"].get("measured")),
+                          "ok": marks.get("measured", 0) >= 4,
+                          "why": marks.get("why")}
+        if not out["anatomy"]["ok"]:
+            out["ok"] = False
+            out["error"] = "LEGS ASSUMED: only %d of 4 leg columns were measured (%s)" % (
+                out["anatomy"]["legs_measured"], "; ".join(marks.get("why") or []))
+        if bpy.context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        attempts = []
+        for how in ("ARMATURE_AUTO", "ARMATURE_ENVELOPE"):
+            for vg in mesh.vertex_groups[:]:
+                mesh.vertex_groups.remove(vg)
+            for mod in [m for m in mesh.modifiers if m.type == "ARMATURE"]:
+                mesh.modifiers.remove(mod)
+            bpy.ops.object.select_all(action="DESELECT")
+            mesh.select_set(True)
+            arm.select_set(True)
+            bpy.context.view_layer.objects.active = arm
+            try:
+                with bpy.context.temp_override(
+                        object=arm, active_object=arm,
+                        selected_objects=[mesh, arm],
+                        selected_editable_objects=[mesh, arm]):
+                    bpy.ops.object.parent_set(type=how)
+                err = ""
+            except Exception as exc:
+                err = str(exc)[:160]
+            bpy.context.view_layer.update()
+            total = len(mesh.data.vertices)
+            loose = sum(1 for v in mesh.data.vertices if not v.groups)
+            attempts.append({"bind": how, "verts": total, "unweighted": loose,
+                             "pct": round(100.0 * loose / max(total, 1), 3),
+                             "groups": len(mesh.vertex_groups), "error": err})
+            if not err and loose <= max(8, total * PAY["tolerance"]):
+                break
+        out["attempts"] = attempts
+        best = min(attempts, key=lambda a: a["unweighted"])
+        out["bound_with"] = best["bind"]
+        out["unweighted"] = best["unweighted"]
+        out["unweighted_pct"] = best["pct"]
+        out["rigged"] = bool(best["unweighted"] <= max(8, best["verts"] * PAY["tolerance"]))
+        if not out["rigged"]:
+            out["reason"] = ("%d of %d vertices carry no bone weight (%.2f%%)"
+                             % (best["unweighted"], best["verts"], best["pct"]))
+        # Root is the transform handle; skin on it stands still while the
+        # body moves (the humanoid rig's wedge-at-toe-off defect).
+        vg = mesh.vertex_groups.get("Root")
+        if vg is not None:
+            mesh.vertex_groups.remove(vg)
+        if out.get("rigged") and PAY.get("rigid_bones"):
+            out["hardened"] = bg_harden_weights(mesh, bones=tuple(PAY["rigid_bones"]),
+                                                threshold=float(PAY.get("rigid_threshold", 0.35)),
+                                                limit=int(PAY.get("influence_limit", 3)))
+with open(PAY["dump"], "w") as _handle:
+    json.dump(out, _handle, default=str)
+print("__MARK__" + json.dumps({"ok": out.get("ok", False), "dumped": True}))
+'''.replace("__MARK__", _RIG_MARK)
+
+
+def _quad_rig_script() -> str:
+    return _measured(_QUAD_RIG_SCRIPT)
+
+
+def rig_quadruped(model, out_path, *, height: float = 1.0, budget: int = 0,
+                  orient: bool = True, assume: Optional[int] = None,
+                  armature_name: str = "Skeleton", tolerance: float = 0.01,
+                  rigid_bones: Sequence[str] = ("Head",),
+                  rigid_threshold: float = 0.35, influence_limit: int = 3,
+                  timeout: int = 900) -> dict:
+    """A four-legged twin of rig(): adopt, turn the head to +Y, measure the
+    legs, trunk, neck and tail off the mesh, build QUADRUPED_BONES on them,
+    bind, and PROVE the bind with the unweighted count.
+
+    height   the animal's total height (crown of the head to the floor), the
+             one number a person actually knows.
+    assume   +1/-1 forces which end along Y is the head when the reading is
+             ambiguous (a symmetric blob, a tail as big as the head).
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    payload = {"model": str(src).replace("\\", "/"), "height": float(height),
+               "budget": int(budget), "orient": bool(orient),
+               "assume": int(assume) if assume in (1, -1) else None,
+               "armature_name": armature_name, "tolerance": float(tolerance),
+               "rigid_bones": [str(b) for b in (rigid_bones or ())],
+               "rigid_threshold": float(rigid_threshold),
+               "influence_limit": int(influence_limit)}
+    with tempfile.TemporaryDirectory(prefix="bgate_rig_") as tmp:
+        dump = Path(tmp) / "rig.json"
+        payload["dump"] = str(dump).replace("\\", "/")
+        script = _quad_rig_script().replace("__PAYLOAD__", json.dumps(payload))
+        result = run_script(script, export_glb=str(out_path), timeout=timeout,
+                            record=False)
+        marked = _marked(result, _RIG_MARK)
+        if not marked:
+            return {"ok": False,
+                    "error": result.get("error") or "no report from Blender",
+                    "traceback": (result.get("traceback") or "")[-800:]}
+        if not dump.is_file():
+            return {"ok": False, "error": "Blender acknowledged a report it "
+                                          "did not write to " + str(dump)}
+        report = json.loads(dump.read_text(encoding="utf-8"))
+    report["out_path"] = str(out_path)
+    report["seconds"] = result.get("seconds")
+    if report.get("bone_names"):
+        report["coverage"] = quadruped_coverage_verdict(report.get("bone_names"))
+    return report
+
+
 def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
         kind: str = "humanoid", height: float = 1.8,
         heads: Optional[float] = None, budget: int = 0,
         orient: bool = True, armature_name: str = "Skeleton", pose: str = "a",
         tolerance: float = 0.01, symmetrize: str = "auto",
-        sym_limit: float = 0.02, timeout: int = 900) -> dict:
+        sym_limit: float = 0.02, rigid_bones: Sequence[str] = ("Head",),
+        rigid_threshold: float = 0.35, influence_limit: int = 3,
+        timeout: int = 900) -> dict:
     """Take a generated mesh to a bound, weighted, exported character.
 
     A generator hands back geometry and nothing else — `rigged: false` on every
@@ -3420,6 +3636,14 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
     ships, and `rigged` is False when neither reaches `tolerance` — a caller
     that ignores it is shipping a statue.
     """
+    if kind == "quadruped":
+        return rig_quadruped(model, out_path, height=height, budget=budget,
+                             orient=orient, armature_name=armature_name,
+                             tolerance=tolerance, rigid_bones=rigid_bones,
+                             rigid_threshold=rigid_threshold,
+                             influence_limit=influence_limit, timeout=timeout)
+    if kind not in RIG_KINDS:
+        return {"ok": False, "error": "kind must be one of %s" % (RIG_KINDS,)}
     src = Path(model)
     if not src.is_file():
         return {"ok": False, "error": f"no model at {src}"}
@@ -3439,7 +3663,12 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
                "tolerance": float(tolerance),
                "symmetrize": (symmetrize if symmetrize in
                               ("auto", "off", "force") else "auto"),
-               "sym_limit": float(sym_limit)}
+               "sym_limit": float(sym_limit),
+               # rigid_bones: any vertex carrying rigid_threshold of one of
+               # these becomes its alone, then influences are capped.
+               "rigid_bones": [str(b) for b in (rigid_bones or ())],
+               "rigid_threshold": float(rigid_threshold),
+               "influence_limit": int(influence_limit)}
     with tempfile.TemporaryDirectory(prefix="bgate_rig_") as tmp:
         dump = Path(tmp) / "rig.json"
         payload["dump"] = str(dump).replace("\\", "/")
@@ -4215,6 +4444,27 @@ def humanoid_coverage_verdict(bone_names, essential=ESSENTIAL_HUMANOID_BONES) ->
     missing = [b for b in essential if b not in present]
     return {"passed": not missing, "missing": missing,
             "checked": len(essential), "found": len(essential) - len(missing)}
+
+# THE QUADRUPED SKELETON. No engine profile names these - Godot has no
+# quadruped SkeletonProfile - so they are chosen to READ, and every tool that
+# takes a foot name (animation_contacts, the support gate, blender_animate's
+# quadruped gaits) speaks them. See quadpose.py.
+QUADRUPED_BONES = (
+    "Root", "Hips", "Spine", "Chest", "Neck", "Head", "Tail1", "Tail2",
+    "LeftFrontUpperLeg", "LeftFrontLowerLeg", "LeftFrontFoot",
+    "RightFrontUpperLeg", "RightFrontLowerLeg", "RightFrontFoot",
+    "LeftBackUpperLeg", "LeftBackLowerLeg", "LeftBackFoot",
+    "RightBackUpperLeg", "RightBackLowerLeg", "RightBackFoot",
+)
+ESSENTIAL_QUADRUPED_BONES = tuple(
+    b for b in QUADRUPED_BONES if b not in ("Root", "Tail1", "Tail2"))
+QUADRUPED_FEET = ("LeftFrontFoot", "RightFrontFoot", "LeftBackFoot", "RightBackFoot")
+RIG_KINDS = ("humanoid", "quadruped", "none")
+
+
+def quadruped_coverage_verdict(bone_names) -> dict:
+    return humanoid_coverage_verdict(bone_names, essential=ESSENTIAL_QUADRUPED_BONES)
+
 
 # What a plate has to say to come back in the template's stance. Handed to the
 # caller rather than hidden, because the art seat writes the rest of the prompt.
@@ -5184,11 +5434,16 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
                   "unweighted": rigged.get("unweighted"),
                   "quality_ok": quality.get("ok"),
                   "error": rigged.get("reason") or rigged.get("error") or ""})
-    if not rigged.get("rigged"):
+    # A BOUND RIG WITH AN ASSUMED TRUNK IS NOT DONE. rig() says ok=False when
+    # the shoulders or crotch could not be measured; this used to read only
+    # `rigged` and hand back a knight whose arm bones sat at template
+    # positions inside his chest, with `ok: True, stage: done`.
+    if not rigged.get("rigged") or not rigged.get("ok"):
         result["stage"] = "rig"
-        result["error"] = (rigged.get("reason")
+        result["error"] = (rigged.get("reason") or rigged.get("error")
                            or "the bind weighted nothing — see steps")
         result["rig"] = rigged
+        result["rigged"] = str(rigged_path) if rigged.get("rigged") else None
         return result
     result["rigged"] = str(rigged_path)
     result["rig"] = rigged
@@ -5260,7 +5515,20 @@ DEFAULT_CLIPS = ({"name": "idle", "kind": "idle"},
 # flight fraction is right for a run and impossible for a walk, and
 # bonepaths.support_verdict refuses to guess from a name.
 CLIP_GAITS = {"walk": "walk", "sneak": "walk", "run": "run", "idle": "stand",
-              "crouch_idle": "stand", "look_around": "stand", "wave": "stand"}
+              "crouch_idle": "stand", "look_around": "stand", "wave": "stand",
+              # quadruped kinds (quadpose): a trot has a suspension a walk
+              # gate would fail and a run gate would not require, so it is
+              # measured and not judged; a gallop flies.
+              "trot": "any", "gallop": "run", "sit": "stand", "alert": "stand",
+              "pounce": "any"}
+
+# What a four-legged character ships with when the caller names no clips.
+QUAD_DEFAULT_CLIPS = ({"name": "idle", "kind": "idle"},
+                      {"name": "walk", "kind": "walk"},
+                      {"name": "trot", "kind": "trot"},
+                      {"name": "gallop", "kind": "gallop"},
+                      {"name": "alert", "kind": "alert"})
+QUADPOSE = Path(__file__).with_name("quadpose.py")
 
 
 def clip_gait(kind: str, clip: str = "") -> str:
@@ -5271,7 +5539,7 @@ def clip_gait(kind: str, clip: str = "") -> str:
     if kind in CLIP_GAITS:
         return CLIP_GAITS[kind]
     label = (clip or kind or "").lower()
-    if any(w in label for w in ("sprint", "run", "jog")):
+    if any(w in label for w in ("sprint", "run", "jog", "gallop")):
         return "run"
     if any(w in label for w in ("walk", "crouch_fwd", "sneak")):
         return "walk"
@@ -5331,6 +5599,19 @@ def facing_of(mesh, forward, up=Vector((0.0, 0.0, 1.0))):
                     "skeleton's forward" % ratio) if readable else
                    ("no readable front — the two sides reach %.2fx, which is "
                     "not a foot" % ratio)}
+
+
+def facing_quad(mesh, forward, up=Vector((0.0, 0.0, 1.0))):
+    """The quadruped facing gate: does the skin's HEAD end sit along the
+    skeleton's forward? bodymeasure.quadruped_front_sign, run on the points
+    expressed in the skeleton's own frame."""
+    left = up.cross(forward).normalized()
+    pts = [(v.dot(left), v.dot(forward), v.dot(up))
+           for v in (mesh.matrix_world @ v.co for v in mesh.data.vertices)]
+    read = quadruped_front_sign(pts)
+    return {"readable": read["sign"] != 0,
+            "agrees": (read["sign"] > 0) if read["sign"] else None,
+            "ratio": read.get("ratio"), "why": read.get("why")}
 
 
 def repair_feet(arm, forward):
@@ -5573,16 +5854,32 @@ else:
                     "bone with skin stands still while the limbs move; strip "
                     "it (rig() does, a hand bind does not)" % owned)
         dump = {"bones": rig_dump(arm), "up": (0.0, 0.0, 1.0)}
-        rigf = RigFrame(dump["bones"])
+        # THE BONES SAY WHAT THIS IS. Front legs make it a quadruped and every
+        # axis, gate and gait below switches on that - not on a caller's word.
+        QUAD = is_quadruped(dump["bones"])
+        Frame = QuadFrame if QUAD else RigFrame
+        out["rig_kind"] = "quadruped" if QUAD else "humanoid"
+        clips_wanted = P["clips"] if P.get("clips") is not None else \
+            P["defaults"]["quadruped" if QUAD else "humanoid"]
+        out["specs"] = clips_wanted
+        rigf = Frame(dump["bones"])
         forward = Vector(rigf.forward)
-        facing = facing_of(mesh, forward)
+        facing = facing_quad(mesh, forward) if QUAD else facing_of(mesh, forward)
         out["facing"] = facing
         out["rig"] = rigf.summary()
         if facing["readable"] and facing["agrees"] is False:
-            if P["facing"] == "repair":
+            if P["facing"] == "repair" and QUAD:
+                out.update(ok=False, refused=True, error=(
+                    "THE SKIN'S HEAD AND THE SKELETON'S FORWARD DISAGREE (%s). "
+                    "facing='repair' re-aims foot bones, which is a humanoid "
+                    "fix; a quadruped's forward is its whole trunk. Re-rig with "
+                    "blender_rig(kind='quadruped', assume=+1 or -1), or pass "
+                    "facing='skeleton' to trust the bones." % facing["why"]))
+                report_and_exit(out)
+            elif P["facing"] == "repair":
                 out["facing"]["repaired"] = repair_feet(arm, forward)
                 dump = {"bones": rig_dump(arm), "up": (0.0, 0.0, 1.0)}
-                rigf = RigFrame(dump["bones"])
+                rigf = Frame(dump["bones"])
                 out["rig"] = rigf.summary()
                 out["facing"]["after"] = facing_of(mesh, Vector(rigf.forward))
             elif P["facing"] == "skeleton":
@@ -5635,19 +5932,57 @@ else:
                     o.data.update()
                 bpy.context.view_layer.update()
                 dump = {"bones": rig_dump(arm), "up": (0.0, 0.0, 1.0)}
-                rigf = RigFrame(dump["bones"])
+                rigf = Frame(dump["bones"])
                 out["rig"] = rigf.summary()
                 out["oriented"] = {"turned_deg": 180,
                                    "now_forward": tuple(round(c, 3) for c in rigf.forward),
-                                   "skin": facing_of(mesh, Vector(rigf.forward))}
+                                   "skin": (facing_quad if QUAD else facing_of)(
+                                       mesh, Vector(rigf.forward))}
             elif abs(fwd_now.dot(Vector((0.0, 1.0, 0.0)))) < 0.5:
                 out["oriented"] = {"turned_deg": 0, "note": "forward is not along Y; "
                                    "left as is - check the export faces -Z in the engine"}
+        if out["ok"] and not QUAD:
+            # THE ARMS CLEAR THE BODY. The trunk's widest half-width between the
+            # crotch and the crown (a mascot's head, a coat, a belly) against
+            # the shoulder joint and the arm's length gives the smallest hang
+            # angle whose path misses the skin. humanpose.ARM_OUT_MIN floors
+            # every clip's arm_out with it.
+            try:
+                sh = rigf.bones.get("LeftUpperArm") or rigf.bones.get("RightUpperArm")
+                hand = rigf.bones.get("LeftHand") or rigf.bones.get("RightHand")
+                if sh and hand:
+                    shoulder_x = abs(v_dot(sh["head"], rigf.left))
+                    arm_len = v_len(v_sub(hand["head"], sh["head"]))
+                    crotch_z = rigf.hip_height() if rigf.has("LeftUpperLeg") else 0.0
+                    left_v = Vector(rigf.left)
+                    trunk = [(abs(p.dot(left_v)), p.z) for p in
+                             (mesh.matrix_world @ v.co for v in mesh.data.vertices)
+                             if abs(p.dot(left_v)) < shoulder_x + 0.02]
+                    widest = max((w for w, z in trunk if z > crotch_z), default=0.0)
+                    need = widest + 0.035 - shoulder_x
+                    ang = math.degrees(math.asin(max(-1.0, min(1.0, need / max(arm_len, 1e-6))))) if need > 0 else 0.0
+                    floor_deg = max(0.0, min(60.0, ang))
+                    globals()["ARM_OUT_MIN"] = floor_deg
+                    out["clearance"] = {"trunk_half_width": round(widest, 4),
+                                        "shoulder_x": round(shoulder_x, 4),
+                                        "arm_length": round(arm_len, 4),
+                                        "arm_out_min_deg": round(floor_deg, 1)}
+            except Exception as exc:
+                out["clearance"] = {"error": str(exc)[:200]}
         if out["ok"]:
-            procedural = [c for c in P["clips"] if c.get("kind") != "library"]
-            library = [c for c in P["clips"] if c.get("kind") == "library"]
-            baked = bake_clips(dump, procedural, fps=FPS)
+            procedural = [c for c in clips_wanted if c.get("kind") != "library"]
+            library = [c for c in clips_wanted if c.get("kind") == "library"]
+            baked = (bake_quad_clips if QUAD else bake_clips)(dump, procedural, fps=FPS)
             out["rig"] = baked["rig"]
+            if library and QUAD:
+                # The packs are humanoid; no quadruped bone map exists yet.
+                for spec in library:
+                    baked["clips"].append({"name": spec.get("name") or spec.get("clip"),
+                                           "ok": False,
+                                           "error": "library clips retarget onto "
+                                                    "humanoids only; a quadruped "
+                                                    "takes the procedural kinds"})
+                library = []
             if library:
                 tgt_rig = RigFrame(dump["bones"])
                 sources = {}
@@ -5772,6 +6107,55 @@ else:
             scene.render.fps = FPS
             scene.frame_start, scene.frame_end = 1, longest
 
+            # --- SELF-COLLISION, MEASURED. Faces passing through each other per
+            # sampled frame, against the rest pose's own count (a generated
+            # mesh arrives with overlaps; the INCREASE is the pose's doing).
+            import bmesh as _bmesh
+            from mathutils.bvhtree import BVHTree as _BVH
+
+            def _overlap_count(frame):
+                scene.frame_set(frame)
+                dg = bpy.context.evaluated_depsgraph_get()
+                ev = mesh.evaluated_get(dg)
+                bm = _bmesh.new()
+                bm.from_mesh(ev.to_mesh())
+                bm.transform(ev.matrix_world)
+                try:
+                    tree = _BVH.FromBMesh(bm, epsilon=1e-5)
+                    n = len({(a, b) if a < b else (b, a)
+                             for a, b in tree.overlap(tree) if a != b})
+                except Exception:
+                    n = -1
+                bm.free()
+                ev.to_mesh_clear()
+                return n
+            arm.animation_data.action = None
+            rest_overlap = _overlap_count(1)
+            out["self_intersection"] = {"rest": rest_overlap, "clips": {}}
+            for clip in out["clips"]:
+                if not clip["ok"]:
+                    continue
+                action = bpy.data.actions[clip["action"]]
+                arm.animation_data.action = action
+                if hasattr(arm.animation_data, "action_slot"):
+                    for slot in action.slots:
+                        arm.animation_data.action_slot = slot
+                        break
+                n = clip["frames"]
+                picks = sorted({int(round(1 + (n - 1) * k / 7.0)) for k in range(8)})
+                worst, worst_f = 0, 1
+                for f in picks:
+                    c = _overlap_count(f)
+                    if c > worst:
+                        worst, worst_f = c, f
+                faces = max(len(mesh.data.polygons), 1)
+                rec = {"worst": worst, "worst_frame": worst_f,
+                       "increase": max(0, worst - max(rest_overlap, 0)),
+                       "increase_pct": round(100.0 * max(0, worst - max(rest_overlap, 0)) / faces, 3)}
+                out["self_intersection"]["clips"][clip["name"]] = rec
+                clip["self_intersection"] = rec
+            arm.animation_data.action = None
+
             # --- the proof: a strip of frames per clip, side and three-quarter.
             if P["proof_frames"] > 0:
                 corners = [mesh.matrix_world @ Vector(c) for c in mesh.bound_box]
@@ -5784,7 +6168,12 @@ else:
                 scene.collection.objects.link(cam)
                 scene.camera = cam
                 set_engine(scene, P["engine"])
-                scene.render.resolution_x, scene.render.resolution_y = P["size"]
+                size = list(P["size"])
+                if QUAD and size[0] < size[1]:
+                    # A four-legged body is long, not tall: a portrait frame
+                    # cropped the nose and the tail off the side view.
+                    size = [size[1], size[0]]
+                scene.render.resolution_x, scene.render.resolution_y = size
                 scene.render.image_settings.file_format = "PNG"
                 scene.render.film_transparent = False
                 try:
@@ -5816,7 +6205,7 @@ else:
                     picks = sorted({int(round(1 + (n - 1) * k / max(P["proof_frames"] - 1, 1)))
                                     for k in range(P["proof_frames"])})
                     for label, direction in views.items():
-                        cam.location = centre + direction * reach * 2.7
+                        cam.location = centre + direction * reach * (2.4 if QUAD else 2.7)
                         cam.rotation_euler = (centre - cam.location).to_track_quat(
                             "-Z", "Y").to_euler()
                         for f in picks:
@@ -5838,10 +6227,17 @@ else:
 
 
 def _with_humanpose(script: str) -> str:
-    """A Blender script with humanpose.py spliced in ahead of it — by source,
-    for the same reason _measured splices bodymeasure.py."""
+    """A Blender script with bodymeasure.py, humanpose.py and quadpose.py
+    spliced in ahead of it — by source, for the same reason _measured
+    splices bodymeasure.py. quadpose's import of humanpose is guarded, so
+    the order here IS its import. A `from __future__` line is legal only at
+    the top of a file, and three files are being made into one, so those
+    lines are dropped."""
     try:
-        return HUMANPOSE.read_text(encoding="utf-8") + "\n\n" + script
+        parts = [re.sub(r"^from __future__ import [^\n]*\n", "",
+                        path.read_text(encoding="utf-8"), flags=re.M)
+                 for path in (MEASURE, HUMANPOSE, QUADPOSE)]
+        return "\n\n".join(parts) + "\n\n" + script
     except OSError as exc:
         raise BlenderNotFound(
             "the pose module %s is not on disk, so no clip can be authored — "
@@ -5875,9 +6271,12 @@ def animate(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
         return {"ok": False, "error": f"no model at {src}"}
     out = Path(out_dir or (Path(out_path).parent / "anim_proof"))
     out.mkdir(parents=True, exist_ok=True)
-    chosen = [dict(c) for c in (clips or DEFAULT_CLIPS)]
+    # None means THE RIG DECIDES: a humanoid gets DEFAULT_CLIPS, a quadruped
+    # QUAD_DEFAULT_CLIPS, and which it is can only be read off the bones
+    # inside Blender. The script reports what it chose as `specs`.
+    chosen = [dict(c) for c in clips] if clips else None
     library: dict = {}
-    for c in chosen:
+    for c in chosen or []:
         if c.get("clip") and not c.get("kind"):
             c["kind"] = "library"
         c.setdefault("name", c.get("clip") or c.get("kind"))
@@ -5902,6 +6301,8 @@ def animate(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
     with tempfile.TemporaryDirectory(prefix="bgate_anim_") as tmp:
         dump = Path(tmp) / "animate.json"
         payload = {"model": str(src).replace("\\", "/"), "clips": chosen,
+                   "defaults": {"humanoid": list(DEFAULT_CLIPS),
+                                "quadruped": list(QUAD_DEFAULT_CLIPS)},
                    "fps": int(fps), "out_dir": str(out).replace("\\", "/"),
                    "stem": stem, "proof_frames": int(proof_frames),
                    "size": [int(size[0]), int(size[1])], "engine": engine,
@@ -5939,8 +6340,32 @@ def animate(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
                 pass
         return report
     report["sheets"] = _proof_sheets(report, out, stem)
-    report["support"] = _support_gate(out_path, report, chosen)
+    report["support"] = _support_gate(out_path, report,
+                                      report.get("specs") or chosen or [])
+    report["collisions"] = collision_verdict(report)
     return report
+
+
+# A pose that pushes more than this share of the mesh's faces through
+# itself is a collision a player sees: a hand in a hip, a club through a
+# head. Measured floor: clean procedural clips on a generated humanoid run
+# 0.0-0.3%; the arm-through-tomato swing ran 2.1%.
+COLLISION_MAX_PCT = 1.0
+
+
+def collision_verdict(report: dict, *, max_pct: float = COLLISION_MAX_PCT) -> dict:
+    """Which clips self-intersect beyond the rest pose, and by how much."""
+    si = report.get("self_intersection") or {}
+    clips = si.get("clips") or {}
+    if not clips:
+        return {"measured": False, "reason": "no self-intersection sample"}
+    failed = {n: r for n, r in clips.items() if float(r.get("increase_pct") or 0.0) > max_pct}
+    return {"measured": True, "rest_overlaps": si.get("rest"), "max_pct": max_pct,
+            "failed": sorted(failed), "worst": {n: r for n, r in failed.items()},
+            "passed": not failed,
+            "note": "" if not failed else
+                    "raise overrides.arm_out on the flagged clips, or pass "
+                    "clearance-aware keys; the frame number says where to look"}
 
 
 def _proof_sheets(report: dict, out: Path, stem: str) -> list:
@@ -6010,7 +6435,8 @@ def _support_gate(glb: str | os.PathLike[str], report: dict, chosen: list) -> di
         base = entry["name"][:-5] if entry["name"].endswith("-loop") else entry["name"]
         kind, clip_name = kinds.get(base) or (base, "")
         gait = clip_gait(kind or base, clip_name or base)
-        feet = [n for n in ("LeftFoot", "RightFoot") if n in entry["positions"]]
+        feet = [n for n in ("LeftFoot", "RightFoot") + QUADRUPED_FEET
+                if n in entry["positions"]]
         if not feet:
             verdicts[entry["name"]] = {"measured": False,
                                       "reason": "no foot joints in the export"}

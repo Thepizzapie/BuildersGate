@@ -87,6 +87,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     # seat that generates, rigs, measures and delivers assets.
     "art": (
         "blender_", "mesh_faceting", "skin_dominance", "animation_",
+        "godot_character_wire", "godot_clip_",
         "image_", "art_", "palette_pin", "ref_", "bible_ref_",
         "godot_deliver_asset", "godot_import_asset", "godot_screenshot",
         "godot_check_project", "godot_inspect_resource", "godot_status",

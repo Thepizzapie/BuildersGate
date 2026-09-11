@@ -512,6 +512,21 @@ ones that are right with bible_ref_attach, and leave the titles alone.
 ## blender_animate
 
 ```text
+A QUADRUPED RIG (front legs in the bones - nothing a caller says) gets
+quadpose instead of humanpose: kinds idle | walk | trot | gallop | sit |
+alert | pounce | keyed, default idle, walk, trot, gallop, alert. The gaits
+are FOOTFALL TABLES, which is what makes a walk a walk: lateral sequence
+LB-LF-RB-RF at 70% stance, diagonal pairs at 44% for the trot (a
+suspension between beats), a transverse gallop at 32% with a flight phase
+and the back flexing with it. The body height is DERIVED PER FRAME after
+the trunk has moved - a 5-degree gallop pitch put the front paws 8.7 cm out
+of reach on 12 of 15 frames until it was. Forward is pelvis-to-head, the
+facing gate reads the skin's head end against it, and facing="repair" is
+refused (it re-aims foot bones, a humanoid fix): re-rig with assume=. The
+support gate judges walk as a walk, gallop as a run, and measures the trot
+without judging it. Library clips are humanoid-only for now. Proof frames
+are landscape. Then godot_character_wire puts it in a scene.
+
 Put gameplay clips on a rigged humanoid, export the .glb, and SHOW them.
 
 THE ANIMATION LAYER THE 3D PATH WAS MISSING. blender_rig binds, blender_flex
@@ -772,6 +787,22 @@ after - so "did that fix it" is a number rather than an impression.
 ## blender_rig
 
 ```text
+kind="quadruped" IS A DIFFERENT SKELETON, NOT A DIFFERENT FIT. Four leg
+columns are read below 40% of the height and split fore/aft and by side; a
+column that spans more than a fifth of the body is a trunk, not a leg, and
+the rig REFUSES (a body on its belly, a legless blob). The head end is the
+end carrying more mass above 60% height (bodymeasure.quadruped_front_sign;
+pass assume=+1/-1 when it cannot tell), and the mesh is turned so the
+length runs along Y with the head at +Y. Shoulder and hip joints sit 45%
+up the chest depth at each leg line, the spine 78% up, the neck and head
+on whatever reaches ahead of the shoulders, Tail1/Tail2 on whatever
+reaches behind the hips (absent means no tail bones). Elbows are built
+BACK of the shoulder and stifles FORWARD of the hip, so the rest already
+bends the way the IK sends it. Bones: QUADRUPED_BONES - Root, Hips, Spine,
+Chest, Neck, Head, Tail1, Tail2, <Left|Right><Front|Back>UpperLeg /
+LowerLeg / Foot. `height` is crown to floor. Same bind, same unweighted
+proof; `coverage` checks the 17 essential bones by exact name.
+
 ANATOMY IS A VERDICT, NOT A NOTE: the report carries `anatomy` - whether the
 trunk (Hips/Spine/Chest/Neck/Head) was hung from the crotch, shoulder line
 and crown MEASURED off this mesh, and how far the height-only template
@@ -2226,6 +2257,136 @@ generator checks playability. USE `cameras`, do not paraphrase it: the
 clauses forbid the wrong reading BY NAME, because a clause that only says
 what it wants inherits the model's default for everything it forgot to
 forbid.
+```
+
+## godot_character_wire
+
+```text
+3D: put an ANIMATED character into a scene that actually plays its clips.
+
+THE GAP, measured on three games: blender_animate ends at a .glb with clips
+in it, godot_deliver_asset wraps a CharacterBody3D around it, and then
+NOTHING PLAYS A CLIP. The template controller had no AnimationPlayer or
+AnimationTree; every project re-wrote "velocity -> walk" by hand, and the
+ones that did not shipped a T-pose statue sliding across the floor with
+every gate green (a T-pose still plants its feet).
+
+WHAT IT WRITES: scenes/characters/<name>.tscn = CharacterBody3D (the
+template third-person controller, the first-person one, a script of yours,
+or none for an NPC) + the imported model at its AUTHORED origin (feet on
+the floor; a Blender-centred model is lifted, never sunk) + a capsule
+fitted to the model's bounds + an InteractRange + an AnimationTree running
+scripts/character_animator.gd. The animator is installed from the 3D
+template when the project has none and NEVER overwritten.
+
+WHAT THE ANIMATOR DOES (character_animator.gd, built at runtime from clip
+names so a missing clip is a reported gap, not a broken resource):
+  Locomotion  BlendSpace1D over idle / walk / run (/ trot / gallop / sprint,
+              whatever the names rank to) positioned by the body's PLANAR
+              SPEED in m/s, with the blend points at the body's own
+              walk_speed / sprint_speed when it exports them.
+  Jump/Fall   from floor contact and vertical velocity (fall_delay keeps a
+              ramp from flickering).
+  Land        once on touchdown when the clip exists, then Locomotion.
+  actions     every other clip: play_action(name) travels there, the
+              machine comes back when the clip ends; action_finished(name).
+  Loops       locomotion clips are FORCED TO LOOP at runtime - the importer
+              only loops "<name>-loop", and a walk that stops after one
+              cycle reads as a freeze. `warnings` names them; export with
+              blender_animate(loop_suffix=True) to bake it.
+
+CLIP RESOLUTION is by name: idle/stand, sneak, walk, trot/jog, run,
+gallop/sprint rank into the speed order; jump/leap, fall/airborne (a
+pack's Jump_Loop), land/landing take the air roles; everything else is an
+action. `clips` pins any role when the names do not say.
+
+THE PROOF. The scene is instanced headless (autoloads live, so the
+controller compiles) and the animator is driven in manual mode through
+stop, walk, run, rising off the floor, falling, touchdown and one action;
+`probe.steps` is the state the machine reached after each, `probe.issues`
+what did not happen. `ok` False with the scene written means the engine
+did not confirm it. MEASURED on the first run: a one-shot action cancelled
+itself on the frame after travel() because the state had not landed yet -
+found by this probe, not by reading the script.
+
+LIBRARIES: `libraries=[res://assets/anim/ual.res]` (godot_clip_retarget's)
+load into the AnimationPlayer at runtime; their clips resolve as
+"<stem>/<clip>" and the character's own clip wins a role over a library's.
+State names cannot carry "/", so the state for "ual/Roll_RM" is
+"ual_Roll_RM" and play_action() takes either spelling.
+
+IK (`ik=True`, default): scripts/character_ik.gd under the body. One
+SkeletonIK3D per foot (UpperLeg -> Foot, humanoid or quadruped names), its
+target dropped onto whatever the ray under the foot hits, weight fading
+in on the floor and out in the air, the pelvis lowered by the lowest
+foot's drop so the higher leg is not over-reached; a LookAtModifier3D on
+Head toward `look_target` when set (4.4+). The probe stands the character
+on a 15-degree ramp for 40 frames and reports each foot's distance from
+the ground under it (`probe.ik.foot_error_m`, over 6 cm fails) and the IK
+weight (under 0.5 means the body never reported floor contact).
+
+Then: instance the scene into a level. With controller=third_person it IS
+the player - add camera_rig.gd as a SIBLING (never a child). For an NPC
+(controller=none) set `velocity` and call move_and_slide() yourself; the
+animator reads the body, nothing else. Then godot_clip_capture.
+```
+
+## godot_clip_retarget
+
+```text
+3D: retarget a clip pack onto a character IN THE ENGINE and keep the library.
+
+blender_animate can retarget a library clip by re-baking it in Blender -
+one export per clip set, never a root-motion clip. Godot has its own
+retarget and this drives it end to end:
+  1. the pack (an animlib pack name such as quaternius-ual, or a .gltf/.glb
+     with a humanoid skeleton; Mixamo and Rigify names are read) is copied
+     into assets/animlib/ and imported,
+  2. a BoneMap .tres is written per side - the pack's bones mapped to
+     SkeletonProfileHumanoid, the character's (already profile names) to
+     themselves, `root` to Root,
+  3. both .import files get the retarget block ON THE SKELETON NODE
+     (`_subresources/nodes/PATH:<armature>/Skeleton3D`) - written as flat
+     params the engine ignores every key, measured - with the rest fixer:
+     fix_silhouette ON, overwrite_axis, normalize_position_tracks. The
+     silhouette fix is the retarget: without it an A-posed rig played a
+     T-posed pack with its arms straight up, every clip "drove" the limbs,
+     and only the engine capture said so.
+  4. a script copies the wanted clips out of the imported pack, rewrites
+     their tracks onto the character's skeleton (GeneralSkeleton after the
+     retarget), drops tracks for bones the character lacks (fingers), and
+     saves res://assets/anim/<name>.res with a <name>.res.json sidecar
+     naming the clips,
+  5. IT PLAYS EACH CLIP ON THE CHARACTER: `drives` are the clips that moved
+     the hands and feet, `dead` the ones that did not.
+
+The key is the PRE-import skeleton path: a retargeted import renames the
+node to GeneralSkeleton, and writing that back as the key matches nothing
+next time and silently undoes the retarget. Root motion: `root_motion`
+lists the clips whose Root travels (_RM); the animator sets
+root_motion_track on that bone and exposes root_motion_velocity for a
+controller. Pack clips are humanoid; a quadruped takes blender_animate's
+gaits. Then: godot_character_wire(libraries=[library]) and LOOK with
+godot_clip_capture.
+```
+
+## godot_clip_capture
+
+```text
+3D: photograph every clip IN THE ENGINE - the picture a human judges.
+
+blender_animate's sheets are Blender's renders of Blender's scene. The
+player sees Godot's import under Godot's skeleton (a retarget is a new
+rest), materials and lights, and every defect between the two was
+invisible by construction. Same mechanism as godot_screenshot (an injected
+autoload and override.cfg, removed in a finally; needs a display): a lit
+floor, the wired character scene instanced with its controller and
+AnimationTree switched off, each clip played through the AnimationPlayer
+and paused at `samples` times, a frame saved from the side, front
+three-quarter and back three-quarter. PIL composites one sheet per clip
+and they come back as images. The first sheet this produced showed a
+retargeted walk with both arms straight up while `drives` was true for
+every clip - the number said fine, the picture said no.
 ```
 
 ## godot_deliver_asset
