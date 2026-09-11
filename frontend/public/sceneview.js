@@ -1,10 +1,10 @@
-/* sceneview.js — the scene as it actually looks, and editable there.
+/* sceneview.js, the scene as it actually looks, and editable there.
  *
  * The node graph answers "what is wired to what". It cannot answer "is the hat
  * on his head", and that is the question you have open when you are placing
- * things. So this composites the scene the way the engine does — every node at
+ * things. So this composites the scene the way the engine does, every node at
  * its world transform, sprites showing their real atlas region, painted in
- * z-order inside the game's own viewport frame — and lets you drag, scale,
+ * z-order inside the game's own viewport frame, and lets you drag, scale,
  * rotate and reorder directly on the picture.
  *
  * WHAT MAKES IT TRUE RATHER THAN APPROXIMATE:
@@ -21,7 +21,7 @@
  * uses. That is true and it was the wrong conclusion: moving something to look
  * at it is not a decision to change the game, and it produced twenty-two
  * unrequested writes to a live scene in one sitting. A backup does not make
- * that acceptable — it only makes it recoverable.
+ * that acceptable, it only makes it recoverable.
  *
  * So a drag changes the PICTURE. Edits stage as pending property writes, a bar
  * says how many are outstanding, and `apply` is the only thing that touches
@@ -82,7 +82,7 @@ window.SceneView = (() => {
    * Everything else in this file draws what the scene FILE declares, and on a
    * project whose props get their texture from a script at load that is an
    * accurate picture of nothing: 577 markers where a dressed floor should be.
-   * No amount of better .tscn parsing crosses that — only running the game
+   * No amount of better .tscn parsing crosses that, only running the game
    * does. So this asks Godot for one real frame and puts it behind the
    * overlay, which keeps the handles, outlines and staged edits exactly where
    * they were while the backdrop finally shows the level.
@@ -95,7 +95,7 @@ window.SceneView = (() => {
   // path -> { name, keys: Map(property -> {value, prev, seq}) }. Staged, never written.
   let pending = new Map();
   /* STRUCTURE stages too, in the same bar. Adding and deleting a node used to
-     be the graph panel's job and it wrote on confirm — so half the builder
+     be the graph panel's job and it wrote on confirm, so half the builder
      committed on click and the other half waited for `apply`, which is exactly
      the split that made accidental writes normal. These are ordered ops:
        { op:"add", src, render, name, parent, wx, wy, seq }
@@ -107,7 +107,7 @@ window.SceneView = (() => {
    *
    * There used to be exactly one level: `undoLast` found the highest `seq`
    * across ops and property edits and threw it away. That is enough to take
-   * back a misclick and nothing else — nudge a node four times and the first
+   * back a misclick and nothing else, nudge a node four times and the first
    * three are unreachable, and there was never any way forward again.
    *
    * So every staging action appends a RECORD of what it did, and the record
@@ -116,7 +116,7 @@ window.SceneView = (() => {
    *   { kind:"op",   op }                            an add/clone/delete entered `staged`
    *   { kind:"drop", op }                            a staged add taken back out
    * Undo walks the record backwards, redo forwards, and the two stacks are the
-   * only thing that decides order — `seq` still stamps ops so `staged` can be
+   * only thing that decides order, `seq` still stamps ops so `staged` can be
    * re-sorted into the order the operator actually made them.
    *
    * Bounded because it holds render payloads for staged placements: 400 of
@@ -127,7 +127,7 @@ window.SceneView = (() => {
   let history = [], redoStack = [];
   let placing = null;      // an armed placement, waiting for a click on the canvas
   let selStaged = -1;      // index into `staged` of a selected, not-yet-written add
-  /* MULTI-SELECT. `sel` stays the PRIMARY — the one with handles, the one an
+  /* MULTI-SELECT. `sel` stays the PRIMARY, the one with handles, the one an
      inspector shows, the anchor a shift-click ranges from. `multi` is every
      path in the selection including that one, so single-select is just a set
      of one and no code path has to ask which mode it is in. SceneBuild is the
@@ -145,12 +145,12 @@ window.SceneView = (() => {
       ".sv{display:flex;flex-direction:column;height:100%;min-height:0}",
       // One row that scrolls, never a stack that wraps. A wrapping toolbar
       // takes its height out of the canvas, and the canvas is the whole point
-      // of this panel — at 1100px wide this was four rows deep.
+      // of this panel, at 1100px wide this was four rows deep.
       ".sv-bar{display:flex;align-items:center;gap:5px;padding:6px 9px;border-bottom:1px solid var(--seam);background:var(--iron);flex-wrap:nowrap;overflow-x:auto;flex:none;scrollbar-width:thin}",
       ".sv-bar>*{flex:none}",
       ".sv-l{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-3)}",
       // inline-flex, because these hold an <svg> now and BGIcon draws
-      // display:block — a block child in a text button drops below the label.
+      // display:block, a block child in a text button drops below the label.
       ".sv-b{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;color:var(--text);font:inherit;font-size:11px;cursor:pointer}",
       ".sv-b:hover:not(:disabled){border-color:var(--accent)}",
       ".sv-b:disabled{opacity:.4;cursor:default}",
@@ -178,7 +178,7 @@ window.SceneView = (() => {
       ".sv-layer:hover .nm{color:var(--bone)}",
       ".sv-layer.off{opacity:.42}",
       ".sv-layer.off .nm{text-decoration:line-through}",
-      // Selected reads as selected on the strip too — without it, a batch
+      // Selected reads as selected on the strip too, without it, a batch
       // eye-click hides four layers with only the one you clicked looking
       // involved.
       ".sv-layer.sel{background:var(--accent-soft);border-color:var(--accent-line)}",
@@ -193,10 +193,10 @@ window.SceneView = (() => {
       // It is a hint until it is a finding, and a finding you can click.
       ".sv-tip.hot{pointer-events:auto;cursor:pointer;color:var(--warn);border-color:var(--warn)}",
       // One column so the pending bar and the placing banner stack instead of
-      // sitting on top of each other — placing is exactly when both are up.
+      // sitting on top of each other, placing is exactly when both are up.
       // `hidden` MUST WIN. Every panel below sets `display`, and a class that
       // sets display beats the UA sheet's [hidden]{display:none} at equal
-      // specificity — so `el.hidden = true` set the attribute and changed
+      // specificity, so `el.hidden = true` set the attribute and changed
       // nothing on screen. That is why the staging bar sat there announcing
       // "0 unsaved changes across 0 nodes" with a discard button, and why an
       // empty dashed placement strip hung underneath it forever.
@@ -204,7 +204,7 @@ window.SceneView = (() => {
       ".sv-top{position:absolute;left:9px;right:9px;top:9px;display:flex;flex-direction:column;gap:6px;pointer-events:none}",
       ".sv-top>*{pointer-events:auto}",
       // Unmissable, because the alternative is writing to a live scene by
-      // accident — which is exactly what this replaced.
+      // accident, which is exactly what this replaced.
       ".sv-pending{display:flex;align-items:center;gap:9px;background:var(--iron);border:1px solid var(--warn);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:10.5px;color:var(--warn)}",
       ".sv-pending .dot{width:8px;height:8px;border-radius:50%;background:var(--warn);flex:none}",
       ".sv-pending .sv-b{color:var(--bone)}",
@@ -212,7 +212,7 @@ window.SceneView = (() => {
       ".sv-place{display:flex;align-items:center;gap:9px;background:var(--iron);border:1px dashed var(--ember);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:10.5px;color:var(--bone)}",
       ".sv-place b{color:var(--ember);font-weight:400}",
       // The scene picker. A list of the project's own .tscn files, which is the
-      // one thing the builder could never reach — every .tscn is kind="screen"
+      // one thing the builder could never reach, every .tscn is kind="screen"
       // to the atlas, and the swap picker filters those out on purpose.
       ".sv-pick{position:absolute;right:9px;top:9px;width:min(300px,calc(100% - 18px));max-height:calc(100% - 18px);overflow-y:auto;background:var(--iron);border:1px solid var(--seam);border-radius:8px;padding:7px;z-index:3}",
       ".sv-pick .hd{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ash2);padding:2px 4px 6px}",
@@ -221,14 +221,14 @@ window.SceneView = (() => {
       ".sv-pick button span{margin-left:auto;font-family:var(--mono);font-size:9px;color:var(--ash2)}",
       ".sv-pick .no{font-size:11px;color:var(--ash);padding:4px 7px;line-height:1.5}",
       // The stage and the running build, side by side. `.sv-body` exists only
-      // so the two can be a ROW inside a column — the stage used to be the
+      // so the two can be a ROW inside a column, the stage used to be the
       // column's only growing child.
       ".sv-body{flex:1;display:flex;min-height:0}",
       ".sv-play{width:0;flex:none;border-left:1px solid var(--seam);display:flex;flex-direction:column;background:var(--iron);overflow:hidden;transition:width .12s}",
       ".sv-play.open{width:var(--sv-play-w,min(46%,460px))}",
       // The handle only exists alongside an open build panel. It is keyed off
       // .sv-play.open rather than toggled in JS so the two can never disagree
-      // — a stale handle floating over the stage would drag a pane that is not
+      //, a stale handle floating over the stage would drag a pane that is not
       // on screen.
       ".sv-split{flex:none;width:0;z-index:4}",
       ".sv-body:has(.sv-play.open) .sv-split{width:7px;margin-right:-7px}",
@@ -242,7 +242,41 @@ window.SceneView = (() => {
   }
 
   /* ── data ─────────────────────────────────────────────────────────────── */
+  /* A 3D SCENE IS THE OTHER VIEWPORT'S. /api/scene/render says which picture
+     it produced; on `dimension: "3d"` everything below hands over to
+     SceneView3D (sceneview3d.js, three.js) and the public API forwards to it
+     until unmount. One name, SceneView, so the builder never has to know
+     which dimension it is standing in. */
+  let via3d = false;
+  let mountSeq = 0;
+  const three = () => window.SceneView3D || null;
+
   async function mount(el, sceneId){
+    // SYNCHRONOUS FIRST: the builder re-renders its panel on every selection
+    // and mounts again whenever #sb-view is empty or `scene` disagrees. The
+    // 2D path fills the element before its first await; this probe must too,
+    // or every re-render during the fetch starts another mount into an
+    // element that is about to be thrown away (measured: four renders and
+    // 60 MB of models re-fetched in ten seconds, and a blank pane).
+    scene = sceneId;
+    el.innerHTML = `<div class="sb-note" style="padding:24px">reading the scene…</div>`;
+    const seq = ++mountSeq;
+    const probe = await readJSON(`/api/scene/render?scene=${encodeURIComponent(sceneId)}`, null);
+    // Only the newest mount goes on to build: a burst of activations is a
+    // burst of probes, and building the viewport once per probe is the work
+    // of the last one done twenty-five times.
+    if (seq !== mountSeq || !el.isConnected) return;
+    if (probe && probe.dimension === "3d"){
+      if (!three()){
+        el.innerHTML = `<div class="sb-note" style="padding:24px">the 3D viewport did not load (sceneview3d.js)</div>`;
+        return;
+      }
+      via3d = true;
+      host = null; cv = null; list = null; sel = null;
+      scene = sceneId;
+      return three().mount(el, sceneId, probe);
+    }
+    via3d = false;
     injectStyle();
     host = el; scene = sceneId;
     host.innerHTML = `
@@ -342,6 +376,11 @@ window.SceneView = (() => {
   /* async, and the answer MATTERS: false means the operator kept their staged
      work and the caller must not go through with whatever it was doing. */
   async function unmount(){
+    if (via3d){
+      const ok = await three().unmount();
+      if (ok){ via3d = false; scene = null; }
+      return ok;
+    }
     if (hasPending() && !(await askConfirm({
       title: `${pendingCount()} change(s) have not been written. Leave and lose them?`,
       body: "Nothing staged has touched the file yet - leaving drops the whole batch.",
@@ -359,7 +398,7 @@ window.SceneView = (() => {
     pending.clear();
     staged = []; selStaged = -1; placing = null;
     // The history describes the staged batch. Once that batch is written or
-    // thrown away, an "undo" of it would be an offer to un-write the file —
+    // thrown away, an "undo" of it would be an offer to un-write the file -
     // which is not what this stack does and must not look like it is.
     history = []; redoStack = [];
   }
@@ -367,13 +406,13 @@ window.SceneView = (() => {
   /* A placement and a duplicate are the same thing to everything that draws,
      names and positions them: a subtree that is not in the file yet, sitting
      at a world point, with a ghost you can drag. They differ only in what
-     `apply` runs — one wire call, or a plan of add/wire calls. */
+     `apply` runs, one wire call, or a plan of add/wire calls. */
   const isAdd = op => op.op === "add" || op.op === "clone";
 
   async function reload(){
     if (!scene) return;
     clearStaged();
-    // The PREVIOUS scene's lock, cleared before the fetch rather than after —
+    // The PREVIOUS scene's lock, cleared before the fetch rather than after -
     // a render that fails returns early, and a stale banner naming a seat that
     // holds a file nobody is looking at any more is worse than no banner.
     held = null;
@@ -425,7 +464,7 @@ window.SceneView = (() => {
      The `+ w/2, + h/2` on the diamond branches is the fix for "the editor is
      off positioning-wise": map_to_local returns a cell's CENTRE, the square
      branch always did that, and the diamond branches were returning the
-     diamond's top corner — so the whole floor drew half a tile up and left of
+     diamond's top corner, so the whole floor drew half a tile up and left of
      the props standing on it. See the server function for the measurement. */
   function cellCenter(x, y, d){
     const w = d.tile_size[0], h = d.tile_size[1];
@@ -486,13 +525,13 @@ window.SceneView = (() => {
   }
 
   /* ── layers ───────────────────────────────────────────────────────────────
-   * A "layer" is a top-level child of the root — Ground, Props, Walls,
+   * A "layer" is a top-level child of the root, Ground, Props, Walls,
    * Characters. That is what a scene is actually organised into, and on a
    * stacked isometric map it is the only way to see the floor under the walls
    * or click a prop that a wall is drawn over.
    *
    * These toggles are a VIEW state, deliberately. Hiding a layer here does not
-   * touch its `visible` property — that would be an edit to the game, and the
+   * touch its `visible` property, that would be an edit to the game, and the
    * whole point of this panel now is that looking at something never changes
    * it. The `hidden` toggle on the toolbar is the control for the real property.
    */
@@ -506,7 +545,7 @@ window.SceneView = (() => {
     const seen = new Map();
     list.items.forEach(it => {
       // A top-level child is one whose path has no separator. The draw list
-      // carries paths, not parent links — deriving it here keeps one source of
+      // carries paths, not parent links, deriving it here keeps one source of
       // truth instead of a second field to keep in sync.
       if (it.path === "." || it.path.includes("/")) return;
       seen.set(it.path, { path: it.path, name: it.name, role: it.role,
@@ -522,7 +561,7 @@ window.SceneView = (() => {
     return [...seen.values()].map(l => ({ ...l, state: layerState(l) }));
   }
 
-  /* WHAT IS IN THIS LAYER — a number, or the reason there is no number.
+  /* WHAT IS IN THIS LAYER, a number, or the reason there is no number.
    *
    * The strip used to print a bare count and leave the cell blank when the
    * count was zero, so "Ground 1200 · Props · Walls 320 · Characters" read as
@@ -561,7 +600,7 @@ window.SceneView = (() => {
   }
 
   /* Which script puts the contents there. The node's own if it has one, else
-     the nearest ancestor that does — that is as far as the FILE knows, and
+     the nearest ancestor that does, that is as far as the FILE knows, and
      naming a script that is merely nearby beats "something, at run time". */
   function fillerScript(it){
     if (!it || !list) return "";
@@ -589,7 +628,7 @@ window.SceneView = (() => {
     return true;
   }
 
-  /* Staged for deletion — and so is everything under it, because unwire takes
+  /* Staged for deletion, and so is everything under it, because unwire takes
      the subtree. Leaving the children on screen after their parent vanished
      would misreport what `apply` is about to do. */
   function deleted(path){
@@ -600,7 +639,7 @@ window.SceneView = (() => {
   }
 
   /* A LAYER CHIP IS ANOTHER WAY TO REACH A NODE. It carries the same three
-     gestures the tree does — plain click replaces, shift ranges, ctrl adds —
+     gestures the tree does, plain click replaces, shift ranges, ctrl adds -
      and the range is over the CHIP ROW, not the tree, because eleven chips is
      what the operator is looking at. Selecting a layer selects the real node,
      so the inspector and every batch op already written apply to it. */
@@ -615,7 +654,7 @@ window.SceneView = (() => {
 
   /* THE EYE IS NOT SELECTION. Two intents on one control is how a layer gets
      hidden when someone meant to click it, so this changes visibility and
-     nothing else — it does not select, and it does not clear a selection.
+     nothing else, it does not select, and it does not clear a selection.
      It DOES batch: with the chip inside a multi-selection, the whole
      selection hides, which is the point of being able to pick four of them. */
   function layerEye(ev, path){
@@ -696,7 +735,7 @@ window.SceneView = (() => {
   }
 
   /* Clicking the art inside an instanced scene selects THE INSTANCE, the way
-     Godot does. The sprite you hit lives in prop.tscn, not in this file — there
+     Godot does. The sprite you hit lives in prop.tscn, not in this file, there
      is no line here to move, so offering to move it would stage a write that
      silently does nothing. */
   function owner(it){
@@ -734,7 +773,7 @@ window.SceneView = (() => {
     return dpr;
   }
 
-  /* Coalesce repaints to one per frame — but never LATCH on the guard.
+  /* Coalesce repaints to one per frame, but never LATCH on the guard.
    *
    * requestAnimationFrame does not fire while the page is not compositing (a
    * hidden pane, a background tab). The obvious `if (pending) return` guard
@@ -800,7 +839,7 @@ window.SceneView = (() => {
     /* THE LIGHTING PASS, in the engine's own order: everything is drawn, then
        CanvasModulate multiplies the canvas, then each Light2D is added on top.
        Doing it here rather than per-item is not an optimisation, it is the
-       definition — a light is not a picture on a node, it is a contribution to
+       definition, a light is not a picture on a node, it is a contribution to
        whatever is underneath it, and there is nothing underneath it until the
        scene has been painted. Gizmos and ghosts come after, deliberately:
        editor furniture must not be dimmed by the game's own night.
@@ -809,7 +848,7 @@ window.SceneView = (() => {
        painted into an offscreen first. Godot's 2D lights modulate the things
        in range; they do not brighten the empty space around them, because
        there is nothing there to brighten. Adding the cookie straight onto the
-       main canvas painted its full 400px halo over bare background as well —
+       main canvas painted its full 400px halo over bare background as well -
        so every fixture wore a soft disc far wider than the floor it lit, pools
        bled through walls into unlit rooms, and lights near the plate edge hung
        in the void as free-floating blobs. Masking the accumulated light by the
@@ -826,7 +865,7 @@ window.SceneView = (() => {
       try { shown.forEach(it => item(it)); } finally { ctx = main; }
       /* THE ALPHA SNAPSHOT, taken before anything modulates the layer.
          `multiply` composites its ALPHA source-over, so tinting the scene by
-         filling it turns every transparent pixel opaque — which both covered
+         filling it turns every transparent pixel opaque, which both covered
          the canvas in a flat rectangle of tint and destroyed the very mask the
          lights were about to be clipped by. Copy the coverage first; it is one
          composite and it is what makes the other two correct. */
@@ -856,12 +895,12 @@ window.SceneView = (() => {
        `view.z` is world-pixels-per-css-pixel, which is the Godot EDITOR's
        100%. The GAME presents this project at 2x (640x360 authored, 1280x720
        window, canvas_items + integer stretch), so a viewport reading "100%"
-       was showing the scene at half the size the player sees it — measured, by
+       was showing the scene at half the size the player sees it, measured, by
        template-matching the source art against the engine's own frame: tile
        and prop both land at exactly 2.00. Nothing was mis-scaled; the panel
        was reporting a different 100% from the one being compared with, and
        saying nothing about the difference. So NAME both percentages. A bare
-       "100%" is the ambiguity itself — it is true of two different sizes on a
+       "100%" is the ambiguity itself, it is true of two different sizes on a
        stretched project, and the reader has no way to tell which one is on
        screen. `game 100% · editor 200%` cannot be misread. */
     const gs = gameScaleOf();
@@ -875,7 +914,7 @@ window.SceneView = (() => {
     const one = document.getElementById("sv-oneone");
     if (one){
       one.classList.toggle("on", Math.abs(view.z - gs) < 0.005);
-      // "1:1" names the wrong thing on a stretched project — one WHAT to one
+      // "1:1" names the wrong thing on a stretched project, one WHAT to one
       // what? The button goes to the size the player sees, so say so.
       const label = gs !== 1 ? "game" : "1:1";
       if (one.textContent !== label) one.textContent = label;
@@ -893,7 +932,7 @@ window.SceneView = (() => {
     if (tip){
       const names = blanks.slice(0, 3).map(i => i.name).join(", ");
       tip.textContent = blanks.length
-        ? `${blanks.length} node(s) draw nothing in the FILE — ${names}${
+        ? `${blanks.length} node(s) draw nothing in the FILE, ${names}${
             blanks.length > 3 ? ` +${blanks.length - 3} more` : ""} · click to step through`
         : "drag to move · handles scale · ring rotates · shift = free";
       tip.title = blanks.length
@@ -902,12 +941,12 @@ window.SceneView = (() => {
     }
     paintHistory();
     // Every path that moves the view lands here, so this is the one place that
-    // has to remember it — one hook rather than eight, and none of them missed.
+    // has to remember it, one hook rather than eight, and none of them missed.
     rememberView();
   }
 
   /* The stack, on the buttons. A bounded history that will not say how deep it
-     is invites exactly one assumption — that it is infinite — and the moment
+     is invites exactly one assumption, that it is infinite, and the moment
      it is not, the operator finds out by losing a step. */
   function paintHistory(){
     const set = (btn, count, title, dead) => {
@@ -935,7 +974,7 @@ window.SceneView = (() => {
                                   && i.draw.reason
                                   // Insides of an instance are another file's
                                   // problem, and an instance that DID open has
-                                  // a picture — its own node is just the anchor.
+                                  // a picture, its own node is just the anchor.
                                   && !i.of && !(i.instance && i.drawn)
                                   && !deleted(i.path));
   }
@@ -987,7 +1026,7 @@ window.SceneView = (() => {
    * Why this is worth the ~50 lines: the complaint was "and lighting", and on
    * this project the whole difference between Godot's picture and ours is one
    * CanvasModulate over 44 point lights. Without it every room is the same
-   * grey and nothing tells you which one you are looking at — the panel is
+   * grey and nothing tells you which one you are looking at, the panel is
    * accurate about geometry and silent about the thing the level design is
    * actually made of.
    *
@@ -995,7 +1034,7 @@ window.SceneView = (() => {
    * is a visibility solve per light against 66 polygons, every frame, for
    * shadow EDGES. The bar here is "recognisably the same scene", not parity.
    */
-  /* Two reusable offscreens — the scene, and the light accumulating on top of
+  /* Two reusable offscreens, the scene, and the light accumulating on top of
      it. Kept between frames because allocating a 935x637 canvas twice per pan
      is the one thing that would make this pass cost anything. */
   const surfaces = new Map();
@@ -1012,7 +1051,7 @@ window.SceneView = (() => {
   }
 
   /* CanvasModulate, applied to the SCENE rather than to the frame.
-     It multiplies the canvas items — which is what it does in the engine —
+     It multiplies the canvas items, which is what it does in the engine -
      and `destination-in` puts the layer's own alpha back afterwards, because
      `multiply` composites alpha source-over and would otherwise turn every
      transparent pixel into an opaque rectangle of tint. Doing it here also
@@ -1048,7 +1087,7 @@ window.SceneView = (() => {
     ctx.globalCompositeOperation = "lighter";
     lights.forEach(it => {
       const d = it.draw;
-      /* Energy over 1 is a brighter light, not a bigger one — and canvas has
+      /* Energy over 1 is a brighter light, not a bigger one, and canvas has
          no HDR, so it is spent on alpha and clamps. HEADROOM is what keeps
          that clamp from eating the room: `lighter` accumulates, this floor
          puts four 1.45-energy fluoro panels over one bullpen, and at full
@@ -1058,7 +1097,7 @@ window.SceneView = (() => {
          own frame on floor_tut. */
       ctx.globalAlpha = clamp((d.energy || 1)
         * (d.color[3] === undefined ? 1 : d.color[3]), 0, 1) * LIGHT_HEADROOM;
-      // `local` is the instanced light scene's own root transform — the
+      // `local` is the instanced light scene's own root transform, the
       // scale.y = 0.5 that lands the pool on the isometric floor plane instead
       // of hanging it in the air as a sphere.
       const lo = d.local || { x:0, y:0, rot:0, sx:1, sy:1 };
@@ -1068,7 +1107,7 @@ window.SceneView = (() => {
       /* WHERE THE COOKIE IS CENTRED, composed rather than added up.
          Godot puts the texture at `offset` in the LIGHT'S OWN space and then
          applies the node's transform, so `offset` and the instance root's own
-         position are both scaled and rotated on the way out — adding them to
+         position are both scaled and rotated on the way out, adding them to
          the world position as plain numbers is only correct while every light
          in the scene sits at identity, which is exactly the case that never
          reports a bug. The pool is rotated too: an 8-degree fitting throws an
@@ -1107,8 +1146,8 @@ window.SceneView = (() => {
     });
     ctx.restore();
     // The mask: keep the accumulated light only where the scene actually put
-    // pixels. Everything else — the void past the plate edge, the unlit room
-    // on the far side of a partition — stays dark, because in the engine there
+    // pixels. Everything else, the void past the plate edge, the unlit room
+    // on the far side of a partition, stays dark, because in the engine there
     // is nothing there for a light to fall on.
     ctx.globalCompositeOperation = "destination-in";
     ctx.drawImage(scene.cv, 0, 0, W, H);
@@ -1120,7 +1159,7 @@ window.SceneView = (() => {
   }
 
   /* A light texture in the light's own colour. Canvas cannot tint a drawImage,
-     so the multiply happens once into an offscreen and is kept — 44 lights over
+     so the multiply happens once into an offscreen and is kept, 44 lights over
      a handful of distinct (texture, colour) pairs, re-tinted every pan would be
      44 full-texture composites per frame. */
   const LIGHT_HEADROOM = 0.6;
@@ -1178,7 +1217,7 @@ window.SceneView = (() => {
     // Applied here rather than composed into the item so a drag still reads and
     // writes this node's own position.
     // The context is already in the item's own units here, so the offset goes
-    // in unscaled — multiplying by view.z again would move the picture with
+    // in unscaled, multiplying by view.z again would move the picture with
     // the zoom.
     if (d.local){
       ctx.translate(d.local.x || 0, d.local.y || 0);
@@ -1202,7 +1241,7 @@ window.SceneView = (() => {
     ctx.restore();
 
     // A node that draws nothing says WHY. Most of these are sprites whose
-    // SpriteFrames is assigned by a script at load — this view shows what the
+    // SpriteFrames is assigned by a script at load, this view shows what the
     // scene FILE declares, and silence there reads as a broken viewport rather
     // than as the accurate answer it is.
     // An instance whose scene opened is not one of these: its own entry draws
@@ -1211,7 +1250,7 @@ window.SceneView = (() => {
     // ...and only while there are FEW of them. The guard above assumed blank
     // markers come in ones and twos. A dressed room is 579 prop instances whose
     // .tscn the scene never opens, and 579 copies of the same sentence overdraw
-    // each other into a grey pulp with the level hidden somewhere underneath —
+    // each other into a grey pulp with the level hidden somewhere underneath -
     // the caption stops being an explanation and becomes the thing in the way.
     // Past the cap the tip bar already says how many there are and steps
     // through them by name, and the selected one still captions itself, so
@@ -1243,7 +1282,7 @@ window.SceneView = (() => {
 
   /* The picture itself, in the caller's already-transformed space. Split out of
      item() so a placement that is not in the file yet can be drawn with exactly
-     the same code — a preview drawn by a second, nearly-identical painter is a
+     the same code, a preview drawn by a second, nearly-identical painter is a
      preview that lies about where the thing will land. Returns whether it drew;
      the caller owns the non-picture cases (camera frame, body cross). */
   function shape(d, b){
@@ -1271,18 +1310,18 @@ window.SceneView = (() => {
 
   /* Every placed cell, painted in the layer's local space (the caller has
    * already applied the node transform). Godot anchors an atlas tile by its
-   * CENTRE on the cell centre and then SUBTRACTS the source's texture_origin —
-   * `dest.position = centre - size/2 - texture_origin` — which is how a 64x100
+   * CENTRE on the cell centre and then SUBTRACTS the source's texture_origin -
+   * `dest.position = centre - size/2 - texture_origin`, which is how a 64x100
    * wall tile stands up out of a 64x32 cell instead of being squashed into it.
    *
    * THE SIGN IS THE WHOLE BUG, and it is why the furniture never sat on the
    * walls. This used to ADD texture_origin, which for this project's own rule
-   * (`texture_origin.y = h/2 - 16`, docs/SCALE.md — bottom edge on the
+   * (`texture_origin.y = h/2 - 16`, docs/SCALE.md, bottom edge on the
    * diamond's BOTTOM VERTEX) puts a tile's bottom at `centre - 16 + h` instead
    * of `centre + 16`: every tile with an origin drew `h - 32` px too low. A
    * 32px floor has origin 0 and h - 32 = 0, so the floor grid was always right
-   * and only the tall tiles moved — 38px for a 70px cubicle, 68px for a 100px
-   * panel — which is exactly the "the props do not line up with the tiles"
+   * and only the tall tiles moved, 38px for a 70px cubicle, 68px for a 100px
+   * panel, which is exactly the "the props do not line up with the tiles"
    * report, seen from the wrong side. Measured on floor_tut against the
    * engine's own 1280x720 frame: the panel art registers at the minus position
    * in Godot (NCC 0.99) and props already registered to within 1 screen px, so
@@ -1336,15 +1375,15 @@ window.SceneView = (() => {
 
   /* ── placing ──────────────────────────────────────────────────────────────
    * The move this panel existed to make possible and could not: put a SCENE in
-   * a scene. Everything the backend needs has been there all along — wire()
-   * emits `instance=ExtResource(...)` for a .tscn and /api/scene/wire is live —
+   * a scene. Everything the backend needs has been there all along, wire()
+   * emits `instance=ExtResource(...)` for a .tscn and /api/scene/wire is live -
    * but no surface could reach it, because the only asset picker in the builder
    * filters .tscn out (every scene is kind="screen" to the atlas, and offering
    * a screen as a sprite would be nonsense). So this is its own picker.
    *
    * A placement is STAGED like every other edit here: the ghost is drawn from
    * the source scene's own draw list, dragging moves the ghost, and nothing is
-   * written until `apply` — which is one wire call plus one position write.
+   * written until `apply`, which is one wire call plus one position write.
    */
   const DRAWN = ["image", "rect", "tiles"];
 
@@ -1354,7 +1393,7 @@ window.SceneView = (() => {
   }
 
   /* Where a placement lands: under the selection, else at the root. Any node
-     can parent another in Godot, so this does not second-guess the choice — it
+     can parent another in Godot, so this does not second-guess the choice, it
      says out loud where the thing is going and lets the click change it. */
   function placeParent(){
     return sel && sel.path !== "." && !sel.of ? sel.path : ".";
@@ -1417,7 +1456,7 @@ window.SceneView = (() => {
       <button class="sv-b" onclick="SceneView.cancelPlacing()">done</button>`;
   }
 
-  /* Desk_01, Desk_02 — never Node2D7. The name is the only handle you have on a
+  /* Desk_01, Desk_02, never Node2D7. The name is the only handle you have on a
      node in a list of forty, and a counter that restarts at every gap reads as
      a bug, so it walks up past everything already taken. */
   function baseName(src){
@@ -1428,7 +1467,7 @@ window.SceneView = (() => {
 
   function nextName(src){ return uniqueName(baseName(src)); }
 
-  /* Desk_07 duplicated is Desk_08, not Desk_07_01 — the trailing counter is
+  /* Desk_07 duplicated is Desk_08, not Desk_07_01, the trailing counter is
      part of the naming scheme, not part of the name. */
   function uniqueName(name){
     const m = /^(.*?)[_-]?(\d+)$/.exec(String(name || "Node"));
@@ -1444,7 +1483,7 @@ window.SceneView = (() => {
   }
 
   /* A subtree as if it were its own scene, so a duplicate's ghost is drawn by
-     exactly the code that draws a placement's — coordinates relative to the
+     exactly the code that draws a placement's, coordinates relative to the
      subtree's root, which is what ghost() and ghostBox() already expect. */
   function subtreeRender(path){
     if (!list) return { items: [] };
@@ -1456,7 +1495,7 @@ window.SceneView = (() => {
       .map(i => ({ ...i, x: i.x - root.x, y: i.y - root.y })) };
   }
 
-  /* The source scene's drawn extent, in its own space — the box you grab the
+  /* The source scene's drawn extent, in its own space, the box you grab the
      ghost by. Rotation is ignored deliberately: this is a pick target, and an
      axis-aligned box you can always hit beats an exact one you cannot. */
   function ghostBox(render){
@@ -1532,7 +1571,7 @@ window.SceneView = (() => {
   }
 
   /* Delete: the selection, staged. A not-yet-written placement just disappears
-     — there is nothing to un-write — and a real node becomes an unwire that
+, there is nothing to un-write, and a real node becomes an unwire that
      runs with everything else at `apply`. */
   function removeSelected(){
     if (selStaged >= 0 && staged[selStaged]){
@@ -1558,10 +1597,10 @@ window.SceneView = (() => {
       say(bad.length === items.length ? why
         : `${bad.length} of ${items.length} selected node(s) cannot be deleted (${
             bad.slice(0, 3).map(b => b.name).join(", ")}${
-            bad.length > 3 ? "…" : ""}) — ${why}. Nothing was staged.`);
+            bad.length > 3 ? "…" : ""}), ${why}. Nothing was staged.`);
       return;
     }
-    // Something already inside another doomed subtree is not a second delete —
+    // Something already inside another doomed subtree is not a second delete -
     // unwire takes the whole subtree, so staging both double-counts the batch.
     const roots = items.filter(it =>
       !items.some(o => o !== it && it.path.startsWith(o.path + "/")));
@@ -1581,7 +1620,7 @@ window.SceneView = (() => {
   /* ── duplicate / paste ────────────────────────────────────────────────────
    * A duplicate is a PLACEMENT of a subtree that has no .tscn: same ghost, same
    * drag, same one line in the pending bar, same single confirmation. The plan
-   * — what to create, under what, with which properties — is built by
+   *, what to create, under what, with which properties, is built by
    * SceneBuild, which holds the outline the .tscn was parsed into; this only
    * stages and, at apply, runs it.
    */
@@ -1672,7 +1711,7 @@ window.SceneView = (() => {
       }
       selStaged = -1;
       const found = hit(wx, wy);
-      // Shift ranges, ctrl/cmd toggles, a plain click replaces — the same three
+      // Shift ranges, ctrl/cmd toggles, a plain click replaces, the same three
       // gestures the tree uses, because they are the same selection.
       const mode = ev.shiftKey ? "range"
         : (ev.ctrlKey || ev.metaKey) ? "toggle" : "set";
@@ -1759,7 +1798,7 @@ window.SceneView = (() => {
     const done = () => {
       if (!drag){ return; }
       const d = drag; drag = null;
-      // A ghost carries its own position — there is no file line to stage yet.
+      // A ghost carries its own position, there is no file line to stage yet.
       if (d.ghost){ paint(); return; }
       if (d.move) (d.group || [{ it: d.it, x0: d.x0, y0: d.y0 }])
         .forEach(m => stageMove(m.it, m.x0, m.y0));
@@ -1792,8 +1831,8 @@ window.SceneView = (() => {
     window.addEventListener("resize", paint);
   }
 
-  /* Escape, in layers. The scene panel owns the key now — one listener, scoped
-     to the Atlas view so it cannot fire under the code editor — and asks here
+  /* Escape, in layers. The scene panel owns the key now, one listener, scoped
+     to the Atlas view so it cannot fire under the code editor, and asks here
      first, because a picker or an armed placement is a nearer thing to dismiss
      than the selection. Returns whether it consumed the press. */
   function escape(){
@@ -1804,7 +1843,7 @@ window.SceneView = (() => {
     return false;
   }
 
-  /* F. Fit the view to the selection — the gesture that gets you back to what
+  /* F. Fit the view to the selection, the gesture that gets you back to what
      you were working on after a pan across a 4000px level. Nothing selected
      falls through to fitting the whole scene, which is what F does there. */
   function frame(){
@@ -1836,20 +1875,20 @@ window.SceneView = (() => {
    *
    * This used to commit on pointer-release: one drag, one file write, one
    * backup. The reasoning was that a confirmation dialog per drag is a tool
-   * nobody uses — which is true, and completely beside the point. Moving a
+   * nobody uses, which is true, and completely beside the point. Moving a
    * thing to look at it is not a decision to change the game, and twenty-two
    * accidental writes to a live scene is not a thing a backup makes fine.
    *
    * So a drag now changes the PICTURE only. Edits accumulate as pending
    * property writes, the bar says how many there are, and `apply` is the only
-   * thing that touches disk — one confirmed action, one backup, not one per
+   * thing that touches disk, one confirmed action, one backup, not one per
    * pixel. `discard` re-reads the file and everything you did evaporates,
    * which is exactly what should have happened by default.
    */
   function stage(it, key, value, prevValue){
     const bucket = pending.get(it.path) || { name: it.name, keys: new Map() };
     const existing = bucket.keys.get(key);
-    // Keep the ORIGINAL value across repeated edits to the same property —
+    // Keep the ORIGINAL value across repeated edits to the same property -
     // three nudges of one node is one change from the file's point of view,
     // and discarding must go back to where the file was, not to nudge two.
     const origin = existing ? existing.prev : prevValue;
@@ -1993,7 +2032,7 @@ window.SceneView = (() => {
   function stageMove(it, x0, y0){
     if (round(it.x, 3) === round(x0, 3) && round(it.y, 3) === round(y0, 3)) return;
     const d = { x0, y0 };
-    // A Control positions by anchor offsets, not by `position` — writing
+    // A Control positions by anchor offsets, not by `position`, writing
     // `position` on one moves nothing and looks like the save silently failed.
     const isControl = /Rect$|^Control$|^Panel$|^Label$|^Button$|Container$/.test(it.type);
     if (isControl){
@@ -2011,7 +2050,7 @@ window.SceneView = (() => {
           `Vector2(${round(px, 2)}, ${round(py, 2)})`);
   }
 
-  /* One confirmed action, one pass, one backup per file — not one per pixel.
+  /* One confirmed action, one pass, one backup per file, not one per pixel.
    *
    * Additions go first so a property staged against a node can find it, and
    * deletions go last so nothing is written to a node on its way out. Each is
@@ -2038,7 +2077,7 @@ window.SceneView = (() => {
        duplicate, in the game. */
     const dropped = adds.flatMap(o => o.dropped || []);
     if (dropped.length) lines.push(
-      `${dropped.length} thing(s) will NOT be copied — ${
+      `${dropped.length} thing(s) will NOT be copied, ${
         dropped.slice(0, 4).join(", ")}${dropped.length > 4 ? "…" : ""}. `
       + "Values this writer will not emit into a .tscn, and overrides on nodes "
       + "that live inside an instanced scene.");
@@ -2053,7 +2092,7 @@ window.SceneView = (() => {
     if (!go || busy) return;
     busy = true;
     const failed = [];
-    // One property write, called from two places — a placement's position and
+    // One property write, called from two places, a placement's position and
     // the staged drags. Two literal call sites would be two chances for one of
     // them to drift out from behind this confirmation.
     const write = (node, key, value) => mutate("/api/scene/node/property", {
@@ -2061,7 +2100,7 @@ window.SceneView = (() => {
 
     /* One staged node into the file, whichever kind it is. `wire` for anything
        backed by a .tscn (a placement, and a duplicated instance), `add` for a
-       plain node — which takes its whole property set in the same call, so a
+       plain node, which takes its whole property set in the same call, so a
        five-node duplicate is five requests rather than five plus thirty. */
     const born = async (asset, type, name, parent, props) => {
       const r = asset
@@ -2151,8 +2190,8 @@ window.SceneView = (() => {
     say(`${n} change${n === 1 ? "" : "s"} written`, "ok");
 
     // THE LOOP. The file is what changed; the build is what you play. Rebuild
-    // only when the panel is open — a minute of Godot for someone who is not
-    // looking at the game is a minute of the tool being unusable — but always
+    // only when the panel is open, a minute of Godot for someone who is not
+    // looking at the game is a minute of the tool being unusable, but always
     // refresh the chip, so a closed panel still says `stale` rather than
     // quietly carrying the previous answer forward.
     if (playOpen()) await rebuild();
@@ -2180,7 +2219,7 @@ window.SceneView = (() => {
       ? it.path.slice(0, it.path.lastIndexOf("/")) : ".", wx, wy);
   }
 
-  /* Same conversion, keyed on the parent's path — a placement has no item of
+  /* Same conversion, keyed on the parent's path, a placement has no item of
      its own yet, only the container it is going into. */
   function localUnder(parentPath, wx, wy){
     const parent = parentPath && parentPath !== "." && list
@@ -2196,7 +2235,7 @@ window.SceneView = (() => {
     const vec = /Vector2\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)/.exec(String(prev));
     if (key === "position" && vec){
       const [wx, wy] = toWorldTransform(it, +vec[1], +vec[2]);
-      // Descendants carry the world offset too — putting only the node back
+      // Descendants carry the world offset too, putting only the node back
       // leaves its children standing where the undone drag left them.
       moveBy(it, wx - it.x, wy - it.y);
     } else if (key === "scale" && vec){
@@ -2210,8 +2249,8 @@ window.SceneView = (() => {
     }
   }
 
-  /* The scene-tree eye. It is the node's real `visible`, not a view filter —
-     the layer strip already owns the view-only version — so it stages like
+  /* The scene-tree eye. It is the node's real `visible`, not a view filter -
+     the layer strip already owns the view-only version, so it stages like
      every other property and lands with the same one confirmation. */
   function stageVisible(path, value){
     const it = list && list.items.find(i => i.path === path);
@@ -2221,7 +2260,7 @@ window.SceneView = (() => {
     stage(it, "visible", value ? "true" : "false", was);
   }
 
-  /* Show or hide the whole selection FOR REAL — staged, one line in the
+  /* Show or hide the whole selection FOR REAL, staged, one line in the
      pending bar, written by the same single confirmation as everything else.
      Same refuse-whole rule as delete: a member this cannot apply to blocks
      the batch and gets named, rather than the other nine going through and
@@ -2239,7 +2278,7 @@ window.SceneView = (() => {
       const bad = [...missing, ...inside];
       say(`${bad.length} of ${wanted.length} selected node(s) cannot take a `
           + `visibility change (${bad.slice(0, 3).join(", ")}${
-            bad.length > 3 ? "…" : ""}) — ${inside.length
+            bad.length > 3 ? "…" : ""}), ${inside.length
               ? "they live inside an instanced scene, so there is no line in "
                 + "this file to set" : "the viewport does not have them"
             }. Nothing was staged.`);
@@ -2257,7 +2296,7 @@ window.SceneView = (() => {
           : `already ${want ? "visible" : "hidden"}`, "ok");
   }
 
-  /* The inverse of toLocalTransform — a staged local value has to come back
+  /* The inverse of toLocalTransform, a staged local value has to come back
      out to world space to be drawn. */
   function toWorldTransform(it, lx, ly){
     const parent = it.path.includes("/")
@@ -2286,7 +2325,7 @@ window.SceneView = (() => {
 
   /* ── selection ────────────────────────────────────────────────────────────
    * ONE authority, two surfaces. A range-select means "everything between
-   * these two in the tree", and the tree's order is SceneBuild's — so a click
+   * these two in the tree", and the tree's order is SceneBuild's, so a click
    * here asks it what the click means and takes back an answer, rather than
    * each surface keeping its own idea of what is selected and echoing.
    */
@@ -2298,7 +2337,7 @@ window.SceneView = (() => {
     setSelection(path ? [path] : [], path || null);
   }
 
-  /* State only — this never calls back, so it is safe for SceneBuild to drive
+  /* State only, this never calls back, so it is safe for SceneBuild to drive
      it from inside its own selection resolution. */
   function setSelection(paths, primary){
     multi = new Set((paths || []).filter(Boolean));
@@ -2315,7 +2354,7 @@ window.SceneView = (() => {
   }
 
   /* Which of the selected nodes a transform should actually be applied to.
-     A node whose ancestor is also selected is carried by that ancestor — apply
+     A node whose ancestor is also selected is carried by that ancestor, apply
      the delta to both and it moves twice, which is the classic multi-select
      bug and looks like the snap is broken. */
   function groupFor(head){
@@ -2334,7 +2373,7 @@ window.SceneView = (() => {
   }
 
   /* A secondary selection: outlined, named, no handles. Handles belong to the
-     primary alone — eight grips on twenty nodes is a canvas of grips. */
+     primary alone, eight grips on twenty nodes is a canvas of grips. */
   function mark(it){
     const pts = corners(it).map(p => toScreen(p[0], p[1]));
     ctx.save();
@@ -2349,7 +2388,7 @@ window.SceneView = (() => {
   }
 
   /* The CONTENT union the game frame, in world units. An isometric level
-     spills well outside the 640x360 rectangle — fitting the rectangle alone
+     spills well outside the 640x360 rectangle, fitting the rectangle alone
      put most of the floor off screen and looked like half the tiles were
      missing. Shared by `fit` and by the opening view, so the two cannot drift
      into framing different rectangles. */
@@ -2358,7 +2397,7 @@ window.SceneView = (() => {
     let x0 = 0, y0 = 0, x1 = v[0], y1 = v[1];
     if (list) list.items.filter(drawable).forEach(it => {
       // A LIGHT'S HALO IS NOT CONTENT. Its box is the cookie's own size times
-      // texture_scale — 400px of falloff around a 30px fitting — and forty of
+      // texture_scale, 400px of falloff around a 30px fitting, and forty of
       // them dragged floor_tut's bounds out to 1883x1746 around a 2261x1184
       // level that does not go there. Framing on that put the centre in a room
       // the plate does not have and zoomed `fit` out to make room for a glow.
@@ -2391,7 +2430,7 @@ window.SceneView = (() => {
    * 29% than they do at the size the player sees. Godot opens a 2D scene at 100%
    * for exactly this reason. Opening at fit meant every comparison against the
    * running game started with a rescale nobody had asked for and the panel never
-   * mentioned — which is how "props are not scaled right in Atlas" survived
+   * mentioned, which is how "props are not scaled right in Atlas" survived
    * three rounds of being told the geometry was correct. It was; the zoom was
    * not the game's.
    *
@@ -2407,7 +2446,7 @@ window.SceneView = (() => {
     catch (e){ return {}; }
   }
 
-  /* Debounced, because it is called from the paint loop — a drag is sixty
+  /* Debounced, because it is called from the paint loop, a drag is sixty
      view changes a second and localStorage is synchronous. */
   function rememberView(){
     if (!scene) return;
@@ -2435,7 +2474,7 @@ window.SceneView = (() => {
     return true;
   }
 
-  /* Game scale, centred on the content — the state the panel opens in when it
+  /* Game scale, centred on the content, the state the panel opens in when it
      has no remembered view for this scene. Returns whether it settled one, so
      the paint loop can try again on the frame the panel finally has a size:
      the Atlas surface mounts this while its section is still `display:none`,
@@ -2465,7 +2504,7 @@ window.SceneView = (() => {
   }
 
   /* Put the view at the game's own scale, about the centre. This is the
-     control for "make Atlas look like what I am comparing it to" — on a
+     control for "make Atlas look like what I am comparing it to", on a
      stretched project the editor's 1:1 and the game's 1:1 are different
      numbers, and until now the panel only offered one of them. */
   function gameScale(){
@@ -2507,7 +2546,7 @@ window.SceneView = (() => {
 
   /* After a write, the backdrop is a photograph of the scene as it was. Left
      alone it shows the OLD art next to a file that already has the new one,
-     which reads as "the swap did not save" — the edit landing invisibly is the
+     which reads as "the swap did not save", the edit landing invisibly is the
      same experience as the edit not landing. */
   function reshoot(){
     if (!opts.real || !real.img || real.busy) return;
@@ -2552,7 +2591,7 @@ window.SceneView = (() => {
   /* Paint it INTO the viewport rect the frame already defines, so a node's
      handles sit exactly where its art does. The shot comes back at a fixed
      1280×720 whatever the project's viewport is, so it is fitted rather than
-     stretched — a backdrop that is 4px off is worse than none, because every
+     stretched, a backdrop that is 4px off is worse than none, because every
      placement you make against it inherits the error. */
   function paintReal(vx, vy, vw, vh){
     if (!opts.real || !real.img) return;
@@ -2569,7 +2608,7 @@ window.SceneView = (() => {
   function toggle(key){
     opts[key] = !opts[key];
     // Repaint the toolbar in place. Re-mounting redraws it too, but it also
-    // re-reads the file — which would silently throw away staged changes for
+    // re-reads the file, which would silently throw away staged changes for
     // the sake of one button's highlight.
     const btn = host && host.querySelector(`[onclick*="toggle('${key}')"]`);
     if (btn) btn.classList.toggle("on", !!opts[key]);
@@ -2578,7 +2617,7 @@ window.SceneView = (() => {
   }
   function setSnap(v){ opts.snap = clamp(parseInt(v, 10) || 8, 1, 256); paint(); }
 
-  /* A canvas is not a screenshot — nothing outside the browser can see it, so
+  /* A canvas is not a screenshot, nothing outside the browser can see it, so
      "here is what my scene looks like" was un-shareable. This writes the exact
      pixels on screen to a real file. */
   async function snapshot(){
@@ -2594,7 +2633,7 @@ window.SceneView = (() => {
    * against and it is not proof of anything: a scene can look correct and play
    * wrong, and until now the only way to find that out was to leave, open the
    * play tab, and remember to rebuild first. Almost nobody remembered, so what
-   * got checked was yesterday's build — which is worse than not checking,
+   * got checked was yesterday's build, which is worse than not checking,
    * because it comes back green.
    *
    * So the loop closes here. Applying an edit writes the file, exports the
@@ -2603,7 +2642,7 @@ window.SceneView = (() => {
    * THE FRAME IS BLANKED ON EVERY EXIT PATH. A running WASM build left in a
    * hidden panel keeps a game loop and an audio context alive behind whatever
    * you switch to; closing the panel and leaving the panel are two different
-   * exits and both have to do it. Switching SCENES deliberately does not — the
+   * exits and both have to do it. Switching SCENES deliberately does not, the
    * build is the whole game, not the file being looked at, and killing the
    * running game because someone opened a different scene beside it would be a
    * bug wearing a tidiness argument. */
@@ -2615,8 +2654,8 @@ window.SceneView = (() => {
     if (f) f.src = "about:blank";
   }
 
-  /* Hidden, not torn down. The panel is only being navigated AWAY from — the
-     staged edits are still the operator's and must survive coming back — but
+  /* Hidden, not torn down. The panel is only being navigated AWAY from, the
+     staged edits are still the operator's and must survive coming back, but
      the build behind it must stop, because a hidden iframe is still a running
      game with an audio context. Deliberately not unmount(): that asks about
      losing staged work, and hiding a tab is not a reason to ask. */
@@ -2710,12 +2749,12 @@ window.SceneView = (() => {
     clearStaged();
     scene = id; sel = null;
     // Drop the previous scene's frame outright. Keeping it would leave the old
-    // level painted behind the new scene's nodes — a backdrop that is silently
+    // level painted behind the new scene's nodes, a backdrop that is silently
     // the wrong room is the one failure mode this feature must not have.
     real.img = null; real.scene = null;
     opts.real = false;
     realBtn();
-    // A new scene gets its OWN opening view — its remembered one, or the game's
+    // A new scene gets its OWN opening view, its remembered one, or the game's
     // scale about its content. Carrying the previous scene's pan over is how a
     // switch used to land on empty space beside the new level.
     viewReady = false;
@@ -2724,7 +2763,8 @@ window.SceneView = (() => {
     return done;
   }
 
-  return { mount, unmount, reload, fit, frame, gameScale, zoom: zoomBy, toggle, setSnap,
+  const api2d = {
+           mount, unmount, reload, fit, frame, gameScale, zoom: zoomBy, toggle, setSnap,
            snapshot, select, setSelection, raise, undo, redo, setScene, nudge,
            apply: applyPending, discard: discardPending, hasPending, escape,
            placeMenu, arm, cancelPlacing, removeSelected, duplicateSelected,
@@ -2737,5 +2777,34 @@ window.SceneView = (() => {
            get list(){ return list; }, get selected(){ return sel; },
            get selection(){ return [...multi]; },
            get scene(){ return scene; },
-           get pending(){ return pendingCount(); } };
+           get pending(){ return pendingCount(); },
+           get dimension(){ return "2d"; } };
+
+  /* The forwarding layer. mount/unmount are the two that decide which
+     viewport is live and always run here; everything else goes to whichever
+     one is mounted. A method the 3D side lacks answers with a toast rather
+     than a TypeError in an onclick. */
+  const out = {};
+  for (const key of Object.keys(api2d)){
+    const desc = Object.getOwnPropertyDescriptor(api2d, key);
+    if (desc.get){
+      Object.defineProperty(out, key, { enumerable: true, get(){
+        if (via3d && three()){ const v = three()[key]; return v === undefined ? desc.get() : v; }
+        return desc.get();
+      } });
+    } else if (key === "mount" || key === "unmount"){
+      out[key] = api2d[key];
+    } else {
+      out[key] = (...args) => {
+        if (via3d && three()){
+          const fn = three()[key];
+          if (typeof fn === "function") return fn(...args);
+          say(`${key} is not available in the 3D viewport`);
+          return undefined;
+        }
+        return api2d[key](...args);
+      };
+    }
+  }
+  return out;
 })();

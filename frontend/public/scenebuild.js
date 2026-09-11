@@ -1,7 +1,7 @@
-/* scenebuild.js — Atlas's third mode: build the scene, not just map it.
+/* scenebuild.js, Atlas's third mode: build the scene, not just map it.
  *
  * The list view tells you which assets a screen uses. The graph view lets you
- * wire one in. Neither shows you the SCENE — the actual tree of nodes, what
+ * wire one in. Neither shows you the SCENE, the actual tree of nodes, what
  * each one is for, which sheet is on which sprite, which script drives what.
  * That is the thing you are really editing when you say "swap the enemy", and
  * until now it lived only in Godot.
@@ -9,21 +9,21 @@
  * So this is the scene as a node graph:
  *
  *   ROLE, NOT CLASS. Nodes are grouped and coloured as characters, enemies,
- *   props, layers, controllers, audio, collision, ui — because that is how a
+ *   props, layers, controllers, audio, collision, ui, because that is how a
  *   scene is thought about. "CharacterBody2D" is an implementation detail of
  *   being a character, and a canvas organised by class is a canvas you read by
  *   translating. The role is inferred server-side from resource paths, script
  *   names and type, in that order.
  *
  *   THE CARD IS THE NODE. Each card shows its type, its script, and the assets
- *   hanging off it — with the actual sprite sheet as a thumbnail and audio as a
+ *   hanging off it, with the actual sprite sheet as a thumbnail and audio as a
  *   player. Seeing that a node points at the wrong sheet is the point.
  *
  *   EVERY EDIT IS A DIFF FIRST. Add, rename, reparent, set a property, swap a
  *   resource, delete a subtree: each one previews the resulting .tscn before it
  *   writes, and each write leaves the previous file under .bgate_out.
  *
- * Parent/child is drawn as the edge, so the graph IS the hierarchy — dragging
+ * Parent/child is drawn as the edge, so the graph IS the hierarchy, dragging
  * a node's parent port onto another node reparents it for real.
  */
 window.SceneBuild = (() => {
@@ -45,6 +45,7 @@ window.SceneBuild = (() => {
     collision:{ g:"⬡", c:"var(--text-3)", label:"collision" },
     controller:{g:"⌁", c:"var(--c-narrative)", label:"controllers" },
     camera:   { g:"◉", c:"var(--text)", label:"camera" },
+    light:    { g:"✧", c:"var(--warn)", label:"lights" },
     audio:    { g:"♪", c:"var(--c-narrative)", label:"audio" },
     fx:       { g:"✦", c:"var(--c-narrative)", label:"fx" },
     ui:       { g:"⊞", c:"var(--good)", label:"ui" },
@@ -54,7 +55,7 @@ window.SceneBuild = (() => {
   };
   const roleOf = r => ROLE[r] || ROLE.node;
 
-  /* The project scan. Atlas owns the one shared copy — it is a whole-project
+  /* The project scan. Atlas owns the one shared copy, it is a whole-project
      walk of every .tscn/.gd/.tres, so it is loaded once and read from here.
      `Atlas.ensure()` is what fills it; this accessor only reads. */
   const atlasMap = () => (window.Atlas && Atlas.map) || null;
@@ -67,9 +68,9 @@ window.SceneBuild = (() => {
   const SND = /\.(ogg|wav|mp3)$/i;
 
   // The properties worth a first-class row in the inspector. Everything else a
-  // node carries is still shown, just not promoted — a scene builder that only
+  // node carries is still shown, just not promoted, a scene builder that only
   // ever exposes position and visible is a scene builder you leave immediately.
-  const COMMON = [
+  const COMMON_2D = [
     { key:"position", hint:"Vector2(x, y)" },
     { key:"rotation", hint:"radians" },
     { key:"scale", hint:"Vector2(x, y)" },
@@ -77,6 +78,20 @@ window.SceneBuild = (() => {
     { key:"visible", hint:"true / false" },
     { key:"modulate", hint:"Color(r, g, b, a)" },
   ];
+  /* The same six questions one dimension up. `transform` is promoted for a
+     node the editor saved (it carries everything in one line); position /
+     rotation / scale are what an agent writes, and a file should carry one
+     spelling or the other, so the row for the spelling the node already
+     has is the one to edit. */
+  const COMMON_3D = [
+    { key:"position", hint:"Vector3(x, y, z)" },
+    { key:"rotation", hint:"Vector3(x, y, z) radians, YXZ" },
+    { key:"scale", hint:"Vector3(x, y, z)" },
+    { key:"transform", hint:"Transform3D(basis rows, origin)" },
+    { key:"visible", hint:"true / false" },
+  ];
+  const dimension = () => (data && data.dimension) || "2d";
+  const commonRows = () => dimension() === "3d" ? COMMON_3D : COMMON_2D;
 
   const COL_W = 300, ROW_H = 190, PAD_X = 40, PAD_Y = 40;
 
@@ -86,8 +101,8 @@ window.SceneBuild = (() => {
   let nc = null, scene = null, data = null, types = null;
   let sel = null, filter = new Set(), busy = false;
   /* SELECTION LIVES HERE, for both surfaces.
-     `sel` is the primary — the one the inspector shows and a range anchors
-     from — and `selection` is everything picked, primary included. Keeping the
+     `sel` is the primary, the one the inspector shows and a range anchors
+     from, and `selection` is everything picked, primary included. Keeping the
      set here rather than in the viewport is not arbitrary: a shift-click means
      "everything between these two IN THE TREE", and the tree's order is this
      module's to know. */
@@ -102,7 +117,7 @@ window.SceneBuild = (() => {
   let clipboard = null;         // { clones: [...] } from clonePlans()
   let healing = false;        // guards the render() self-heal from looping
   let repaintPending = false; // a repaint deferred until the picker closes
-  // The viewport is the primary surface — it is where things are PLACED. The
+  // The viewport is the primary surface, it is where things are PLACED. The
   // graph is the structural read of the same scene, one click away.
   let surface = (() => {
     try { return localStorage.getItem("bgate-scene-surface") || "viewport"; }
@@ -230,7 +245,7 @@ window.SceneBuild = (() => {
       ".sb-tr .eye:hover{color:var(--accent)}",
       ".sb-tr .eye .bgi .e{stroke:currentColor}",
       // The twisty is drawn, not typed. A unicode triangle resolves out of whatever symbol
-      // font the OS falls back to — the exact drift icons.js exists to end —
+      // font the OS falls back to, the exact drift icons.js exists to end -
       // and a triangle this small is three borders.
       ".sb-tw{width:12px;height:12px;flex:none;background:none;border:0;padding:0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}",
       ".sb-tw:disabled{cursor:default}",
@@ -256,12 +271,12 @@ window.SceneBuild = (() => {
     const host = document.getElementById("atlas-scene");
     if (!host) return;
     /* THE SHARED SCAN HAS TO BE IN HAND BEFORE ANYTHING READS SCREENS FROM IT.
-       Atlas.map is populated by whoever loads it first — on startup that is a
+       Atlas.map is populated by whoever loads it first, on startup that is a
        1200ms-deferred badge() call, and the scan itself walks the whole
        project. Open this mode inside that window and atlasMap() is still null,
        so bestScene() has nothing to choose from and the picker falls through to
        its one-option fallback: the current scene and nothing else. It never
-       recovers, because the map arriving fires no re-render — the panel only
+       recovers, because the map arriving fires no re-render, the panel only
        repaints on user action, and the one control the user would reach for is
        the picker that is now stuck. Reported as "the scene is locked to the
        title page" on a project whose declared boot scene is the title.
@@ -279,13 +294,17 @@ window.SceneBuild = (() => {
       host.innerHTML = `<div class="empty" style="padding:40px">no scene to build - Atlas found no .tscn</div>`;
       return;
     }
-    if (!types) types = await readJSON("/api/scene/node/types", {groups:[]});
     if (!data || force || data.scene !== scene) await reload();
+    // The palette is the scene's: a 3D world is offered MeshInstance3D and
+    // lights, a 2D one Sprite2D and TileMapLayer. Cached per dimension.
+    const dim = dimension();
+    if (!types || types.dimension !== dim)
+      types = await readJSON(`/api/scene/node/types?scene=${encodeURIComponent(scene)}`, {groups:[], dimension: dim});
     render();
   }
 
   /* Which scene to open on. Alphabetical picks whatever sorts first, and in
-     this project that is `combat` — a one-node script host with nothing to
+     this project that is `combat`, a one-node script host with nothing to
      draw. A builder whose first frame is an empty rectangle looks broken even
      when it is being perfectly accurate, so open on the scene the map says has
      the most in it. */
@@ -293,7 +312,7 @@ window.SceneBuild = (() => {
     const map = atlasMap();
     const screens = (map && map.screens) || [];
     if (!screens.length) return null;
-    // The project's declared boot scene beats any heuristic — it is the one
+    // The project's declared boot scene beats any heuristic, it is the one
     // scene the author has already told us matters.
     const main = map && map.main_scene;
     if (main && screens.some(s => s.id === main)) return main;
@@ -301,7 +320,7 @@ window.SceneBuild = (() => {
     ((map && map.edges) || []).forEach(e => {
       weight[e.from] = (weight[e.from] || 0) + 1;
     });
-    // "Most edges" picks a QA fixture on any project that has one — those
+    // "Most edges" picks a QA fixture on any project that has one, those
     // scenes exist precisely to reference everything at once. Sideline them
     // rather than let asset count speak for importance.
     const side = s => /^res:\/\/(tests?|qa)\//i.test(s.id)
@@ -375,7 +394,7 @@ window.SceneBuild = (() => {
          + `</b>` + t.slice(at + needle.length);
   }
 
-  /* Is this node visible IN THE GAME — the real `visible` property, staged
+  /* Is this node visible IN THE GAME, the real `visible` property, staged
      edits included. The layer strip's eyes are a view filter and a different
      thing entirely; this one changes the scene. */
   function nodeVisible(path){
@@ -416,7 +435,7 @@ window.SceneBuild = (() => {
     const q = treeQ.trim().toLowerCase();
     /* A filter REVEALS, it does not extract. Showing only the matches throws
        away where they are, which on a scene with nine nodes called `Body` is
-       the only thing that tells them apart — so the ancestors of every hit
+       the only thing that tells them apart, so the ancestors of every hit
        come too, and everything on the path is forced open. */
     let keep = null;
     if (q){
@@ -557,7 +576,7 @@ window.SceneBuild = (() => {
   }
 
   /* The eye writes the node's real `visible`. In the viewport it stages with
-     everything else; on the graph surface — where nothing is staged — it goes
+     everything else; on the graph surface, where nothing is staged, it goes
      through the same diff-then-write every other structural edit does. */
   function toggleVisible(path){
     const want = !nodeVisible(path);
@@ -663,8 +682,8 @@ window.SceneBuild = (() => {
     if (!host || !data) return;
     /* NEVER REPAINT UNDERNEATH AN OPEN DROPDOWN. render() replaces the whole
        panel with innerHTML, which DESTROYS the <select> node. If that lands
-       while the user has the list open — and the dashboard polls on several
-       timers — the native popup is torn off its element and vanishes. What the
+       while the user has the list open, and the dashboard polls on several
+       timers, the native popup is torn off its element and vanishes. What the
        user sees is a picker that will not open at all, or one that snaps shut
        the moment they scroll it. With 64 scenes the list is long enough that
        scrolling is required, so the bug hits every single attempt to change
@@ -686,7 +705,7 @@ window.SceneBuild = (() => {
     const roles = data.roles || {};
     /* LAST-DITCH SELF-HEAL. Every caller is supposed to have the scan in hand
        before it gets here, but if any path ever renders without one the picker
-       silently becomes a single dead option — the current scene, unchangeable,
+       silently becomes a single dead option, the current scene, unchangeable,
        with no error anywhere to explain it. Refetch once and repaint rather
        than leave the user staring at a control that does nothing. */
     if (!screens.length && !healing){
@@ -751,7 +770,7 @@ window.SceneBuild = (() => {
       </div>`;
 
     // The handle was just rebuilt with the rest of the panel, so it needs
-    // binding again. init() is idempotent per element — re-running it over a
+    // binding again. init() is idempotent per element, re-running it over a
     // scope that still holds live handles is free.
     if (window.Split) Split.init(host);
     bindTree(host);
@@ -763,7 +782,7 @@ window.SceneBuild = (() => {
       nc = new NodeCanvas(document.getElementById("sb-canvas"), {
         nodes, edges, renderBody, accent: "var(--accent)",
         // The canvas runs its own ctrl/shift multi-select and marquee, so read
-        // the set it settled on rather than the one node it names — otherwise a
+        // the set it settled on rather than the one node it names, otherwise a
         // box-select on the graph reduces to whichever node happened to be last.
         onSelect: node => {
           if (selecting) return;
@@ -794,7 +813,7 @@ window.SceneBuild = (() => {
   }
 
   /* Leaving the viewport tears down SceneView, which throws away anything staged
-     there. unmount() asks about that and returns false when the answer is no —
+     there. unmount() asks about that and returns false when the answer is no -
      an answer this used to discard, so it asked the question and switched
      regardless. Nothing may change until it comes back true. */
   async function setSurface(next){
@@ -806,7 +825,7 @@ window.SceneBuild = (() => {
   }
 
   /* Dragging a parent's `children` port onto a node's `parent` port IS a
-     reparent — the graph edge and the scene hierarchy are the same fact, so
+     reparent, the graph edge and the scene hierarchy are the same fact, so
      editing one has to edit the other. */
   async function onConnect(from, to){
     const parent = from[0], child = to[0];
@@ -861,7 +880,7 @@ window.SceneBuild = (() => {
   }
 
   /* What "between these two" means. The rows on screen, when both ends are on
-     screen — that is what the operator drew a line through. When one end is
+     screen, that is what the operator drew a line through. When one end is
      inside a collapsed branch, the file's own order is the only honest answer;
      tree order does not exist for a row that is not being shown. */
   function rangeOrder(a, b){
@@ -903,7 +922,7 @@ window.SceneBuild = (() => {
    * now the inspector offered its usual six property rows for both of them as
    * if they were ordinary: a TileMapLayer, whose tiles are packed bytes rather
    * than nodes, and an empty container that a script fills with add_child when
-   * the game runs. Setting `position` on the second one is not wrong exactly —
+   * the game runs. Setting `position` on the second one is not wrong exactly -
    * it is just about to be overwritten, which is worse than being refused.
    *
    * So say which it is, name the script where the file names one, and put the
@@ -913,7 +932,7 @@ window.SceneBuild = (() => {
     "YSort", "Control", "ParallaxBackground", "ParallaxLayer"]);
 
   /* The script that fills a container: its own, else the nearest ancestor with
-     one. That is the end of what the FILE knows — anything further would be a
+     one. That is the end of what the FILE knows, anything further would be a
      guess dressed as a fact. */
   function fillerOf(n){
     let node = n;
@@ -953,7 +972,7 @@ window.SceneBuild = (() => {
   /* WHAT A SELECTION OF TWENTY CAN AND CANNOT BE TOLD TO DO.
    *
    * The single-node inspector is six property fields and a name box, and none
-   * of those mean anything across a mixed selection — a `position` field over
+   * of those mean anything across a mixed selection, a `position` field over
    * twenty nodes either edits one of them or twenty to the same number, and
    * both are wrong. So the batch panel offers only what genuinely applies to
    * all of them at once, and says which of the batch is in the way of the rest
@@ -983,7 +1002,7 @@ window.SceneBuild = (() => {
         <button class="sb-b wide" onclick="SceneView.duplicateSelected()">duplicate all ${nodes.length}</button>
         <button class="sb-b wide" onclick="SceneBuild.copySelection()">copy all ${nodes.length}</button>
         <button class="sb-b bad wide" onclick="SceneView.removeSelected()">delete all ${nodes.length}</button>
-        <div class="sb-note">Every one of these stages — nothing reaches the
+        <div class="sb-note">Every one of these stages, nothing reaches the
           file until <b>apply</b>, which asks once and keeps a backup. Hiding
           here sets the node's real <b>visible</b>; the eyes on the layer strip
           are a view filter and change nothing.</div>`
@@ -1017,12 +1036,12 @@ window.SceneBuild = (() => {
     if (!n) return el.innerHTML = overview();
 
     const state = fileState(n);
-    const shown = new Set(COMMON.map(c => c.key));
+    const shown = new Set(commonRows().map(c => c.key));
     const others = Object.entries(n.properties || {})
       .filter(([k]) => !shown.has(k) && k !== "script");
     const res = (n.resources || []).filter(r => r.property !== "script");
     const info = roleOf(n.role);
-    const propsHtml = COMMON.map(c => `<div class="sb-row">
+    const propsHtml = commonRows().map(c => `<div class="sb-row">
         <label title="${E(c.hint)}">${E(c.key)}</label>
         <input class="sb-in" id="sb-p-${E(c.key)}" placeholder="${E(c.hint)}"
                value="${E((n.properties || {})[c.key] || "")}">
@@ -1069,7 +1088,7 @@ window.SceneBuild = (() => {
               onclick="SceneBuild.editAudio('${E(r.path)}')">audio lab</button>` : ""}
           </div>
         </div>`).join("")
-        : `<div class="sb-note">nothing — drop an asset on it from the graph, or
+        : `<div class="sb-note">nothing, drop an asset on it from the graph, or
             <button class="sb-b" onclick="SceneBuild.swapMenu('${E(n.path)}','')">attach one…</button></div>`}
 
       <div class="sb-h">script</div>
@@ -1080,7 +1099,7 @@ window.SceneBuild = (() => {
       </div>
 
       ${state && state.kind === "runtime"
-        ? `<details class="sb-drawer"><summary>properties — a script overwrites
+        ? `<details class="sb-drawer"><summary>properties, a script overwrites
              what this node holds</summary>${propsHtml}</details>`
         : `<div class="sb-h">properties</div>${propsHtml}`}
 
@@ -1093,7 +1112,7 @@ window.SceneBuild = (() => {
   /* The "add a child" palette used to render identically under every node, so
      a TileMapLayer called Walls offered the full ~40-type list. Godot lets you
      parent anything anywhere, but a node under a tilemap inherits its
-     transform and is organisationally lost — the exact mistake bible #37 (one
+     transform and is organisationally lost, the exact mistake bible #37 (one
      editable thing = one named node) exists to prevent, offered by the tool
      that is supposed to enforce it.
 
@@ -1108,6 +1127,13 @@ window.SceneBuild = (() => {
     Node2D: ["visual", "character", "controller"], Node: ["controller"],
     CanvasLayer: ["ui", "visual"], ParallaxBackground: ["layer"],
     Sprite2D: ["controller"], AnimatedSprite2D: ["controller"],
+    // The 3D bodies want the same two things: a shape and a picture.
+    CharacterBody3D: ["collision", "visual"], RigidBody3D: ["collision", "visual"],
+    StaticBody3D: ["collision", "visual"], Area3D: ["collision", "visual"],
+    VehicleBody3D: ["collision", "visual"], Path3D: ["controller"],
+    Node3D: ["visual", "character", "light", "controller"],
+    MeshInstance3D: ["controller"], Camera3D: ["controller"],
+    SpringArm3D: ["camera"],
   };
   // Types whose content is data, not children.
   const LEAFY = {
@@ -1121,13 +1147,19 @@ window.SceneBuild = (() => {
       "not a child. Add siblings under the body instead.",
     CollisionPolygon2D: "A collision polygon is a leaf - add siblings under " +
       "the body instead.",
+    CollisionShape3D: "A collision shape is a leaf - its shape is a resource, " +
+      "not a child. Add siblings under the body instead.",
+    CollisionPolygon3D: "A collision polygon is a leaf - add siblings under " +
+      "the body instead.",
+    MultiMeshInstance3D: "Instances live in this node's MultiMesh resource, not " +
+      "as child nodes. Put objects in a Node3D container beside it.",
   };
 
   function childDrawer(n, types){
     const groups = (types.groups || []);
     const leafWhy = LEAFY[n.type];
     const wanted = WANTS[n.type] || null;
-    // Preferred roles first, everything else after — never hidden, because the
+    // Preferred roles first, everything else after, never hidden, because the
     // uncommon case is still legitimate and a palette that lies is worse.
     const ordered = wanted
       ? groups.slice().sort((a, b) => {
@@ -1159,7 +1191,7 @@ window.SceneBuild = (() => {
         E(m.path.split("/").pop())).join(", ")}</div>` : ""}
       <div class="sb-h">building</div>
       <div class="sb-note">Click a node in the tree or the picture to inspect
-        it — <b>shift-click</b> a range, <b>ctrl-click</b> to add one. Drag a
+        it, <b>shift-click</b> a range, <b>ctrl-click</b> to add one. Drag a
         node's <b>children</b> port onto another node's <b>parent</b> port to
         reparent it. Every edit shows the resulting <b>.tscn</b> before it
         writes, and the previous file is kept under
@@ -1274,7 +1306,7 @@ window.SceneBuild = (() => {
    *
    * This lived on the Atlas GRAPH, which is gone. The Asset Library's "wire"
    * action is the caller: it has an asset and no scene, so the scene has to be
-   * chosen first — which is the one thing the rest of this module never does,
+   * chosen first, which is the one thing the rest of this module never does,
    * because everything else here operates on the scene already open.
    *
    * The target scene is therefore passed explicitly rather than going through
@@ -1307,7 +1339,7 @@ window.SceneBuild = (() => {
     const name = id => (map && map.nodes[id] && map.nodes[id].label) || id;
     confirmDiff(`wire ${name(assetId)} into ${name(sceneId)}`, dry.data,
       () => mutate("/api/scene/wire", { body: { scene: sceneId, asset: assetId } }),
-      // Land the operator on what they just changed. Already looking at it —
+      // Land the operator on what they just changed. Already looking at it -
       // reload in place; otherwise switch, because a confirmed write into a
       // scene the editor does not show is indistinguishable from nothing.
       () => { if (sceneId === scene) refresh(); else setScene(sceneId); });
@@ -1350,7 +1382,7 @@ window.SceneBuild = (() => {
       `<div class="sb-note">${E(dryData.summary || "")}</div>
        ${dryData.nodepath_references ? `<div class="sb-note sb-warn">
          ${dryData.nodepath_references} NodePath reference(s) elsewhere in the
-         scene still name the old node — those are not rewritten.</div>` : ""}
+         scene still name the old node, those are not rewritten.</div>` : ""}
        <div class="sb-h">the scene after this change</div>
        <div class="sb-diff">${E(tail(dryData.text, 2000))}</div>`,
       [{ label:"cancel", fn: closeModal },
@@ -1361,7 +1393,7 @@ window.SceneBuild = (() => {
            say(`${w.data.summary} · backup ${w.data.backup}`, "ok");
            if (done) done();
            // The engine backdrop is a photo of the scene BEFORE this write. If
-           // it is up, re-take it — otherwise the swap lands in the file and
+           // it is up, re-take it, otherwise the swap lands in the file and
            // the picture keeps showing the old art, which is indistinguishable
            // from the swap having failed.
            try {
@@ -1376,13 +1408,13 @@ window.SceneBuild = (() => {
 
   /* ── duplicate / copy / paste ─────────────────────────────────────────────
    * The plan for re-creating a node and its subtree. Built here because the
-   * outline — types, parent links, properties, scripts, resources — is what
+   * outline, types, parent links, properties, scripts, resources, is what
    * this module holds; run by SceneView, because that is where a not-yet-
    * written thing gets a ghost, a drag and a place in the one confirmation.
    *
    * THE WRITER'S VALUE WHITELIST IS MIRRORED, NOT GUESSED AT. `_prop_value` in
-   * bgate_core/scenewire.py accepts a deliberately narrow set — a property
-   * writer that emits anything is a property writer that corrupts a .tscn —
+   * bgate_core/scenewire.py accepts a deliberately narrow set, a property
+   * writer that emits anything is a property writer that corrupts a .tscn -
    * and a duplicate that silently drops a `polygon` is a duplicate that is
    * wrong in a way you find out about in the game. So the same set is tested
    * here and everything outside it is NAMED before the write.
@@ -1423,8 +1455,8 @@ window.SceneBuild = (() => {
         // `add_node(type="(instance)")`, which invents a node that is not a node.
         if (node.instance && !inst){ broken.push(node.path); return; }
         /* AN OVERRIDE IS NOT A NODE.
-           A block with a parent inside an instance and no `type` —
-           `[node name="Art" parent="Prop_00" index="0"]` — is Godot RE-SETTING
+           A block with a parent inside an instance and no `type` -
+           `[node name="Art" parent="Prop_00" index="0"]`, is Godot RE-SETTING
            a property on something that already exists inside prop.tscn. It has
            no type to create and no scene to wire, and `add_node` given a type
            would put a SECOND Art beside the instance's own. There is no safe
@@ -1492,7 +1524,7 @@ window.SceneBuild = (() => {
       "ok");
   }
 
-  /* Paste lands UNDER the selection, the way Godot does — the selected node is
+  /* Paste lands UNDER the selection, the way Godot does, the selected node is
      where you are pointing, and pasting a chair beside the chair you selected
      rather than into the room you selected is the wrong half of the time. */
   function pasteClipboard(){
@@ -1552,7 +1584,7 @@ window.SceneBuild = (() => {
     const mod = ev.ctrlKey || ev.metaKey;
     const k = ev.key;
     // Ctrl+F must work FROM the tree filter as well as into it, and Escape has
-    // to be able to leave a field — those two are the only keys allowed
+    // to be able to leave a field, those two are the only keys allowed
     // through while something is focused for typing.
     if (typingIn(ev.target)){
       if (k === "Escape"){ ev.target.blur(); return; }
@@ -1587,7 +1619,7 @@ window.SceneBuild = (() => {
     }
     if (mod && (k === "c" || k === "C")){
       // Never steal a copy from someone with text HIGHLIGHTED on the page. A
-      // collapsed selection is a caret, not a highlight — testing the object
+      // collapsed selection is a caret, not a highlight, testing the object
       // for truthiness instead swallowed every Ctrl+C in the panel, because a
       // stray caret is almost always somewhere.
       const text = window.getSelection && window.getSelection();
@@ -1632,7 +1664,7 @@ window.SceneBuild = (() => {
   function toggleRole(r){ filter.has(r) ? filter.delete(r) : filter.add(r); render(); }
   function refresh(){ activate(scene, true); }
 
-  /* Called when this MODE is navigated away from — not when it is torn down.
+  /* Called when this MODE is navigated away from, not when it is torn down.
      The viewport keeps everything it has staged; what stops is the playable
      build inside it, which would otherwise keep running, and playing audio,
      behind whatever the operator switched to. Same contract as

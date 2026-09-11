@@ -593,6 +593,35 @@ scene_set_property(godot_project, scene="scenes/floor.tscn",
 `parent`) and truncates loudly: a baked floor plate is fifteen hundred nodes,
 and dumping the whole tree buries the task in furniture.
 
+### 3D scenes
+
+Every tool above reads the scene's dimension off its root. In a scene whose
+root is a Node3D, `scene_wire` makes a `.png` a Sprite3D, a mesh `.tres` a
+MeshInstance3D, and a `.glb`/`.gltf`/`.obj` an instance (Godot imports a
+model as a PackedScene, so it is the same line a `.tscn` gets);
+`scene_set_property` accepts `Vector3(...)`, `Transform3D(...)`, `Basis`,
+`Quaternion` and `AABB` literals; the node palette offers bodies, lights,
+CollisionShape3D and Camera3D instead of their 2D siblings.
+
+The Atlas viewport does the same one dimension up. `/api/scene/render`
+answers a 3D scene with world matrices and shapes rather than a paint list
+(`dimension: "3d"`), and `sceneview3d.js` builds them in three.js: primitive
+meshes with Godot's defaults, collision shapes as wire, lights and the
+camera as glyphs, `.glb` instances through `/api/model3d/raw`, and ArrayMesh
+geometry the editor left inline in the file decoded from its base64
+surfaces through `/api/scene/mesh` (positions and indices; both the
+compressed and float32 layouts). Orbit, click to select, W/E/R for the
+move/rotate/scale gizmo; a drag stages a write in the spelling the node
+already uses (`transform =`, or position/rotation/scale) and nothing touches
+the file until `apply`. Two conventions are pinned by tests because they
+were measured wrong: the twelve numbers of a `Transform3D` are the basis
+ROWS then the origin, and `rotation` is YXZ euler in radians.
+
+A street of 5,000 nodes and 265 lights is the measured case: the parse is
+memoised on the text, the render on the file's mtime, and the viewport lights
+eight of the lights and draws the rest as glyphs, because a forward renderer
+with 265 point lights compiles a shader that takes the tab down.
+
 **Every write checks the lock.** A scene held by another seat is refused, from
 an agent and from the dashboard alike, because the holder may be mid-edit and
 about to write its own copy over yours. A seat is never blocked by its own lock.

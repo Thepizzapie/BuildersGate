@@ -8,12 +8,12 @@
 <!-- app.css FIRST, and the order is load-bearing. Its opening `@layer` statement
      is what ranks every layer in the page, and a layer's rank is fixed by the
      FIRST time the browser sees the name. Loading Mantine's stylesheet ahead of
-     that statement registered `mantine` as layer one — the weakest — and no
+     that statement registered `mantine` as layer one, the weakest, and no
      later statement can move it, so Mantine's controls lost their padding,
      border and ground to this app's bare-element rules and rendered as
      library-shaped unstyled elements. -->
 <!-- Tabler, vendored. The prototype linked jsdelivr; this binds to loopback and
-     also ships inside a PyInstaller exe, where a CDN is simply absent — and
+     also ships inside a PyInstaller exe, where a CDN is simply absent, and
      absent icons are a layout, not a style.
 
      Type is Inter + JetBrains Mono, vendored beside it. IBM Plex is gone from
@@ -24,7 +24,7 @@
 <!-- Mantine's own rules, which land in the `mantine` slot app.css declared:
      after base and layout, before components. -->
 <link rel="stylesheet" href="/static/dist/bgate.css">
-<!-- CodeMirror 5 (MIT, vendored under static/vendor/codemirror — see its
+<!-- CodeMirror 5 (MIT, vendored under static/vendor/codemirror, see its
      LICENSE). theme-bgate.css is ours: it maps the editor's tokens onto the
      app's own colour variables so the code pane follows the light/dark switch
      instead of being the one panel with a fixed palette. -->
@@ -55,19 +55,19 @@
      /api/window/state and renders nothing unless it is inside the frameless
      desktop window, so a browser gets no fake caption and no dead close
      button. When it DOES render it adds `bg-framed` to <html>, which is what
-     reserves the 44px at the top — see .bg-titlebar in shell.css. Kept first
+     reserves the 44px at the top, see .bg-titlebar in shell.css. Kept first
      in the body so it is above every deck in both senses. -->
 <div data-react="titlebar"></div>
 <div class="deck">
-  <!-- THE 4a SHELL — frontend/src/shell/. Four AREAS on a 56px icon rail, the
+  <!-- THE 4a SHELL, frontend/src/shell/. Four AREAS on a 56px icon rail, the
        screens of the area you are in on a second column, a header, and a
        permanent 340px inspector. It renders with `display:contents`, so its
        children land directly in the body grid ALONGSIDE .stage below rather
-       than wrapping it — reparenting the stage into a React node would reload
+       than wrapping it, reparenting the stage into a React node would reload
        every iframe on the page at boot.
 
        WHAT IT REPLACED: an eleven-destination rail with three unlabelled runs,
-       and a status bar. Eleven peers is not a hierarchy — you had to already
+       and a status bar. Eleven peers is not a hierarchy, you had to already
        know where a thing lived. The rail's own pin, its resize handle and its
        four theme buttons went with it; the ground is now settings.
 
@@ -91,12 +91,12 @@
     </div>
     <div class="stage-body">
 
-      <!-- THE FLOOR — one stream of everything the studio is doing, and the
+      <!-- THE FLOOR, one stream of everything the studio is doing, and the
            director's dispatch box under it. The screen this redesign exists
            for: what used to be an Overview of five counters, an Agents console,
            and a board were three places to look for one question. Its four
            readings (everything / live / needs you / history) are this one deck
-           reading the current screen — four decks would be four polls of the
+           reading the current screen, four decks would be four polls of the
            same log. -->
       <section class="deck-view" id="view-floor"><div data-react="floor"></div></section>
       <!-- THE BRAINSTORM ROOM (8a). Its own screen rather than a tab on the
@@ -108,7 +108,7 @@
 
       <section class="deck-view active" id="view-overview">
         <div class="view-heading"><div><span class="eyebrow">Command deck</span><h2>Overview</h2></div><p>The studio at a glance - live agents, the queue, the build.</p></div>
-        <!-- REACT ISLAND — the first one. The body of this deck is
+        <!-- REACT ISLAND, the first one. The body of this deck is
              frontend/src/views/Overview.tsx, mounted by /static/dist/bgate.js.
              It renders the same .ov-stats / .spanel markup against the same
              app.css, reads the same five endpoints on the same 4s cadence, and
@@ -118,16 +118,16 @@
         <div data-react="overview"></div>
       </section>
 
-      <!-- THE DIRECTOR'S CONSOLE — frontend/src/shell/agents/.
+      <!-- THE DIRECTOR'S CONSOLE, frontend/src/shell/agents/.
            Replaces agents_console.js (2,245 lines) and the delegation graph
            beside it. Three faults are why it is a rewrite and not a patch: the
            brainstorm RESET button was appended conditionally and could simply
            not exist, the cockpit was a fixed-height grid that reserved 560px
-           for a three-line conversation, and the graph was delegation-by-seat —
+           for a three-line conversation, and the graph was delegation-by-seat -
            which is the Board screen in this shell, maintained once. -->
       <section class="deck-view" id="view-agents"><div data-react="agents"></div></section>
 
-      <!-- SETTINGS (7b) — frontend/src/shell/settings/. Every word of the help
+      <!-- SETTINGS (7b), frontend/src/shell/settings/. Every word of the help
            is kept; what changed is that a row is a label beside its own control
            instead of a card with the control 900px away, and precedence is a
            left-edge stripe you can read down the page instead of a chip you
@@ -143,7 +143,7 @@
         <div id="studio-body" class="studio-body"><div class="empty">loading studio…</div></div>
       </section>
 
-      <!-- SEAT WORKSPACES — frontend/src/shell/seats/. One workspace per CRAFT
+      <!-- SEAT WORKSPACES, frontend/src/shell/seats/. One workspace per CRAFT
            rather than a kanban lane wearing the seat's name: art's is a sheet
            in progress with its consistency measured against the pin, tech's is
            godot_check_project's findings, gameplay's is the tunables table with
@@ -171,14 +171,14 @@
         <div id="me-page" class="editor-page"></div>
       </section>
 
-      <!-- REACT ISLAND — frontend/src/views/playtests/. Play & record, the
+      <!-- REACT ISLAND, frontend/src/views/playtests/. Play & record, the
            recorded-sessions list, the review overlay (video, triage, telemetry,
            transcript) and the notepad drawer are all rendered from there. The
            sessions arrive on pollState()'s /api/state push (store.ts); the
            recorder polls /api/playtest/status itself, on playtest.* events. -->
       <section class="deck-view" id="view-playtests"><div data-react="playtests"></div></section>
 
-      <!-- REACT ISLAND — frontend/src/views/assets/. The heading actions, the
+      <!-- REACT ISLAND, frontend/src/views/assets/. The heading actions, the
            review queue, the tracked-binaries table and the detail drawer are
            all rendered from there against the same app.css classes.
 
@@ -188,7 +188,7 @@
            #gallery (the shell's renderGallery). Both look themselves up by id
            on every write, so they neither know nor care who made the element.
 
-           The data is NOT fetched here — pollState() below already reads
+           The data is NOT fetched here, pollState() below already reads
            /api/state for the whole shell and pushes it to the island's store. -->
       <section class="deck-view" id="view-assets">
         <div data-react="assets"></div>
@@ -196,7 +196,7 @@
 
       <section class="deck-view" id="view-world">
         <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible and keep the fiction honest. Everything here is authored by you - the pipeline reads it.</p></div>
-        <!-- REACT ISLAND — frontend/src/views/world/. The bible editor, its
+        <!-- REACT ISLAND, frontend/src/views/world/. The bible editor, its
              reference anchors and the lore graph; it draws its own sub-nav. -->
         <div data-react="world"></div>
       </section>
@@ -238,7 +238,7 @@
 <div class="firstrun" id="firstrun" hidden>
   <div class="fr-card">
     <div class="fr-mark" data-icon="logo" data-icon-size="40"></div>
-    <!-- REACT ISLAND — frontend/src/views/FirstRun.tsx. It owns the card's two
+    <!-- REACT ISLAND, frontend/src/views/FirstRun.tsx. It owns the card's two
          ways in: open one of the registered projects, or scaffold a new one.
          WHAT IT DOES NOT OWN IS WHETHER THIS OVERLAY IS UP. pollState() below
          decides that, exactly as it always did, by toggling #firstrun[hidden];
@@ -270,10 +270,10 @@ function setTheme(mode){
   if (window.BGDynamicTheme) BGDynamicTheme.sync();
   syncThemeButtons();
   // Anything drawn to a <canvas> reads its colours once, at paint time, and
-  // cannot resolve var() — those modules have to redraw on a ground change.
+  // cannot resolve var(), those modules have to redraw on a ground change.
   window.dispatchEvent(new CustomEvent("bgate:theme", { detail:{ mode } }));
 }
-/* A <canvas> 2D context cannot resolve var() — assigning "var(--ember)" to
+/* A <canvas> 2D context cannot resolve var(), assigning "var(--ember)" to
    fillStyle is a silent no-op that leaves the previous colour in place. Both
    sceneview.js and spriteedit.js hit that and worked around it by following the
    dead assignment with a hardcoded hex on the same line, which then froze those
@@ -407,15 +407,15 @@ let lastActivityId = 0;
 /* ── one path for every mutation ─────────────────────────────────────────
  * Every mutation in this shell used to be `await fetch(...)` with the response
  * dropped on the floor, and every read was wrapped in a blanket catch returning
- * an empty object — which does not even fire on a 500, because an error body is
+ * an empty object, which does not even fire on a 500, because an error body is
  * still valid JSON, so the empty object never happened and the error was simply
  * never read.
  * So the backend's perfectly actionable sentence ("claude CLI not found on
  * PATH") was binned and the failure rendered as nothing happening.
  *
  * The backend speaks two shapes and both are handled here:
- *   {ok:true, data} / {ok:false, error:{code,message,detail}}  — api.py routes
- *   bare payloads, 200 {ok:false, error:"a sentence"}, {detail} — app.py
+ *   {ok:true, data} / {ok:false, error:{code,message,detail}}, api.py routes
+ *   bare payloads, 200 {ok:false, error:"a sentence"}, {detail}, app.py
  * mutate() returns {ok, data, error, code, status}; a caller skips its
  * re-render when ok is false so the operator's selection survives the failure.
  */
@@ -464,14 +464,14 @@ async function mutate(path, options){
     if (!quiet) toast(message);
     /* THE FAILURE BODY SURVIVES, ON `body`.
      *
-     * `data` stays null on a refusal — every caller in the app reads it as
+     * `data` stays null on a refusal, every caller in the app reads it as
      * "the thing I asked for" and handing back an error envelope there would
      * make a failed write look like a successful one to code that only checks
      * for null. But several endpoints put their REAL answer in the failure:
      * /api/godot/check returns ok:false with the errors, the exit code and the
      * compiler output; /api/play/rebuild returns the last 500 chars of the
      * export stderr in `detail`. Dropping it meant the Tech seat's findings
-     * panel — the entire reason that seat exists — was empty on exactly the
+     * panel, the entire reason that seat exists, was empty on exactly the
      * path that had something to say, and the screen read "request failed ·
      * 200". Additive on purpose: nothing that checks .ok/.error/.data changes,
      * and a caller that wants the detail reads .body. */
@@ -482,7 +482,7 @@ async function mutate(path, options){
 }
 
 /* Reads. Same two shapes; a failure returns the caller's fallback TAGGED with
- * __error so a panel can render "backend error" instead of the empty state —
+ * __error so a panel can render "backend error" instead of the empty state -
  * empty and broken must not look identical. */
 async function readJSON(path, fallback){
   const failed = message => {
@@ -526,7 +526,7 @@ function toast(message, kind){
 
 const DECK_CRUMB = {
   floor:"The floor", board:"Board", brainstorm:"Brainstorm",
-  // `agents` is the DECK KEY and stays one — it is what setWorkspace(),
+  // `agents` is the DECK KEY and stays one, it is what setWorkspace(),
   // SeatShell.select() and the restored-view localStorage entry all use. Only
   // the crumb changed, and it has to match frontend/src/shell/nav.ts or the
   // rail and the breadcrumb name one screen two things.
@@ -540,7 +540,7 @@ const DECK_CRUMB = {
  * Kept separate from setWorkspace because of WHEN it has to run. The restore
  * call fires from an inline script that sits ABOVE the module <script> tags,
  * so on a reload into Studio (or Seats, Atlas, World) window.Studio did not
- * exist yet and the guard skipped it silently — the panel sat on "loading
+ * exist yet and the guard skipped it silently, the panel sat on "loading
  * studio…" until you clicked the rail item it was already on. Now the same
  * function runs again once the modules have registered. */
 function activateWorkspace(name){
@@ -554,8 +554,8 @@ function activateWorkspace(name){
   return !owners[name];   // a view with no module is already "activated"
 }
 
-/* The Agents view had a second mode — a delegation GRAPH over the kanban lanes
-   — and a per-browser preference to choose between them. Both are gone with the
+/* The Agents view had a second mode, a delegation GRAPH over the kanban lanes
+, and a per-browser preference to choose between them. Both are gone with the
    4a shell: lanes-by-seat is the Board screen now, so it is one screen with one
    implementation rather than two that drift. agents_graph.js is no longer
    loaded; nothing else referenced it.
@@ -567,7 +567,7 @@ function activateWorkspace(name){
  *
  * `list` and `graph` were removed. A stored preference naming either of them
  * still exists in the localStorage of every browser that ever opened the old
- * build, and it must not resolve to a mode that no longer has a tab — hence the
+ * build, and it must not resolve to a mode that no longer has a tab, hence the
  * whitelist rather than a bare read. */
 const ATLAS_MODES = ["scene", "code"];
 let atlasMode = (() => {
@@ -600,7 +600,7 @@ function setAtlasMode(mode){
   const mod = { scene: window.SceneBuild, code: window.AtlasCode }[atlasMode];
   if (!mod) return false;
   // Both modes name their scenes from the Atlas scan, so make sure that scan
-  // exists before they ask — otherwise the picker opens with one entry.
+  // exists before they ask, otherwise the picker opens with one entry.
   if (window.Atlas && typeof Atlas.ensure === "function"){
     Atlas.ensure().then(() => mod.activate()).catch(() => mod.activate());
     return true;
@@ -612,7 +612,7 @@ function setAtlasMode(mode){
 function setWorkspace(name, trigger){
   const next = DECK_CRUMB[name] ? name : "overview";
   // Leaving Atlas entirely has to stop the playable build too, not just
-  // switching modes within it — a hidden deck-view still runs its iframe, and
+  // switching modes within it, a hidden deck-view still runs its iframe, and
   // the only symptom is audio from a panel you can no longer see.
   if (next !== "atlas" && atlasMode === "code" && window.AtlasCode
       && typeof AtlasCode.deactivate === "function") AtlasCode.deactivate();
@@ -630,7 +630,7 @@ function setWorkspace(name, trigger){
   // that highlights a screen you are not on is worse than no highlight.
   window.dispatchEvent(new CustomEvent("bgate:workspace", { detail:{ name: next } }));
   activateWorkspace(next);
-  // The overview and the playtests deck refresh themselves — both are React
+  // The overview and the playtests deck refresh themselves, both are React
   // islands that watch their deck's .active class and poll only on screen.
   const body = document.querySelector(".stage-body"); if (body) body.scrollTop = 0;
 }
@@ -649,7 +649,7 @@ document.querySelector(".workspace-tabs")?.addEventListener("keydown", event => 
 /* A seat is "at work" only when it has a LIVE dispatched agent right now
  * (window._liveSeats is refreshed by pollQueue from /api/agents). The old
  * "acted in the last 5 minutes" heuristic showed a seat as working long after
- * its agent finished, and a restart wiped it entirely — both misleading. */
+ * its agent finished, and a restart wiped it entirely, both misleading. */
 function isWorking(seat){
   return !!(window._liveSeats && window._liveSeats.has(seat.role));
 }
@@ -683,18 +683,18 @@ function dispatchToSeat(role){
    #ledger was the Overview's activity list; the React floor replaced it and the
    element with it. This function still ran on a 2s interval, threw on
    `box.querySelector` against null, and had that throw swallowed by
-   pollActivity's own `catch(e){}` — so nothing was visible and nothing was
+   pollActivity's own `catch(e){}`, so nothing was visible and nothing was
    logged.
 
    The expensive half is the SECOND-ORDER effect. `lastActivityId` only advanced
    inside the loop below the throw, so it stayed 0 for the life of the tab and
-   every tick re-requested `/api/activity?after_id=0` — the entire event
+   every tick re-requested `/api/activity?after_id=0`, the entire event
    backlog, every two seconds, growing with the project. On this project that is
    6000+ rows a tick.
 
    Kept rather than deleted because the cursor is the useful part: it is what
    makes the request incremental. It advances whether or not anything is on
-   screen to draw, and the drawing is skipped when there is no host — which
+   screen to draw, and the drawing is skipped when there is no host, which
    there is not, and the floor (frontend/src/shell/Floor.tsx) reads the same
    endpoint for itself. */
 function renderLedger(events, fresh){
@@ -736,17 +736,17 @@ function show(rel){
 }
 
 /* The World view is a WRITE surface (bible editor, reference anchors, lore
- * graph) and is a React island, frontend/src/views/world/ — the read-only chip
+ * graph) and is a React island, frontend/src/views/world/, the read-only chip
  * list that used to be rendered here was the producer's whole complaint. */
 
 
 /* The recorded-sessions list, the review overlay (openSession / seekReview /
  * syncTranscript and the video-offset correction), retrySession and the
- * triage are the Playtests island now — frontend/src/views/playtests/. The
+ * triage are the Playtests island now, frontend/src/views/playtests/. The
  * sessions reach it through the BGState push below. */
 
 function showOffline(reason){
-  // Blocker: the header must resolve to a DEFINITE state — never a permanent
+  // Blocker: the header must resolve to a DEFINITE state, never a permanent
   // "connecting…". On failure, say so plainly and offer a retry action.
   const pl = document.getElementById("projline");
   if (pl) pl.innerHTML = `<b>Offline</b> · ${esc(reason)} · ` +
@@ -756,11 +756,11 @@ function showOffline(reason){
 }
 /* ── first run ───────────────────────────────────────────────────────────
  * The absence case. /api/state answers 200 {project:null,hint} now, so this
- * branch is REACHABLE — it used to be dead code behind a 503 that only ever
+ * branch is REACHABLE, it used to be dead code behind a 503 that only ever
  * rendered "Offline · server 503" on a machine that had never had a project.
  * The legacy 404/503 shapes are still handled: an older backend must not fall
  * through to the offline card either. */
-/* THE CARD ITSELF IS REACT — frontend/src/views/FirstRun.tsx. What stays here
+/* THE CARD ITSELF IS REACT, frontend/src/views/FirstRun.tsx. What stays here
    is the decision to show it, because that is boot-path control flow and it
    belongs with pollState() which makes it. The card is told WHY through an
    event; it fetches its own /api/project for the registry and the target path.
@@ -811,7 +811,7 @@ async function pollState(){
     if (!s || !s.project){ showFirstRun(s && s.hint); return; }
     hideFirstRun();
     // THE PROJECT LINE LIVED IN THE OLD RAIL and the shell renders it now. This
-    // wrote to it unguarded, inside pollState's own try/catch — so the moment
+    // wrote to it unguarded, inside pollState's own try/catch, so the moment
     // the element went, every poll threw on null.innerHTML, was caught, and
     // reported as `showOffline("backend unreachable")`. A connected dashboard
     // said offline and the store was never fed: the whole shell read "no
@@ -825,7 +825,7 @@ async function pollState(){
     renderFloor(s.seats);
     renderGallery(s.previews);
     // THE ASSETS DECK IS REACT (frontend/src/views/assets/). It does not fetch
-    // /api/state for itself — this poll is already the shell's single reader of
+    // /api/state for itself, this poll is already the shell's single reader of
     // the most expensive endpoint on the server, and a second copy would be a
     // few hundred milliseconds out of step with the status bar drawn from this
     // same body. So the payload is pushed, exactly where renderAssetWorkspace()
@@ -841,7 +841,7 @@ async function pollState(){
 }
 /* The play panel's controls hint (never a fighting-game scheme the template
  * does not bind) is drawn by the Playtests island from `controls` on the
- * BGState push — see frontend/src/views/playtests/PlayPanel.tsx. */
+ * BGState push, see frontend/src/views/playtests/PlayPanel.tsx. */
 
 /* ── two readouts, two facts ───────────────────────────────────────────────
    These used to be one function writing the same vault state into both the
@@ -860,7 +860,7 @@ function setConnection(ok, text){
   if (t) t.textContent = text;
 }
 
-// counts: {modified, missing, pending, clean, locked} — or null when unknown.
+// counts: {modified, missing, pending, clean, locked}, or null when unknown.
 function setVault(ok, counts){
   const chip = document.getElementById("sb-vault");
   if (!chip) return;
@@ -895,14 +895,14 @@ async function pollActivity(){
 
 /* ── dispatch + play ───────────────────────────────────────────────────
    THE QUEUE COMPOSER IS GONE and so are the three functions that served it
-   (toggleBrief, addItem, refreshAgentView). They were unreachable — every
-   caller went with the old Agents board — but each one dereferenced a deleted
+   (toggleBrief, addItem, refreshAgentView). They were unreachable, every
+   caller went with the old Agents board, but each one dereferenced a deleted
    element on its first line, which is the exact shape that bites the moment
    somebody wires a caller back up. What replaced them is window.BGCompose,
    published by the React console while it is mounted. */
 /* THE QUEUE COMPOSER WENT WITH THE OLD AGENTS BOARD. This populated its seat
    <select> at the top level of the script and threw the moment the element was
-   gone — a TypeError at file scope, which skips every statement after it. The
+   gone, a TypeError at file scope, which skips every statement after it. The
    function declarations below survive (they hoist), so the page looked fine and
    the failure was silent: what actually stopped was the initialisation that
    runs further down. Guarded rather than deleted, because the composer is
@@ -956,7 +956,7 @@ async function pollQueue(){
       const lat = (a.steer_latency_s || []);
       if (lat.length) window._steerLat = lat[lat.length - 1];
     });
-    // Seats that have a live agent right now — drives the floor "at work" dot.
+    // Seats that have a live agent right now, drives the floor "at work" dot.
     window._liveSeats = new Set(items.filter(i => liveSet.has(i.id)).map(i => i.seat));
     // Per-seat queued load for the seat strip badges.
     const load = {};
@@ -1259,7 +1259,7 @@ const SpriteAnim = {
   _ivs: [],
   mountAll(container){
     if (!container) return;
-    // the container was just re-rendered — kill prior timers before remounting
+    // the container was just re-rendered, kill prior timers before remounting
     this._ivs.forEach(clearInterval); this._ivs = [];
     container.querySelectorAll(".spr-mount").forEach(el =>
       this.mount(el, el.dataset.rel, +el.dataset.fps || 8, +el.dataset.count || 0,
@@ -1340,8 +1340,8 @@ async function renderArtRail(itemId, running){
 }
 
 
-/* The play panel — boot/stop the build, the recorder's start/stop, the
- * preflight and its throttling, the status poll — is the Playtests island
+/* The play panel, boot/stop the build, the recorder's start/stop, the
+ * preflight and its throttling, the status poll, is the Playtests island
  * now: frontend/src/views/playtests/PlayPanel.tsx. */
 
 syncThemeButtons();
@@ -1356,7 +1356,7 @@ document.addEventListener("DOMContentLoaded", () => activateWorkspace(initialWor
 /* THE TIMERS ARE GONE; THE BUS DOES THE NOTICING. Each watcher runs now, on
    every matching event (coalesced), on reconnect, and on a slow safety timer
    for what no event describes. (The recorder's own watcher lives in the
-   Playtests island — PlayPanel.tsx — on the same playtest.* kinds.)
+   Playtests island, PlayPanel.tsx, on the same playtest.* kinds.)
    pollActivity reads the activity LEDGER, which
    is wider than the event bus, so it listens to everything and keeps a timer. */
 BGEvents.watch(pollState, { kinds: ["*"], every: 30000 });
@@ -1381,7 +1381,7 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
 <script src="/static/nodecanvas.js"></script>
 <!-- THE DELEGATION GRAPH IS BACK. It was unloaded on the argument that
      "lanes-by-seat is the Board screen now", and then the Board screen was
-     itself removed — so the replacement outlived the thing it replaced by
+     itself removed, so the replacement outlived the thing it replaced by
      nothing at all, and the console had no graph for two shells running. The
      React pane mounts this; see shell/agents/Agents.tsx GraphPane. -->
 <script src="/static/agents_graph.js"></script>
@@ -1389,7 +1389,7 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
 <script src="/static/icons.js"></script>
 <script src="/static/split.js"></script>
 <script src="/static/bgselect.js"></script>
-<!-- Both were written, finished, and never given a script tag — so nothing
+<!-- Both were written, finished, and never given a script tag, so nothing
      registered them and the Studio showed two flows instead of four. -->
 <!-- The live-chat pane and the header bell are React now
      (frontend/src/shell/agents/ChatLive.tsx, frontend/src/shell/Bell.tsx). -->
@@ -1413,7 +1413,7 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
 <script src="/static/brainstorm.js"></script>
 <!-- _core.js ONLY. The eight per-seat modules it used to drive are React now
      (frontend/src/shell/seats/), but this file is not just their shell: it also
-     exports BGWS — which brainstorm, flows, overview_history, wf,
+     exports BGWS, which brainstorm, flows, overview_history, wf,
      wf_steps_model and wf_steps_tools all use. Deleting it to tidy up would
      take six unrelated views with it. -->
 <script src="/static/seats/_core.js"></script>
@@ -1446,19 +1446,22 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
 <script src="/static/nowplaying.js"></script>
 <script src="/static/audiolab.js"></script>
 <script src="/static/beatmaker.js"></script>
-<!-- The 3D model viewer/editor. An ES module (three.js only ships as one) —
+<!-- The 3D model viewer/editor. An ES module (three.js only ships as one) -
      the import map below is what lets modeledit.js and every vendored addon
      under static/vendor/three/examples/jsm write `import ... from "three"`
      instead of a long relative path to the vendored build. Inlined rather
      than an external src= file: Chromium only honours an out-of-line import
      map when it is the very first thing to reference "three", and a src=
      fetch loses that race often enough in practice to not be worth it. Must
-     sit before the module script that uses it — this is the only import map
+     sit before the module script that uses it, this is the only import map
      in the page, so there is nothing earlier to conflict with. -->
 <script type="importmap">
 {"imports": {"three": "/static/vendor/three/build/three.module.min.js"}}
 </script>
 <script type="module" src="/static/modeledit.js"></script>
+<!-- The 3D scene viewport. sceneview.js hands over to it when a scene's root
+     is a Node3D; same import map, same vendored three. -->
+<script type="module" src="/static/sceneview3d.js"></script>
 <script type="module" src="/static/modeledit_tools.js"></script>
 <script src="/static/assetlib.js"></script>
 <!-- The Work history panel. Self-contained: it injects its own style and
@@ -1483,7 +1486,7 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
 </script>
 <!-- THE REACT ISLANDS. Built from frontend/ by `npm run build`; the OUTPUT is
      committed, because the dashboard also ships as a wheel and as an .exe and
-     neither of those has node — a `pip install -e .` that needed a JS build
+     neither of those has node, a `pip install -e .` that needed a JS build
      would be a new install step for everyone to fix a problem nobody has.
 
      It is a module, so it is deferred: every classic script above has already

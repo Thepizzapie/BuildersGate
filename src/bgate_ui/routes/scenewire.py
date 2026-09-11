@@ -1,16 +1,16 @@
-"""Wiring endpoints — turn an Atlas edge you can see into an edge that exists.
+"""Wiring endpoints, turn an Atlas edge you can see into an edge that exists.
 
 Atlas derives the whole screen/asset graph by reading scenes and scripts, which
 makes it a perfect map and a read-only one: the answer to "this sheet is wired
 to nothing" was always "go do it in Godot". These endpoints make the graph
-WRITABLE in the one direction that is safely mechanical — adding a node for an
+WRITABLE in the one direction that is safely mechanical, adding a node for an
 asset, attaching a script, removing a node again.
 
 Every mutation is available as a dry run first and takes a backup when it is
 not, because the file being edited is one the engine also owns.
 
 The res:// namespace is the addressing scheme throughout, matching /api/screenmap
-— a caller that got a node id out of the Atlas graph can pass it straight back.
+- a caller that got a node id out of the Atlas graph can pass it straight back.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from typing import Optional
 
 from fastapi import APIRouter
 
-from bgate_core.level import scenedraw, scenewire, tilemap
+from bgate_core.level import scenedraw, scenedraw3d, scenewire, tilemap
 from bgate_ui import api
 from bgate_ui.deps import root
 
@@ -29,7 +29,7 @@ router = APIRouter()
 
 # Trees that hold .tscn files which are not scenes of this game. .bgate_out is
 # where THIS module's own backups land, so without it every wire would add a
-# phantom scene to the next "wire into…" list — each one a copy of a real one.
+# phantom scene to the next "wire into…" list, each one a copy of a real one.
 SKIP_DIRS = {".godot", ".bgate_out", ".bgate", ".git", ".asset_work",
              "export", "build", "__pycache__"}
 
@@ -90,7 +90,7 @@ def _res_type(asset_file: Path) -> Optional[str]:
     """The class a .tres declares itself to be. None for anything else.
 
     Suffix-guessing calls every .tres a SpriteFrames, which is right for what
-    the sprite pipeline writes and wrong for the project's TileSet — and an
+    the sprite pipeline writes and wrong for the project's TileSet, and an
     ext_resource with the wrong type loads as null, so the node draws nothing
     and says nothing.
     """
@@ -114,7 +114,7 @@ def _tree(text: str) -> list[dict]:
 
 @router.get("/api/scene/tree")
 def scene_tree(scene: str) -> dict:
-    """The node tree of one scene — what a wire can parent itself to."""
+    """The node tree of one scene, what a wire can parent itself to."""
     project_root = root()
     target = _resolve(project_root, scene)
     if target.suffix.lower() != ".tscn":
@@ -139,8 +139,8 @@ def scene_tree(scene: str) -> dict:
 def scene_wire(payload: dict) -> dict:
     """Add a node for ``asset`` to ``scene``. Pass dry_run to just see the text.
 
-    The node type is derived from the asset, not chosen by the caller — a PNG
-    becomes a Sprite2D, a SpriteFrames becomes an AnimatedSprite2D — because
+    The node type is derived from the asset, not chosen by the caller, a PNG
+    becomes a Sprite2D, a SpriteFrames becomes an AnimatedSprite2D, because
     "which node holds this file" is a fact about the file. ``node_type`` is
     accepted as an override for the cases where it genuinely is a choice
     (a TextureRect in a Control scene, say).
@@ -209,6 +209,32 @@ def scene_unwire(payload: dict) -> dict:
     return api.ok(out)
 
 
+def _model_url_for(project_root: Path, res_path: str, kind: str) -> Optional[str]:
+    """The URL the 3D viewport fetches a model or image from, or None.
+
+    Models go through /api/model3d/raw, which serves only the model formats
+    and their companions and resolves a .gltf's buffers relative to it.
+    Images go through /api/preview like the 2D viewport's sprites.
+    """
+    if not res_path.startswith("res://"):
+        return None
+    try:
+        target = _resolve(project_root, res_path)
+    except Exception:
+        return None
+    rel = target.relative_to(project_root).as_posix()
+    if kind == "image":
+        return f"/api/preview?rel={rel}" if target.suffix.lower() in {
+            ".png", ".webp", ".jpg", ".jpeg", ".svg"} else None
+    if target.suffix.lower() not in {".glb", ".gltf", ".obj"}:
+        return None
+    try:
+        stat = target.stat()
+        return f"/api/model3d/raw/{rel}?v={int(stat.st_mtime)}-{stat.st_size}"
+    except OSError:
+        return f"/api/model3d/raw/{rel}"
+
+
 def _preview_for(project_root: Path, res_path: str) -> Optional[str]:
     """The root-relative path /api/preview will accept, for a res:// image."""
     if not res_path.startswith("res://"):
@@ -227,7 +253,7 @@ def _preview_for(project_root: Path, res_path: str) -> Optional[str]:
 def scene_outline(scene: str) -> dict:
     """The scene as a buildable graph: every node, its role, what hangs off it.
 
-    One request, everything a canvas needs to draw the whole scene — role for
+    One request, everything a canvas needs to draw the whole scene, role for
     grouping, resources with previews for the cards, properties for the
     inspector. Per-node requests would be N round trips per repaint, which is
     the mistake ``/api/node/media`` already exists to avoid elsewhere.
@@ -250,6 +276,7 @@ def scene_outline(scene: str) -> dict:
     roles: dict[str, int] = {}
     for node in nodes:
         roles[node["role"]] = roles.get(node["role"], 0) + 1
+    dimension = scenewire.scene_dimension(text)
     return {
         "scene": _as_res(project_root, target),
         "rel": target.relative_to(project_root).as_posix(),
@@ -257,6 +284,7 @@ def scene_outline(scene: str) -> dict:
         "lock": _lock(project_root, target),
         "nodes": nodes,
         "roles": roles,
+        "dimension": dimension,
         "resources": [{"id": e["id"], "type": e["type"], "path": e["path"],
                        "preview": _preview_for(project_root, e["path"]),
                        "exists": _exists(project_root, e["path"])}
@@ -291,7 +319,7 @@ _EDITABLE = {".gd", ".cs", ".tscn", ".tres", ".gdshader", ".json", ".cfg"}
 def scene_files(scene: str) -> dict:
     """Every file this scene reaches, and the folders they live in.
 
-    The question behind "open the scene" is rarely just the .tscn — it is the
+    The question behind "open the scene" is rarely just the .tscn, it is the
     script on the player, the SpriteFrames that script preloads, the shared
     constants file two of them import. Answering it meant a file tree and some
     guessing, so this walks it instead: the scene's own ext_resources, then one
@@ -377,9 +405,38 @@ def scene_files(scene: str) -> dict:
     }
 
 
+# THE RENDER IS MEMOISED ON THE FILE. The builder re-mounts its viewport on
+# every panel repaint and each mount asks for the draw list again; on a
+# 5,000-node scene that is five seconds of parsing per click. Keyed on the
+# file's mtime and size, so a write (every one of which goes through
+# _mutate here) misses on the next read and nothing stale survives.
+_RENDER_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
+_RENDER_CACHE_MAX = 4
+
+
 @router.get("/api/scene/render")
 def scene_render(scene: str) -> dict:
-    """The scene as a draw list — what it looks like, in paint order.
+    project_root = root()
+    target = _resolve(project_root, scene)
+    try:
+        stat = target.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = (0, 0)
+    cached = _RENDER_CACHE.get(str(target))
+    if cached and cached[0] == stamp:
+        out = dict(cached[1])
+        out["lock"] = _lock(project_root, target)      # never stale
+        return out
+    out = _scene_render(scene)
+    if len(_RENDER_CACHE) >= _RENDER_CACHE_MAX:
+        _RENDER_CACHE.pop(next(iter(_RENDER_CACHE)))
+    _RENDER_CACHE[str(target)] = (stamp, out)
+    return out
+
+
+def _scene_render(scene: str) -> dict:
+    """The scene as a draw list, what it looks like, in paint order.
 
     Everything a canvas needs to composite the scene the way the engine does:
     world transforms, resolved textures with their atlas regions, sizes,
@@ -393,8 +450,8 @@ def scene_render(scene: str) -> dict:
     gd = _godot_dir(project_root)
 
     # MEMOISED FOR THE LIFE OF THE REQUEST. A dressed floor asks for the same
-    # handful of prop textures hundreds of times — 233 props over ~40 distinct
-    # images — and every uncached `size_of` is a PIL open of a file already on
+    # handful of prop textures hundreds of times, 233 props over ~40 distinct
+    # images, and every uncached `size_of` is a PIL open of a file already on
     # the page. Panning must not be a network operation and this endpoint must
     # not be a disk one either.
     @lru_cache(maxsize=None)
@@ -429,10 +486,22 @@ def scene_render(scene: str) -> dict:
 
     text = target.read_text(encoding="utf-8", errors="replace")
     try:
-        out = scenedraw.draw_list(
-            text, read=read, size_of=size_of, rel_of=rel_of,
-            viewport=scenedraw.viewport_of(project_text),
-            scale=scenedraw.content_scale(project_text))
+        if scenedraw3d.is_3d_scene(text):
+            # THE SAME ENDPOINT, A DIFFERENT PICTURE. A 3D scene has no paint
+            # order and no canvas; it gets world matrices and shapes for the
+            # WebGL viewport, and `dimension` tells the client which one to
+            # mount. One URL, so the builder never has to know in advance.
+            out = scenedraw3d.draw_list(
+                text, read=read,
+                model_url_of=lambda res, kind="model": _model_url_for(
+                    project_root, res, kind),
+                scene_path=_as_res(project_root, target))
+        else:
+            out = scenedraw.draw_list(
+                text, read=read, size_of=size_of, rel_of=rel_of,
+                viewport=scenedraw.viewport_of(project_text),
+                scale=scenedraw.content_scale(project_text))
+            out["dimension"] = "2d"
     except scenewire.WireError as exc:
         raise api.bad_request(str(exc), scene=scene)
     out["scene"] = _as_res(project_root, target)
@@ -444,12 +513,42 @@ def scene_render(scene: str) -> dict:
     return out
 
 
+@router.get("/api/scene/mesh")
+def scene_mesh(scene: str, id: str):
+    """One ArrayMesh's triangles, decoded from the scene text, as bytes.
+
+    Binary rather than JSON because a street's road surface is 120,000
+    vertices and base64 in JSON would be half again as big and parsed
+    twice. Layout: ``BGM1``, uint32 vertex_count, uint32 index_count, then
+    vertex_count x 3 float32 positions, then index_count x uint32 indices,
+    all little-endian. The viewport builds a BufferGeometry from it directly.
+    """
+    import struct
+
+    from fastapi.responses import Response
+
+    project_root = root()
+    target = _resolve(project_root, scene)
+    if target.suffix.lower() != ".tscn":
+        raise api.bad_request("not a scene file", scene=scene)
+    if not re.match(r"^[A-Za-z0-9_]+$", id or ""):
+        raise api.bad_request("not a sub-resource id", id=id)
+    text = target.read_text(encoding="utf-8", errors="replace")
+    got = scenedraw3d.mesh_data(text, id)
+    if got is None:
+        raise api.not_found(f"no ArrayMesh {id} in {scene}", id=id)
+    head = b"BGM1" + struct.pack("<II", got["vertex_count"], len(got["indices"]) // 4)
+    return Response(content=head + got["positions"] + got["indices"],
+                    media_type="application/octet-stream",
+                    headers={"Cache-Control": "no-cache"})
+
+
 @router.post("/api/scene/snapshot")
 def scene_snapshot(payload: dict) -> dict:
     """Save what the viewport is showing as a PNG under .bgate_out/scene_shots.
 
     A canvas is not a screenshot: nothing outside the browser can see it, so
-    "here is what my scene looks like" was un-shareable — you could not paste it
+    "here is what my scene looks like" was un-shareable, you could not paste it
     into a review, attach it to a task, or send it to anyone. This writes the
     exact pixels the viewport drew, gizmos and all, to a real file.
     """
@@ -486,7 +585,7 @@ def _mutate(payload: dict, apply_fn) -> dict:
     """Shared shape for every scene edit: dry run, then write with a backup.
 
     Every mutation goes through here so none of them can quietly skip the
-    backup, the LOCK, or the dry-run contract — that consistency is worth more
+    backup, the LOCK, or the dry-run contract, that consistency is worth more
     than the handful of lines it saves.
 
     THE LOCK CHECK IS NOT OPTIONAL POLISH. Every other writer in the system asks
@@ -505,7 +604,7 @@ def _mutate(payload: dict, apply_fn) -> dict:
         held = _lock(project_root, scene_file)
         if held:
             raise api.locked(
-                f"{scene_file.name} is locked by the {held['seat']} seat — it "
+                f"{scene_file.name} is locked by the {held['seat']} seat, it "
                 "may be mid-edit and about to write its own copy over this one",
                 scene=payload.get("scene"), **held)
     text = scene_file.read_text(encoding="utf-8", errors="replace")
@@ -524,7 +623,7 @@ def _mutate(payload: dict, apply_fn) -> dict:
     else:
         out["nodes"] = scenewire.outline(result["text"])
         # Every edge Atlas draws comes out of this file. A dry run changed
-        # nothing, so it must NOT drop the cache — that would hand a free full
+        # nothing, so it must NOT drop the cache, that would hand a free full
         # rescan to anyone hovering over a preview.
         from bgate_core.art import screenmap as _screenmap
         _screenmap.invalidate(project_root)
@@ -533,7 +632,7 @@ def _mutate(payload: dict, apply_fn) -> dict:
 
 @router.post("/api/scene/node/add")
 def scene_node_add(payload: dict) -> dict:
-    """Add a plain node — a CanvasLayer, a Camera2D, a Timer, a grouping Node2D.
+    """Add a plain node, a CanvasLayer, a Camera2D, a Timer, a grouping Node2D.
 
     A scene is not only the files in it, and a builder that can only place
     assets can only ever build half of one.
@@ -556,7 +655,7 @@ def scene_node_property(payload: dict) -> dict:
 
 @router.post("/api/scene/node/swap")
 def scene_node_swap(payload: dict) -> dict:
-    """Point a node's resource at a different file — the swap the builder is for.
+    """Point a node's resource at a different file, the swap the builder is for.
 
     Try that sheet, try that music, try the other enemy. By hand this is four
     steps (find the scene, add an ext_resource, retype the property, delete the
@@ -585,16 +684,55 @@ def scene_node_reparent(payload: dict) -> dict:
         text, str(payload.get("node") or ""), str(payload.get("parent") or ".")))
 
 
+_TYPES_3D = [
+    {"role": "layer", "label": "world", "types": [
+        "Node3D", "WorldEnvironment", "NavigationRegion3D", "CanvasLayer"]},
+    {"role": "character", "label": "bodies", "types": [
+        "CharacterBody3D", "RigidBody3D", "StaticBody3D", "Area3D",
+        "AnimatableBody3D", "VehicleBody3D"]},
+    {"role": "visual", "label": "visuals", "types": [
+        "MeshInstance3D", "CSGBox3D", "CSGCylinder3D", "CSGSphere3D",
+        "Sprite3D", "Label3D", "GPUParticles3D", "CPUParticles3D",
+        "MultiMeshInstance3D", "Decal"]},
+    {"role": "collision", "label": "collision", "types": [
+        "CollisionShape3D", "CollisionPolygon3D"]},
+    {"role": "light", "label": "lights", "types": [
+        "DirectionalLight3D", "OmniLight3D", "SpotLight3D"]},
+    {"role": "controller", "label": "controllers", "types": [
+        "Node", "Timer", "AnimationPlayer", "AnimationTree", "Marker3D",
+        "Path3D", "PathFollow3D", "SpringArm3D", "RemoteTransform3D",
+        "RayCast3D"]},
+    {"role": "camera", "label": "camera", "types": ["Camera3D"]},
+    {"role": "audio", "label": "audio", "types": [
+        "AudioStreamPlayer", "AudioStreamPlayer3D"]},
+    {"role": "ui", "label": "ui", "types": [
+        "Control", "Panel", "Label", "Button", "RichTextLabel",
+        "ProgressBar", "VBoxContainer", "HBoxContainer"]},
+]
+
+
 @router.get("/api/scene/node/types")
-def scene_node_types() -> dict:
+def scene_node_types(scene: Optional[str] = None) -> dict:
     """The node types the builder offers, grouped the way a scene is thought about.
 
     Deliberately a curated list, not Godot's full ClassDB: a palette with two
     thousand entries is a search box with no answers. Anything absent can still
     be typed in, because refusing a valid engine class would be worse than a
-    short list.
+    short list. Pass ``scene`` and the palette is the one for that scene's
+    dimension: a 3D world is offered MeshInstance3D and lights, not Sprite2D.
     """
-    return {"groups": [
+    dimension = "2d"
+    if scene:
+        try:
+            project_root = root()
+            text = _resolve(project_root, scene).read_text(
+                encoding="utf-8", errors="replace")
+            dimension = scenewire.scene_dimension(text)
+        except Exception:
+            dimension = "2d"
+    if dimension == "3d":
+        return {"dimension": "3d", "groups": _TYPES_3D}
+    return {"dimension": "2d", "groups": [
         {"role": "layer", "label": "layers & world", "types": [
             "Node2D", "CanvasLayer", "ParallaxBackground", "ParallaxLayer",
             "TileMapLayer", "YSort"]},

@@ -1,14 +1,14 @@
-"""Wiring an asset into a scene — the .tscn edit, done as a text edit.
+"""Wiring an asset into a scene, the .tscn edit, done as a text edit.
 
 Atlas can already SEE that a sheet belongs to no screen. Acting on that meant
 opening Godot, finding the scene, dragging the file onto the tree, and picking
-the right node type — four steps outside the tool that told you about it. This
+the right node type, four steps outside the tool that told you about it. This
 module closes that loop: given a scene and an asset, it produces the exact
 .tscn text that has the asset wired in, and can write it.
 
 Text, not a scene graph. A .tscn is a line-oriented INI-ish file whose ordering
 and formatting Godot preserves on save, so a targeted textual insert leaves a
-diff a human can review — an all-of-it reserialiser would rewrite the whole
+diff a human can review, an all-of-it reserialiser would rewrite the whole
 file and bury the one line that matters. The parse here is deliberately shallow
 and REFUSES anything it does not fully understand rather than guessing: a
 malformed scene is returned untouched with a reason.
@@ -23,7 +23,7 @@ preference:
     .gd                   -> script on a node   script = ExtResource(id)
 
 Every entry point takes ``dry_run`` and returns the resulting text plus a
-summary, so the UI can show the change before it touches disk — and a backup is
+summary, so the UI can show the change before it touches disk, and a backup is
 written on every real save.
 """
 from __future__ import annotations
@@ -65,7 +65,32 @@ _EXT_TYPE: dict[str, str] = {
     ".jpeg": "Texture2D", ".svg": "Texture2D",
     ".ogg": "AudioStream", ".wav": "AudioStream", ".mp3": "AudioStream",
     ".tres": "SpriteFrames", ".gd": "Script", ".tscn": "PackedScene",
+    # A model file is a PackedScene once Godot has imported it; instancing
+    # one is the same [node ... instance=ExtResource] line a .tscn gets.
+    ".glb": "PackedScene", ".gltf": "PackedScene", ".obj": "PackedScene",
+    ".fbx": "PackedScene", ".dae": "PackedScene", ".blend": "PackedScene",
 }
+# THE SAME FILES, WIRED INTO A 3D SCENE. A texture becomes a Sprite3D, a sound
+# an AudioStreamPlayer3D, and a mesh .tres a MeshInstance3D. Which table
+# applies is a fact about the SCENE (its root is a Node3D), not the caller's
+# choice: a PNG dropped into a 3D world as a Sprite2D draws in screen space
+# over everything, which reads as "the texture is broken".
+_BY_SUFFIX_3D: dict[str, tuple[str, str]] = {
+    ".png": ("Sprite3D", "texture"),
+    ".webp": ("Sprite3D", "texture"),
+    ".jpg": ("Sprite3D", "texture"),
+    ".jpeg": ("Sprite3D", "texture"),
+    ".svg": ("Sprite3D", "texture"),
+    ".ogg": ("AudioStreamPlayer3D", "stream"),
+    ".wav": ("AudioStreamPlayer3D", "stream"),
+    ".mp3": ("AudioStreamPlayer3D", "stream"),
+    ".tres": ("MeshInstance3D", "mesh"),
+    ".gd": ("", "script"),
+    ".tscn": ("", ""),
+    ".glb": ("", ""), ".gltf": ("", ""), ".obj": ("", ""),
+    ".fbx": ("", ""), ".dae": ("", ""), ".blend": ("", ""),
+}
+_INSTANCED = (".tscn", ".glb", ".gltf", ".obj", ".fbx", ".dae", ".blend")
 
 _NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 
@@ -77,15 +102,39 @@ class WireError(ValueError):
 # ---------------------------------------------------------------------------
 # Reading a scene
 # ---------------------------------------------------------------------------
+# THE PARSE IS MEMOISED ON THE TEXT. A scene with baked mesh data is tens of
+# megabytes (a real driving study's main.tscn is 75 MB), every regex here is
+# a full pass over it, and one render asks for the parse five times through
+# five entry points (is it 3D, the outline, the sub-resources, the lock, the
+# dimension). Keyed on the string's own hash, which Python caches on the
+# object, so identical text costs one parse per process and a changed file
+# misses cleanly. Sixty-four entries: a scene plus every file it instances.
+_PARSE_CACHE: dict[tuple[int, int], dict] = {}
+_PARSE_CACHE_MAX = 64
+
+
 def parse(text: str) -> dict:
     """The shallow structure this module needs: resources, nodes, counts.
 
     Deliberately not a full parser. It knows where blocks START, which is all
     an insert needs, and it reports what it found so a caller can refuse.
+    The result is shared between callers; treat it as read-only.
     """
+    key = (len(text), hash(text))
+    hit = _PARSE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    out = _parse(text)
+    if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
+        _PARSE_CACHE.pop(next(iter(_PARSE_CACHE)))
+    _PARSE_CACHE[key] = out
+    return out
+
+
+def _parse(text: str) -> dict:
     header = _HEADER_RE.search(text)
     if not header:
-        raise WireError("not a Godot scene — no [gd_scene] header")
+        raise WireError("not a Godot scene, no [gd_scene] header")
     ext = [{"type": m.group("type"), "path": m.group("path"),
             "id": m.group("id"), "span": m.span()}
            for m in _EXT_RE.finditer(text)]
@@ -142,7 +191,7 @@ def unique_node_name(parsed: dict, want: str, parent: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Blocks — the span a node's own lines occupy
+# Blocks, the span a node's own lines occupy
 # ---------------------------------------------------------------------------
 def _find(parsed: dict, path: str) -> dict:
     node = next((n for n in parsed["nodes"] if node_path(n) == path), None)
@@ -172,7 +221,7 @@ def descendants(parsed: dict, node: dict) -> list[dict]:
 def properties(text: str, parsed: dict, node: dict) -> dict:
     """The ``key = value`` lines inside a node block, verbatim.
 
-    Values are returned as the raw Godot literals they are — ``Vector2(3, 4)``,
+    Values are returned as the raw Godot literals they are, ``Vector2(3, 4)``,
     ``ExtResource("2_hero")``, ``true``. Parsing them into Python and back would
     be a second, worse serialiser, and every round trip through it would be a
     chance to rewrite a line nobody asked to change.
@@ -248,7 +297,7 @@ _RES_HEADER_RE = re.compile(r'^\[gd_resource\s+type="([^"]+)"', re.MULTILINE)
 def resource_type_of(tres_text: str) -> Optional[str]:
     """The class a .tres actually IS, read from its own header.
 
-    ``_EXT_TYPE`` can only guess from the suffix, and it guesses SpriteFrames —
+    ``_EXT_TYPE`` can only guess from the suffix, and it guesses SpriteFrames -
     which is right for the .tres files these pipelines generate and wrong for
     every TileSet, Theme and custom Resource in the project. An ext_resource
     that declares the wrong type loads as null and the node silently draws
@@ -258,26 +307,39 @@ def resource_type_of(tres_text: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def scene_dimension(text: str) -> str:
+    """'3d' when the scene's root lives in 3D space, else '2d'."""
+    from . import scenedraw3d
+
+    return "3d" if scenedraw3d.is_3d_scene(text) else "2d"
+
+
 def wire(text: str, res_path: str, *, node_name: Optional[str] = None,
          parent: str = ".", node_type: Optional[str] = None,
-         res_type: Optional[str] = None) -> dict:
+         res_type: Optional[str] = None, dimension: str = "") -> dict:
     """Return the scene text with ``res_path`` wired in as a new node.
 
     Never mutates a file. Returns ``{text, node, id, reused, node_type, summary}``.
+    ``dimension`` defaults to what the scene's root says.
     """
     if not res_path.startswith("res://"):
         raise WireError(f"expected a res:// path, got {res_path!r}")
     parsed = parse(text)
     if not parsed["nodes"]:
-        raise WireError("scene has no nodes — nothing to parent to")
+        raise WireError("scene has no nodes, nothing to parent to")
 
     suffix = Path(res_path).suffix.lower()
-    if suffix not in _BY_SUFFIX:
+    dimension = dimension or scene_dimension(text)
+    table = _BY_SUFFIX_3D if dimension == "3d" else _BY_SUFFIX
+    if suffix not in table:
+        if suffix in _INSTANCED:
+            raise WireError(f"a {suffix} model instances into a 3D scene; this "
+                            "scene's root is 2D")
         raise WireError(f"don't know how to wire a {suffix or 'file'} into a scene")
-    default_type, prop = _BY_SUFFIX[suffix]
+    default_type, prop = table[suffix]
 
     if suffix == ".gd":
-        raise WireError("a script attaches to an existing node — use attach_script()")
+        raise WireError("a script attaches to an existing node, use attach_script()")
 
     parents = {node_path(n) for n in parsed["nodes"]}
     if parent not in parents:
@@ -298,7 +360,7 @@ def wire(text: str, res_path: str, *, node_name: Optional[str] = None,
     name = unique_node_name(parsed, node_name or _default_name(res_path), parent)
     ntype = sanitize_node_name(node_type) if node_type else default_type
 
-    if suffix == ".tscn":
+    if suffix in _INSTANCED:
         block = (f'\n[node name="{name}" parent="{parent}" '
                  f'instance=ExtResource("{rid}")]\n')
         ntype = "(instance)"
@@ -319,7 +381,7 @@ def wire(text: str, res_path: str, *, node_name: Optional[str] = None,
 def attach_script(text: str, res_path: str, *, node: str = ".") -> dict:
     """Put ``script = ExtResource(id)`` on an existing node.
 
-    Scripts are the one asset kind that does not become a node of its own —
+    Scripts are the one asset kind that does not become a node of its own -
     wiring one as a child would be nonsense, so it gets its own entry point
     rather than a flag that changes what `wire` means.
     """
@@ -354,7 +416,7 @@ def attach_script(text: str, res_path: str, *, node: str = ".") -> dict:
         body = body[:head_end] + f'script = ExtResource("{rid}")\n' + body[head_end:]
     out = out[:tgt["start"]] + body + out[end:]
     # Replacing a script leaves the OLD one as an ext_resource nobody uses, and
-    # Atlas counts an ext_resource as a reference — so the previous script would
+    # Atlas counts an ext_resource as a reference, so the previous script would
     # never show up as dead again.
     out, dropped = _drop_unused(out)
     out = _with_load_steps(out, parse(out), 0)
@@ -380,16 +442,16 @@ def _drop_unused(text: str) -> tuple[str, list[str]]:
 
 def add_node(text: str, *, name: str, node_type: str, parent: str = ".",
              props: Optional[dict] = None) -> dict:
-    """Add a plain node — no resource attached.
+    """Add a plain node, no resource attached.
 
     The counterpart to `wire`: a scene is not only the assets in it. A
     CanvasLayer for the HUD, a Camera2D, a Timer, a bare Node2D to group the
-    enemies under — none of those are a file on disk, and a builder that can
+    enemies under, none of those are a file on disk, and a builder that can
     only add things that ARE files can only ever build half a scene.
     """
     parsed = parse(text)
     if not parsed["nodes"]:
-        raise WireError("scene has no nodes — nothing to parent to")
+        raise WireError("scene has no nodes, nothing to parent to")
     parents = {node_path(n) for n in parsed["nodes"]}
     if parent not in parents:
         raise WireError(f"no node at {parent!r} in this scene")
@@ -424,21 +486,21 @@ def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
                  parent: str = ".", owns: Optional[Sequence[str]] = None) -> dict:
     """Write generated tile layers into a scene, REPLACING same-named ones.
 
-    Replacing is the whole point. A generator is re-run — new seed, wider
-    corridors, a different tileset — and an append-only writer turns that into
+    Replacing is the whole point. A generator is re-run, new seed, wider
+    corridors, a different tileset, and an append-only writer turns that into
     Ground, Ground2, Ground3 stacked on each other, all still drawing. The
     second run of a level generator looked identical to the first because the
     old layer was on top of the new one, and nothing about the scene said so.
 
     So a node of the same name under the same parent is overwritten in place,
     and one that exists but is NOT a TileMapLayer is refused rather than
-    clobbered — that name belongs to something the generator did not make.
+    clobbered, that name belongs to something the generator did not make.
 
     ``owns`` names every layer this generator MAY produce, and any of them not
     in `layers` this run is REMOVED. Replacing by name alone covers the run
     that produces the same layers again; it does not cover the run that
     produces FEWER. A level generated with decals and then regenerated without
-    them left the old decal layer in place, still drawing — forty-two stains
+    them left the old decal layer in place, still drawing, forty-two stains
     over a level that had asked for none, and the scene loads perfectly. Same
     failure family as the stacked-Ground case above, in the other direction.
 
@@ -447,7 +509,7 @@ def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
     writes nothing.
     """
     from . import tilemap                      # local: keeps the
-    # dependency one-way — tilemap knows nothing about scenes.
+    # dependency one-way, tilemap knows nothing about scenes.
 
     if not tileset_res.startswith("res://"):
         raise WireError(f"expected a res:// path for the tileset, got "
@@ -457,7 +519,7 @@ def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
 
     parsed = parse(text)
     if not parsed["nodes"]:
-        raise WireError("scene has no nodes — nothing to parent to")
+        raise WireError("scene has no nodes, nothing to parent to")
     if parent not in {node_path(n) for n in parsed["nodes"]}:
         raise WireError(f"no node at {parent!r} in this scene")
 
@@ -485,7 +547,7 @@ def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
         elif target["type"] != TILE_LAYER_TYPE:
             raise WireError(
                 f"{full!r} is a {target['type'] or 'node'}, not a "
-                f"{TILE_LAYER_TYPE} — refusing to overwrite it")
+                f"{TILE_LAYER_TYPE}, refusing to overwrite it")
         else:
             start, end = block_span(out, parsed, target)
             out = out[:start] + block + "\n" + out[end:]
@@ -504,7 +566,7 @@ def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
             continue
         if target["type"] != TILE_LAYER_TYPE:
             # a name this generator claims but something else now owns is left
-            # alone — removing it would delete work nobody asked us to touch
+            # alone, removing it would delete work nobody asked us to touch
             continue
         start, end = block_span(out, parsed, target)
         out = out[:start] + out[end:]
@@ -525,8 +587,9 @@ _PROP_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
 # when the engine next loads the scene, with a message pointing at a line
 # number nobody wrote by hand.
 _PROP_VALUE_RE = re.compile(
-    r"^(true|false|-?\d+(\.\d+)?|\"[^\"\\\n]*\"|&\"[^\"\\\n]*\"|"
-    r"(Vector2|Vector2i|Vector3|Color|Rect2)\([-\d\s.,]*\)|"
+    r"^(true|false|-?\d+(\.\d+)?(e-?\d+)?|\"[^\"\\\n]*\"|&\"[^\"\\\n]*\"|"
+    r"(Vector2|Vector2i|Vector3|Vector3i|Vector4|Color|Rect2|Quaternion|"
+    r"Basis|Transform2D|Transform3D|Plane|AABB)\([-\d\s.,e]*\)|"
     r"(Ext|Sub)Resource\(\"[^\"\\\n]+\"\)|NodePath\(\"[^\"\\\n]*\"\))$")
 
 
@@ -545,9 +608,9 @@ def _prop_value(value) -> str:
     text = str(value).strip()
     if not _PROP_VALUE_RE.match(text):
         raise WireError(
-            f"{text!r} is not a Godot value this can write safely — numbers, "
-            "true/false, \"strings\", Vector2(x, y), Color(...), "
-            "ExtResource(\"id\") and NodePath(\"...\") are accepted")
+            f"{text!r} is not a Godot value this can write safely: numbers, "
+            "true/false, \"strings\", Vector2/Vector3(...), Transform3D(...), "
+            "Color(...), ExtResource(\"id\") and NodePath(\"...\") are accepted")
     return text
 
 
@@ -586,8 +649,8 @@ def swap_resource(text: str, node: str, res_path: str, *,
                   res_type: Optional[str] = None) -> dict:
     """Point a node's resource property at a different file.
 
-    This is the move the whole scene builder exists for — try that sheet, try
-    that music, try the other enemy — and doing it by hand is: find the scene,
+    This is the move the whole scene builder exists for, try that sheet, try
+    that music, try the other enemy, and doing it by hand is: find the scene,
     add an ext_resource, retype the property, then remember to delete the old
     resource so it does not read as still-used. All four steps are one call.
     """
@@ -602,7 +665,7 @@ def swap_resource(text: str, node: str, res_path: str, *,
     default_type, default_prop = _BY_SUFFIX[suffix]
     prop = prop or default_prop
     if not prop:
-        raise WireError("a scene instance cannot be swapped in place — "
+        raise WireError("a scene instance cannot be swapped in place, "
                         "remove the node and add the other scene")
     if target["instance"]:
         raise WireError(f"{node!r} is an instanced scene, not a node with a "
@@ -632,14 +695,14 @@ def rename_node(text: str, node: str, new_name: str) -> dict:
     """Rename a node and repoint every child's ``parent=`` at the new path.
 
     NodePath strings elsewhere in the scene (an AnimationPlayer track, an
-    exported node reference) are NOT rewritten — finding them all reliably
+    exported node reference) are NOT rewritten, finding them all reliably
     means understanding every property type. They are counted and reported so
     the rename is never silently half-done.
     """
     parsed = parse(text)
     target = _find(parsed, node)
     if target["parent"] is None:
-        raise WireError("renaming the root changes the scene's own name — "
+        raise WireError("renaming the root changes the scene's own name, "
                         "do that in Godot, where the uid is updated with it")
     final = sanitize_node_name(new_name)
     parent = target["parent"]
@@ -686,7 +749,7 @@ def reparent(text: str, node: str, new_parent: str) -> dict:
 
     Godot requires a parent's block to appear before its children's, so this
     RELOCATES the block group rather than editing an attribute in place. The
-    group must be contiguous — which is how Godot itself writes scenes — and a
+    group must be contiguous, which is how Godot itself writes scenes, and a
     file where it is not is refused rather than shuffled into something that
     loads differently than it reads.
     """
@@ -706,7 +769,7 @@ def reparent(text: str, node: str, new_parent: str) -> dict:
     indices = sorted(parsed["nodes"].index(n) for n in group)
     if indices != list(range(indices[0], indices[0] + len(indices))):
         raise WireError(f"{node!r} and its children are not contiguous in this "
-                        "file — open it in Godot and re-save it first")
+                        "file, open it in Godot and re-save it first")
 
     first, last = parsed["nodes"][indices[0]], parsed["nodes"][indices[-1]]
     start = first["start"]
@@ -747,7 +810,7 @@ def unwire(text: str, node: str, *, recursive: bool = False) -> dict:
     ext_resource after its only user is gone still counts as a reference in
     Atlas, so the asset would never show up as dead again.
 
-    `recursive` takes the node's children with it — deleting a character means
+    `recursive` takes the node's children with it, deleting a character means
     deleting its sprite, its collision shape and its hitbox, and making that
     four separate confirmations is a worse answer than one honest count.
     """
@@ -758,11 +821,11 @@ def unwire(text: str, node: str, *, recursive: bool = False) -> dict:
     if target["parent"] is None:
         raise WireError("refusing to remove the scene's root node")
     # A child's `parent` is the target's path exactly, or that path plus a
-    # separator — a prefix test alone would call "GroundVisual" a child of
+    # separator, a prefix test alone would call "GroundVisual" a child of
     # "Ground" and refuse a removal that is perfectly safe.
     children = descendants(parsed, target)
     if children and not recursive:
-        raise WireError(f"{node!r} has {len(children)} child node(s) — pass "
+        raise WireError(f"{node!r} has {len(children)} child node(s), pass "
                         "recursive to take them with it")
 
     doomed = [target] + (children if recursive else [])
@@ -782,13 +845,13 @@ def unwire(text: str, node: str, *, recursive: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Roles — what a node IS, for someone building a scene
+# Roles, what a node IS, for someone building a scene
 # ---------------------------------------------------------------------------
 # A scene builder needs "the enemies" and "the controllers", not "the
 # CharacterBody2Ds". Godot's type is one input to that and rarely the decisive
 # one: a Node2D is a character or a spawn point or a group depending entirely on
 # what hangs off it. So the role is inferred from three signals, strongest
-# first — the paths its resources live under, its script's path, then its type.
+# first, the paths its resources live under, its script's path, then its type.
 #
 # This is presentation, not truth. It groups a canvas so a person can find
 # things; nothing downstream branches on it, so a wrong guess costs a
@@ -806,6 +869,22 @@ _ROLE_BY_TYPE: dict[str, str] = {
     "Control": "ui", "Label": "ui", "Button": "ui", "TextureRect": "ui",
     "ColorRect": "ui", "Panel": "ui", "VBoxContainer": "ui",
     "HBoxContainer": "ui", "RichTextLabel": "ui", "ProgressBar": "ui",
+    # THE 3D HALF, same buckets. A scene is thought about the same way in
+    # either dimension; what changes is which class carries the picture.
+    "MeshInstance3D": "visual", "Sprite3D": "visual", "Label3D": "ui",
+    "CSGBox3D": "visual", "CSGSphere3D": "visual", "CSGCylinder3D": "visual",
+    "CSGTorus3D": "visual", "CSGMesh3D": "visual", "CSGPolygon3D": "visual",
+    "CSGCombiner3D": "visual", "MultiMeshInstance3D": "visual",
+    "CollisionShape3D": "collision", "CollisionPolygon3D": "collision",
+    "Area3D": "collision", "StaticBody3D": "collision",
+    "AnimatableBody3D": "collision",
+    "DirectionalLight3D": "light", "OmniLight3D": "light", "SpotLight3D": "light",
+    "WorldEnvironment": "layer", "NavigationRegion3D": "layer",
+    "GPUParticles3D": "fx", "CPUParticles3D": "fx", "AnimationTree": "fx",
+    "Marker3D": "marker", "Path3D": "controller", "PathFollow3D": "controller",
+    "RemoteTransform3D": "controller", "SpringArm3D": "controller",
+    "VehicleBody3D": "character", "VehicleWheel3D": "collision",
+    "Skeleton3D": "controller", "BoneAttachment3D": "marker",
 }
 _ROLE_BY_PATH: tuple[tuple[str, str], ...] = (
     ("/enemies/", "enemy"), ("/enemy", "enemy"), ("/monsters/", "enemy"),
@@ -890,12 +969,12 @@ def outline(text: str) -> list[dict]:
                              instance=node["instance"]),
         })
 
-    # UI is a place in the tree, not a node type — but ONLY for the handful of
+    # UI is a place in the tree, not a node type, but ONLY for the handful of
     # classes that are genuinely ambiguous. A ColorRect standing in for a
     # platform's art sits under a StaticBody2D and is a placeholder VISUAL; the
     # same class under a CanvasLayer is the HUD. A Label is never placeholder
     # art, and a scripted Node2D whose script happens to live in scripts/ui/ is
-    # not a rectangle — demoting either of those (the first cut of this did)
+    # not a rectangle, demoting either of those (the first cut of this did)
     # turns a correct answer into a wrong one.
     by_path = {n["path"]: n for n in out}
     ui_hosts = {"CanvasLayer", "Control", "Panel", "VBoxContainer",
@@ -932,7 +1011,7 @@ def apply(scene_file: str | os.PathLike[str], new_text: str, *,
     """Write the edited scene, keeping a timestamped copy of what was there.
 
     A wiring mistake in a .tscn can cost an afternoon, and "undo" is not a thing
-    a web UI has over a file the engine also owns — so the previous bytes are
+    a web UI has over a file the engine also owns, so the previous bytes are
     always still on disk under .bgate_out/scene_backups.
     """
     scene_file = Path(scene_file)

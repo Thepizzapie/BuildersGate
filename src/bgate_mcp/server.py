@@ -6064,8 +6064,10 @@ def scene_wire(godot_project: str, scene: str, asset: str,
                dry_run: bool = False, force: bool = False) -> dict:
     """Put an asset into a scene as a new node, wired correctly.
 
-    The node type comes from the FILE (.png -> Sprite2D, SpriteFrames .tres ->
-    AnimatedSprite2D, .tscn -> instance); `node_type` overrides it. Allocates a
+    The node type comes from the FILE and the SCENE: in a 2D scene .png ->
+    Sprite2D, SpriteFrames .tres -> AnimatedSprite2D, .tscn -> instance; in a
+    3D scene (root is a Node3D) .png -> Sprite3D, a mesh .tres -> MeshInstance3D,
+    and .glb/.gltf/.obj instance like a .tscn. `node_type` overrides it. Allocates a
     non-colliding ext_resource id, reuses an existing reference, bumps
     load_steps and uniquifies the node name. A .gd is not an asset here - use
     scene_attach_script.
@@ -6104,7 +6106,8 @@ def scene_unwire(godot_project: str, scene: str, node: str,
 def scene_node_add(godot_project: str, scene: str, name: str, node_type: str,
                    parent: str = ".", props: Optional[dict] = None,
                    dry_run: bool = False, force: bool = False) -> dict:
-    """Add a plain node - a Camera2D, a Timer, a CanvasLayer, a grouping Node2D.
+    """Add a plain node - a Camera2D, a Timer, a CanvasLayer, a grouping Node2D,
+    or in a 3D scene a MeshInstance3D, a CollisionShape3D, a DirectionalLight3D.
 
     A scene is not only the files in it. `props` sets properties in the same
     call, in Godot's own literal syntax where the type needs it:
@@ -6127,7 +6130,8 @@ def scene_set_property(godot_project: str, scene: str, node: str, key: str,
     """Set one property on one node - position, z_index, visible, scale, a flag.
 
     THIS IS THE MOVE TOOL. Vector and colour values are Godot literals passed
-    as strings ("Vector2(320, 96)", "Color(1, 0.5, 0, 1)"); numbers, bools and
+    as strings ("Vector2(320, 96)", "Vector3(1, 0, -4)", "Transform3D(...)",
+    "Color(1, 0.5, 0, 1)"); numbers, bools and
     strings pass as themselves. `clear=True` removes the property so the node
     returns to the class default. On a GENERATED scene (bake output in the
     .tscn header) the generator's input is the authority and your write lasts
