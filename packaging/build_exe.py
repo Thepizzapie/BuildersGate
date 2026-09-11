@@ -92,6 +92,11 @@ SMOKE_PATHS = [
     ("/static/dist/bgate.js", "javascript"),
     ("/static/agents_graph.js", "javascript"),
     ("/static/img/mascot.png", "image/png"),
+    # The 3D viewport: an ES module and the vendored three.js it imports. Both
+    # must come back as JavaScript from the bundle, or a 3D scene opens blank.
+    ("/static/sceneview3d.js", "javascript"),
+    ("/static/vendor/three/build/three.module.min.js", "javascript"),
+    ("/static/vendor/three/examples/jsm/controls/TransformControls.js", "javascript"),
     ("/api/state", "json"),
     ("/api/routes/status", "json", _routes_ok),
 ]
@@ -118,6 +123,15 @@ BUILT_ASSETS = [
     "img/mascot.png",
     "dist/bgate.js",
     "dist/bgate.css",
+    # The 3D scene viewport and the vendored three.js it imports through the
+    # page's import map. An exe built from a checkout where the vendor tree
+    # never landed in static/ would open a 3D scene to a module-load error
+    # with no other symptom.
+    "sceneview3d.js",
+    "vendor/three/build/three.module.min.js",
+    "vendor/three/examples/jsm/controls/OrbitControls.js",
+    "vendor/three/examples/jsm/controls/TransformControls.js",
+    "vendor/three/examples/jsm/loaders/GLTFLoader.js",
 ]
 
 
