@@ -163,7 +163,7 @@ class TestTelemetryEndToEnd:
 class TestWebTelemetryContract:
     def test_web_build_posts_to_the_active_app_session(self):
         telemetry = (
-            Path(__file__).parents[2] / "src" / "templates" / "shared" / "addons" / "bgate"
+            Path(__file__).parents[2] / "src" / "templates" / "godot" / "shared" / "addons" / "bgate"
             / "bgate_telemetry.gd"
         ).read_text(encoding="utf-8")
         # The proven web transport (commit 1ffb46d): a web build has no env var,

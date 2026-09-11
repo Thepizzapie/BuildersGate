@@ -119,6 +119,17 @@ def find_godot(prefer_console: bool = False) -> str:
     return sorted(found, key=rank)[-1]
 
 
+def find_binary() -> str:
+    """The engine registry's entrypoint — see bgate_core.runtime.engines.binary.
+
+    Every adapter exposes this name with no arguments, so a caller that knows
+    only "this project's engine" can get its executable without knowing which
+    engine that is. find_godot keeps prefer_console for the one caller (a human
+    wanting a visible console window) that has a reason to care.
+    """
+    return find_godot()
+
+
 def available() -> dict:
     try:
         path = find_godot()

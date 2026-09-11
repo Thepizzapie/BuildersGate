@@ -860,6 +860,22 @@ def _tool(fn: Optional[Callable] = None, *,
         if _seat_scoped_off(fn.__name__):
             _PARKED[fn.__name__] = wrapper
         return wrapper
+    if not _engine_registers(fn.__name__):
+        # AND NEITHER IS ANOTHER ENGINE'S TOOL. The engine column existed since
+        # the first migration and decided nothing: a project recorded as "none"
+        # still advertised eighteen godot_ tools, nine scene_ tools and the
+        # whole level surface to every agent it dispatched — tools whose first
+        # act is to open a project.godot that is not there. The failure is not
+        # the error; it is the forty turns an agent spends believing the tool
+        # is the right one and its arguments are wrong.
+        #
+        # NOT PARKED, unlike a seat-scoped tool. tool_unlock exists so a seat
+        # can take on work outside its craft mid-session; there is no
+        # corresponding move for an engine, because the engine is not a
+        # question about who is working — it is a question about what the game
+        # is written in. project_set_engine plus a fresh session is the way to
+        # change it, and it says so in its own result.
+        return wrapper
     if not _seat_registers(fn.__name__):
         # AND NEITHER IS A TOOL THIS SEAT NEVER CALLS. Same reasoning as the
         # module gate, a size larger: measured on one project's logs, art
@@ -948,6 +964,37 @@ def _wire_doc(fn: Callable) -> str:
                  f"`{fn.__name__}` in the source. Read it before arguing with "
                  "a result.")
     return head
+
+
+# Which engine the PINNED project is built in, resolved once for the same
+# reason _MODULES_OFF is: the registry is built at import, one process per
+# session, and the session is pinned to one project. None means "not asked yet";
+# "" means asked and unanswerable, which registers everything.
+_ENGINE: Optional[str] = None
+
+
+def _engine_registers(tool_name: str) -> bool:
+    """Does this tool survive the project's engine?
+
+    Same failure rule as the module and seat gates, stated once more because it
+    is the rule that keeps all three safe: a session no project claims — or any
+    failure reading the row — registers EVERYTHING. A missing tool must only
+    ever be the result of a stored decision, never of a broken read.
+    """
+    global _ENGINE
+    if _ENGINE is None:
+        try:
+            root = os.environ.get("BGATE_ROOT", "").strip()
+            if not root:
+                root = str(_project.require_root())
+            _ENGINE = _project.engine_of(root)
+        except Exception:                                         # noqa: BLE001
+            _ENGINE = ""
+    if not _ENGINE:
+        return True
+    from bgate_core.runtime import engines as _engines
+
+    return _engines.tool_enabled(tool_name, _ENGINE)
 
 
 def _module_registers(tool_name: str) -> bool:
@@ -1257,6 +1304,45 @@ def project_set_dimension(dimension: str) -> dict:
     _log("project", f"dimension {was or '(unset)'} -> {dimension}")
     return {"project": after, "was": was, "now": after.get("dimension"),
             "changed": was != after.get("dimension")}
+
+
+@_tool
+def project_set_engine(engine: str) -> dict:
+    """Correct which engine this project is built in: godot | web | unity | none.
+
+    Decides which tools an agent is handed, which doctor rows are graded, and
+    where the scaffolder looks for a template — so a wrong value quietly aims
+    the whole board at an engine the game is not written in. ``init`` wrote
+    'godot' unconditionally and ``adopt`` wrote 'godot' or 'none'; until now
+    nothing could change it afterwards except re-running ``project_init``, which
+    also overwrites name, pitch and dimension.
+
+    An engine with no adapter (unity today) is a legal, honest value: the board,
+    the canon and the art pipeline work, and nothing edits or runs the game. The
+    result says which case you are in rather than making you infer it from a
+    missing tool.
+    Full notes: docs/tools.md#project_set_engine
+    """
+    from bgate_core.runtime import engines as _engines
+
+    root = _root()
+    was = _project.get(root).get("engine") or ""
+    after = _project.set_engine(root, engine)
+    now = after.get("engine")
+    _log("project", f"engine {was or '(unset)'} -> {engine}")
+    detected, found_in = "", ""
+    where, detected = _project.engine_dir(root)
+    if where is not None:
+        found_in = str(where)
+    return {"project": after, "was": was, "now": now, "changed": was != now,
+            "supported": _engines.supported(now),
+            # WHAT IS ON DISK, NEXT TO WHAT WAS JUST RECORDED. The whole class
+            # of bug this tool exists to fix is a row that disagrees with the
+            # files, so saying both in one result is what makes a wrong entry
+            # visible at the moment it is made rather than a week later.
+            "detected": detected, "engine_dir": found_in,
+            "agrees": (not detected) or detected == now,
+            "restart_required": was != now}
 
 
 # ---------------------------------------------------------------------------
@@ -4940,6 +5026,91 @@ def godot_status() -> dict:
     return {**probe, **(_godot.version() if probe["available"] else {})}
 
 
+# ---------------------------------------------------------------------------
+# The engine-neutral pair
+# ---------------------------------------------------------------------------
+# THESE ARE ADDITIVE, NOT A RENAME, and that was measured rather than assumed.
+# Renaming godot_status/godot_check_project to the neutral names would have
+# touched 161 references across forty files — including built JS bundles, the
+# decision records in docs/decisions (which describe what was true when they
+# were written and must not be rewritten), and templates/shared/CLAUDE.md, which
+# is STAMPED INTO EVERY USER'S GAME PROJECT. Existing projects would have gone
+# on instructing their agents to call a tool that no longer existed.
+#
+# So the godot_ names stay, engine-owned by godot, and these two answer the same
+# questions for whichever engine the project actually records. Seat briefs and
+# workflow nodes migrate onto them at their own pace.
+#
+# The other two the plan named — a neutral `run` and `screenshot` — are NOT
+# here, deliberately. `run` takes a script in the engine's own language, so a
+# neutral signature would be a lie; and a neutral screenshot has to inherit
+# godot_screenshot's gallery archiving and focus caveat, which is worth
+# extracting into a shared helper exactly once, when a second adapter exists to
+# call it. Phase 3.
+@_tool
+def engine_status() -> dict:
+    """Is this project's engine installed and drivable? Check before engine work.
+
+    The engine-neutral sibling of godot_status: it asks whatever engine the
+    project records rather than assuming Godot. An engine Builders Gate has no
+    adapter for answers honestly (`supported: false`) instead of looking broken.
+    """
+    from bgate_core.runtime import engines as _engines
+
+    root = _root()
+    engine = _project.engine_of(root)
+    out = {"engine": engine, "label": _engines.label(engine),
+           "supported": _engines.supported(engine)}
+    where, detected = _project.engine_dir(root)
+    out["engine_dir"] = str(where) if where is not None else ""
+    out["detected"] = detected
+    # THE ROW AND THE FILES, SIDE BY SIDE. A project whose engine was recorded
+    # wrong presents as "the tools are all missing", which sends an agent to
+    # look at the tools. Saying both here sends it to project_set_engine.
+    out["agrees"] = (not detected) or detected == engine
+    if not out["supported"]:
+        out["available"] = False
+        out["reason"] = (f"{out['label']} projects are recognised but not "
+                         "driven: there is no adapter, so this project's "
+                         "engine tools are not registered.")
+        return out
+    adapter = _engines.adapter(engine)
+    probe = adapter.available()
+    return {**out, **probe,
+            **(adapter.version() if probe.get("available") else {})}
+
+
+@_tool
+def engine_check(engine_project: str = "", timeout: int = 180) -> dict:
+    """Does this project still build? The engine-neutral 'did I break it' check.
+
+    engine_project defaults to wherever this project's engine actually lives
+    (`<root>/game` or `<root>`), so the common call takes no arguments at all —
+    the argument that godot_check_project most often gets wrong.
+    """
+    from bgate_core.runtime import engines as _engines
+
+    root = _root()
+    engine = _project.engine_of(root)
+    if not _engines.supported(engine):
+        return {"ok": False, "engine": engine,
+                "error": f"EngineUnsupported: {_engines.label(engine)} projects "
+                         "have no adapter, so there is nothing to build-check."}
+    target = engine_project.strip()
+    if not target:
+        where = _project.game_dir(root, engine=engine)
+        if where is None:
+            return {"ok": False, "engine": engine,
+                    "error": f"no {_engines.label(engine)} project found under "
+                             f"{root} — looked for "
+                             f"{', '.join(_engines.markers(engine))} in "
+                             "<root>/game and <root>."}
+        target = str(where)
+    _contained_path(target, "engine_project")
+    return {"engine": engine,
+            **_engines.adapter(engine).check_project(target, timeout=timeout)}
+
+
 def _script_source(script: str, godot_project: Optional[str]):
     """(source, path_it_came_from). A one-line argument that names a .gd file
     on disk is a PATH, not a program — nothing else is treated as one.
@@ -5151,7 +5322,7 @@ def track_generate(spec: Annotated[dict, Field(description='The circuit, as JSON
     proj = _P(godot_project or _root())
     if not (proj / "project.godot").is_file():
         return {"ok": False, "error": f"{proj} holds no project.godot"}
-    tpl = _P(__file__).resolve().parent.parent / "templates" / "shared" / "tools"
+    tpl = _P(__file__).resolve().parent.parent / "templates" / "godot" / "shared" / "tools"
     tools_dir = proj / "scripts" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
     copied = []
@@ -5241,7 +5412,7 @@ def blockout_generate(spec: Annotated[Optional[dict], Field(description='The lay
     if problems:
         return {"ok": False, "error": "spec refused before the engine ran",
                 "problems": problems, "spec": spec}
-    tpl = _P(__file__).resolve().parent.parent / "templates" / "shared" / "tools"
+    tpl = _P(__file__).resolve().parent.parent / "templates" / "godot" / "shared" / "tools"
     tools_dir = proj / "scripts" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
     dst = tools_dir / "bgate_blockout_gen.gd"
@@ -8874,6 +9045,7 @@ from bgate_mcp.tools_blender import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_brainstorm import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_cinematic import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_level import *  # noqa: E402,F401,F403
+from bgate_mcp.tools_web import *  # noqa: E402,F401,F403
 # THE TEST SEAMS THE STAR IMPORTS SKIP. A pile of tests stub the blender
 # adapter by mutating the MODULE OBJECT through this namespace
 # (`setattr(server._blender, "combine", ...)`) - that works from any module

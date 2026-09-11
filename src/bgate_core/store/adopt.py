@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import db, project
+from ..runtime import engines as _engines
 from .scaffold import TEMPLATES_DIR
 
 # Where the appended blocks start and end. Anything between the two lines is
@@ -77,6 +78,10 @@ def detect(directory: str | os.PathLike[str]) -> dict:
         "exists": base.is_dir(),
         "godot": False,
         "godot_dir": None,
+        "engine": "",
+        "engine_dir": None,
+        "engine_label": "",
+        "engine_supported": False,
         "godot_name": "",
         "godot_version": "",
         "main_scene": "",
@@ -97,6 +102,16 @@ def detect(directory: str | os.PathLike[str]) -> dict:
     }
     if not out["exists"]:
         return out
+
+    # WHICH ENGINE THIS DIRECTORY IS, asked before anything Godot-specific.
+    # detect() used to answer exactly one question — "is there a project.godot"
+    # — so a web or Unity project read as "not a game", which is the answer that
+    # sends someone to file a bug rather than to the docs.
+    engine_at, engine_found = project.engine_dir(base)
+    out["engine"] = engine_found
+    out["engine_dir"] = str(engine_at) if engine_at is not None else None
+    out["engine_label"] = _engines.label(engine_found) if engine_found else ""
+    out["engine_supported"] = _engines.supported(engine_found) if engine_found         else False
 
     game_dir = project.game_dir(base)
     if game_dir is not None:
@@ -212,7 +227,7 @@ def stamp_gitignore(directory: str | os.PathLike[str]) -> dict:
     that someone tuned, and replacing it to protect their API key while dropping
     their own rules is not a trade anyone asked for.
     """
-    source = TEMPLATES_DIR / "shared" / ".gitignore"
+    source = TEMPLATES_DIR / "godot" / "shared" / ".gitignore"
     body = source.read_text(encoding="utf-8") if source.is_file() else (
         ".env\n.env.*\n!.env.example\n.bgate/\n.bgate_out/\n.godot/\n")
     return _merge_block(Path(directory) / ".gitignore", body)
@@ -224,7 +239,7 @@ def stamp_claude_md(directory: str | os.PathLike[str], name: str = "") -> dict:
     Same marked-block discipline as .gitignore, for the same reason: a project
     that already has a CLAUDE.md has one because someone wrote it.
     """
-    source = TEMPLATES_DIR / "shared" / "CLAUDE.md"
+    source = TEMPLATES_DIR / "godot" / "shared" / "CLAUDE.md"
     if not source.is_file():
         return {"path": "", "action": "skipped",
                 "error": f"template missing: {source}"}
@@ -366,7 +381,7 @@ def install_telemetry(directory: str | os.PathLike[str]) -> dict:
     if game is None or not (game / "project.godot").is_file():
         return {"action": "skipped", "why": "no Godot project to install into"}
 
-    source = TEMPLATES_DIR / "shared" / "addons" / "bgate"
+    source = TEMPLATES_DIR / "godot" / "shared" / "addons" / "bgate"
     if not source.is_dir():
         return {"action": "skipped", "why": "the addon is missing from this build"}
 
@@ -419,10 +434,16 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
         dimension = found["dimension"]
     if engine == "godot" and not found["godot"]:
         # No project.godot is not a refusal — plenty of people adopt the repo
-        # root before the engine files land, or use another engine entirely —
-        # but recording engine=godot for a directory with no Godot in it makes
-        # every later godot_* tool fail confusingly.
-        engine = "none"
+        # root before the engine files land — but recording engine=godot for a
+        # directory with no Godot in it makes every later godot_* tool fail
+        # confusingly.
+        #
+        # AND IF THE DIRECTORY IS SOME OTHER ENGINE, SAY SO. The caller's
+        # "godot" here is a default, not an assertion: nothing upstream of this
+        # has looked at the files yet. Deferring to what detection actually
+        # found is what makes `bgate adopt` on a web game record engine=web
+        # instead of the old engine=none, which was true and useless.
+        engine = found["engine"] or "none"
 
     # Preserve what a previous adopt/init already recorded: re-running adopt to
     # refresh detection must not silently wipe a pitch the user wrote later.

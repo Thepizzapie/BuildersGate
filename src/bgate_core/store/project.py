@@ -6,10 +6,17 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from ..runtime import engines as _engines
 from . import db
 from .util import slugify
 
-ENGINES = ("godot", "none")
+# THE LEGAL ENGINES ARE THE REGISTRY'S, NOT THIS MODULE'S. This was a literal
+# ("godot", "none") and it was the reason the column could not grow: a second
+# engine had to be added here, in adopt, in doctor and in the dispatch prose,
+# and nothing tied the four together. bgate_core.runtime.engines is now the one
+# place that knows, and it costs no migration — the schema default is still
+# 'godot' and every existing row already reads it.
+ENGINES = _engines.names()
 
 
 class HarnessCheckoutError(ValueError):
@@ -343,8 +350,56 @@ def set_dimension(root: str | os.PathLike[str], dimension: str) -> dict:
     return get(root)
 
 
-def game_dir(root: str | os.PathLike[str]) -> Optional[Path]:
-    """Where this project's Godot project.godot actually lives, or None.
+def engine_of(root: str | os.PathLike[str]) -> str:
+    """This project's recorded engine, defaulting rather than raising.
+
+    Called from tool registration and from doctor, both of which run before
+    anyone has checked that a project exists. A directory with no game.db, an
+    unreadable row or a value the registry no longer knows all answer with the
+    default — the same rule the module and seat gates already state: a missing
+    capability must only ever come from a stored decision, never a failed read.
+    """
+    try:
+        value = str((get(root) or {}).get("engine") or "").strip()
+    except Exception:                                             # noqa: BLE001
+        return _engines.DEFAULT
+    return value if _engines.known(value) else _engines.DEFAULT
+
+
+def set_engine(root: str | os.PathLike[str], engine: str) -> dict:
+    """Correct the project's engine record.
+
+    The sibling of set_dimension, and it exists for the sharper version of the
+    same problem. ``init`` wrote 'godot' unconditionally and ``adopt`` wrote
+    'godot' or 'none'; after that no surface on any client could change it, so a
+    project adopted before its engine could be detected — or one that was never
+    a Godot project at all — carried a wrong engine forever. Re-running init
+    would have fixed it by overwriting name, pitch and dimension as well, which
+    is the workaround this replaces.
+
+    Not cosmetic: the engine decides which tools an agent is handed, which
+    doctor rows are graded, and where the scaffolder looks for a template.
+    """
+    if engine not in ENGINES:
+        raise ValueError(f"engine must be one of {ENGINES}, got {engine!r}")
+    was = str((get(root) or {}).get("engine") or "")
+    with db.tx(root) as conn:
+        conn.execute("UPDATE project SET engine = ?, "
+                     "updated_at = datetime('now') WHERE id = 1", (engine,))
+    if was != engine:
+        try:
+            from ..board import activity
+
+            activity.log(root, "project",
+                         f"engine {was or '(unset)'} -> {engine}",
+                         seat="director")
+        except Exception:
+            pass            # an unlogged correction is still a correction
+    return get(root)
+
+
+def engine_dir(root: str | os.PathLike[str]) -> tuple[Optional[Path], str]:
+    """Where this project's engine project lives, and which engine it is.
 
     Two entrypoints disagree about the layout: godot_scaffold (MCP) writes into
     ``<root>/game``, while ``bgate init`` and the dashboard's new-project route
@@ -352,10 +407,41 @@ def game_dir(root: str | os.PathLike[str]) -> Optional[Path]:
     the two silently did nothing for projects made the other way — the web
     export was unreachable for every CLI-created project for exactly that
     reason. Ask here instead of guessing.
+
+    THE DIRECTORY IS ASKED, NOT THE ROW. A project whose engine has not been
+    recorded yet (adopt runs detection before it writes anything) still gets the
+    right answer, and a row that disagrees with the files on disk loses to the
+    files. Candidate order is unchanged — ``<root>/game`` still wins over
+    ``<root>`` — and within a candidate the registry's DETECT_ORDER decides, so
+    a Godot project carrying a tooling package.json is still a Godot project.
     """
     base = Path(root)
     for candidate in (base / "game", base):
-        if (candidate / "project.godot").is_file():
+        found = _engines.detect_engine(candidate)
+        if found:
+            return candidate, found
+    return None, ""
+
+
+def game_dir(root: str | os.PathLike[str],
+             engine: str = _engines.DEFAULT) -> Optional[Path]:
+    """Where this project's <engine> project lives, or None.
+
+    DELIBERATELY STILL GODOT BY DEFAULT, and this is not an oversight. Thirty
+    call sites ask this question and then do Godot things with the answer —
+    ``adopt`` parses ``project.godot`` out of it, ``webbuild`` runs a Godot
+    export in it, ``enginetests`` looks for ``.gd`` files under it. Widening the
+    walk to every engine's marker would hand all thirty a directory for a
+    project they cannot read: a web game would be adopted as a Godot game with
+    an empty config, which is worse than not being recognised at all.
+
+    So the general resolver is ``engine_dir``, and these callers move onto it as
+    their tools learn the engine axis. Passing ``engine`` explicitly works today
+    for anything that already knows what it is looking at.
+    """
+    base = Path(root)
+    for candidate in (base / "game", base):
+        if _engines.marker_hit(candidate, engine) is not None:
             return candidate
     return None
 

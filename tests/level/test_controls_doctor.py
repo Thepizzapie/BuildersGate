@@ -33,7 +33,7 @@ class TestKeyNames:
 class TestParseInputMap:
     def test_the_2d_template_reports_only_what_it_binds(self):
         """The regression guard: if anyone re-adds a fake control, this fails."""
-        text = (scaffold.TEMPLATES_DIR / "2d" / "project.godot").read_text(
+        text = (scaffold.TEMPLATES_DIR / "godot" / "2d" / "project.godot").read_text(
             encoding="utf-8")
         got = controls.parse_input_map(text)
         assert [a["action"] for a in got] == ["move_left", "move_right", "jump"]
@@ -41,7 +41,7 @@ class TestParseInputMap:
         assert got[2]["keys"] == ["Space"]
 
     def test_the_3d_template_reports_its_own_map(self):
-        text = (scaffold.TEMPLATES_DIR / "3d" / "project.godot").read_text(
+        text = (scaffold.TEMPLATES_DIR / "godot" / "3d" / "project.godot").read_text(
             encoding="utf-8")
         actions = [a["action"] for a in controls.parse_input_map(text)]
         assert "move_forward" in actions and "move_back" in actions

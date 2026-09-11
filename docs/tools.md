@@ -3575,6 +3575,135 @@ briefs, so a stale value aims the board at the wrong kind of game. Use
 mid-port) rather than picking whichever is closer.
 ```
 
+## web_build
+
+```text
+Build the game AND measure what a first visit downloads. Fails if over budget.
+
+WHY THE TWO HALVES ARE NOT SEPARABLE. A finished Godot 3D game was exported
+to the web to see how close it was: it ran, and the payload was 661 MB - a
+622 MB .pck plus a 38 MB .wasm, holding 1.27 GB of heap after load. Nothing
+in the pipeline had ever asked what a build weighed, because for a desktop
+export nobody cares. On the web the payload IS the product: past a few tens
+of megabytes there is no game, only a spinner. A build whose payload nobody
+looked at is exactly how that shipped.
+
+THE SIZES ARE THE COMPRESSED TRANSFER, NOT BYTES ON DISK. Every static host
+worth using serves .js/.css/.html gzipped, so disk bytes overstate a bundle
+by three to four times - and a budget measured against the wrong number is
+one people learn to ignore. Already-compressed formats (png, webp, woff2,
+mp3) are counted at their real size, because gzipping them gains nothing and
+occasionally reports MORE than the input. Source maps are excluded: they
+ship, and no player ever downloads them.
+
+Verified against vite's own reporting on a real build: this measured 2,217
+bytes where vite said "gzip: 2.22 kB", and 123,274 where vite said
+"124.00 kB".
+
+THE DEFAULT BUDGET IS 25 MB and `budget_mb` overrides it. 25 is roughly
+where a game stops being openable by someone who was not already committed
+to opening it - about 20 seconds on a 10 Mbit connection. The number matters
+far less than the fact that SOME number is checked, which is what the 661 MB
+export did not have.
+
+When it fails, read `payload.biggest`. It is almost always one texture, one
+model, or an uncompressed audio file.
+```
+
+## web_dev
+
+```text
+Start the dev server and wait until the URL actually answers.
+
+RETURNS ONLY ONCE THE PORT ANSWERS. Returning as soon as the process spawned
+would hand back a URL that is not up yet, and a screenshot taken against it
+photographs a connection error - which then gets read as "the game is
+broken" rather than "the server was not ready".
+
+IT BINDS 127.0.0.1 EXPLICITLY, and that is a fix rather than a preference.
+Vite's default host is the string "localhost", which on Windows binds ::1
+ONLY. Measured: the server was up and serving perfectly, and every probe of
+http://127.0.0.1:<port>/ failed for the full 90-second timeout. Binding the
+address that is about to be handed back is what makes the URL in the result
+true. It stays loopback, the same posture `bgate serve` takes.
+
+A timed-out or stopped server is killed as a process TREE. npm spawns vite
+as a child, so killing the npm shim alone leaves the real server holding the
+port - and every later start then fails on --strictPort for a server nothing
+is tracking and nobody can stop. Measured, the same session.
+
+Idempotent: an already-running server is reported, not restarted.
+```
+
+## engine_screenshot
+
+```text
+Photograph the running game, whichever engine this project is built in.
+
+Godot runs the actual game and captures the viewport - this hands straight
+to godot_screenshot rather than growing a second copy of its gallery
+archiving and its focus caveat. Web starts the dev server if it is not
+already up, loads it in a headless browser and captures the page.
+
+`at` means the same thing on both engines: a game that has not finished its
+first frame photographs as a blank canvas, and waiting is the honest fix
+rather than retrying until a frame happens to land.
+
+ON A WEB RESULT, READ console_errors AND failed_requests BEFORE THE IMAGE.
+A web game that renders nothing is almost always a thrown exception or a
+404, and neither of those is visible in the picture. That is exactly how a
+blank capture gets reported as "the shader is wrong". The same rule as
+godot_screenshot's `focus` caveat, and it is stated on every result rather
+than only when something looks wrong - a caveat that appears once you
+already suspect a problem arrives after the bug report has been written.
+
+WHY THIS IS NOT A RENAME OF godot_screenshot. That rename would have touched
+161 references across forty files: built JS bundles, the decision records in
+docs/decisions (which describe what was true when they were written), and
+templates/shared/CLAUDE.md - which is stamped into every user's game
+project, so existing games would have gone on instructing their agents to
+call a tool that no longer existed. The godot_ names stay; this sits beside
+them and dispatches.
+```
+
+## project_set_engine
+
+```text
+Correct which engine this project is built in: godot | web | unity | none.
+
+THE COLUMN EXISTED AND MEANT NOTHING. `project.engine` has been in the
+schema since the first migration, but it had two legal values and exactly
+one reader that changed behaviour - the dispatcher picked which sentence to
+put in a seat brief. Every godot_ tool, every scene_ tool and doctor's
+Godot rows registered and ran regardless of what the row said, so a project
+recorded as "none" still advertised eighteen Godot tools to every agent it
+dispatched.
+
+`init` wrote "godot" unconditionally and `adopt` wrote "godot" or "none";
+after that nothing on any surface could change it except re-running
+`project_init`, which also overwrites name, pitch and dimension. That is
+the workaround this replaces.
+
+WHAT THE VALUE DECIDES: which tools an agent is handed, which doctor rows
+are graded, and where the scaffolder looks for a template.
+
+AN ENGINE WITH NO ADAPTER IS A LEGAL VALUE. `unity` is recognised, named
+and detected, and Builders Gate will not edit or run the game - the board,
+the canon and the art pipeline still work. `bgate adopt` saying "Unity,
+unsupported" is the answer that sends someone to the docs; "not a game" is
+the one that sends them to a bug report. `supported` in the result says
+which case you are in rather than making you infer it from a missing tool.
+
+THE RESULT SAYS WHAT IS ON DISK NEXT TO WHAT WAS JUST RECORDED. The whole
+class of bug this fixes is a row that disagrees with the files, so
+`detected`, `engine_dir` and `agrees` are reported alongside the new value:
+a wrong entry is visible at the moment it is made rather than a week later.
+
+Changing the engine changes which tools this server registers, and the
+registry is built once per process - so a change needs a fresh session
+before an agent sees the new surface (`restart_required`).
+```
+
 ## prop_generate
 
 ```text

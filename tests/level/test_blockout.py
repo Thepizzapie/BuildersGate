@@ -128,7 +128,7 @@ class TestRealBake:
         spec["rooms"][3]["height"] = 1.5                       # a closet under the player
         spec["doors"].append({"from": "Kitchen", "to": "Hall", "width": 0.7})  # too narrow
         (proj / ".bgate_blockout_spec.json").write_text(json.dumps(spec), encoding="utf-8")
-        src = (scaffold.TEMPLATES_DIR / "shared" / "tools" / "bgate_blockout_gen.gd").read_text(encoding="utf-8")
+        src = (scaffold.TEMPLATES_DIR / "godot" / "shared" / "tools" / "bgate_blockout_gen.gd").read_text(encoding="utf-8")
         got = godot.run_script(src, project_dir=str(proj), timeout=240)
         report = json.loads((proj / ".bgate_out" / "blockout_report.json").read_text(encoding="utf-8"))
         assert (proj / "scenes" / "blockout" / "house.tscn").is_file()
@@ -148,7 +148,7 @@ class TestRealBake:
         proj = tmp_path / "game"
         scaffold.new_project(proj, "Blockout", kind="3d")
         (proj / ".bgate_blockout_spec.json").write_text(json.dumps(HOUSE), encoding="utf-8")
-        src = (scaffold.TEMPLATES_DIR / "shared" / "tools" / "bgate_blockout_gen.gd").read_text(encoding="utf-8")
+        src = (scaffold.TEMPLATES_DIR / "godot" / "shared" / "tools" / "bgate_blockout_gen.gd").read_text(encoding="utf-8")
         got = godot.run_script(src, project_dir=str(proj), timeout=240)
         report = json.loads((proj / ".bgate_out" / "blockout_report.json").read_text(encoding="utf-8"))
         assert got["ok"] is True and report["ok"] is True, report["errors"]

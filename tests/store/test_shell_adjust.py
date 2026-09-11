@@ -285,7 +285,7 @@ class TestNoGameSpecificHardcoding:
     def test_the_shipped_2d_template_really_only_binds_three_actions(self):
         from pathlib import Path
 
-        project = Path(__file__).resolve().parents[2] / "src" / "templates" / "2d" / "project.godot"
+        project = Path(__file__).resolve().parents[2] / "src" / "templates" / "godot" / "2d" / "project.godot"
         if not project.is_file():
             pytest.skip("templates not present in this checkout")
         text = project.read_text(encoding="utf-8")

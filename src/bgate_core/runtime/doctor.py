@@ -42,7 +42,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Optional
-from . import ffmpegbin as _ffmpegbin
+from . import engines, ffmpegbin as _ffmpegbin
 
 # Windows: never flash a console window out of a background health check.
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -60,7 +60,8 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 # green when ANY registered provider has a key and a third provider needs no
 # edit here.
 CHECKS = ("python", "art_key", "local_runtimes", "agent_cli", "ffmpeg",
-          "ffprobe", "blender", "godot", "godot_web_templates", "whisper",
+          "ffprobe", "blender", "godot", "godot_web_templates",
+          "node", "playwright", "whisper",
           "imageto3d", "local_image", "aseprite", "anim_library")
 
 # Rows that SUMMARISE A REGISTRY rather than probe one binary on PATH.
@@ -110,6 +111,10 @@ MIN_REQUIRED = {
     "ffprobe": "",
     "blender": "4.2",
     "godot": "4.0",
+    # Node 20 is the oldest release vite 5 supports; below it the dev server
+    # fails on syntax rather than on a version check.
+    "node": "20",
+    "playwright": "",
     "godot_web_templates": "",
     "whisper": "0.10",
     # No floor. A red row here means image-to-3D is unavailable and every
@@ -434,6 +439,43 @@ def _probe_godot_web_templates() -> dict:
                 version=probe.get("version", ""))
 
 
+def _probe_node() -> dict:
+    """Node.js — everything the web engine does starts here.
+
+    No search globs and no 0-byte-stub check, unlike the godot row: node
+    installs itself onto PATH on every platform it supports, so `which` is the
+    whole story. BGATE_NODE covers the nvm/volta case where the shell's node is
+    not the one this process inherited.
+    """
+    from bgate_adapters import web
+
+    probe = web.available()
+    if not probe.get("available"):
+        return _missing("node", probe.get("reason", "node not found"))
+    found = web.version()
+    return _finish("node", found.get("path", ""), found.get("version", ""))
+
+
+def _probe_playwright() -> dict:
+    """The headless browser the web engine photographs a running game with.
+
+    GREEN ONLY WHEN IT IS USABLE, which is a narrower question than "is the
+    package importable" — and it is narrower for the reason the art_key row
+    already had to learn. Playwright is TWO installs: `pip install playwright`
+    puts the package there, and `playwright install chromium` downloads the
+    browser as a separate few-hundred-MB step a fresh environment has NOT done.
+    A row that went green on the import alone would promise screenshots on a
+    machine that cannot take one, and the failure would surface as a confusing
+    error inside a capture rather than as a red row here.
+    """
+    from bgate_adapters import web
+
+    probe = web.browser_available()
+    if not probe.get("available"):
+        return _missing("playwright", probe.get("reason", "not usable"))
+    return _row(available=True, path=probe.get("path", ""))
+
+
 def _probe_whisper() -> dict:
     """Is faster-whisper importable by the interpreter that will run it.
 
@@ -561,6 +603,8 @@ _PROBES: dict[str, Callable[[], dict]] = {
     "blender": _probe_blender,
     "godot": _probe_godot,
     "godot_web_templates": _probe_godot_web_templates,
+    "node": _probe_node,
+    "playwright": _probe_playwright,
     "whisper": _probe_whisper,
     "imageto3d": _probe_imageto3d,
     "anim_library": _probe_anim_library,
@@ -650,6 +694,26 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
                     row["reason"] = ((row.get("reason") or "")
                                      + " (module disabled — not required for "
                                        "this project)").strip()
+        except Exception:
+            pass
+
+        # AND NEITHER IS ANOTHER ENGINE'S DEPENDENCY. Same rule one axis over:
+        # a web project must not open doctor to a red godot_web_templates, and
+        # a Godot project must not be graded on a browser driver it will never
+        # launch. Marked rather than removed, so "why isn't Godot listed" has
+        # an answer on the row itself; a row no engine claims is a core row and
+        # stays graded for everyone.
+        try:
+            from ..store import project as _project
+
+            engine = _project.engine_of(root)
+            for name, row in report.items():
+                if not engines.doctor_row_enabled(name, engine):
+                    row["engine_disabled"] = True
+                    row["reason"] = (
+                        (row.get("reason") or "")
+                        + f" (not required for a {engines.label(engine)} "
+                          "project)").strip()
         except Exception:
             pass
     return report

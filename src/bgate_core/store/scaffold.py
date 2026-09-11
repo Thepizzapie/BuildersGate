@@ -20,14 +20,50 @@ from .util import slugify
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
 KINDS = ("2d", "3d")
 
+# TEMPLATES ARE NOW <engine>/<kind>, not <kind>. The dimension WAS the template
+# key, which made a second engine impossible to express: "3d" cannot mean both a
+# Godot third-person slice and a Three.js one. templates/{2d,3d,shared} moved
+# under templates/godot/ and nothing else about the copy changed — the engine's
+# own shared/ tree is still overlaid on top of its kind tree, so there is still
+# exactly one copy of the telemetry code per engine rather than one per
+# dimension.
+#
+# The engine-neutral trees (humanoid/, cutout/) deliberately stayed at the top
+# level: they are assets and rig data, not a project to stamp out.
 _NAME_TOKEN = "__PROJECT_NAME__"
 
+# THE SECOND TOKEN EXISTS BECAUSE npm REFUSES THE FIRST ONE. A package.json
+# "name" must be lowercase with no spaces, so a project called "Neon Drift"
+# stamped through __PROJECT_NAME__ produces a manifest npm rejects outright —
+# `npm install` fails on "Invalid name" before a single dependency is fetched,
+# on a project the scaffolder just reported as created. The display name still
+# belongs in <title> and in CLAUDE.md's heading; only machine identifiers take
+# this one.
+_SLUG_TOKEN = "__PROJECT_SLUG__"
+
 # Rewritten rather than copied, because they carry the project name token.
-_TEXT_SUFFIXES = (".godot", ".tscn", ".gd", ".cfg", ".svg", ".md")
+# The web entries are here for the same reason .godot and .tscn are: package.json
+# carries the project name, and index.html carries its title.
+_TEXT_SUFFIXES = (".godot", ".tscn", ".gd", ".cfg", ".svg", ".md",
+                  ".ts", ".tsx", ".js", ".json", ".html", ".css", ".txt")
+
+
+def engine_dir(engine: str) -> Path:
+    """Where this engine's templates live. Raises for an engine with none."""
+    from ..runtime import engines as _engines
+
+    name = _engines.template_dir_name(engine)
+    if not name:
+        raise ValueError(
+            f"there is no scaffold template for engine {engine!r} — "
+            f"{_engines.label(engine)} projects are adopted, not scaffolded")
+    return TEMPLATES_DIR / name
 
 
 def _rendered(item: Path, name: str) -> str:
-    return item.read_text(encoding="utf-8").replace(_NAME_TOKEN, name)
+    return (item.read_text(encoding="utf-8")
+            .replace(_NAME_TOKEN, name)
+            .replace(_SLUG_TOKEN, slugify(name)))
 
 
 def _already_ours(out: Path, item: Path, name: str) -> bool:
@@ -60,29 +96,68 @@ def _backup(out: Path) -> Path:
     return bak
 
 
-def list_templates() -> list[dict]:
+_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "web": {
+        "2d": "Canvas 2D slice: a player, ground, a ledge, jump/land telemetry "
+              "and the same feel tunables the Godot template exports - vite "
+              "dev server, TypeScript, vitest, no framework.",
+        "3d": "Three.js slice: third-person controller with a follow camera, a "
+              "prop kit and a ground plane, jump/land telemetry, feel tunables "
+              "in one module - vite dev server, TypeScript, vitest.",
+    },
+}
+
+
+def list_templates(engine: str = "") -> list[dict]:
+    """Every template this engine ships, with whether it is actually on disk."""
+    from ..runtime import engines as _engines
+
+    engine = engine or _engines.DEFAULT
+    try:
+        base = engine_dir(engine)
+    except ValueError:
+        return []
     out = []
     for kind in KINDS:
-        path = TEMPLATES_DIR / kind
+        path = base / kind
         out.append({
             "kind": kind,
+            "engine": engine,
             "available": path.is_dir(),
             "path": str(path),
-            "description": {
+            "description": _DESCRIPTIONS.get(engine, {}).get(kind) or {
                 "2d": "Side-on platformer slice: player, ground, ledge, jump/land "
                       "telemetry, feel tunables exported.",
                 "3d": "Third-person slice: camera-relative controller + orbit/follow/"
                       "fixed camera rig, a prop kit (platform, ramp, crate, pickup, "
                       "trigger volume), an arcade vehicle with a chase camera in "
                       "vehicle_demo.tscn, jump/land telemetry, feel tunables exported.",
-            }[kind],
+            }.get(kind, ""),
         })
     return out
 
 
+# What to do with the project you just made, per engine. The Godot list has
+# been the scaffold's closing advice since it shipped; the web one is the same
+# three moves in that engine's vocabulary.
+_NEXT: dict[str, list[str]] = {
+    "godot": [
+        "godot_check_project to import and validate it",
+        "playtest_start, then launch the game with BGATE_TELEMETRY set",
+        "BGateTelemetry.emit_event(kind, data) from your own code",
+    ],
+    "web": [
+        "npm install, then engine_check to typecheck and build it",
+        "web_dev to serve it, engine_screenshot to see it running",
+        "telemetry.emit(kind, data) from your own code (src/bgate/telemetry.ts)",
+    ],
+}
+
+
 def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
-                force: bool = False, replace: bool = False) -> dict:
-    """Create a Godot project at dest from the given template.
+                force: bool = False, replace: bool = False,
+                engine: str = "") -> dict:
+    """Create an engine project at dest from the given template.
 
     Refuses to write into a non-empty directory unless force — a scaffolder that
     quietly overwrites someone's work is a data-loss bug wearing a feature's hat.
@@ -103,11 +178,20 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
     """
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
+    from ..runtime import engines as _engines
 
-    template = TEMPLATES_DIR / kind
-    shared = TEMPLATES_DIR / "shared"
+    engine = engine or _engines.DEFAULT
+    if not _engines.known(engine):
+        raise ValueError(f"engine must be one of {_engines.names()}, "
+                         f"got {engine!r}")
+
+    base = engine_dir(engine)
+    template = base / kind
+    shared = base / "shared"
     if not template.is_dir():
-        raise FileNotFoundError(f"template not found: {template}")
+        raise FileNotFoundError(
+            f"template not found: {template} — {_engines.label(engine)} has no "
+            f"{kind} scaffold")
 
     target = Path(dest)
     project.refuse_harness(target, "scaffold a game")
@@ -200,6 +284,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
         "ok": True,
         "path": str(target),
         "kind": kind,
+        "engine": engine,
         "name": name,
         "root_gitignore": root_ignore,
         "slug": slugify(name),
@@ -209,11 +294,7 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
         "unchanged": sorted(unchanged),
         "replaced": sorted(replaced, key=lambda r: r["file"]),
         "skipped": sorted(skipped, key=lambda s: s["file"]),
-        "next": [
-            "godot_check_project to import and validate it",
-            "playtest_start, then launch the game with BGATE_TELEMETRY set",
-            "BGateTelemetry.emit_event(kind, data) from your own code",
-        ],
+        "next": _NEXT.get(engine, _NEXT["godot"]),
     }
     # A caller that only prints result["files"] would otherwise report "0 files"
     # on a run that deliberately left the user's work alone, which reads as a
