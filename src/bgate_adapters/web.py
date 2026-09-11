@@ -466,6 +466,20 @@ def screenshot(url: str, out_path: str, *, at: float = 1.0,
     are invisible in the picture, which is exactly how a blank screenshot gets
     reported as "the shader is wrong".
     """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        parts = None
+    host = ((parts.hostname if parts else "") or "").lower()
+    if parts is None or parts.scheme not in ("http", "https") or host not in (
+            "127.0.0.1", "localhost", "::1"):
+        # Enforced here as well as at the tool, so a caller that reaches the
+        # adapter directly gets the same answer: this photographs the dev
+        # server, never the network.
+        return {"ok": False, "error": "screenshot only visits loopback http(s) "
+                                      f"URLs; refused {url!r}"}
     probe = browser_available()
     if not probe["available"]:
         return {"ok": False, **probe, "error": probe["reason"]}

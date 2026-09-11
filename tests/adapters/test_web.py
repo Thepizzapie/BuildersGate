@@ -401,3 +401,31 @@ class TestWebTelemetryStatus:
         got = playtest.preflight(root=str(root), native=True)["checks"]["native_game"]
         assert got["engine"] == "web"
         assert got["ok"] is False and "npm install" in got["reason"]
+
+
+class TestContainment:
+    """A tool's optional path argument is not a way out of the project."""
+
+    def test_dist_must_stay_inside_the_project(self, tmp_path):
+        from bgate_mcp import tools_web
+        out, refused = tools_web._dist_under(str(tmp_path), "../elsewhere")
+        assert refused and "inside the project" in refused["error"]
+        out, refused = tools_web._dist_under(str(tmp_path), "build/web")
+        assert refused is None and out.endswith("web")
+
+    def test_the_screenshot_only_visits_loopback(self, tmp_path):
+        from bgate_mcp import tools_web
+        assert tools_web._loopback("http://127.0.0.1:5173/")
+        assert tools_web._loopback("http://localhost:5173/x")
+        assert not tools_web._loopback("http://169.254.169.254/latest/meta-data")
+        assert not tools_web._loopback("file:///etc/passwd")
+        got = web.screenshot("http://example.com/", str(tmp_path / "s.png"))
+        assert got["ok"] is False and "loopback" in got["error"]
+
+    def test_a_web_game_reports_its_dimension_from_its_dependencies(self, tmp_path):
+        from bgate_core.store import adopt
+        (tmp_path / "package.json").write_text(
+            '{"name":"x","dependencies":{"three":"^0.170.0"}}', encoding="utf-8")
+        found = adopt.detect(tmp_path)
+        assert found["engine"] == "web" and found["dimension"] == "3d"
+        assert found["dimension_evidence"]["features"] == ["three"]

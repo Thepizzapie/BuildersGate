@@ -26,6 +26,18 @@ from bgate_mcp.server import (  # noqa: F401
 )
 
 
+def _loopback(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    return parts.scheme in ("http", "https") and host in (
+        "127.0.0.1", "localhost", "::1", "[::1]")
+
+
 def _project_dir(given: str = "") -> str:
     """Where this project's web game lives, or '' when there is none.
 
@@ -34,6 +46,12 @@ def _project_dir(given: str = "") -> str:
     tools would have inherited the same trap.
     """
     if given.strip():
+        # CONTAINED EVEN ON THE READ-ONLY PATH. web_status only lists scripts
+        # and asks whether node_modules exists, but "does this directory have
+        # a package.json and what does it run" is a question about any path
+        # on the machine, and a seated session must not get to ask it outside
+        # its own project.
+        _contained_path(given.strip(), "web_project")
         return given.strip()
     where = _project.game_dir(_root(), engine="web")
     return str(where) if where is not None else ""
@@ -48,6 +66,23 @@ def _need_project(given: str = "") -> tuple[str, Optional[dict]]:
                     "web_project explicitly, or check project_set_engine."}
     _contained_path(target, "web_project")
     return target, None
+
+
+def _dist_under(target: str, dist: str) -> tuple[str, Optional[dict]]:
+    """A build directory INSIDE the project, or a refusal.
+
+    `dist` is a name like "dist" or "build/web"; resolved against the project
+    it must stay under it, or a payload measurement becomes a way to list the
+    sizes of any directory on the machine.
+    """
+    base = _Path(target).resolve()
+    out = (base / (dist or _web.DEFAULT_DIST)).resolve()
+    try:
+        out.relative_to(base)
+    except ValueError:
+        return "", {"ok": False, "error": f"dist must be inside the project; "
+                                          f"{dist!r} resolves outside {target}"}
+    return str(out), None
 
 
 @_tool
@@ -93,6 +128,9 @@ def web_build(web_project: str = "", budget_mb: float = 0,
         return refused
     budget = int(budget_mb * 1024 * 1024) if budget_mb > 0 \
         else _web.DEFAULT_BUDGET_BYTES
+    _, refused = _dist_under(target, dist)
+    if refused:
+        return refused
     got = _web.build(target, timeout=timeout, budget_bytes=budget, dist=dist)
     payload = got.get("payload") or {}
     if got.get("built"):
@@ -115,7 +153,9 @@ def web_payload(web_project: str = "", budget_mb: float = 0,
         return refused
     budget = int(budget_mb * 1024 * 1024) if budget_mb > 0 \
         else _web.DEFAULT_BUDGET_BYTES
-    out = _Path(target) / (dist or _web.DEFAULT_DIST)
+    out, refused = _dist_under(target, dist)
+    if refused:
+        return refused
     return _web.payload(out, budget_bytes=budget)
 
 
@@ -240,6 +280,16 @@ def engine_screenshot(at: float = 1.0, label: str = "", url: str = "",
     if refused:
         return refused
     target_url = url.strip()
+    if target_url and not _loopback(target_url):
+        # THE BROWSER PHOTOGRAPHS THIS PROJECT'S GAME, NOT THE NETWORK. A
+        # headless Chromium pointed at an arbitrary URL returns the page, its
+        # console and every failed request: an agent could read an internal
+        # service or a cloud metadata endpoint through it. The dev server is
+        # loopback; so is anything this tool will visit.
+        return {"ok": False, "engine": engine,
+                "error": "url must be a loopback http(s) address (the dev "
+                         "server's); this tool photographs the running game, "
+                         "not the network"}
     started = None
     if not target_url:
         started = _web.dev_start(target, timeout=60)

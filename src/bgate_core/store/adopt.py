@@ -23,6 +23,7 @@ stacking a second copy.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -56,6 +57,22 @@ _3D_MARKERS = re.compile(
 _2D_MARKERS = re.compile(
     r'type="(Node2D|Camera2D|Sprite2D|Sprite|AnimatedSprite2D|CharacterBody2D|'
     r'RigidBody2D|StaticBody2D|TileMap|TileMapLayer|Polygon2D)"')
+# THE SAME QUESTION IN UNITY'S YAML. A perspective camera and a mesh renderer
+# are 3D; an orthographic camera, a sprite renderer and a tilemap are 2D. The
+# component names are the serialized class names every .unity and .prefab
+# carries, so this reads the same files Unity does without parsing them.
+_UNITY_3D = re.compile(r"^\s*(orthographic: 0|MeshRenderer:|MeshFilter:|"
+                       r"SkinnedMeshRenderer:|Terrain:|CharacterController:)",
+                       re.MULTILINE)
+_UNITY_2D = re.compile(r"^\s*(orthographic: 1|SpriteRenderer:|Tilemap:|"
+                       r"TilemapRenderer:|Rigidbody2D:|BoxCollider2D:)",
+                       re.MULTILINE)
+# And in a web game's dependencies: a 3D library is a declaration of intent
+# that no source scan needs to second-guess.
+_WEB_3D_DEPS = ("three", "@babylonjs/core", "babylonjs", "playcanvas",
+                "@react-three/fiber")
+_WEB_2D_DEPS = ("phaser", "pixi.js", "kaboom", "kaplay", "excalibur",
+                "matter-js")
 
 
 def _iter_files(base: Path):
@@ -156,7 +173,19 @@ def detect(directory: str | os.PathLike[str]) -> dict:
                 continue
             out["dimension_evidence"]["3d_nodes"] += len(_3D_MARKERS.findall(text))
             out["dimension_evidence"]["2d_nodes"] += len(_2D_MARKERS.findall(text))
-        elif suffix in (".gd", ".cs"):
+        elif suffix in (".unity", ".prefab"):
+            if suffix == ".unity":
+                out["scenes"] += 1
+                scene_sizes.append((size, str(path.relative_to(base)).replace("\\", "/")))
+            if size > 8 << 20:
+                continue            # a scene past this is baked data, not layout
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            out["dimension_evidence"]["3d_nodes"] += len(_UNITY_3D.findall(text))
+            out["dimension_evidence"]["2d_nodes"] += len(_UNITY_2D.findall(text))
+        elif suffix in (".gd", ".cs", ".ts", ".tsx", ".js", ".jsx"):
             out["scripts"] += 1
         elif suffix in (".gdshader", ".shader", ".tres") and "shader" in path.name:
             out["shaders"] += 1
@@ -166,6 +195,23 @@ def detect(directory: str | os.PathLike[str]) -> dict:
             out["audio"] += 1
         elif suffix in (".glb", ".gltf", ".blend", ".fbx", ".obj"):
             out["models"] += 1
+
+    if out["engine"] == "web" and engine_at is not None:
+        # The dependency list is the web game's project.godot: what it
+        # renders with is declared there, before any scene exists.
+        try:
+            deps = json.loads((engine_at / "package.json").read_text(
+                encoding="utf-8"))
+            names = set(deps.get("dependencies") or {}) | set(
+                deps.get("devDependencies") or {})
+        except (OSError, ValueError, AttributeError):
+            names = set()
+        out["dimension_evidence"]["3d_nodes"] += 10 * sum(
+            1 for d in _WEB_3D_DEPS if d in names)
+        out["dimension_evidence"]["2d_nodes"] += 10 * sum(
+            1 for d in _WEB_2D_DEPS if d in names)
+        out["dimension_evidence"]["features"] = sorted(
+            n for n in names if n in _WEB_3D_DEPS or n in _WEB_2D_DEPS)
 
     out["biggest_scenes"] = [name for _, name in
                              sorted(scene_sizes, reverse=True)[:5]]

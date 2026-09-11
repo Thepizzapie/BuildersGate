@@ -368,3 +368,20 @@ class TestEngineAxis:
             assert engines.tool_owner(name) == "unity"
             assert not engines.tool_enabled(name, "godot")
         assert engines.tool_enabled("engine_screenshot", "unity")
+
+
+class TestDimension:
+    def test_a_unity_scene_says_whether_it_is_3d(self, tmp_path):
+        from bgate_core.store import adopt
+        base = _unity_project(tmp_path)
+        scenes = base / "Assets" / "Scenes"
+        scenes.mkdir()
+        (scenes / "Main.unity").write_text(
+            "Camera:\n  orthographic: 0\nMeshRenderer:\n  m_Enabled: 1\n"
+            "MeshFilter:\n  m_Mesh: {}\n", encoding="utf-8")
+        found = adopt.detect(base)
+        assert found["scenes"] == 1 and found["dimension"] == "3d"
+        (scenes / "Main.unity").write_text(
+            "Camera:\n  orthographic: 1\nSpriteRenderer:\n  m_Sprite: {}\n"
+            "Rigidbody2D:\n  m_Mass: 1\n", encoding="utf-8")
+        assert adopt.detect(base)["dimension"] == "2d"
