@@ -1,16 +1,16 @@
-"""Prove the WHEEL is the product — not just that the .py files import.
+"""Prove the WHEEL is the product, not just that the .py files import.
 
 `pip install builders-gate` has shipped broken before: once with no JavaScript
 under `bgate_ui/static` (every dashboard asset 404'd), once with no `templates/`
 at all (`bgate init` raised FileNotFoundError), once with no engine schemas.
-Nothing caught any of them, because nothing in CI ever installed the wheel — the
+Nothing caught any of them, because nothing in CI ever installed the wheel, the
 suite runs against the checkout, where every one of those trees is simply there
 on disk whether or not the packaging declares it.
 
 tests/packaging/test_packaging.py is the fast half of that guard: it reads pyproject and
 asserts every shipped tree is covered by a package-data pattern, without
 building anything. This is the slow half, and the half that cannot be fooled by
-a pattern that looks right — it runs against an installed wheel in a clean
+a pattern that looks right, it runs against an installed wheel in a clean
 interpreter with the checkout deliberately off sys.path, and then drives the
 installed console script the way a user would.
 
@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_exe import serve_and_fetch                          # noqa: E402
 
 # Every entry is a file the runtime READS at request or scaffold time and cannot
-# regenerate — the ones whose absence is invisible until a user hits that exact
+# regenerate, the ones whose absence is invisible until a user hits that exact
 # surface. Named individually rather than counted: a count stays green while the
 # wrong file is missing.
 REQUIRED_FILES = [
@@ -55,10 +55,19 @@ REQUIRED_FILES = [
     "bgate_ui/static/img/mascot.png",
     # THE DOTFILE. `**/*` does not match it, so it has to be named explicitly in
     # package-data, and without it the project this scaffolds does not ignore
-    # .env — which is the failure that has already put an API key in a commit.
-    "templates/shared/.gitignore",
-    # Greets the user inside their own game project.
-    "templates/shared/CLAUDE.md",
+    # .env, which is the failure that has already put an API key in a commit.
+    "templates/godot/shared/.gitignore",
+    "templates/web/shared/.gitignore",
+    "templates/unity/shared/.gitignore",
+    # Greets the user inside their own game project, one per engine.
+    "templates/godot/shared/CLAUDE.md",
+    "templates/web/shared/CLAUDE.md",
+    "templates/unity/shared/CLAUDE.md",
+    # The telemetry each engine ships: the Godot autoload, the web module and
+    # the Unity MonoBehaviour, none of which any Python file imports.
+    "templates/godot/shared/addons/bgate/bgate_telemetry.gd",
+    "templates/web/shared/src/bgate/telemetry.ts",
+    "templates/unity/shared/Assets/BGate/BGateTelemetry.cs",
 ]
 
 # (directory, extension, how many at least). Trees too large to name file by
@@ -72,7 +81,7 @@ failures: list[str] = []
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
-    print(f"  {'ok  ' if ok else 'FAIL'} {label}" + (f"  — {detail}" if detail else ""))
+    print(f"  {'ok  ' if ok else 'FAIL'} {label}" + (f", {detail}" if detail else ""))
     if not ok:
         failures.append(f"{label}: {detail}" if detail else label)
 
@@ -81,7 +90,7 @@ def installed_root() -> Path:
     """The site-packages directory the wheel unpacked into.
 
     templates/ carries no .py at all, so it is not importable
-    and can only be found relative to a package that is — the same walk
+    and can only be found relative to a package that is, the same walk
     bgate_core/store/scaffold.py does at runtime (``__file__/../../templates``). If
     that walk lands somewhere without them, the user's install is broken in
     exactly the way this script exists to catch.
@@ -104,7 +113,7 @@ def bgate_script() -> Path:
 
     NOT `.resolve()`, and the difference is the whole reason this could not be
     run outside Windows. A POSIX venv's `bin/python` is a SYMLINK to the base
-    interpreter, so resolving it walks out of the venv and lands in /usr/bin —
+    interpreter, so resolving it walks out of the venv and lands in /usr/bin -
     where the entry point this script exists to check has, correctly, not been
     installed. Windows venvs COPY python.exe instead, so the same line is
     harmless there, and CI runs this job on Windows: the bug could only ever
@@ -165,7 +174,7 @@ def main() -> int:
         # list is absent, and a CI runner has neither Blender nor an API key, so
         # a non-zero exit here is the normal, healthy answer. What is being
         # tested is that it runs at all out of the wheel and reports structured
-        # rows — the CONTRIBUTING bug-report flow depends on --json working on a
+        # rows, the CONTRIBUTING bug-report flow depends on --json working on a
         # machine where nothing else does.
         r = subprocess.run([str(bgate), "doctor", "--json"], cwd=work,
                            capture_output=True, text=True, timeout=180)
@@ -201,7 +210,7 @@ def main() -> int:
     if failures:
         print("\nwheel smoke FAILED:\n  " + "\n  ".join(failures))
         return 1
-    print("\nwheel smoke passed — the wheel contains the product")
+    print("\nwheel smoke passed, the wheel contains the product")
     return 0
 
 
