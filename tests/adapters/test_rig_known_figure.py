@@ -3,15 +3,15 @@
 Every other check in this repo measures an unknown mesh and asks whether the
 answer looks plausible. That is the same trap as a green gate: a number that is
 wrong in a believable way passes it. `bg_human(height, heads)` builds a figure
-whose every landmark is known BY CONSTRUCTION — the same `bg_proportions` call
+whose every landmark is known BY CONSTRUCTION, the same `bg_proportions` call
 places the shoulder, the waist and the crotch and then builds shells around
-them — so the measurement can be handed a body and marked against the answer.
+them, so the measurement can be handed a body and marked against the answer.
 
 WHAT IT COSTS TO SKIP THIS, and the example is this file's own reason to exist.
 The shoulder measurement was first validated by one hand-run at one head count
 in one pose. It reported the joint 1.3 cm from the template's own shoulder_z
 and read as a solved problem. Both halves of that were wrong. The matrix says
-the error in that cell is +3.43% of body height — 6.0 cm — and that a 3-head
+the error in that cell is +3.43% of body height, 6.0 cm, and that a 3-head
 chibi is refused outright rather than measured at all.
 
 The 1.3 cm itself was a UNIT ERROR, and it is the kind only a harness catches:
@@ -25,7 +25,7 @@ trust one cell.
 HOW IT RUNS. One Blender process builds and measures the whole matrix, because
 a per-case process turned a four-second measurement into three minutes of
 startup. The functions being measured are spliced into that script from
-bgate_adapters/bodymeasure.py, and this harness splices the same way — so what
+bgate_adapters/bodymeasure.py, and this harness splices the same way, so what
 it measures is the bytes production runs, not a copy of them.
 """
 import json
@@ -43,14 +43,14 @@ MARK = "BGATE_KNOWN:"
 # Head counts to cover, and 3.0 is in here on purpose: a chibi's arms never
 # leave its body, and a measurement that cannot say so is worse than one that
 # refuses. 4.0 stands in for the stylised generated characters this pipeline
-# actually produces — the one that started this work measures 4.44.
+# actually produces, the one that started this work measures 4.44.
 HEAD_COUNTS = (7.5, 6.0, 5.0, 4.0, 3.0)
 HEIGHT = 1.75
 DETAIL = 3          # the density at which the error stops moving; see below
 
 # TWO BUILDS, AND THE SECOND ONE IS NOT A NICETY. bg_human at its default build
-# has thighs wider than their separation — hip_x is 0.048 of chin height and
-# thigh_r is 0.062 — so the figure has no gap between its legs anywhere and no
+# has thighs wider than their separation, hip_x is 0.048 of chin height and
+# thigh_r is 0.062, so the figure has no gap between its legs anywhere and no
 # crotch can be measured on it at all. A slimmer build opens one. Both cases
 # are covered because both must be: the fat one proves the refusal, the slim
 # one proves the measurement.
@@ -79,7 +79,7 @@ for heads in CFG["heads"]:
                                     "hip_x", "thigh_r", "neck_r")},
                          "measured": landmarks(mesh)})
 # TO A FILE, NOT TO STDOUT. run_script hands back the last 4000 characters of
-# stdout only, and ten cells of landmarks is several times that — printed, the
+# stdout only, and ten cells of landmarks is several times that, printed, the
 # whole matrix comes back as an empty report indistinguishable from a crash.
 # _TDEV_SCRIPT solved the same problem by shrinking its report; this one needs
 # every row, so it writes them down.
@@ -142,8 +142,8 @@ def test_the_shoulder_is_found_within_a_measured_envelope(matrix):
          3.0    +1.17  refused       +0.11   refused
 
     ON THE DEFAULT BUILD ALONE THIS READS +-3.5%, AND THAT IS THE NUMBER THIS
-    TEST USED TO CARRY. Adding a slimmer build — which had to be added anyway,
-    because bg_human at build 1.0 has no crotch gap to measure — turned up a
+    TEST USED TO CARRY. Adding a slimmer build, which had to be added anyway,
+    because bg_human at build 1.0 has no crotch gap to measure, turned up a
     cell at -13.36%: a slim 5-head figure with its arms down, where the crease
     run ends early and the joint lands 23 cm low. One cell in twenty, and it
     would never have been found by running more head counts at one build.
@@ -158,7 +158,7 @@ def test_the_shoulder_is_found_within_a_measured_envelope(matrix):
             continue
         if abs(got) > abs(worst):
             worst, where = got, key
-    assert where is not None, "every cell refused — nothing was measured"
+    assert where is not None, "every cell refused, nothing was measured"
     assert abs(worst) <= 14.0, (where, worst, "shoulder_z error grew past the "
                                               "envelope this test records")
 
@@ -166,8 +166,8 @@ def test_the_shoulder_is_found_within_a_measured_envelope(matrix):
 @needs_blender
 def test_the_shoulder_error_is_method_limited_not_sampling_limited(matrix):
     """AND THAT IS WHY 4% IS NOT FIXED BY A DENSER MESH. Measured on the
-    7.5-head figure across bg_human's four detail levels — 578, 940, 1350 and
-    1808 vertices — the error does not shrink toward zero, it CONVERGES:
+    7.5-head figure across bg_human's four detail levels, 578, 940, 1350 and
+    1808 vertices, the error does not shrink toward zero, it CONVERGES:
 
         T-pose  +1.47  +2.64  +2.75  +2.80
         A-pose  -8.33  -1.57  +3.37  +3.43
@@ -183,8 +183,8 @@ def test_the_shoulder_error_is_method_limited_not_sampling_limited(matrix):
          6.0    +2.70      2.88
          5.0    +2.56      2.76
 
-    It stops tracking on stylised figures — 4.0 heads reads +1.06 against 2.59
-    — so it is a mechanism, not a constant to subtract. Correcting it is its
+    It stops tracking on stylised figures, 4.0 heads reads +1.06 against 2.59
+, so it is a mechanism, not a constant to subtract. Correcting it is its
     own change and has not been made.
     """
     cell = matrix[(7.5, 1.0, "t")]
@@ -199,7 +199,7 @@ def test_the_shoulder_error_is_method_limited_not_sampling_limited(matrix):
 @needs_blender
 def test_both_shoulders_are_measured_identically(matrix):
     """Left and right of a mirror-symmetric figure must not disagree at all.
-    The broken version was symmetric too — it put both joints on the bicep —
+    The broken version was symmetric too, it put both joints on the bicep -
     so this catches a sloppy measurement, never a wrong one."""
     for key, cell in matrix.items():
         left, right = _shoulder(cell, "Left"), _shoulder(cell, "Right")
@@ -211,16 +211,19 @@ def test_both_shoulders_are_measured_identically(matrix):
 
 
 @needs_blender
-def test_a_chibi_in_an_a_pose_is_refused_rather_than_guessed(matrix):
-    """THE REFUSAL PATH, ON A REAL BODY RATHER THAN IN PRINCIPLE. A 3-head
-    figure with its arms down has no gap anywhere between arm and torso, so
-    there is no crease to find and no shoulder to report. `why` says that, and
-    no `shoulder` key is emitted for anything downstream to trust."""
+def test_a_chibi_in_an_a_pose_is_measured_by_the_tube_scan_not_guessed(matrix):
+    """THE SECOND WAY IN, ON A REAL BODY. A 3-head figure with its arms down
+    has no gap between arm and torso, so the crease finder has nothing to
+    find; it says so in `crease_why`. The tube scan then walks the arm's
+    cross-section bands and reports the shoulder from where the tube meets
+    the trunk, labelled `method: "tube"` so nothing downstream mistakes it
+    for a crease measurement. Neither route is allowed to guess silently."""
     cell = matrix[(3.0, 1.0, "a")]
     for side in ("Left", "Right"):
         got = _shoulder(cell, side)
-        assert "shoulder" not in got, got
-        assert got.get("why"), got
+        assert got.get("crease_why"), got
+        assert got.get("method") == "tube", got
+        assert "shoulder" in got, got
 
 
 @needs_blender
@@ -238,7 +241,7 @@ def test_the_crotch_is_found_wherever_the_legs_are_actually_apart(matrix):
 
     ALWAYS NEGATIVE. The measurement finds where the midline FILLS, and the
     inner thighs meet below the joint they hang from, so it reads low by about
-    a thigh's radius every time — 3.2% of height against a thigh_r of 3.2% at
+    a thigh's radius every time, 3.2% of height against a thigh_r of 3.2% at
     build 0.6. That is the same shape of bias the shoulder has, one landmark
     down, and correcting it is deliberately not done here: see the trunk report.
 
@@ -253,7 +256,7 @@ def test_the_crotch_is_found_wherever_the_legs_are_actually_apart(matrix):
             continue
         checked += 1
         err = 100.0 * (crotch["value"] - cell["known"]["crotch_z"]) / HEIGHT
-        assert err < 0, (key, err, "a crotch read ABOVE the known one — the "
+        assert err < 0, (key, err, "a crotch read ABOVE the known one, the "
                                    "thigh-radius bias explains a low reading, "
                                    "nothing explains a high one")
         worst = max(worst, abs(err))
@@ -268,7 +271,7 @@ def test_a_figure_whose_thighs_touch_is_refused_a_crotch(matrix):
     chin height and thigh_r is 0.062, so the thighs overlap across the midline
     and the legs are one solid from the ankles up. The measurement declines
     rather than reporting the height at which the calves merge, which is what
-    it would otherwise find — measured, 13% of body height, a knee.
+    it would otherwise find, measured, 13% of body height, a knee.
 
     This is not a quirk of the template. A skirt, a robe or a long coat does
     exactly the same thing to a generated character.
@@ -283,7 +286,7 @@ def test_a_figure_whose_thighs_touch_is_refused_a_crotch(matrix):
 @needs_blender
 def test_the_neck_is_found_within_a_hair_of_the_chin(matrix):
     """AND THE CHIN IS THE ONLY KNOWN LANDMARK IT CAN BE MARKED AGAINST, because
-    bg_human's neck is a cylinder hidden under the arms in a T-pose — the arm
+    bg_human's neck is a cylinder hidden under the arms in a T-pose, the arm
     spans the shoulder line and swamps the neck's own width. What the
     measurement finds is the base of the head shell, and it tracks the chin
     closely, in percent of total height:
@@ -299,7 +302,7 @@ def test_the_neck_is_found_within_a_hair_of_the_chin(matrix):
     question was asked on purpose. neck_r falls from 3.94% of height to 3.03%
     across those head counts while the error wanders between -0.26 and +2.03
     without following it, and it halves when the build slims while neck_r
-    halves too — the opposite of a one-radius offset. Whatever this is, it is
+    halves too, the opposite of a one-radius offset. Whatever this is, it is
     not one body radius, so the correction that would pay twice for the
     shoulder and the crotch does not pay a third time here.
     """
@@ -319,7 +322,7 @@ def test_the_neck_is_found_within_a_hair_of_the_chin(matrix):
 def test_a_trunk_with_no_bottom_anchor_is_not_fitted(matrix):
     """THE REFUSAL HAS TO REACH THE DECISION, not just the report. When the
     crotch cannot be found there is no span to hang a spine in, so `fitted` is
-    False and fit_trunk leaves every trunk bone where the template put it — and
+    False and fit_trunk leaves every trunk bone where the template put it, and
     says TRUNK ASSUMED, because a caller that cannot tell a measured spine from
     an inherited one is the disease this whole sequence has been treating.
     """
@@ -334,8 +337,8 @@ def test_a_trunk_with_no_bottom_anchor_is_not_fitted(matrix):
 def test_the_landmarks_the_trunk_still_does_not_measure(matrix):
     """WHAT IS STILL ASSUMED, kept as a fact in the report rather than an
     absence from it. The spine is now hung between a measured crotch and a
-    measured shoulder, but the four bones BETWEEN them — Hips, Spine, Chest,
-    UpperChest — are still placed by the template's proportions within that
+    measured shoulder, but the four bones BETWEEN them, Hips, Spine, Chest,
+    UpperChest, are still placed by the template's proportions within that
     span. Nothing here measures a waist or a chest, because on an A-posed mesh
     the arms touch the ribs and no cross-section can separate them.
 
@@ -346,4 +349,4 @@ def test_the_landmarks_the_trunk_still_does_not_measure(matrix):
     assert set(trunk) >= {"crotch", "crown", "shoulder_line", "neck_base",
                           "fitted"}
     for name in ("waist", "chest", "upperchest"):
-        assert name not in trunk, (name, "measured now — extend the envelope")
+        assert name not in trunk, (name, "measured now, extend the envelope")

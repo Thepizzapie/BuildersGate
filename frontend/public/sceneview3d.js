@@ -227,6 +227,9 @@ window.SceneView3D = (() => {
       keep = { renderer: r, camera: cam, orbit: orb, gizmo: giz, world: new THREE.Scene() };
     }
     ({ renderer, camera, orbit, gizmo, world } = keep);
+    // stop() loses the context on purpose; a mount for the next scene must
+    // hand it back or the loop waits on a restore nobody asked for.
+    try { if (renderer.getContext().isContextLost()) renderer.forceContextRestore(); } catch (e) {}
     stage.prepend(renderer.domElement);
     world.background = cssColor("--bg");
     gizmo.setMode(opts.mode);
@@ -688,7 +691,8 @@ window.SceneView3D = (() => {
     else if (ev.key === "e" || ev.key === "E") setMode("rotate");
     else if (ev.key === "r" || ev.key === "R") setMode("scale");
     else if (ev.key === "f" || ev.key === "F") fit(sel ? [sel] : null);
-    else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z"){ ev.preventDefault(); ev.shiftKey ? redo() : undo(); }
+    // Ctrl+Z / Ctrl+Shift+Z are the builder's: scenebuild.js routes them to
+    // SceneView.undo/redo, and a second handler here popped two moves per press.
     else if (ev.key === "Escape") escape();
   }
 
