@@ -9,6 +9,39 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.46] - 2026-09-12
+
+### Added
+- **Three engines. `project.engine` decides which tools register, which doctor rows are graded, where the scaffolder looks, and what every seat is told to verify with**
+- **The web engine: vite + TypeScript templates, a dev server, a build with a payload budget, vitest, headless screenshots**
+- **The Unity engine: adopted through the Hub's project, compiled in batchmode, tested through the Test Framework, photographed by the editor, instrumented by a self-booting MonoBehaviour**
+- **`engine_status`, `engine_check`, `engine_screenshot`, `engine_scaffold`, `engine_templates`, `project_set_engine`: the engine-neutral spine**
+- **Atlas builds 3D scenes: a three.js viewport with orbit, selection, a move/rotate/scale gizmo and staged writes**
+- **The file's own meshes: ArrayMesh geometry decoded from the .tscn's base64 surfaces and served per mesh**
+- **The first-run card offers Godot, Web and Unity; Unity as an adopt path; `bgate init --engine web`; `POST /api/project/adopt`**
+- **The 3D character pipeline: quadruped poses, `godot_character_wire`, `godot_clip_capture`, `godot_clip_retarget`**
+- **The 3D viewport renders on demand and can be stopped; the exe build checks and smokes its assets**
+
+### Changed
+- **Seat lanes, playtest, the Tests tab, the asset scan and the dashboard's engine card follow the project's engine**
+- **The scene draw list is memoised on the text, the render on the files it reads: a 5,483-node scene opens in 0.1 s after the first 5**
+- **Every seat carries the engine-neutral tools; web and Unity families go to the seats that were measured using their Godot equivalents**
+- **Dependency floors raised above their advisories, and audited at the floor in CI**
+- **Templates live under `templates/<engine>/<kind>`**
+
+### Fixed
+- **A running game could not report telemetry: the guard refused the proxied origin and the tokenless POST**
+- **`engine_screenshot` spread an async tool wrapper's coroutine into a dict**
+- **Node subprocesses decoded as cp1252 on Windows and handed back an empty stdout for a green vitest run**
+- **The dev server's stdout was a pipe nobody drained; a recycled pid could get its tree killed**
+- **The Unity Test Framework's `-runTests` was combined with `-quit`, so a green suite wrote no results**
+- **The character probe's IK weight read 0.00 for every NPC; Blender's self-intersection baseline kept the last keyed pose**
+- **Managed blocks stamped by an earlier release were doubled by re-adopting; Unity's Library tree was scanned as the game**
+- **An instance's placement stacked on the packed root's transform; caches raced on the thread pool; `engine_status` lost the Godot project path**
+
+### Security
+- **Every optional path argument on the web and Unity tools is contained; the headless browser visits loopback URLs only; `dist` must resolve inside the project**
+
 ## [0.1.45] - 2026-09-06
 
 ### Added
@@ -62,7 +95,7 @@ Full narrative: [docs/decisions/0.1.45.md](https://github.com/Thepizzapie/Builde
 - **`ui_concept` paints the game's screens and derives a palette and a Godot Theme**
 - **`sfx_prompt` generates real SFX through kie sounds**
 - **`godot_export_probe` runs a script against the EXPORTED pck**
-- **`bgate connect` — wiring your coding agent is a command, not a paragraph to retype**
+- **`bgate connect`, wiring your coding agent is a command, not a paragraph to retype**
 - …and 1 more, in the decisions file.
 
 ### Changed
@@ -215,9 +248,9 @@ Full narrative: [docs/decisions/0.1.35.md](https://github.com/Thepizzapie/Builde
 Twenty-two commits, and one sentence covers most of them: **a check that grades its own homework is not a check.** The rig gates measured whether…
 
 ### Added
-- **`blender_flex` — the deformation gate**
+- **`blender_flex`, the deformation gate**
 - **`blender_rig` audits before it binds**
-- **`godot_retarget_check` — the engine's own verdict**
+- **`godot_retarget_check`, the engine's own verdict**
 - **Rig and animation quality metrics**
 - **Pairwise art tournament judging**
 - **Nine scene tools on the MCP surface**
@@ -255,7 +288,7 @@ Full narrative: [docs/decisions/0.1.33.md](https://github.com/Thepizzapie/Builde
 One call turns "a model that looks like X" into a rigged character in the engine, and `force` stops meaning "overwrite your project".
 
 ### Added
-- **`character_generate` — the whole pipeline as one tool**
+- **`character_generate`, the whole pipeline as one tool**
 
 ### Fixed
 - **`force` meant "overwrite your project", and said nothing about it**
@@ -267,7 +300,7 @@ Full narrative: [docs/decisions/0.1.32.md](https://github.com/Thepizzapie/Builde
 A generated mesh becomes a rigged character an engine can move, and the skeleton it binds to is the same one every time.
 
 ### Added
-- **`blender_rig` — the missing step between geometry and a character**
+- **`blender_rig`, the missing step between geometry and a character**
 - **A shipped humanoid template**
 
 ### Fixed
@@ -277,7 +310,7 @@ A generated mesh becomes a rigged character an engine can move, and the skeleton
 - **A 404 meant "server missing" when it means "server answering"**
 - **EEVEE answers to two names**
 
-### Added — the paths a session could not reach
+### Added, the paths a session could not reach
 - **Krea 3D shipped unreachable**
 - **Which knobs a backend takes is now discoverable**
 - **ComfyUI claimed to be available with no workflow**
@@ -289,15 +322,15 @@ Full narrative: [docs/decisions/0.1.31.md](https://github.com/Thepizzapie/Builde
 
 The 3D path stops being a blockout generator.
 
-### Added — 3D
+### Added, 3D
 - **Image-to-3D on the user's own GPU**
 - **Krea 3D**
-- **`bg_adopt` — a generation is not an asset**
+- **`bg_adopt`, a generation is not an asset**
 - **Orientation is refused rather than guessed**
 - **`doctor` gains an `imageto3d` row**
 - **`spend` gains a `mesh` kind**
 
-### Added — CI
+### Added, CI
 - **A CI pipeline that gates on more than pytest**
 - **`packaging/smoke_wheel.py`**
 - **A release guard**
@@ -392,7 +425,7 @@ Full narrative: [docs/decisions/0.1.24.md](https://github.com/Thepizzapie/Builde
 - **A message to the director is a work item with its own log**
 - **A staging queue between the conversation and the graph**
 - **Auto-deploy**
-- **Phases — the pockets of work inside a running agent**
+- **Phases, the pockets of work inside a running agent**
 - **You can see what the agent sees**
 - **Sign-off gates**
 - **Cross-agent work is drawn**
