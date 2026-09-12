@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import shutil
 import time
 from pathlib import Path
@@ -111,6 +112,10 @@ class WireError(ValueError):
 # misses cleanly. Sixty-four entries: a scene plus every file it instances.
 _PARSE_CACHE: dict[tuple[int, int], dict] = {}
 _PARSE_CACHE_MAX = 64
+# The dashboard serves routes on a thread pool and the viewport fires a
+# hundred mesh requests at once; two threads evicting the same dict is a
+# RuntimeError mid-iteration. One lock per cache, held only around the dict.
+_PARSE_LOCK = threading.Lock()
 
 
 def parse(text: str) -> dict:
@@ -121,13 +126,15 @@ def parse(text: str) -> dict:
     The result is shared between callers; treat it as read-only.
     """
     key = (len(text), hash(text))
-    hit = _PARSE_CACHE.get(key)
+    with _PARSE_LOCK:
+        hit = _PARSE_CACHE.get(key)
     if hit is not None:
         return hit
     out = _parse(text)
-    if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
-        _PARSE_CACHE.pop(next(iter(_PARSE_CACHE)))
-    _PARSE_CACHE[key] = out
+    with _PARSE_LOCK:
+        while len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
+            _PARSE_CACHE.pop(next(iter(_PARSE_CACHE)))
+        _PARSE_CACHE[key] = out
     return out
 
 

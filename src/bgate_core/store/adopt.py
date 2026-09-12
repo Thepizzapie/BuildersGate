@@ -47,7 +47,10 @@ MD_MARK_END = "<!-- END builders-gate -->"
 # Directories that are never someone's source: skipping them keeps the size and
 # file counts honest (a .godot import cache can outweigh the whole game).
 SKIP_DIRS = {".git", ".godot", ".import", ".bgate", ".bgate_out", "__pycache__",
-             "node_modules", ".venv", "venv", "build", "dist", ".vs", ".idea"}
+             "node_modules", ".venv", "venv", "build", "dist", ".vs", ".idea",
+             # Unity's generated trees. Library/PackageCache alone is
+             # thousands of files that are not the game.
+             "Library", "Temp", "Logs", "obj", "UserSettings"}
 
 # Nodes that only exist in one dimension. Presence in a .tscn is strong
 # evidence; the counts decide, because a 3D game usually still has 2D UI.
@@ -254,8 +257,15 @@ def _merge_block(target: Path, body: str, start: str = MARK_START,
         return {"path": str(target), "action": "created"}
 
     existing = target.read_text(encoding="utf-8", errors="replace")
-    if start in existing and end in existing:
-        head, _, rest = existing.partition(start)
+    # THE MARKER AS EARLIER RELEASES WROTE IT. The wording was tidied once,
+    # and a project adopted before that carries the old line; matching only
+    # the new one appended a second managed block beside the stale first.
+    # The legacy spelling is recognised on read and rewritten to the current
+    # one, so the file converges on a single block.
+    legacy = start.replace("(managed block, ", "(managed block " + chr(0x2014) + " ")
+    opener = start if start in existing else (legacy if legacy in existing else "")
+    if opener and end in existing:
+        head, _, rest = existing.partition(opener)
         _, _, tail = rest.partition(end)
         updated = head + block + tail.lstrip("\n")
         if updated == existing:

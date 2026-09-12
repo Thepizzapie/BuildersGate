@@ -9,7 +9,7 @@ MEASURED, NOT GUESSED. On one project's agent logs, across every run:
     director     7
 
 against **256 registered**. So 92% of the catalogue was dead weight in any
-given run — and it is not free weight, because a tool's schema rides in the
+given run, and it is not free weight, because a tool's schema rides in the
 system prompt of EVERY turn.
 
 WHAT THAT COSTS, measured on the same project in one morning:
@@ -22,12 +22,12 @@ WHAT THAT COSTS, measured on the same project in one morning:
     70    art          87   12,353,446    141,994
     71    qa           77   12,192,070    158,339
 
-71.2 MILLION tokens in a day, of which 69.4M — 97.5% — was cache_read. Total
+71.2 MILLION tokens in a day, of which 69.4M, 97.5%, was cache_read. Total
 INPUT across every run was 844 tokens. The agents were barely reading the game
 at all; they were re-reading the tool catalogue, two hundred times each.
 
 That is the whole finding: on a subscription, context size is multiplied by
-turn count, so a schema nobody calls is not idle — it is billed on every turn
+turn count, so a schema nobody calls is not idle, it is billed on every turn
 of every run forever. `bgate_core.modules` already knew this ("~200 tool
 schemas ride in every agent's context on every turn") and gated by FEATURE.
 This gates by WHO IS ASKING, which is the bigger cut, because a gameplay agent
@@ -36,13 +36,13 @@ matter which modules the project has switched on.
 
 HOW THE LISTS ARE BUILT, and the rule that keeps this from breaking work:
 
-  * CORE is every seat's, always — the board, the brief, the bible, the lane
+  * CORE is every seat's, always, the board, the brief, the bible, the lane
     check, spend, notes. A seat that cannot read its own item cannot work.
   * Each seat then adds the families its measured usage shows it using.
   * PREFIXES, not exact names, so a new tool in an existing family is available
     the day it is written rather than the day someone remembers this file.
   * AN UNKNOWN SEAT GETS EVERYTHING. A missing toolset must only ever be the
-    result of a stored decision, never of a name this file has not heard of —
+    result of a stored decision, never of a name this file has not heard of -
     the same rule `_module_registers` follows for an unreadable module choice.
 
 WHEN A SEAT IS GENUINELY MISSING A TOOL, add it here rather than working
@@ -57,7 +57,7 @@ __all__ = ["tools_for_seat", "seat_registers"]
 
 
 #: Every seat gets these. The board, its own instructions, canon, and the
-#: safety rails — none of which are optional to doing any work at all.
+#: safety rails, none of which are optional to doing any work at all.
 CORE: tuple[str, ...] = (
     "project_status", "project_select", "tool_index",
     "seat_brief", "seat_list", "seat_can_write", "seat_notes", "seat_post_note",
@@ -66,6 +66,13 @@ CORE: tuple[str, ...] = (
     "not_building_list", "recall", "ask_human",
     "asset_status", "asset_lock", "asset_release", "asset_track", "asset_verify",
     "agent_activity", "provider_status", "bgate_doctor",
+    # THE ENGINE-NEUTRAL SPINE. engine_status / engine_check /
+    # engine_screenshot are the same three questions godot_* answers, asked
+    # of whichever engine the project records; a seat brief on a web or
+    # Unity project tells every seat to call them, so every seat has them.
+    # The engine gate (engines.ENGINE_TOOLS) still decides which engine's
+    # own family registers underneath.
+    "engine_",
 )
 
 #: Seat -> the extra families its MEASURED usage shows it reaching for.
@@ -73,15 +80,17 @@ SEATS: dict[str, tuple[str, ...]] = {
     # Mechanics, systems and feel: edits scripts and scenes, drives the engine,
     # and proves it with the engine rather than by reading.
     "gameplay": (
-        "godot_", "scene_", "traversal_prove", "scale_check", "scale_record_3d",
+        "godot_", "web_", "unity_", "scene_",
+        "traversal_prove", "scale_check", "scale_record_3d",
         "level_", "encounter_design_set", "room_", "playtest_", "evidence_",
         "iteration_", "telemetry", "game_view_", "causal_", "consistency_check",
     ),
-    # Engine plumbing, build and performance — the same engine surface, plus
+    # Engine plumbing, build and performance, the same engine surface, plus
     # the project-level knobs gameplay does not touch.
     "tech": (
-        "godot_", "scene_", "playtest_", "evidence_", "iteration_",
-        "game_view_", "local_status", "kie_status", "aseprite_status",
+        "godot_", "web_", "unity_", "scene_", "playtest_", "evidence_",
+        "iteration_", "game_view_", "local_status", "kie_status",
+        "aseprite_status", "project_set_engine",
     ),
     # The visual pipeline. The biggest list, and it earns it: this is the only
     # seat that generates, rigs, measures and delivers assets.
@@ -92,6 +101,7 @@ SEATS: dict[str, tuple[str, ...]] = {
         "godot_deliver_asset", "godot_import_asset", "godot_screenshot",
         "godot_check_project", "godot_inspect_resource", "godot_status",
         "godot_test_run", "godot_retarget_check", "godot_evidence",
+        "web_status", "web_dev", "unity_status", "unity_install_scripts",
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
         "canon_check", "vfx_animate", "sidescroll_generate", "level_reskin",
@@ -109,7 +119,8 @@ SEATS: dict[str, tuple[str, ...]] = {
     # Verification: does the game actually play. Drives the engine hard, writes
     # only tests, and files what it finds.
     "qa": (
-        "godot_", "evidence_", "playtest_", "scene_outline", "traversal_prove",
+        "godot_", "web_test_run", "web_status", "unity_test_run", "unity_status",
+        "evidence_", "playtest_", "scene_outline", "traversal_prove",
         "scale_check", "consistency_check", "canon_check", "room_review",
         "mesh_faceting", "skin_dominance", "animation_curves", "art_qa_verdict",
         "iteration_", "causal_",
@@ -134,7 +145,7 @@ def tools_for_seat(seat: str) -> tuple[str, ...] | None:
     """The prefixes a seat may register, or None meaning "everything".
 
     None rather than an empty tuple for the unknown-seat case, so a caller
-    cannot mistake "no restriction" for "no tools" — an empty tuple would
+    cannot mistake "no restriction" for "no tools", an empty tuple would
     register nothing and leave an agent mute.
     """
     key = (seat or "").strip().lower()
@@ -146,8 +157,8 @@ def tools_for_seat(seat: str) -> tuple[str, ...] | None:
 def seat_registers(tool_name: str, seat: str) -> bool:
     """Does this seat carry this tool?
 
-    Prefix match, so a family stays whole as it grows. An unknown seat — no
-    BGATE_SEAT at all, which is what a hand-started session looks like — gets
+    Prefix match, so a family stays whole as it grows. An unknown seat, no
+    BGATE_SEAT at all, which is what a hand-started session looks like, gets
     every tool, because the human driving it is not the thing being budgeted.
     """
     allowed = tools_for_seat(seat)

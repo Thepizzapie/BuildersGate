@@ -1,10 +1,10 @@
-"""The wheel has to contain the product — not just the .py files.
+"""The wheel has to contain the product, not just the .py files.
 
 The shipped wheel used to declare `package-data = {bgate_ui = ["static/*.html"]}`
 and nothing else, which meant `pip install builders-gate` produced:
 
 * a dashboard whose every ``/static/**/*.js`` 404'd (seat panels, flows, wf,
-  nodecanvas, atlas — the entire frontend),
+  nodecanvas, atlas, the entire frontend),
 * a scaffolder that raised ``FileNotFoundError`` because ``templates/`` was not
   package data at all.
 
@@ -74,7 +74,7 @@ def _matches_any(rel: str, patterns: list[str]) -> bool:
 class TestGitCarriesWhatShips:
     """A shipped file that git does not track is invisible until CI.
 
-    THE FAILURE THIS EXISTS FOR: `templates/shared/.gitignore` is a template —
+    THE FAILURE THIS EXISTS FOR: `templates/shared/.gitignore` is a template -
     it is COPIED INTO scaffolded game projects, where ignoring
     `export_presets.cfg` is exactly right, because that file holds per-machine
     export config and can carry an Android signing password. But it also sits
@@ -82,8 +82,8 @@ class TestGitCarriesWhatShips:
     that every scaffolded project is supposed to ship was never committed.
 
     Everything looked fine on the machine that wrote it: the file is on disk, so
-    the wheel built locally contained it and the tests passed. A fresh clone —
-    CI, a contributor, the release build — got a wheel with no export preset, so
+    the wheel built locally contained it and the tests passed. A fresh clone -
+    CI, a contributor, the release build, got a wheel with no export preset, so
     `bgate publish` would fail on the one step it exists to remove. Package-data
     globs cannot save you from a file that is not in the checkout.
 
@@ -93,7 +93,7 @@ class TestGitCarriesWhatShips:
 
     def _untracked(self, tree: Path) -> list[str]:
         # -uall, or an entirely-untracked DIRECTORY collapses to one entry
-        # ending in "/" — which the filter below drops, so a whole vendored
+        # ending in "/", which the filter below drops, so a whole vendored
         # tree could go missing from the wheel and still pass this test. That
         # is the exact shape of the bug the class exists to catch.
         out = subprocess.run(
@@ -127,7 +127,7 @@ class TestGitCarriesWhatShips:
         assert not stray, (
             "these ship in the wheel but git does not carry them, so a fresh "
             "clone builds without them:\n  " + "\n  ".join(stray)
-            + "\n(if one is ignored on purpose, `git add -f` it — a package-data "
+            + "\n(if one is ignored on purpose, `git add -f` it, a package-data "
             "glob cannot include a file that is not in the checkout)")
 
 
@@ -136,7 +136,7 @@ class TestTheShellsAssetsExist:
 
     THE GAP THIS CLOSES, and it cost a whole feature. `_untracked` above asks
     "is everything on disk also in git", which cannot see a file that is on
-    NEITHER — and that is exactly what happened to the 3D model viewer: a bare
+    NEITHER, and that is exactly what happened to the 3D model viewer: a bare
     `build/` in .gitignore matched the vendored three/build/ directory, so
     three.js's library file was never committed, never on a fresh clone, and the
     import map pointed at a 404. Eighteen sibling files were tracked, which made
@@ -193,7 +193,7 @@ class TestTheShellsAssetsExist:
             + "\n  ".join(missing))
 
     def test_every_referenced_asset_is_tracked_by_git(self):
-        """On disk is not enough — a fresh clone gets only what git carries."""
+        """On disk is not enough, a fresh clone gets only what git carries."""
         if not (REPO / ".git").exists():
             pytest.skip("not a git checkout")
         import subprocess
@@ -217,7 +217,7 @@ class TestTheShellsAssetsExist:
 class TestDeclarations:
     def test_data_only_trees_are_installed_packages(self, cfg):
         """templates/ carries no .py, but scaffold.py resolves
-        ``__file__/../../templates`` — so it must land in site-packages next
+        ``__file__/../../templates``, so it must land in site-packages next
         to the code packages or the scaffolder cannot find them. It lives in
         src/ beside them for exactly that reason."""
         find = cfg["tool"]["setuptools"]["packages"]["find"]
@@ -255,7 +255,7 @@ class TestDeclarations:
         one file and nothing under ``static/seats/``. Named from the source tree
         (frontend/public/seats), which the build copies to static/seats."""
         seats = list((REPO / "frontend" / "public" / "seats").glob("*.js"))
-        assert seats, "no seat panels found — did the tree move?"
+        assert seats, "no seat panels found, did the tree move?"
         patterns = _package_data(cfg)["bgate_ui"]
         for p in seats:
             rel = f"static/seats/{p.name}"
@@ -279,7 +279,7 @@ def _build_wheel(outdir: Path) -> Path:
 
 @pytest.mark.slow
 class TestBuiltWheel:
-    """Builds the real artifact. ~15s, hence slow — CI runs the full
+    """Builds the real artifact. ~15s, hence slow, CI runs the full
     build+install smoke separately."""
 
     @pytest.fixture(scope="class")
@@ -300,9 +300,12 @@ class TestBuiltWheel:
         assert "bgate_ui/static/index.html" in names
 
     def test_wheel_contains_scaffold_templates(self, names):
-        for expected in ("templates/2d/project.godot",
-                         "templates/3d/project.godot",
-                         "templates/shared/addons/bgate/bgate_telemetry.gd"):
+        for expected in ("templates/godot/2d/project.godot",
+                         "templates/godot/3d/project.godot",
+                         "templates/godot/shared/addons/bgate/bgate_telemetry.gd",
+                         "templates/web/2d/package.json",
+                         "templates/web/shared/src/bgate/telemetry.ts",
+                         "templates/unity/shared/Assets/BGate/BGateTelemetry.cs"):
             assert expected in names, expected
 
     def test_wheel_contains_route_modules(self, names):
@@ -321,8 +324,8 @@ class TestBuiltWheel:
 # ---------------------------------------------------------------------------
 # numpy was declared ONLY by the `record` extra while bgate_core/art/propsheet.py,
 # retrodiffusion's background keying and the wall-tile tone match all imported
-# it unguarded. Every developer machine had it — sounddevice pulls it in, and
-# so does half of scientific Python — so the art pipeline worked everywhere it
+# it unguarded. Every developer machine had it, sounddevice pulls it in, and
+# so does half of scientific Python, so the art pipeline worked everywhere it
 # was written and would have raised ImportError on the first clean install.
 # Linux CI caught it, which is luck: CI installs `.[dev]` and happened not to
 # drag numpy in. This test is the guard that does not depend on luck.
@@ -332,7 +335,7 @@ class TestBuiltWheel:
 
 #: Third-party top-level modules the shipped packages may import WITHOUT the
 #: import being guarded by try/except ImportError. Each maps to why it is
-#: guaranteed to be installed. A new name here is a decision — declare it in
+#: guaranteed to be installed. A new name here is a decision, declare it in
 #: `dependencies`, guard the import, or add it with a reason.
 ALLOWED_UNGUARDED = {
     # direct, in [project.dependencies]
@@ -425,7 +428,7 @@ def test_the_core_dependencies_actually_declare_what_they_claim(cfg):
         key = aliases.get(name.lower(), name.lower())
         assert key in declared, (
             f"{name} is listed as a core dependency in ALLOWED_UNGUARDED but "
-            f"[project.dependencies] does not name it — declared: "
+            f"[project.dependencies] does not name it, declared: "
             f"{sorted(declared)}")
 
 
@@ -453,7 +456,7 @@ def test_every_adapter_read_from_disk_is_shipped_in_the_frozen_bundle():
     """A module PyInstaller can import is not a file PyInstaller wrote down.
 
     `collect_submodules` compiles bgate_adapters into the archive and puts no
-    .py on disk, and four adapters are never imported for their behaviour —
+    .py on disk, and four adapters are never imported for their behaviour -
     three are handed to another interpreter by PATH (Blender's `--python`, a
     whisper subprocess) and one has its text spliced into a generated script.
 
@@ -461,7 +464,7 @@ def test_every_adapter_read_from_disk_is_shipped_in_the_frozen_bundle():
     dist/BuildersGate/_internal held no bgate_adapters directory at all, so
     every `Path(__file__).with_name(...)` in that package resolved to nothing
     and all of modelling, rigging, sprite baking and transcription were dead in
-    the packaged app. Nothing caught it because nothing ran the frozen binary —
+    the packaged app. Nothing caught it because nothing ran the frozen binary -
     the same reason the wheel shipped without its own static/ and templates/,
     which is what the rest of this file exists for.
     """
@@ -524,7 +527,7 @@ def test_the_installers_component_payloads_and_its_exclusions_agree():
     """
     shipped, excluded = _iss_component_paths(), _iss_excluded_paths()
     assert shipped == excluded, (
-        "packaging/installer.iss ships and excludes different paths — shipped "
+        "packaging/installer.iss ships and excludes different paths, shipped "
         f"by a component but not excluded from core: {sorted(shipped - excluded)}; "
         f"excluded from core but shipped by nothing: {sorted(excluded - shipped)}")
 
@@ -535,7 +538,7 @@ def test_every_installer_component_payload_is_something_the_spec_ships():
     The floor's art moved out of the dashboard's static tree into its own
     distribution. packaging/bgate.spec learned about it; installer.iss did not,
     so ISCC matched zero files for two `Source:` wildcards and failed the build
-    at the very last step — after a nine-minute PyInstaller run, with no error
+    at the very last step, after a nine-minute PyInstaller run, with no error
     text naming the paths. The spec is the only thing that decides what exists
     under `_internal`, so this asks it directly.
     """
@@ -553,7 +556,7 @@ def test_every_installer_component_payload_is_something_the_spec_ships():
 
 
 def test_the_floor_assets_the_installer_ships_exist_in_the_checkout():
-    """The floor component's payload is the assets package — a real directory
+    """The floor component's payload is the assets package, a real directory
     in this repo, not a pip install that happens at build time."""
     pkg = REPO / "packaging" / "floor-assets" / "builders_gate_floor_assets"
     assert (pkg / "__init__.py").is_file()

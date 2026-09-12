@@ -15,6 +15,7 @@ The res:// namespace is the addressing scheme throughout, matching /api/screenma
 from __future__ import annotations
 
 import re
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -410,28 +411,80 @@ def scene_files(scene: str) -> dict:
 # 5,000-node scene that is five seconds of parsing per click. Keyed on the
 # file's mtime and size, so a write (every one of which goes through
 # _mutate here) misses on the next read and nothing stale survives.
-_RENDER_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
+_RENDER_CACHE: dict[str, tuple[tuple, dict]] = {}
 _RENDER_CACHE_MAX = 4
+_CACHE_LOCK = threading.Lock()
+
+# THE TEXT TOO. A 75 MB scene read once per mesh request is 115 reads of 75
+# MB while the viewport streams its geometry in; the parse and sub-resource
+# caches key on the string's hash, so handing them the same object is what
+# makes them hit at all. Keyed on the file's stamp, like the render.
+_TEXT_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+def _stamp(target: Path) -> tuple[int, int]:
+    try:
+        stat = target.stat()
+        return (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (0, 0)
+
+
+def _scene_text(target: Path) -> str:
+    stamp = _stamp(target)
+    with _CACHE_LOCK:
+        hit = _TEXT_CACHE.get(str(target))
+    if hit and hit[0] == stamp:
+        return hit[1]
+    text = target.read_text(encoding="utf-8", errors="replace")
+    with _CACHE_LOCK:
+        while len(_TEXT_CACHE) >= 4:
+            _TEXT_CACHE.pop(next(iter(_TEXT_CACHE)))
+        _TEXT_CACHE[str(target)] = (stamp, text)
+    return text
+
+
+def _render_stamp(project_root: Path, target: Path, text: str) -> tuple:
+    """The host file's stamp plus every file the draw list reads through it.
+
+    A render opens instanced .tscn files and names .glb models; a crate
+    edited in kit/crate.tscn changed the picture of main.tscn without
+    touching main.tscn. Stat each referenced file, one level down: the
+    nested ones are read by the same walk, and a stamp that recursed would
+    cost what it is saving.
+    """
+    parts: list = [_stamp(target)]
+    try:
+        parsed = scenewire.parse(text)
+    except scenewire.WireError:
+        return tuple(parts)
+    for ext in parsed["ext"]:
+        if ext["type"] != "PackedScene" and not ext["path"].lower().endswith(
+                (".tscn", ".glb", ".gltf", ".obj", ".png", ".webp", ".jpg", ".jpeg")):
+            continue
+        try:
+            parts.append((ext["path"], _stamp(_resolve(project_root, ext["path"]))))
+        except Exception:                                        # noqa: BLE001
+            parts.append((ext["path"], (0, 0)))
+    return tuple(parts)
 
 
 @router.get("/api/scene/render")
 def scene_render(scene: str) -> dict:
     project_root = root()
     target = _resolve(project_root, scene)
-    try:
-        stat = target.stat()
-        stamp = (stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        stamp = (0, 0)
-    cached = _RENDER_CACHE.get(str(target))
+    stamp = _render_stamp(project_root, target, _scene_text(target))
+    with _CACHE_LOCK:
+        cached = _RENDER_CACHE.get(str(target))
     if cached and cached[0] == stamp:
         out = dict(cached[1])
         out["lock"] = _lock(project_root, target)      # never stale
         return out
     out = _scene_render(scene)
-    if len(_RENDER_CACHE) >= _RENDER_CACHE_MAX:
-        _RENDER_CACHE.pop(next(iter(_RENDER_CACHE)))
-    _RENDER_CACHE[str(target)] = (stamp, out)
+    with _CACHE_LOCK:
+        while len(_RENDER_CACHE) >= _RENDER_CACHE_MAX:
+            _RENDER_CACHE.pop(next(iter(_RENDER_CACHE)))
+        _RENDER_CACHE[str(target)] = (stamp, out)
     return out
 
 
@@ -484,7 +537,7 @@ def _scene_render(scene: str) -> dict:
     except Exception:
         pass
 
-    text = target.read_text(encoding="utf-8", errors="replace")
+    text = _scene_text(target)
     try:
         if scenedraw3d.is_3d_scene(text):
             # THE SAME ENDPOINT, A DIFFERENT PICTURE. A 3D scene has no paint
@@ -533,8 +586,7 @@ def scene_mesh(scene: str, id: str):
         raise api.bad_request("not a scene file", scene=scene)
     if not re.match(r"^[A-Za-z0-9_]+$", id or ""):
         raise api.bad_request("not a sub-resource id", id=id)
-    text = target.read_text(encoding="utf-8", errors="replace")
-    got = scenedraw3d.mesh_data(text, id)
+    got = scenedraw3d.mesh_data(_scene_text(target), id)
     if got is None:
         raise api.not_found(f"no ArrayMesh {id} in {scene}", id=id)
     head = b"BGM1" + struct.pack("<II", got["vertex_count"], len(got["indices"]) // 4)

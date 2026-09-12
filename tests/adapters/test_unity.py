@@ -205,6 +205,10 @@ class TestTests:
         got = unity.test_run(str(project), timeout=60)
         assert got["ok"] is True and got["total"] == 2 and got["platform"] == "EditMode"
         assert "-runTests" in got["command"] and "-testPlatform EditMode" in got["command"]
+        # -quit would end the editor before the asynchronous test run began;
+        # the runner exits on its own. The compile check keeps -quit.
+        assert "-quit" not in got["command"]
+        assert "-quit" in unity.check_project(str(project), timeout=60)["command"]
         monkeypatch.setenv("FAKE_UNITY_MODE", "test_fail")
         got = unity.test_run(str(project), timeout=60, filter="Tests.Feel")
         assert got["ok"] is False and got["failed"] == 1
@@ -417,3 +421,24 @@ class TestFirstRunAdopt:
         body = got.json().get("data", got.json())
         assert body["engine"] == "unity" and body["engine_supported"] is True
         assert project.get(base)["engine"] == "unity"
+
+
+class TestEngineScreenshotDispatch:
+    def test_the_neutral_screenshot_calls_the_functions_not_the_async_wrappers(self, tmp_path, monkeypatch):
+        """server._tool wraps every tool in an async function; a dispatcher
+        that calls the registered name gets a coroutine, and `{**coro}` is a
+        TypeError. Measured: every Godot and Unity engine_screenshot failed."""
+        import inspect
+        from bgate_mcp import server, tools_unity, tools_web
+        base = _unity_project(tmp_path)
+        from bgate_core.store import project
+        project.init(base, "x", engine="unity")
+        monkeypatch.setenv("BGATE_ROOT", str(base))
+        monkeypatch.setattr(server, "_root", lambda: str(base))
+        seen = {}
+        def fake_still(**kw):
+            seen.update(kw); return {"ok": True, "path": "x.png"}
+        monkeypatch.setattr(tools_unity.unity_screenshot, "__wrapped__", fake_still, raising=False)
+        got = tools_web.engine_screenshot.__wrapped__(scene="Assets/Scenes/Main.unity", label="t")
+        assert not inspect.iscoroutine(got)
+        assert got["engine"] == "unity" and got["ok"] is True and seen["scene"] == "Assets/Scenes/Main.unity"

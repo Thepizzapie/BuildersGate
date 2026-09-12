@@ -34,6 +34,7 @@ from __future__ import annotations
 import copy
 import math
 import re
+import threading
 from typing import Callable, Optional
 
 from . import scenewire
@@ -225,6 +226,7 @@ def is_3d_scene(text: str) -> bool:
 # Sub-resources: the meshes, shapes and materials a scene defines inline
 # ---------------------------------------------------------------------------
 _SUB_CACHE: dict[tuple[int, int], dict] = {}
+_CACHE_LOCK = threading.Lock()
 
 #: A property line longer than this is baked data (a PackedVector3Array of
 #: mesh vertices runs to megabytes) and nothing here reads it. Skipping it
@@ -239,7 +241,8 @@ def sub_resources(text: str) -> dict[str, dict]:
     scene: one pass over the file per process, not one per render.
     """
     key = (len(text), hash(text))
-    hit = _SUB_CACHE.get(key)
+    with _CACHE_LOCK:
+        hit = _SUB_CACHE.get(key)
     if hit is not None:
         return hit
     out: dict[str, dict] = {}
@@ -280,9 +283,10 @@ def sub_resources(text: str) -> dict[str, dict]:
             start = nl + 1
         out[head.group("id")] = {"type": head.group("type"), "props": props,
                                  "id": head.group("id")}
-    if len(_SUB_CACHE) >= 64:
-        _SUB_CACHE.pop(next(iter(_SUB_CACHE)))
-    _SUB_CACHE[key] = out
+    with _CACHE_LOCK:
+        while len(_SUB_CACHE) >= 64:
+            _SUB_CACHE.pop(next(iter(_SUB_CACHE)))
+        _SUB_CACHE[key] = out
     return out
 
 
@@ -507,10 +511,14 @@ def _apply_patch(nodes: list[dict], patch: dict) -> None:
         node["resources"] = list(merged.values())
 
 
+_PLACEMENT_KEYS = ("transform", "position", "rotation", "scale",
+                   "rotation_degrees", "quaternion", "basis")
+
+
 def _walk(scene_text: str, *, read, model_url_of, stack: tuple[str, ...] = (),
           patch: Optional[dict] = None, base_matrix: Optional[list] = None,
           prefix: str = "", visible_base: bool = True,
-          scene_path: str = "") -> list[dict]:
+          scene_path: str = "", root_placed: bool = False) -> list[dict]:
     nodes = scenewire.outline(scene_text)
     if patch:
         _apply_patch(nodes, patch)
@@ -537,7 +545,15 @@ def _walk(scene_text: str, *, read, model_url_of, stack: tuple[str, ...] = (),
         # a Node3D: its `transform` or `position` line is the whole reason it
         # is in the scene.
         spatial = is_spatial(node["type"]) or bool(node["instance"])
-        local = local_matrix(props) if spatial else IDENTITY
+        # THE HOST'S PLACEMENT REPLACES THE PACKED ROOT'S, it does not stack
+        # on it. The instance node IS the other scene's root; a `transform =`
+        # on the instance overrides whatever the saved root carried, so an
+        # instanced branch saved with a non-identity root lands once, where
+        # the host put it, not twice.
+        if parent is None and root_placed:
+            local = IDENTITY
+        else:
+            local = local_matrix(props) if spatial else IDENTITY
         m = mat_mul(base, local)
         world[node["path"]] = m
 
@@ -588,6 +604,7 @@ def _open_instance(host: dict, node: dict, m: list, *, read, model_url_of,
                    visible: bool) -> list[dict]:
     res_path = next((r["path"] for r in node["resources"]
                      if r["property"] == "instance"), "")
+    host_props = node.get("properties") or {}
     name = res_path.rsplit("/", 1)[-1] or "a scene"
     host["instance"] = res_path
     if not res_path:
@@ -621,7 +638,8 @@ def _open_instance(host: dict, node: dict, m: list, *, read, model_url_of,
         inner = _walk(text, read=read, model_url_of=model_url_of,
                       stack=stack + (res_path,), patch=copy.deepcopy(patch),
                       base_matrix=m, prefix=host["path"], visible_base=visible,
-                      scene_path=res_path)
+                      scene_path=res_path,
+                      root_placed=any(k in host_props for k in _PLACEMENT_KEYS))
     except scenewire.WireError as exc:
         host["draw"] = {"kind": "marker", "reason": f"{name}: {exc}"}
         return []
@@ -785,6 +803,10 @@ _KEY_RE = re.compile(r'"(\w+)":\s*(-?\d+)')
 _BYTES_RE = re.compile(r'"(\w+)":\s*PackedByteArray\("([^"]*)"\)')
 FLAG_COMPRESS_ATTRIBUTES = 1 << 29
 _MESH_CACHE: dict[tuple[int, int, str], dict] = {}
+#: Decoded geometry kept across requests, bounded by bytes rather than by
+#: entry count: one road surface is 1.4 MB of positions, one crate 200 B.
+_MESH_CACHE_BUDGET = 192 * 1024 * 1024
+_mesh_cache_bytes = 0
 
 
 def mesh_data(text: str, mesh_id: str) -> Optional[dict]:
@@ -794,7 +816,8 @@ def mesh_data(text: str, mesh_id: str) -> Optional[dict]:
     import struct
 
     key = (len(text), hash(text), mesh_id)
-    hit = _MESH_CACHE.get(key)
+    with _CACHE_LOCK:
+        hit = _MESH_CACHE.get(key)
     if hit is not None:
         return hit
     sub = sub_resources(text).get(mesh_id)
@@ -856,7 +879,12 @@ def mesh_data(text: str, mesh_id: str) -> Optional[dict]:
            "indices": struct.pack(f"<{len(indices)}I", *indices),
            "vertex_count": base, "triangle_count": len(indices) // 3,
            "aabb": sub["props"].get("_aabb")}
-    if len(_MESH_CACHE) >= 256:
-        _MESH_CACHE.pop(next(iter(_MESH_CACHE)))
-    _MESH_CACHE[key] = out
+    global _mesh_cache_bytes
+    size = len(out["positions"]) + len(out["indices"])
+    with _CACHE_LOCK:
+        while _MESH_CACHE and _mesh_cache_bytes + size > _MESH_CACHE_BUDGET:
+            gone = _MESH_CACHE.pop(next(iter(_MESH_CACHE)))
+            _mesh_cache_bytes -= len(gone["positions"]) + len(gone["indices"])
+        _MESH_CACHE[key] = out
+        _mesh_cache_bytes += size
     return out

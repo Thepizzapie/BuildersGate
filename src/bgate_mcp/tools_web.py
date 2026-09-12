@@ -256,8 +256,12 @@ def engine_screenshot(at: float = 1.0, label: str = "", url: str = "",
     if engine == "godot":
         # One door, one implementation: hand straight to the Godot tool rather
         # than growing a second copy of its archiving and focus caveat.
-        from bgate_mcp.tools_level import godot_screenshot as _shot
+        # The registered tool is an ASYNC wrapper (see server._tool); the
+        # function itself is what a synchronous caller wants, and
+        # functools.wraps keeps it on __wrapped__.
+        from bgate_mcp.tools_level import godot_screenshot as _wrapped_shot
 
+        _shot = getattr(_wrapped_shot, "__wrapped__", _wrapped_shot)
         where = _project.game_dir(root, engine="godot")
         if where is None:
             return {"ok": False, "engine": engine,
@@ -266,8 +270,9 @@ def engine_screenshot(at: float = 1.0, label: str = "", url: str = "",
                 **_shot(str(where), at=at, scene=scene or None, label=label,
                         timeout=timeout)}
     if engine == "unity":
-        from bgate_mcp.tools_unity import unity_screenshot as _still
+        from bgate_mcp.tools_unity import unity_screenshot as _wrapped_still
 
+        _still = getattr(_wrapped_still, "__wrapped__", _wrapped_still)
         return {"engine": engine,
                 **_still(scene=scene, label=label, timeout=timeout,
                          width=width, height=height)}

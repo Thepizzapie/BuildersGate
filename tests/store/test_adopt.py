@@ -67,7 +67,7 @@ class TestDetect:
         assert found["main_scene"] == "res://scenes/world.tscn"
 
     def test_calls_a_3d_game_3d(self, game):
-        """A 3D game with a 2D menu is still a 3D game — the answer people get
+        """A 3D game with a 2D menu is still a 3D game, the answer people get
         wrong by counting scenes instead of nodes."""
         found = adopt.detect(game)
         assert found["dimension"] == "3d"
@@ -276,7 +276,7 @@ class TestCli:
 
 
 class TestStampedBriefing:
-    """The CLAUDE.md is the deliverable, not a nice-to-have — it is the only
+    """The CLAUDE.md is the deliverable, not a nice-to-have, it is the only
     thing a first-time user reads before their session starts guessing."""
 
     SOURCE = Path(__file__).resolve().parents[2] / "src" / "templates" / "godot" / "shared" / "CLAUDE.md"
@@ -380,7 +380,7 @@ class TestTheTelemetryAutoload:
 
 class TestHarnessCheckoutIsNeverAGame:
     """The tool's own repository refused as a project root or parent, at every
-    entry point — adopt, scaffold, and the store itself."""
+    entry point, adopt, scaffold, and the store itself."""
 
     @pytest.fixture()
     def harness(self, tmp_path) -> Path:
@@ -415,3 +415,18 @@ class TestHarnessCheckoutIsNeverAGame:
     def test_cli_adopt_reports_and_exits_2(self, harness, capsys):
         assert cli.adopt_project(str(harness)) == 2
         assert "Builders Gate source checkout" in capsys.readouterr().out
+
+
+def test_a_block_stamped_by_an_earlier_release_is_replaced_not_doubled(tmp_path):
+    """The marker's wording was tidied once. A project adopted before that
+    carries the old line; matching only the new one appended a second managed
+    block and left the stale first in place."""
+    from bgate_core.store import adopt
+    f = tmp_path / ".gitignore"
+    old_start = adopt.MARK_START.replace("(managed block, ", "(managed block " + chr(0x2014) + " ")
+    f.write_text(f"mine\n{old_start}\nold body\n{adopt.MARK_END}\n", encoding="utf-8")
+    got = adopt._merge_block(f, "new body")
+    text = f.read_text(encoding="utf-8")
+    assert got["action"] == "refreshed"
+    assert text.count("Builders Gate (managed") == 1
+    assert chr(0x2014) not in text and "new body" in text and text.startswith("mine")

@@ -201,3 +201,22 @@ class TestArrayMesh:
     def test_a_mesh_that_is_not_there_is_none(self):
         text = _scene("")
         assert d.mesh_data(text, "ArrayMesh_nope") is None
+
+
+class TestInstanceRootPlacement:
+    def test_the_hosts_placement_replaces_the_packed_roots_transform(self):
+        # A branch saved as a scene keeps its root at (10, 0, 0). Instanced
+        # with position (3, 0, 0), Godot puts it at 3, not 13: the host's
+        # line overrides the packed root's, it does not stack on it.
+        prop = HEAD + '[node name="Crate" type="Node3D"]\nposition = Vector3(10, 0, 0)\n[node name="Mesh" type="MeshInstance3D" parent="."]\n'
+        text = (HEAD + '[ext_resource type="PackedScene" path="res://crate.tscn" id="1_c"]\n'
+                '\n[node name="World" type="Node3D"]\n'
+                '[node name="Crate" parent="." instance=ExtResource("1_c")]\n'
+                'position = Vector3(3, 0, 0)\n'
+                '[node name="Loose" parent="." instance=ExtResource("1_c")]\n')
+        out = d.draw_list(text, read=lambda p: prop if p == "res://crate.tscn" else None,
+                          model_url_of=lambda p, kind="model": None)
+        by = {i["path"]: i for i in out["items"]}
+        assert by["Crate/Mesh"]["world"][0][3] == 3
+        # With no placement on the host, the packed root's own transform holds.
+        assert by["Loose/Mesh"]["world"][0][3] == 10
