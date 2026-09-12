@@ -469,9 +469,27 @@ func _drive(speed: float, on_floor: bool, vertical: float) -> void:
 	anim.set("manual_on_floor", on_floor)
 	anim.set("manual_vertical", vertical)
 
-func _physics_process(_delta: float) -> void:
+func _settle(delta: float) -> void:
+	## FLOOR CONTACT IS SOMETHING A BODY HAS TO ASK FOR. CharacterBody3D only
+	## updates is_on_floor() inside move_and_slide(), and a character wired
+	## with no controller (an NPC) has no script calling it, so the IK
+	## weight read 0.00 on the ramp for every NPC while the same rig passed
+	## as a player. The probe stands in for the missing controller: gravity
+	## down, one slide per frame, nothing else.
+	if not (inst is CharacterBody3D):
+		return
+	var body := inst as CharacterBody3D
+	if body.get_script() != null:
+		return                     # a controller of its own moves it
+	body.velocity.y -= 9.8 * delta
+	body.move_and_slide()
+	if body.is_on_floor():
+		body.velocity = Vector3.ZERO
+
+func _physics_process(delta: float) -> void:
 	if anim == null:
 		return
+	_settle(delta)
 	if wait > 0:
 		wait -= 1
 		return

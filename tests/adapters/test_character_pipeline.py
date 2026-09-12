@@ -8,7 +8,7 @@ nothing. Those are not judgement calls, they are the same five steps in the same
 order, which is what a tool is for.
 
 Nothing here spends money or spawns Blender. What is under test is the ORDER,
-the gating, and the refusals — the parts that decide whether a caller is billed
+the gating, and the refusals, the parts that decide whether a caller is billed
 twice for a mistake the first stage could have caught.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ def stub(monkeypatch, tmp_path):
     monkeypatch.setattr(blender, "_key_plate", lambda src, dst: (0.18, ""))
     monkeypatch.setattr(blender, "rig", lambda *a, **k: dict(
         calls.__setitem__("rig", k) or {},
-        rigged=True, bound_with="ARMATURE_AUTO", unweighted=0,
+        rigged=True, ok=True, bound_with="ARMATURE_AUTO", unweighted=0,
         adopt={"quality": {"ok": True}}))
 
     import bgate_adapters.imageto3d as i3d
@@ -56,7 +56,7 @@ class TestOrderAndGating:
 
     def test_a_failed_plate_costs_only_the_plate(self, stub, monkeypatch, tmp_path):
         """The mesh is the expensive half. A plate that cannot be keyed must
-        stop the run — an unkeyed plate measured 605 s and 21% non-manifold,
+        stop the run, an unkeyed plate measured 605 s and 21% non-manifold,
         refused by the quality gate downstream, against 216 s and 16% keyed."""
         monkeypatch.setattr(blender, "_key_plate",
                             lambda src, dst: (0.0, "background is not flat"))
@@ -90,7 +90,7 @@ class TestItMatchesTheRunThatWorked:
     Pinned so a later tidy-up cannot quietly change them back."""
 
     def test_the_plate_is_conditioned_on_the_pose_reference(self, stub, tmp_path):
-        """The reference carries the STANCE — arms out, feet flat, symmetrical,
+        """The reference carries the STANCE, arms out, feet flat, symmetrical,
         framed head to feet. That is what let the template skeleton fit with no
         compensation; without it the generator picks a stance and the skeleton
         has to be bent to match."""
@@ -119,7 +119,7 @@ class TestItMatchesTheRunThatWorked:
         assert stub["mesh"]["resolution"] == "1024"
 
     def test_the_rig_uses_the_template_stance(self, stub, tmp_path):
-        """pose="t" — the plate is a T-pose, so the skeleton must be too. An
+        """pose="t", the plate is a T-pose, so the skeleton must be too. An
         A-pose skeleton inside a T-pose body is what put the hand bones 14 cm
         outside the mesh."""
         blender.character("a pirate woman", tmp_path, backend="krea")
@@ -156,7 +156,7 @@ class TestTheSubjectReference:
         blender.character("the owner", tmp_path, backend="krea",
                           ref_images=[str(ref)])
         refs = list(stub["plate"]["ref_paths"])
-        assert refs[0] == str(ref), "the subject must lead — edit models read " \
+        assert refs[0] == str(ref), "the subject must lead, edit models read " \
                                     "the first image as the thing to edit"
         assert len(refs) == 2, "the stance template must still be carried"
 
@@ -257,8 +257,8 @@ class TestThePlateGoesToTheProviderThatWasNamed:
     """provider="kie" painting at openai is how a funded project went dark.
 
     _plate_provider knew two names and sent everything else to gpt-image, so
-    on a project whose character provider IS kie — with 3,446 credits and a
-    drained openai account — the plate stage hit openai on provider="kie",
+    on a project whose character provider IS kie, with 3,446 credits and a
+    drained openai account, the plate stage hit openai on provider="kie",
     provider="" and no provider at all, and reported a 429 for an account
     nobody had chosen. Three dead runs read as "the pipeline is closed".
     """

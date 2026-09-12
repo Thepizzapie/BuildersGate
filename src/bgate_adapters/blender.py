@@ -1,4 +1,4 @@
-"""Headless Blender adapter — the agent's eyes on its own geometry.
+"""Headless Blender adapter, the agent's eyes on its own geometry.
 
 An agent writes a bpy script, this runs it in ``blender --background``, and hands
 back tri counts, UV warnings, materials, and optionally a render. That return
@@ -31,7 +31,7 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 #
 # stdin=DEVNULL is load-bearing, not hygiene. When the MCP server runs over
 # stdio, its stdin IS the client's protocol channel. A child that inherits it
-# blocks reading a stream meant for the server — Blender then sits at ~0% CPU
+# blocks reading a stream meant for the server, Blender then sits at ~0% CPU
 # forever, which reads as "slow render" and gets misdiagnosed as a GPU stall.
 # It can also steal bytes off the wire and corrupt the session.
 #
@@ -53,13 +53,13 @@ RUNNER = Path(__file__).with_name("_blender_runner.py")
 # 4.2 shipped the rewrite as BLENDER_EEVEE_NEXT; 5.x dropped the legacy engine
 # and took the plain BLENDER_EEVEE name back. Both spellings are accepted here
 # and the choice between them is made INSIDE Blender, by _bg_engine below,
-# against the enum that install actually offers — a version number parsed out
+# against the enum that install actually offers, a version number parsed out
 # here would be one more thing to get wrong on the next rename.
 EEVEE = "BLENDER_EEVEE_NEXT"          # canonical spelling for this codebase
 EEVEE_ALIASES = ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE")
 
 ENGINES = ("BLENDER_WORKBENCH", *EEVEE_ALIASES, "CYCLES")
-DEFAULT_ENGINE = "BLENDER_WORKBENCH"  # fast, GPU-optional — a preview, not a beauty pass
+DEFAULT_ENGINE = "BLENDER_WORKBENCH"  # fast, GPU-optional, a preview, not a beauty pass
 
 # Set scene.render.engine to `name`, trying EEVEE's other spelling before
 # giving up. Injected into every script this adapter runs in Blender, because
@@ -87,7 +87,7 @@ def _bg_engine(scene, name):
 # Measured on this machine (Blender 4.5, Windows): the FIRST EEVEE render after a
 # cold boot blew past a 240s timeout; every run after it took 1-12s, and the same
 # script that timed out later ran in 1.4s. Clearing Blender's own gl-shader-cache
-# did NOT bring the stall back, so the warmup is below Blender — GPU driver shader
+# did NOT bring the stall back, so the warmup is below Blender, GPU driver shader
 # cache or the OS first-loading its GPU DLLs. Cause unconfirmed; the cost is real.
 #
 # So: warmup() pays it once on purpose, and the first GPU-engine call gets a
@@ -97,8 +97,8 @@ GPU_ENGINES = (*EEVEE_ALIASES, "CYCLES")
 
 _warmed: set[str] = set()
 
-# EEVEE_NEXT — the engine warmup() defaults to and the one every GPU path in
-# this adapter names — landed in Blender 4.2 and does not exist before it, so a
+# EEVEE_NEXT, the engine warmup() defaults to and the one every GPU path in
+# this adapter names, landed in Blender 4.2 and does not exist before it, so a
 # 4.1 install is not "old", it is unusable here. bgate_core.runtime.doctor declares the
 # same floor in MIN_REQUIRED; the two must stay equal or the health check and
 # the adapter will disagree about the same binary.
@@ -130,7 +130,7 @@ def _path_version(path: str) -> tuple[int, ...]:
     From the name, never from `blender --version`: discovery is called by health
     polls and pytest skipifs, and spawning a process per candidate just to rank
     the list would turn a stat() into seconds. Unversioned layouts (a PATH entry,
-    a custom dir) come back () and sort lowest — a known-good 4.5 beats a guess.
+    a custom dir) come back () and sort lowest, a known-good 4.5 beats a guess.
     """
     for part in reversed(Path(path).parts):
         match = _DIR_VERSION.search(part)
@@ -151,7 +151,7 @@ def find_blender() -> str:
     layout stops padding), so the lexicographic sort this used to do would hand
     an agent the older install and then blame Blender for the missing feature.
 
-    Anything below MIN_VERSION is not a candidate — but it is not silence
+    Anything below MIN_VERSION is not a candidate, but it is not silence
     either: a too-old install is reported AS too old, with its version, because
     "Blender not found" sends the user hunting for an install they already have.
     """
@@ -179,7 +179,7 @@ def find_blender() -> str:
         newest = ranked[-1]
         raise BlenderNotFound(
             f"Blender {_pretty(_path_version(newest))} is installed at {newest}, "
-            f"but this adapter needs {_pretty(MIN_VERSION)} or newer — "
+            f"but this adapter needs {_pretty(MIN_VERSION)} or newer, "
             "BLENDER_EEVEE_NEXT (the render engine every GPU path here uses) "
             f"does not exist before {_pretty(MIN_VERSION)}. Upgrade Blender, or "
             "point BGATE_BLENDER at a newer build."
@@ -192,7 +192,7 @@ def find_blender() -> str:
 
 
 def available() -> dict:
-    """Probe without running anything heavy — for health checks and tool errors."""
+    """Probe without running anything heavy, for health checks and tool errors."""
     try:
         path = find_blender()
     except BlenderNotFound as exc:
@@ -213,8 +213,8 @@ def version() -> dict:
 #
 # glTF STORES BONE HEADS AND NOT BONE TAILS. A glTF joint is a node with a
 # translation; where the bone POINTS is Blender's own idea, and nothing in the
-# format carries it. So io_scene_gltf2 guesses on import — child head where a
-# bone has exactly one child, and an invented stub for a leaf — and the guess is
+# format carries it. So io_scene_gltf2 guesses on import, child head where a
+# bone has exactly one child, and an invented stub for a leaf, and the guess is
 # not the rig that was authored.
 #
 # MEASURED (Blender 4.5, the 940-vert bg_human base, 22 deform bones):
@@ -224,11 +224,11 @@ def version() -> dict:
 #   ...the same after a merge-by-distance clean     200 of 940 unweighted
 #   ...envelope weighting instead                     0 of 940 unweighted
 #
-# ALL 200 SAT BETWEEN z=1.546 AND z=1.800 — the top of the skull, and nothing
+# ALL 200 SAT BETWEEN z=1.546 AND z=1.800, the top of the skull, and nothing
 # else. The Head bone is a LEAF, its authored tail reached z=1.786, and the
 # importer's stub stopped at z=1.532: heat had no bone above the crown, so the
-# crown got no weight. That is why the damage survives cleaning the mesh — the
-# mesh was never the problem — and why combine() then stepped the whole body
+# crown got no weight. That is why the damage survives cleaning the mesh, the
+# mesh was never the problem, and why combine() then stepped the whole body
 # layer down to deform:nearest, which is rigid.
 #
 # TWO THINGS FIX IT, both measured back to 0 of 940:
@@ -236,16 +236,16 @@ def version() -> dict:
 #   * RESTORE. The exporting run writes every armature's rest pose into the
 #     layer's .bgate.json record (see LAYER_RECORD_SUFFIX), and the importing
 #     run puts the tails back. Exact, and it also restores roll and the
-#     use_deform flags — the importer marks every bone deforming, including a
+#     use_deform flags, the importer marks every bone deforming, including a
 #     Root that was authored not to. Measured on the base above: 0 of 23 heads
 #     moved, 7 of 23 tails did, and putting those 7 back is the whole fix.
-#   * GROW. With no record to restore from — a .glb from somewhere else — each
+#   * GROW. With no record to restore from, a .glb from somewhere else, each
 #     LEAF bone is extended along its own axis until it spans the geometry
 #     standing around that axis, capped at BGATE_LEAF_CAP times its imported
 #     length. Measured 0 of 940 (adult), 0 of 940 (chibi) and 0 of 1350 (A-pose,
 #     dense) against 200/0/362 unrepaired.
 #
-# The standard reconstruction — "a bone's tail is its child's head" — is NOT
+# The standard reconstruction, "a bone's tail is its child's head", is NOT
 # one of them. Measured, it changed nothing at all (200 before, 200 after),
 # because the importer already applies exactly that rule wherever it can. The
 # bones it gets wrong are the ones with no child to ask.
@@ -289,8 +289,8 @@ def bgate_drop_shapes(objects):
     MEASURED (Blender 4.5): importing ANY .glb that carries an armature makes
     io_scene_gltf2 build a 42-vertex "Icosphere" at the world ORIGIN, link it
     into the scene and leave it PARENTLESS. It is not the asset. Left in, it is
-    the one object that fails envelope weighting — which drags the whole layer
-    down to rigid nearest-bone weights — it trips a no_material check that
+    the one object that fails envelope weighting, which drags the whole layer
+    down to rigid nearest-bone weights, it trips a no_material check that
     names a layer nobody authored, and it re-exports into the assembled .glb so
     the next import invents another one.
     """
@@ -312,7 +312,7 @@ def bgate_rig_dump(objects=None):
     """Every armature's REST pose, in ARMATURE space, ready to be written down.
 
     Armature space, not world: it is what edit_bone.head/.tail read and write,
-    and it is preserved across the glTF round trip (measured — 0 of 23 bone
+    and it is preserved across the glTF round trip (measured, 0 of 23 bone
     HEADS moved), which is what makes putting the tails back meaningful.
     """
     pool = objects if objects is not None else list(_bpy.context.scene.objects)
@@ -339,7 +339,7 @@ def bgate_rig_dump(objects=None):
 
 def bgate_rig_restore(rig, rest):
     """Put the authored tails, rolls and deform flags back. Returns how many
-    tails actually moved — zero means the importer happened to guess right."""
+    tails actually moved, zero means the importer happened to guess right."""
     bones = (rest or {}).get("bones") or {}
     if not bones:
         return 0
@@ -371,7 +371,7 @@ def bgate_rig_repair(rig, meshes, cap=BGATE_LEAF_CAP):
 
     A leaf is the only bone the importer has nothing to guess FROM, and a leaf
     that stops short of the geometry it is supposed to move is exactly the
-    unweighted skull cap. Only leaves are touched — every other bone's tail is
+    unweighted skull cap. Only leaves are touched, every other bone's tail is
     already its child's head, which is both the importer's rule and the right
     answer. Returns {bone: growth factor} for what moved.
     """
@@ -457,7 +457,7 @@ except Exception:
 
 
 def _read_json(path: Path) -> dict:
-    """A dict off disk, or {}. Never raises — every caller here is a side
+    """A dict off disk, or {}. Never raises, every caller here is a side
     channel whose absence must not fail the run it decorated."""
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
@@ -482,7 +482,7 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
                    `bg_clean` does in four lines. Pass kit=False for a script
                    that must run against bare bpy.
     blend_file     open this .blend first; None starts from an empty scene
-                   (no default cube — scripts should build what they mean).
+                   (no default cube, scripts should build what they mean).
     render         also render the active camera to a PNG.
     export_glb     also export the scene to this .glb (modifiers applied).
     record         when a .glb is exported, write THIS SCRIPT into a sidecar
@@ -492,7 +492,7 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
                    manifest, so six months on the manifest names not just which
                    file a layer came from but the source that produced it.
                    Internal callers that build their own script (combine,
-                   apply_texture, turnaround) pass record=False — the script
+                   apply_texture, turnaround) pass record=False, the script
                    they run is this module's, not the layer's.
     out_dir        where renders land. Defaults to <cwd>/.bgate_out.
     engine         BLENDER_WORKBENCH (default, fast) | BLENDER_EEVEE_NEXT | CYCLES.
@@ -500,17 +500,17 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
     Returns {ok, error, traceback, print, scene:{objects,totals,materials,...},
              issues:[game-readiness problems], glb:{...}, render:{...},
              exit_code, seconds}. A failing SCRIPT is a normal result with
-     ok=False — not an exception. A failing BLENDER (missing binary, timeout,
+     ok=False, not an exception. A failing BLENDER (missing binary, timeout,
      unparseable result) raises or reports ok=False with a reason.
 
     ONLY THE LAST 4000 CHARACTERS OF STDOUT COME BACK, AND THAT IS THE TRAP
     EVERY SCRIPT IN THIS MODULE HAS FALLEN INTO. The marked-report convention
-    — print MARK + json.dumps(...) and read it with _marked — needs the mark
+, print MARK + json.dumps(...) and read it with _marked, needs the mark
     still at the start of its line, so a report bigger than the window arrives
     truncated and _marked returns {}. There is then NO error and NO traceback:
     an oversized success is indistinguishable from a crashed run, and the
     caller reports "no report from Blender" about a script that did everything
-    right. It has cost this file twice — _TDEV_SCRIPT printed two joint tables
+    right. It has cost this file twice, _TDEV_SCRIPT printed two joint tables
     at 3580 characters on a 23-bone rig and was three bones from silence, and
     the known-figure harness printed ten cells of landmarks and got nothing
     back at all.
@@ -535,7 +535,7 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
     # Everything from here down lives inside the try: the rmtree used to sit on
     # the last line, so the ONLY path that cleaned up was total success. A
     # timeout, a crashed Blender, an unreadable result.json, a missing
-    # blend_file — every failure mode left its scratch dir in %TEMP%, and
+    # blend_file, every failure mode left its scratch dir in %TEMP%, and
     # failures are exactly what an agent produces in bulk while iterating.
     tmp = Path(tempfile.mkdtemp(prefix="bgate_blender_"))
     try:
@@ -546,7 +546,7 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
         if export_glb:
             # The rest pose, captured to a FILE rather than printed. The runner
             # truncates stdout to its last 4000 characters, and a 23-bone dump
-            # is bigger than that — printing it would evict the agent's own
+            # is bigger than that, printing it would evict the agent's own
             # output and still arrive cut in half.
             source += ("\n\n" + _RIG_SOURCE + "\n" +
                        _RIG_CAPTURE.replace("__RIG_OUT__", json.dumps(str(rig_path))))
@@ -590,7 +590,7 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
             _warmed.add(engine)
 
         if not result_path.exists():
-            # Blender died before the runner could write anything — a crash, a bad
+            # Blender died before the runner could write anything, a crash, a bad
             # .blend, or a startup failure. Surface its own words.
             return {
                 "ok": False,
@@ -622,7 +622,7 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
                 "detail": ("these bpy.ops calls discard their return value: "
                            + ", ".join(discarded[:8])
                            + ". An operator that cannot run returns "
-                             "{'CANCELLED'} and the script carries on — it does "
+                             "{'CANCELLED'} and the script carries on, it does "
                              "NOT raise, and the run reports ok. Wrap them in "
                              "bg_op(...) so a no-op fails loudly, or use the "
                              "non-operator helper (bg_apply bakes transforms "
@@ -634,7 +634,7 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
             # ARMATURES ARE RECORDED EVEN WHEN record=False. `record` governs
             # whose SCRIPT the sidecar claims, and combine/apply_texture run
             # this module's rather than the layer's. The rest pose is not
-            # authorship, it is the thing glTF cannot carry — see _RIG_SOURCE —
+            # authorship, it is the thing glTF cannot carry, see _RIG_SOURCE -
             # and dropping it here is how the assembled asset would lose its
             # tails the moment anything re-imported it.
             armatures = _read_json(rig_path)
@@ -696,7 +696,7 @@ _IMPORTABLE = {".glb": "import_scene.gltf", ".gltf": "import_scene.gltf",
 
 
 def scene_stats(blend_file: str, timeout: int = 120) -> dict:
-    """Report a .blend — or an importable mesh file — without changing it.
+    """Report a .blend, or an importable mesh file, without changing it.
 
     THE READ-ONLY PATH, and the one most likely to be pointed at a .glb: every
     generated asset in this pipeline IS a .glb, so "what is in this thing" is
@@ -746,7 +746,7 @@ def export_gltf(out_path: str, *, blend_file: Optional[str] = None,
                 script: str = "pass", timeout: int = 240) -> dict:
     """Export a .blend (or a script-built scene) to .glb for the engine.
 
-    Modifiers are applied — Blender's exporter defaults that OFF, which silently
+    Modifiers are applied, Blender's exporter defaults that OFF, which silently
     ships the base mesh and makes an asset look right in Blender and wrong in the
     engine. Returns the run result plus glb{exported, bytes} and the
     game-readiness issues worth fixing before this reaches a level.
@@ -756,7 +756,7 @@ def export_gltf(out_path: str, *, blend_file: Optional[str] = None,
 
 
 # ---------------------------------------------------------------------------
-# Assembly — the layers, bound into one asset
+# Assembly, the layers, bound into one asset
 # ---------------------------------------------------------------------------
 #
 # WHY A CHARACTER IS NOT ONE GENERATION. Asked for a whole figure in one pass, a
@@ -766,7 +766,7 @@ def export_gltf(out_path: str, *, blend_file: Optional[str] = None,
 # hands and the cap did not, and the team logo on the cap was scrambled.
 #
 # Modelling each layer on its own fixes the first half. This function is the
-# second half — without an assemble step, "layers" is just a pile of files, and
+# second half, without an assemble step, "layers" is just a pile of files, and
 # the seat that split the work has made the human's job worse rather than better.
 
 COMBINE_SUFFIXES = (".glb", ".gltf", ".blend")
@@ -778,16 +778,16 @@ COMBINE_SUFFIXES = (".glb", ".gltf", ".blend")
 # for would only add a lost asset to a lost afternoon.
 MAX_LAYERS = 8
 
-# How far proud of its surface a decal sits, in Blender units — the FLOOR only.
+# How far proud of its surface a decal sits, in Blender units, the FLOOR only.
 #
 # THIS NUMBER IS THE GLITCHING LOGO. A logo modelled flush against a cap is two
 # surfaces at the same depth, and which one draws is undefined per frame, per
-# angle, per driver — the artefact reads as the logo tearing or flickering, and
+# angle, per driver, the artefact reads as the logo tearing or flickering, and
 # it is invisible in the modelling viewport where nobody moves the camera.
 # Shrinkwrap conforms the decal to the curve; the offset decides the argument.
 #
 # AN ABSOLUTE CONSTANT IS THE WRONG SHAPE FOR THIS. It is applied in the decal
-# object's LOCAL space, after the layer's own scale — so the same 0.001 means a
+# object's LOCAL space, after the layer's own scale, so the same 0.001 means a
 # visible float on a 0.3 m prop and nothing at all on a 10 m one, and a layer
 # scaled 0.1x divides it by ten again. The offset is derived from the TARGET's
 # bounding-box diagonal and divided back out by the decal's world scale; this
@@ -800,7 +800,7 @@ DECAL_OFFSET_RATIO = 0.002
 
 # SHRINKWRAP ONLY MOVES VERTICES IT ALREADY HAS. MEASURED (Blender 4.5): a
 # 4-vertex plane of size 0.4 shrinkwrapped onto a sphere of radius 1.2 put its
-# four corners on the surface and its face centre 0.030 INSIDE it — minimum
+# four corners on the surface and its face centre 0.030 INSIDE it, minimum
 # radius 1.1696 against the sphere's 1.2. The decal reads as a hole. Subdivided
 # to a max edge of 4% of the target's diagonal (25 verts here) the worst
 # deviation dropped to 0.0083, exactly the requested offset, and every point sat
@@ -841,7 +841,7 @@ def _check_parts(parts: list) -> list[dict]:
     """Normalise and validate the layer list before Blender is ever launched.
 
     Every one of these is a mistake that would otherwise surface as a confusing
-    bpy traceback several minutes in, or — worse — as an asset that assembled
+    bpy traceback several minutes in, or, worse, as an asset that assembled
     "successfully" with a layer silently missing.
     """
     if not parts:
@@ -913,7 +913,7 @@ def wipe():
 
 
 def bring_in(part):
-    """Import one part and return ONLY the objects it added — the importer's
+    """Import one part and return ONLY the objects it added, the importer's
     own junk removed, and the rig it guessed at put back."""
     path = part["path"]
     blended = path.lower().endswith(".blend")
@@ -936,25 +936,25 @@ def bring_in(part):
     # measured; this import path had not.
     #
     # ONLY ON A glTF IMPORT. A .blend's custom shapes are a rigger's control
-    # widgets — somebody put them there — and deleting an author's widgets
+    # widgets, somebody put them there, and deleting an author's widgets
     # because a different importer invents lookalikes is not the same fix.
     dropped = []
     if not blended:
         added, dropped = bgate_drop_shapes(added)
     if dropped:
         notes.append({"layer": part["name"],
-                      "note": "dropped the glTF importer's bone custom shape(s) %s — "
+                      "note": "dropped the glTF importer's bone custom shape(s) %s, "
                               "not part of this layer" % ", ".join(dropped)})
 
     # A .blend carries its bone tails. Only glTF loses them, so only a glTF
-    # import is repaired — growing a leaf on a rig that was loaded intact would
+    # import is repaired, growing a leaf on a rig that was loaded intact would
     # be inventing bone length nobody lost.
     fixed = {} if blended else bgate_rig_fix(added, part.get("rest") or {})
     for name, moved in (fixed.get("restored") or {}).items():
         if moved:
             notes.append({"layer": part["name"],
                           "note": "restored %d authored bone tail(s) on %s from the "
-                                  "layer record — glTF does not carry them"
+                                  "layer record, glTF does not carry them"
                                   % (moved, name)})
     for name, grown in (fixed.get("grown") or {}).items():
         if grown:
@@ -983,7 +983,7 @@ for part in P["parts"]:
     bpy.context.view_layer.update()
     for obj in [o for o in objects if o.parent is None]:
         # COMPOSE, NEVER ASSIGN. Two measured failures lived on these lines:
-        #   obj.scale = (s, s, s) CLOBBERED the imported node's own scale — a
+        #   obj.scale = (s, s, s) CLOBBERED the imported node's own scale, a
         #     layer authored at (2, 2, 3) came out (1, 1, 1) the moment anyone
         #     passed a scale, and (1,1,1) is exactly what "scale: 1.0" means.
         #   obj.rotation_euler = ... was a SILENT NO-OP, because the glTF
@@ -1081,8 +1081,8 @@ bpy.context.view_layer.update()
 def deform_bones(armature):
     """The bones that can actually MOVE a vertex.
 
-    A vertex group named for anything else — a control bone, a leftover named
-    'NotABone' — carries weight that no bone reads. Counting those as "bound"
+    A vertex group named for anything else, a control bone, a leftover named
+    'NotABone', carries weight that no bone reads. Counting those as "bound"
     is how a mesh reports zero unweighted vertices and still tears in-engine.
     """
     if armature is None:
@@ -1091,7 +1091,7 @@ def deform_bones(armature):
 
 
 def unweighted(meshes, bone_names):
-    """Vertices carrying no DEFORM weight — the ones that stay at the rest pose."""
+    """Vertices carrying no DEFORM weight, the ones that stay at the rest pose."""
     total = 0
     for mesh in meshes:
         groups = mesh.vertex_groups
@@ -1139,7 +1139,7 @@ def weight_layer(name, meshes, armature):
         if not loose:
             return "deform:" + label
         notes.append({"layer": name,
-                      "note": "%s weighting left %d vertices unweighted — stepping down"
+                      "note": "%s weighting left %d vertices unweighted, stepping down"
                               % (label, loose)})
         unparent(meshes)
 
@@ -1163,7 +1163,7 @@ def weight_layer(name, meshes, armature):
         mod.object = armature
         mesh.parent = armature
     notes.append({"layer": name,
-                  "note": "fell back to nearest-bone weights — rigid, but nothing tears"})
+                  "note": "fell back to nearest-bone weights, rigid, but nothing tears"})
     return "deform:nearest"
 
 
@@ -1176,7 +1176,7 @@ if P["rig"]:
             break
     if armature is None:
         notes.append({"layer": P["rig"],
-                      "note": "named as the rig but contains no armature — nothing was bound"})
+                      "note": "named as the rig but contains no armature, nothing was bound"})
     else:
         armature.parent = root
 
@@ -1196,7 +1196,7 @@ if armature is not None:
             # MEASURED: on the first real character run an agent lost roughly
             # twenty minutes to "which authoring choice makes the glTF round
             # trip survivable for bone heat?" and "does cleaning the boolean
-            # output fix weighting?" — then boolean-unioned every layer and
+            # output fix weighting?", then boolean-unioned every layer and
             # rebuilt them all. Bone heat refuses doubled verts, loose
             # geometry, zero-area faces and multiple islands, which is exactly
             # what a per-layer glTF round trip hands it. It does not raise; it
@@ -1219,7 +1219,7 @@ if armature is not None:
             #
             # KEEP THE AUTHORED POSITION. parent_type='BONE' positions a child
             # relative to the bone's TAIL, in BONE-LOCAL space where the bone's
-            # +Y runs along its own length — nothing like the armature object's
+            # +Y runs along its own length, nothing like the armature object's
             # own space. MEASURED (Blender 4.5): a cap authored at (0, 0, 2),
             # bound to the default bone (head (0,0,0), tail (0,0,1)) with
             # matrix_parent_inverse = armature.matrix_world.inverted(), landed
@@ -1248,7 +1248,7 @@ if armature is not None:
 def decal_deviation(obj, target):
     """Worst distance from the SHRINKWRAPPED result to the target's surface.
 
-    Measured on the EVALUATED mesh, and on face centres as well as vertices —
+    Measured on the EVALUATED mesh, and on face centres as well as vertices -
     the sag that a decal_not_fitted check exists to catch happens BETWEEN the
     vertices, so a vertex-only sample reports a perfect fit on the exact mesh
     that has a hole in the middle of it.
@@ -1316,12 +1316,12 @@ for part in P["parts"]:
                        "check": "untextured",
                        "materials": sorted(mats),
                        "detail": "layer %r carries %d material(s) (%s) and not one "
-                                 "image texture — it ships as a flat colour"
+                                 "image texture, it ships as a flat colour"
                                  % (part["name"], len(mats), ", ".join(sorted(mats))),
                        "fix": "generate a texture for %r and apply_texture it onto "
                               "that layer before combining" % part["name"]})
     # ANY bind that did not happen is a layer that stands still while the body
-    # moves — a bone: bind that named a bone the armature does not have used to
+    # moves, a bone: bind that named a bone the armature does not have used to
     # leave nothing but a note, and notes are not checks.
     if part["bind"] != "none" and bound.get(part["name"], "none") == "none":
         checks.append({"layer": part["name"],
@@ -1350,7 +1350,7 @@ for part in P["parts"]:
         fit = decal_fit.get(name)
         if fit is None:
             checks.append({"layer": part["name"], "object": name, "check": "decal_not_fitted",
-                           "detail": "decal layer with no shrinkwrap — it will z-fight",
+                           "detail": "decal layer with no shrinkwrap, it will z-fight",
                            "fix": "check the decal target has a mesh"})
             continue
         gap = decal_deviation(obj, bpy.data.objects[fit["target"]])
@@ -1360,7 +1360,7 @@ for part in P["parts"]:
             checks.append({"layer": part["name"], "object": name,
                            "check": "decal_not_fitted",
                            "gap": round(gap, 5), "tolerance": round(fit["tolerance"], 5),
-                           "detail": "decal sits up to %.4f from %s (budget %.4f) — it "
+                           "detail": "decal sits up to %.4f from %s (budget %.4f), it "
                                      "sinks into the surface between its vertices"
                                      % (gap, fit["target"], fit["tolerance"]),
                            "fix": "give the decal more geometry, or model it closer "
@@ -1419,7 +1419,7 @@ else:
 
 # THIS PASS RE-EXPORTS, SO IT INHERITS THE ROUND TRIP'S DAMAGE. A texture run
 # that imports a rigged layer, wires an image and writes it back out would ship
-# the importer's GUESSED bone tails as if they were authored — and its own
+# the importer's GUESSED bone tails as if they were authored, and its own
 # capture would then record the guess, so the record combine() later restores
 # from would be wrong. Put the tails back before anything is written.
 #
@@ -1444,7 +1444,7 @@ report = {"materials": [], "unwrapped": [], "slots": [], "wired": {},
 
 def say(detail):
     """Print the findings BEFORE raising. The runner captures stdout even when
-    the script dies, and it skips the .glb export when it does — so a refusal
+    the script dies, and it skips the .glb export when it does, so a refusal
     reports what it saw and writes no half-textured asset."""
     report["detail"] = detail
     print("BGATE_TEXTURE:" + json.dumps(report))
@@ -1455,7 +1455,7 @@ def load(kind):
 
     THIS IS THE HALF EVERYONE FORGETS. A roughness or normal map is measurement,
     not colour: read as sRGB it gets the display transfer curve applied on the
-    way in, so every value is wrong — a 0.5 roughness lands near 0.21 and the
+    way in, so every value is wrong, a 0.5 roughness lands near 0.21 and the
     surface reads far glossier than it was authored. Only the maps that feed a
     COLOUR socket stay sRGB.
     """
@@ -1484,7 +1484,7 @@ def node_for(tree, bsdf, label, row):
 
 def principled(tree):
     """The glTF importer does not always leave the node called 'Principled
-    BSDF' — an imported material can carry a renamed one, and looking it up by
+    BSDF', an imported material can carry a renamed one, and looking it up by
     name only is how a texture run reports success having wired nothing."""
     node = tree.nodes.get("Principled BSDF")
     if node is not None and node.type == "BSDF_PRINCIPLED":
@@ -1563,7 +1563,7 @@ def wire(material):
                 tree.links.new(base.outputs["Alpha"], bsdf.inputs["Alpha"])
             done.append("alpha:" + P["alpha"])
 
-    # Viewport/EEVEE only — the export does not read these (see above), but a
+    # Viewport/EEVEE only, the export does not read these (see above), but a
     # material that looks opaque when a human opens the .blend to check is its
     # own bug report.
     for attr, value in (("surface_render_method",
@@ -1584,7 +1584,7 @@ def wire(material):
 meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
 
 # COUNTED BEFORE THE FALLBACK MATERIALS ARE INVENTED. The ambiguity that
-# matters is skin/eye/mouth — surfaces somebody AUTHORED as different. Grey
+# matters is skin/eye/mouth, surfaces somebody AUTHORED as different. Grey
 # placeholders this call created a line later are not a distinction anybody
 # made, and refusing over them would break every untextured layer.
 authored = set()
@@ -1629,7 +1629,7 @@ elif len(authored) > 1 and not P["all_slots"]:
     report["refused"] = "ambiguous_material"
     say("%d authored material slots and no material named" % len(authored))
     raise RuntimeError(
-        "this model has %d material slots (%s) — name one with material=, or "
+        "this model has %d material slots (%s), name one with material=, or "
         "pass all_slots=True if the same maps really belong on every surface"
         % (len(authored), ", ".join(report["authored"])))
 else:
@@ -1686,7 +1686,7 @@ def apply_texture(model: str | os.PathLike[str],
     """Put generated maps on a layer's material and re-export it.
 
     THE MISSING HALF OF THE LAYERED PATH. Measured on the first real character
-    run: the assembled asset carried 21 materials and ZERO images — every
+    run: the assembled asset carried 21 materials and ZERO images, every
     surface a flat colour an agent typed, because nothing connected the image
     adapter to the 3D layers. A flat colour is a blocking-in tool; the shipped
     surface is a generated texture, conditioned on the same pinned references
@@ -1703,12 +1703,12 @@ def apply_texture(model: str | os.PathLike[str],
         normal      tangent-space normals, through a Normal Map node.
         emission    what glows. Feeds Emission Color and lifts strength to 1.
 
-    Every one of those is DATA, not colour, and is loaded Non-Color — see
+    Every one of those is DATA, not colour, and is loaded Non-Color, see
     load() in the script for what sRGB does to a roughness value. ``image`` and
     ``emission`` feed colour sockets and stay sRGB.
 
     ``alpha``   auto | opaque | clip | blend. ``auto`` inspects the base image
-                and picks clip when it actually has transparent pixels — which
+                and picks clip when it actually has transparent pixels, which
                 is what makes a keyed decal export as alphaMode MASK instead of
                 a solid rectangle of key colour glued over the cap.
     ``decal``   shorthand for a conformed logo: implies backface culling.
@@ -1717,11 +1717,11 @@ def apply_texture(model: str | os.PathLike[str],
     than one AUTHORED material, because the same map on every slot of a body
     layer paints skin, eyes and mouth with one image and calls it textured;
     pass all_slots=True to say you meant it. (Grey placeholder materials this
-    call invents for a mesh that had none do not count — nobody authored that
+    call invents for a mesh that had none do not count, nobody authored that
     distinction.) A named material that matches no slot is a FAILURE
     (ok=False), not an empty ``textured`` list beside a cheerful ok=True.
 
-    Meshes without UVs are unwrapped first — otherwise the map is attached and
+    Meshes without UVs are unwrapped first, otherwise the map is attached and
     silently ignored, which reads as the texture having failed.
     """
     src = Path(model)
@@ -1748,7 +1748,7 @@ def apply_texture(model: str | os.PathLike[str],
             "colorspace": "sRGB" if kind in ("base_color", "emission") else "Non-Color",
         }
     if not maps:
-        raise ValueError("apply_texture needs at least one map — pass an image, "
+        raise ValueError("apply_texture needs at least one map, pass an image, "
                          "or a roughness/metallic/normal/emission map")
 
     mode = alpha
@@ -1782,7 +1782,7 @@ def apply_texture(model: str | os.PathLike[str],
     ok = bool(result.get("ok")) and not refused and bool(textured)
     error = result.get("error")
     if not ok and not error:
-        error = ("no material was textured — the model's slots are %s"
+        error = ("no material was textured, the model's slots are %s"
                  % (", ".join(report.get("slots") or []) or "empty"))
 
     got = {**result,
@@ -1869,7 +1869,7 @@ else:
 
 # THE IMPORTER'S OWN JUNK IS NOT THE SUBJECT. MEASURED (Blender 4.5): importing
 # any .glb that carries an armature makes io_scene_gltf2 build a bone custom
-# shape — a 2x2x2 "Icosphere" at the world ORIGIN, linked into the scene with
+# shape, a 2x2x2 "Icosphere" at the world ORIGIN, linked into the scene with
 # hide_render False and NO PARENT. On a combine() product that is the only
 # parentless mesh in the file, so the old pivot rotated it and nothing else; it
 # also dragged the subject's bounding box back to the origin and rendered a grey
@@ -1884,7 +1884,7 @@ for rig in [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]:
 meshes = [o for o in bpy.context.scene.objects
           if o.type == "MESH" and o.name not in shapes]
 if not meshes:
-    raise RuntimeError("nothing to render — the model imported no meshes")
+    raise RuntimeError("nothing to render, the model imported no meshes")
 
 # Frame the subject from its own bounds. A fixed camera distance renders a
 # thumbnail of a giant or a crop of a doll depending on the export scale.
@@ -1901,7 +1901,7 @@ height = max(hi[2] - lo[2], 1e-3)
 width = max(hi[0] - lo[0], hi[1] - lo[1], 1e-3)
 reach = max(height, width)
 
-# The eight bbox corners RELATIVE TO THE CENTRE — the frustum fit below needs
+# The eight bbox corners RELATIVE TO THE CENTRE, the frustum fit below needs
 # them rotated per angle, and only the offsets rotate.
 corners = [Vector((x, y, z)) - centre
            for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
@@ -1916,7 +1916,7 @@ pivot.location = centre
 bpy.context.view_layer.update()
 
 # PARENT THE ANCESTOR, NOT THE MESH. Only parentless meshes used to join the
-# pivot — and a combine() product re-imports under an "Assembled" root, with its
+# pivot, and a combine() product re-imports under an "Assembled" root, with its
 # deforming layers parented to an armature, so NO mesh is parentless, nothing
 # joined the pivot, and all four "angles" came back byte-identical fronts. Walk
 # up to whatever sits at the top, whatever type it is.
@@ -1950,8 +1950,8 @@ bpy.context.scene.camera = cam
 def frame_at(degrees):
     """Camera distance that FITS the subject at this angle, from the centre.
 
-    A rotated bounding box is wider than an axis-aligned one — up to 1.41x
-    against the 1.15x of visible width the old fixed 2.4x reach bought — which
+    A rotated bounding box is wider than an axis-aligned one, up to 1.41x
+    against the 1.15x of visible width the old fixed 2.4x reach bought, which
     is why the 45 degree view was the one that came back cropped.
     """
     turn = math.radians(degrees)
@@ -1965,8 +1965,8 @@ def frame_at(degrees):
 
 # Three-point lighting at MODEST energy, scaled to the subject, PLACED AROUND
 # THE SUBJECT. Everything here used to be measured from the world origin with X
-# hardcoded to 0, so a model exported centred on (3, -5, 0) — which is what any
-# asset authored beside its neighbours looks like — was lit and framed several
+# hardcoded to 0, so a model exported centred on (3, -5, 0), which is what any
+# asset authored beside its neighbours looks like, was lit and framed several
 # metres from where it actually was.
 def lamp(name, offset, energy, size):
     data = bpy.data.lights.new(name, type="AREA")
@@ -2056,7 +2056,7 @@ print("BGATE_TURNAROUND:" + json.dumps(
 # PIVOT turns the subject by `degrees` about Z. So the label that renders the
 # face is whichever rotation brings the base's forward axis round to -Y.
 #
-# The base faces +Y (see BG_FORWARD in _blender_base — Blender +Y is glTF -Z,
+# The base faces +Y (see BG_FORWARD in _blender_base, Blender +Y is glTF -Z,
 # which is what Godot calls forward), so that rotation is 180, not 0. These
 # used to be 0/45/90/180 against a base that faced -Y; every angle here is the
 # old one plus 180, which is exactly what a base turned to face the other way
@@ -2064,7 +2064,7 @@ print("BGATE_TURNAROUND:" + json.dumps(
 # offsets it fits to are symmetric about the centre, so frame_at(d + 180)
 # returns the same distance frame_at(d) did.
 #
-# LEFT UNLABELLED ON PURPOSE: "side" is one side, the same one it always was —
+# LEFT UNLABELLED ON PURPOSE: "side" is one side, the same one it always was -
 # 270 shows the figure's right, because 90 did.
 TURNAROUND_ANGLES = (("front", 180), ("threequarter", 225), ("side", 270),
                      ("back", 0))
@@ -2097,10 +2097,10 @@ def _exposure_report(path: Path) -> dict:
     if not subject:
         return {"checked": True, "blown": 0.0, "clipped": 0.0, "mean": 0.0,
                 "subject": 0.0, "ok": False,
-                "verdict": "empty — nothing is in frame; the camera is not "
+                "verdict": "empty, nothing is in frame; the camera is not "
                            "looking at the subject"}
 
-    # ITU-R 601, which is what PIL's own convert('L') uses — the thresholds
+    # ITU-R 601, which is what PIL's own convert('L') uses, the thresholds
     # here were calibrated against those numbers.
     luma = [0.299 * r + 0.587 * g + 0.114 * b for r, g, b in subject]
     total = len(subject)
@@ -2110,18 +2110,18 @@ def _exposure_report(path: Path) -> dict:
 
     verdict = ""
     if covered < MIN_SUBJECT_FRACTION:
-        verdict = (f"almost nothing in frame — the subject covers {covered:.2%} "
+        verdict = (f"almost nothing in frame, the subject covers {covered:.2%} "
                    "of it; the camera is framing empty space")
     elif blown >= BLOWN_FRACTION:
-        verdict = (f"blown out — {blown:.0%} of the SUBJECT is pure white; the "
+        verdict = (f"blown out, {blown:.0%} of the SUBJECT is pure white; the "
                    "lights are too hot and the colours in the model are not "
                    "what you are looking at")
     elif clipped >= CLIPPED_FRACTION:
-        verdict = (f"clipped — {clipped:.0%} of the subject has a colour channel "
+        verdict = (f"clipped, {clipped:.0%} of the subject has a colour channel "
                    "railed at full; that detail is gone even where the overall "
                    "brightness looks reasonable")
     elif mean <= DARK_MEAN:
-        verdict = f"too dark to read — mean subject luminance {mean:.0f}/255"
+        verdict = f"too dark to read, mean subject luminance {mean:.0f}/255"
     return {"checked": True, "blown": round(blown, 3), "clipped": round(clipped, 3),
             "mean": round(mean, 1), "subject": round(covered, 4),
             "ok": not verdict, "verdict": verdict}
@@ -2148,11 +2148,11 @@ def turnaround(model: str | os.PathLike[str], out_dir: str | os.PathLike[str], *
                  fitted to it, so the rotated three-quarter view does not crop.
     ``margin``   headroom on that fit. 1.0 is edge-to-edge.
     ``angles``   ``[(label, degrees), ...]``. The degrees turn the SUBJECT, not
-                 the camera, and "front" is 180 because the base faces +Y — see
+                 the camera, and "front" is 180 because the base faces +Y, see
                  TURNAROUND_ANGLES. Pass your own only for a model that does
                  not follow the base's facing.
 
-    ``ok`` is False when any frame fails its exposure check — which is the whole
+    ``ok`` is False when any frame fails its exposure check, which is the whole
     point: a render nobody can read must not pass as a finished one. When it is
     False, ``error`` SAYS WHICH FRAMES AND WHY: an ok=False carrying error=None
     is rewritten downstream into "the call failed without stating a reason",
@@ -2189,7 +2189,7 @@ def turnaround(model: str | os.PathLike[str], out_dir: str | os.PathLike[str], *
     error = result.get("error")
     if not ok and not error:
         if not renders:
-            error = ("no frames came back — the render script produced no "
+            error = ("no frames came back, the render script produced no "
                      "turnaround report")
         else:
             error = "%d of %d frames unreadable: %s" % (
@@ -2235,14 +2235,14 @@ def combine(parts: list, out_path: str | os.PathLike[str], *,
     Returns the run result plus ``parts`` (per layer: its objects, tris, and how
     it bound), ``checks`` (the failures worth catching before the engine does),
     and ``warnings``. A layer that imported nothing, failed to bind, or carries
-    unweighted vertices is NAMED — the whole reason to model in layers is that
+    unweighted vertices is NAMED, the whole reason to model in layers is that
     a bad one can be re-run alone, which needs knowing which one it was.
     """
     checked = _check_parts(parts)
     warnings: list[str] = []
     if len(checked) > MAX_LAYERS:
         warnings.append(
-            f"{len(checked)} layers is above the planning ceiling of {MAX_LAYERS} — "
+            f"{len(checked)} layers is above the planning ceiling of {MAX_LAYERS}, "
             "assembling anyway, but a subject that needs this many is usually two "
             "assets, and every extra layer is another generation somebody paid for")
     if rig and rig not in [p["name"] for p in checked]:
@@ -2252,7 +2252,7 @@ def combine(parts: list, out_path: str | os.PathLike[str], *,
     if not rig and any(p["bind"] != "none" for p in checked):
         # Binding without a rig is the caller believing the asset animates when
         # it cannot. Say so here rather than shipping a static character.
-        warnings.append("layers ask to bind but no rig was named — nothing will "
+        warnings.append("layers ask to bind but no rig was named, nothing will "
                         "deform; pass rig=<the layer holding the armature>")
 
     # Each layer's own record, read BEFORE the run: it carries the bone tails
@@ -2347,10 +2347,10 @@ def combine(parts: list, out_path: str | os.PathLike[str], *,
 # The wording turnaround's caller already uses when frames land outside the
 # project. SAME SENTENCE ON PURPOSE: an assembled .glb and a textured layer are
 # registered by exactly the same machinery, fail to register for exactly the
-# same reason, and used to say nothing at all about it — so an agent got a
+# same reason, and used to say nothing at all about it, so an agent got a
 # cheerful ok=True over an asset no reviewer would ever be shown.
 ARTIFACT_NOTE = (
-    "no artifact can be registered for this file — out_path is outside the "
+    "no artifact can be registered for this file, out_path is outside the "
     "project root, so art QA and the dashboard cannot see it; write it into "
     "the project to put it on the ledger")
 
@@ -2358,7 +2358,7 @@ ARTIFACT_NOTE = (
 def _artifact_note(out_path: str | os.PathLike[str]) -> str:
     """``ARTIFACT_NOTE`` when this output cannot be put on the ledger, else "".
 
-    Containment is decided the way the rest of Builders Gate decides it —
+    Containment is decided the way the rest of Builders Gate decides it -
     BGATE_ROOT if the caller set one, otherwise the nearest ``.bgate`` walking
     up from the file's own directory. Never raises and never guesses: with
     bgate_core absent the adapter is being used standalone, there is no ledger
@@ -2387,7 +2387,7 @@ def _artifact_note(out_path: str | os.PathLike[str]) -> str:
 # materials were None and whose image and texture counts were both zero.
 _PROMOTED = {
     "no_material": "every surface will import as default grey",
-    "no_uv": "cannot be textured at all — the map attaches and is ignored",
+    "no_uv": "cannot be textured at all, the map attaches and is ignored",
     "unapplied_scale": "the engine sees the wrong dimensions",
     "non_uniform_scale": "shears children and normals",
     "ngons": "triangulates unpredictably per exporter",
@@ -2414,7 +2414,7 @@ def _promoted_issues(result: dict, owned: dict, warnings: list[str]) -> list[dic
             "fix": issue.get("fix") or "",
         })
     for kind, count in sorted(counts.items()):
-        warnings.append(f"{count} object(s): {kind} — {_PROMOTED[kind]}")
+        warnings.append(f"{count} object(s): {kind}, {_PROMOTED[kind]}")
     return promoted
 
 
@@ -2442,12 +2442,12 @@ def _shippable(report: dict, checks: list[dict], warnings: list[str]):
 # ---------------------------------------------------------------------------
 #
 # A character run leaves a per-layer .glb, a .blend rig, the assembled asset and
-# a set of renders — fourteen files for one request, and nothing on disk says
+# a set of renders, fourteen files for one request, and nothing on disk says
 # which of them is the deliverable. Deleting the intermediates by hand means
 # reading the directory and guessing; leaving them means every asset ships with
 # its own scratch heap.
 #
-# The manifest answers "which of these is the thing" — and it OUTLIVES the
+# The manifest answers "which of these is the thing", and it OUTLIVES the
 # sweep, keeping what was built, from what, and what was removed. A cleanup that
 # erases the record of the run is not cleanup, it is amnesia: the layer list is
 # how you re-run one layer six months later.
@@ -2484,7 +2484,7 @@ def read_layer_record(out_path: str | os.PathLike[str]) -> dict:
 
 
 def merge_layer_record(out_path: str | os.PathLike[str], fields: dict) -> str:
-    """Update a layer's record in place. Never raises — a record that fails to
+    """Update a layer's record in place. Never raises, a record that fails to
     write must not fail an export that succeeded."""
     doc = read_layer_record(out_path)
     doc.update({k: v for k, v in fields.items() if v not in (None, "")})
@@ -2499,17 +2499,17 @@ def merge_layer_record(out_path: str | os.PathLike[str], fields: dict) -> str:
 
 def write_manifest(out_path: str | os.PathLike[str], result: dict,
                    *, recipe: Optional[list] = None) -> str:
-    """Record the run beside its output. Never raises — a manifest that fails
+    """Record the run beside its output. Never raises, a manifest that fails
     to write must not fail an asset that assembled.
 
     THIS IS THE RE-RUN, NOT A RECEIPT. The old manifest recorded a layer's
-    name, objects, tri count and source file and nothing else — so the sentence
+    name, objects, tri count and source file and nothing else, so the sentence
     "re-run one layer later" was false in both directions. The placement
     arguments (``at``, ``rotate``, ``scale``, ``bind``), which layer held the
     rig, what the assembly root was called and which images went onto which
     surface were all discarded, and then sweep() deleted the sources. What
     survived could not rebuild the asset and could not even say what it had
-    been. ``combine`` is now recoverable from ``recipe`` alone — see
+    been. ``combine`` is now recoverable from ``recipe`` alone, see
     manifest_recipe().
     """
     target = Path(out_path)
@@ -2557,7 +2557,7 @@ def manifest_recipe(out_path: str | os.PathLike[str]) -> dict:
     """The combine() call that produced this asset, read back off its manifest.
 
     Returns ``{parts, rig, root_name, missing}``. ``missing`` names the layer
-    sources that are no longer on disk — after a sweep that is most of them,
+    sources that are no longer on disk, after a sweep that is most of them,
     which is the point: each entry carries the script that built it, so a layer
     can be rebuilt and the assembly re-run rather than guessed at.
     """
@@ -2596,7 +2596,7 @@ def _confine(root: Path, candidate: Path) -> str:
     """Refuse a path that is not inside ``root``. Raises ValueError if it is not.
 
     Uses the registry's own normaliser so "inside the tree" means exactly what
-    it means everywhere else in Builders Gate — including the resolution of
+    it means everywhere else in Builders Gate, including the resolution of
     ``..``, symlinks and drive-relative Windows paths, which is precisely where
     a hand-rolled ``str.startswith`` check leaks.
     """
@@ -2617,14 +2617,14 @@ def sweep(out_path: str | os.PathLike[str], *, dry_run: bool = False,
     """Remove a run's intermediate layer files, keeping the asset and the record.
 
     Reads the manifest written beside the assembled asset, so it deletes what
-    THAT RUN produced and nothing else — a sweep that globs a directory takes
+    THAT RUN produced and nothing else, a sweep that globs a directory takes
     the neighbouring asset's layers with it.
 
     Kept always: the assembled file, its manifest, the RIG layer, and (by
     default) renders. Removed: the per-layer sources listed in the manifest,
     and only those that sit INSIDE the assembled asset's own directory tree and
     carry a layer suffix. Everything else comes back under ``refused`` with the
-    reason and is left alone — a manifest is an ordinary JSON file, and an
+    reason and is left alone, a manifest is an ordinary JSON file, and an
     unconfined unlink() of absolute paths read out of one is an arbitrary-delete
     primitive pointed wherever its last editor liked.
 
@@ -2635,7 +2635,7 @@ def sweep(out_path: str | os.PathLike[str], *, dry_run: bool = False,
     path = manifest_path(target)
     if not path.is_file():
         raise FileNotFoundError(
-            f"no manifest beside {target.name} — sweep only removes what a "
+            f"no manifest beside {target.name}, sweep only removes what a "
             f"recorded run produced, so there is nothing safe to do here")
     doc = json.loads(path.read_text(encoding="utf-8"))
 
@@ -2672,7 +2672,7 @@ def sweep(out_path: str | os.PathLike[str], *, dry_run: bool = False,
             kept.append(str(candidate))
             continue
         # OUT OF TREE IS OUT OF BOUNDS. A shared models/base_human.blend passed
-        # as a layer is not this asset's intermediate — swept once, it is gone
+        # as a layer is not this asset's intermediate, swept once, it is gone
         # for every other asset that was built on it.
         try:
             _confine(root, candidate)
@@ -2737,7 +2737,7 @@ def _measured(script: str) -> str:
     Python and pasted into the Blender script here, so a change to the crease
     finder or the parameter derivation cannot land in one world and miss the
     other. Same pattern as _RIG_SOURCE and _blender_kit.KIT, which are also
-    text prepended to a script — the difference is that this one is a real
+    text prepended to a script, the difference is that this one is a real
     module on both sides.
 
     READ AT CALL TIME, NOT AT IMPORT. bgate_adapters ships no .py on disk in a
@@ -2751,7 +2751,7 @@ def _measured(script: str) -> str:
     except OSError as exc:
         raise BlenderNotFound(
             "the measurement module %s is not on disk, so no measuring script "
-            "can be built — this is a build that shipped bgate_adapters "
+            "can be built, this is a build that shipped bgate_adapters "
             "without its source, the same way it would ship without %s (%s)"
             % (MEASURE.name, RUNNER.name, exc)) from exc
 
@@ -2766,7 +2766,7 @@ import bpy, json
 from mathutils import Vector
 
 def landmarks(mesh):
-    """Where the body actually is — the bpy adapter over bodymeasure.
+    """Where the body actually is, the bpy adapter over bodymeasure.
 
     THREE LINES ON PURPOSE. Everything this used to do now lives in
     bgate_adapters/bodymeasure.py, which is plain Python a test can import;
@@ -2787,7 +2787,7 @@ def fit_trunk(eb, L):
     every one of them at a fraction of CHIN HEIGHT on a 7.5-head figure scaled
     by total height alone. On a 4.44-head character 1.75 m tall that put the
     crotch 34 cm above the one its mesh has, the thigh bones 37.6 cm above
-    their own joint, and the Neck and Head bones inside the skull — while every
+    their own joint, and the Neck and Head bones inside the skull, while every
     rig gate stayed green, because each of them compares the trunk against the
     same template that placed it.
 
@@ -2798,7 +2798,7 @@ def fit_trunk(eb, L):
 
     RETURNS WHAT IT DID, and says so when it did nothing. A trunk that could
     not be measured is left exactly where the template put it and reported as
-    assumed — a caller must be able to tell a measured spine from an inherited
+    assumed, a caller must be able to tell a measured spine from an inherited
     one, which is the whole disease this sequence has been treating.
     """
     trunk = L.get("trunk") or {}
@@ -2807,7 +2807,7 @@ def fit_trunk(eb, L):
                 "why": (trunk.get("crotch", {}).get("why")
                         or trunk.get("shoulder_line", {}).get("why")
                         or "no trunk anchors were measured"),
-                "note": "TRUNK ASSUMED — these bones are the template's, "
+                "note": "TRUNK ASSUMED, these bones are the template's, "
                         "placed by total height, not this body's"}
     crotch = trunk["crotch"]["value"]
     shoulder = trunk["shoulder_line"]["value"]
@@ -2893,21 +2893,21 @@ def anchor_rows(trunk, bound=TDEV_BOUND):
     """Each anchor with its error bar, and whether that bar reaches the bound.
 
     ON THE ROW, NOT IN A SUMMARY. Two of these landmarks have error bars wider
-    than the threshold a downstream gate judges against — the shoulder line is
-    worth 0.134 of body height against 0.08, the crotch 0.111 — so a bone hung
+    than the threshold a downstream gate judges against, the shoulder line is
+    worth 0.134 of body height against 0.08, the crotch 0.111, so a bone hung
     off either can fail template_deviation on measurement error alone, with
     nothing wrong with the rig. That is a different fact from "this character
     is mis-proportioned", and a reader who cannot tell them apart goes looking
     for a fault that is not there.
 
     `straddles` is the flag for it: measured, and this measurement cannot tell.
-    The _unmeasured doctrine one step along — not unmeasured, but measured to a
+    The _unmeasured doctrine one step along, not unmeasured, but measured to a
     tolerance coarser than the question being asked of it.
 
     KEPT SHORT ON PURPOSE. This rides home inside the rig report, and
     run_script hands back 4000 characters of stdout. The first version of this
     function wrote a sentence per row and the whole rig came back as "no report
-    from Blender" — see run_script's own docstring for the rule it broke.
+    from Blender", see run_script's own docstring for the rule it broke.
     """
     rows = {}
     for name in ("crotch", "shoulder_line", "neck_base", "crown"):
@@ -2923,7 +2923,7 @@ def anchor_rows(trunk, bound=TDEV_BOUND):
 
 def fit_bones(arm, mesh):
     """Move the template's bones onto the measured body. Same bones, same
-    names, same hierarchy — only their positions become this character's."""
+    names, same hierarchy, only their positions become this character's."""
     L = landmarks(mesh)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode="EDIT")
@@ -2954,7 +2954,7 @@ def fit_bones(arm, mesh):
             hip_x = d.get("hip_x", abs(foot.x))
             # THE HIP JOINT IS THE CROTCH'S HEIGHT, MEASURED. It used to be
             # 52% of total height, which on this character's own mesh put the
-            # thigh bones 37.6 cm above its crotch, inside the belly — and left
+            # thigh bones 37.6 cm above its crotch, inside the belly, and left
             # them 3.3 cm below the Hips bone's head, so the two disagreed
             # about where the leg starts. Both now read the same number.
             hip_z = (trunk["crotch"] if trunk["fitted"]
@@ -2999,7 +2999,7 @@ def shells(mesh):
     THE NUMBER A GENERATOR WILL NOT TELL YOU. A real user's character came back
     as 940 separate shells; it renders, it has a volume, every well-formedness
     gate passes it, and bone heat then refuses to cross the gaps so the loose
-    shells weight to whichever bone happens to be nearest — the fingers to the
+    shells weight to whichever bone happens to be nearest, the fingers to the
     hip, the hair to the shoulder. Counting them before the bind is the cheapest
     warning available, and `decimation_target` / `budget` are the knobs on it.
     """
@@ -3081,7 +3081,7 @@ def mirror_weights(mesh, bone_names, plane_x, tol):
     one over the other.
 
     Copying picks a winner, and on a generated character neither side is
-    reliably the good one — heat fails differently on each. Averaging a vertex
+    reliably the good one, heat fails differently on each. Averaging a vertex
     with its mirrored partner's Left/Right-swapped weights fixes the common
     failure, which is one elbow bound cleanly and the other bound to the ribs,
     without a coin flip. Vertices with no partner within `tol` are LEFT ALONE
@@ -3170,7 +3170,7 @@ else:
     # HEIGHT ALONE IS NOT A FIT. bg_human's base stands in a wide A-pose and a
     # generated character rarely matches it. MEASURED on a pirate whose arms
     # hang closer to her sides: the hand bones landed at x=+/-0.693 against a
-    # mesh half-width of 0.556 — FOURTEEN CENTIMETRES outside her body, floating
+    # mesh half-width of 0.556, FOURTEEN CENTIMETRES outside her body, floating
     # in open air. Heat then weighted her fingers to a bone that is not where
     # her hand is, and posing dragged them into claws. Every bone read as
     # "bound" and the unweighted count was 3, because a bone outside the mesh
@@ -3224,7 +3224,7 @@ else:
                 # AFFINE, NOT PROPORTIONAL. reach = shoulder_offset + limbs *
                 # arm_length, and the shoulder half-width does not scale with
                 # `limbs` at all. Solving reach/target as a plain ratio put the
-                # wrist 6 mm OUTSIDE the mesh on the first attempt — right
+                # wrist 6 mm OUTSIDE the mesh on the first attempt, right
                 # direction, wrong model. Two probes give the line exactly.
                 probe = _build(0.5)
                 reach_half = _reach(probe) if probe else reach * 0.5
@@ -3242,8 +3242,8 @@ else:
     out["fit"] = fit
     if arm is not None:
         # PLACEMENT, not just length. Scaling the template by height put
-        # 16 of 24 bones more than 6 cm from any vertex — hands 13 cm out
-        # in open air — and every check still passed, because a bone
+        # 16 of 24 bones more than 6 cm from any vertex, hands 13 cm out
+        # in open air, and every check still passed, because a bone
         # outside the mesh still claims the vertices nearest it. Moving
         # the arm and leg chains onto landmarks measured off this mesh
         # takes that to 0 of 23 when the plate was posed to the template,
@@ -3329,7 +3329,7 @@ else:
         out["rigged"] = bool(best["unweighted"] <=
                              max(8, best["verts"] * PAY["tolerance"]))
         if not out["rigged"]:
-            out["reason"] = ("%d of %d vertices carry no bone weight (%.2f%%) — "
+            out["reason"] = ("%d of %d vertices carry no bone weight (%.2f%%), "
                              "they will not deform. Heat refuses to cross "
                              "non-manifold junctions, so clean the mesh further "
                              "or accept a rigid envelope bind."
@@ -3359,7 +3359,7 @@ else:
             out["symmetrised"] = {
                 "ran": False, "mean": sym.get("mean"), "limit": limit,
                 "reason": ("this body is %.1f%% of its height away from its own "
-                           "mirror image, over the %.1f%% limit — mirroring "
+                           "mirror image, over the %.1f%% limit, mirroring "
                            "would pair vertices with the wrong anatomy. Pass "
                            "symmetrize='force' if the asymmetry is cosmetic"
                            % (sym.get("mean", 0) * 100.0, limit * 100.0))}
@@ -3394,7 +3394,7 @@ else:
                                             limit=int(PAY.get("influence_limit", 3)))
     # TO A FILE. This report grew past run_script's 4000-character stdout
     # window the moment the trunk fit and its anchors joined it, and the mark
-    # at the start of its line went with the head of the string — so a rig that
+    # at the start of its line went with the head of the string, so a rig that
     # had done everything right came back as "no report from Blender" with no
     # error and no traceback, and a perfectly good .glb on disk. Third time in
     # this file. See run_script's own docstring for the rule.
@@ -3620,7 +3620,7 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
         timeout: int = 900) -> dict:
     """Take a generated mesh to a bound, weighted, exported character.
 
-    A generator hands back geometry and nothing else — `rigged: false` on every
+    A generator hands back geometry and nothing else, `rigged: false` on every
     local backend. This is the step between that and something an engine can
     animate: adopt it (weld, decimate, scale, orient, ground), fit a skeleton to
     the mesh's own measured height, bind, and PROVE the bind took.
@@ -3633,7 +3633,7 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
 
     Bone heat first because it deforms properly, envelope only as a fallback
     because it is rigid and pinches at the joints. Whichever binds more is what
-    ships, and `rigged` is False when neither reaches `tolerance` — a caller
+    ships, and `rigged` is False when neither reaches `tolerance`, a caller
     that ignores it is shipping a statue.
     """
     if kind == "quadruped":
@@ -3706,7 +3706,7 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
 # ---------------------------------------------------------------------------
 # WHY THIS EXISTS, AND IT IS THE SAME DISEASE THE MESH GATES HAD. rig() proves a
 # bind with the unweighted-vertex count, and that is the right proof that
-# SOMETHING was written — but zero unweighted vertices is equally true of a rig
+# SOMETHING was written, but zero unweighted vertices is equally true of a rig
 # whose elbow collapses to a straw the moment it bends, whose shoulder tears the
 # torso open, and whose knee pushes the calf through the thigh. Every number in
 # the rig report stays green while the character animates like a bag of spanners,
@@ -3722,7 +3722,7 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
 #                a bad weight fan collapses the cross-section at the joint while
 #                the limb's length and the vertex count stay exactly the same.
 #   intersection faces passing through each other. ABSOLUTE COUNTS ARE
-#                MEANINGLESS on a generated mesh — it arrives with overlapping
+#                MEANINGLESS on a generated mesh, it arrives with overlapping
 #                shells and the BVH epsilon reports some touching neighbours as
 #                hits. The gate reads the INCREASE a pose causes, which cancels
 #                that baseline exactly.
@@ -3736,7 +3736,7 @@ _FLEX_MARK = "BGATE_FLEX:"
 # in bone-local space where +Y runs along the bone, so "X"/"Z" bend and "Y"
 # twists; a knee driven the wrong way hyperextends, which is a HARSHER test of
 # the same weights, not a wrong one. Chosen to hit every joint a walk cycle
-# moves, one bone at a time — a single-joint pose is diagnosable, a full pose
+# moves, one bone at a time, a single-joint pose is diagnosable, a full pose
 # only tells you something somewhere is wrong.
 FLEX_POSES = (
     ("shoulder_raise", "LeftUpperArm",  "X",   80.0),
@@ -3757,7 +3757,7 @@ P = json.loads(r"""__PAYLOAD__""")
 
 
 def set_engine(scene, name):
-    """The kit's engine setter, inlined — this script runs with kit=False."""
+    """The kit's engine setter, inlined, this script runs with kit=False."""
     for candidate in (name, "BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH"):
         try:
             scene.render.engine = candidate
@@ -3873,7 +3873,7 @@ out = {"ok": True, "model": P["model"], "armatures": len(arms),
 
 if not arms or not meshes:
     out["ok"] = False
-    out["error"] = ("no %s in %s — the deformation gate needs a RIGGED model, "
+    out["error"] = ("no %s in %s, the deformation gate needs a RIGGED model, "
                     "which is what blender_rig produces"
                     % ("armature" if not arms else "mesh", P["model"]))
     print("__MARK__" + json.dumps(out))
@@ -3910,7 +3910,7 @@ else:
             "vertex_groups": len(mesh.vertex_groups)}
     if not aligned:
         rest["note"] = ("a generative modifier changes the vertex count, so "
-                        "per-bone pinch cannot be measured — volume and "
+                        "per-bone pinch cannot be measured, volume and "
                         "intersection still can")
     rest_radii = radii(bm, owned, segments(arm))
     rest["owned_bones"] = len(owned)
@@ -3995,7 +3995,7 @@ else:
             # ONLY THE BONES THAT MOVED. THE FULL TABLE DOES NOT FIT DOWN THE
             # PIPE. run_script keeps the last 4000 characters of stdout, a
             # 23-bone table per pose is ~1.1 KB, and six poses of it pushed the
-            # front of the marked JSON line off the top — so the report parsed
+            # front of the marked JSON line off the top, so the report parsed
             # as absent and flex() reported "no report from Blender" on a run
             # that had worked perfectly. Twenty entries reading 1.0 were never
             # the useful part anyway.
@@ -4081,13 +4081,13 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
 
     DEFERRED, LABELLED SO IT IS NOT LATER FILED AS A BUG: THE INTERSECT BUDGET
     MAY BE THE WRONG SHAPE RATHER THAN THE WRONG VALUE. It is
-    max(8, faces * 0.004) — a function of mesh density with no term for how far
+    max(8, faces * 0.004), a function of mesh density with no term for how far
     the pose actually moved the mesh. Contacts scale with displacement, and a
     pose that moves more geometry making more contacts is not obviously a
     defect. Measured when the shoulder joint was moved off the bicep and onto
     the shoulder: shoulder_raise went from 0 to 122 new face pairs and
     elbow_bend from 128 to 166, on a rig that had just got better, because the
-    same rotation now swings the whole arm instead of the forearm — mean vertex
+    same rotation now swings the whole arm instead of the forearm, mean vertex
     displacement 2.910%h -> 7.099%h and 1.356%h -> 3.754%h. Giving the budget a
     displacement term is a DESIGN change and must not be done as a threshold
     tweak: retuning a threshold inside the change that moved the numbers
@@ -4095,7 +4095,7 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
 
     PRE-TRUNK BASELINE, and this is the control for the next change rather than
     a curiosity. In that same measurement two poses moved their intersection
-    count with their displacement UNCHANGED — spine_twist 0 -> 33 new pairs at
+    count with their displacement UNCHANGED, spine_twist 0 -> 33 new pairs at
     9.075%h -> 9.005%h, and knee_bend 40 -> 44 at 2.5268%h -> 2.5268%h,
     identical to four decimals. Neither pose drives an arm. That is the bind
     redistributing across bones the trunk work is about to move, so those four
@@ -4110,24 +4110,24 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
     # INERTNESS IS CHECKED FIRST AND IT DOMINATES. A mesh that no bone drives
     # cannot lose volume, cannot pinch and cannot self-intersect, so every other
     # threshold here reports perfection on it. The first real run of this gate
-    # passed exactly such a model — six green poses, zero issues, an armature
+    # passed exactly such a model, six green poses, zero issues, an armature
     # sitting inside a mesh that was never bound to it.
     displaced = [p.get("max_displacement") for p in poses
                  if p.get("max_displacement") is not None]
     if rest and not rest.get("armature_modifier"):
         issues.append({"pose": "*", "kind": "inert",
                        "note": "the mesh carries no armature modifier bound to "
-                               "this skeleton — nothing here deforms, and every "
+                               "this skeleton, nothing here deforms, and every "
                                "other measurement in this report is vacuous"})
     elif rest and not rest.get("vertex_groups"):
         issues.append({"pose": "*", "kind": "inert",
-                       "note": "the mesh has no vertex groups — the modifier is "
+                       "note": "the mesh has no vertex groups, the modifier is "
                                "attached but there are no weights for it to use"})
     elif displaced and max(displaced) < 1e-4:
         issues.append({"pose": "*", "kind": "inert",
                        "value": max(displaced),
                        "note": "no pose moved a single vertex more than 0.1 mm "
-                               "— the bind is decorative"})
+                               "- the bind is decorative"})
 
     for pose in poses:
         label = pose.get("label", "?")
@@ -4140,7 +4140,7 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
             issues.append({"pose": label, "kind": "volume",
                            "value": ratio,
                            "note": f"body lost {(1 - ratio) * 100:.1f}% of its "
-                                   "volume in one bend — a weight fan is "
+                                   "volume in one bend, a weight fan is "
                                    "collapsing the joint"})
         worst = pose.get("worst_pinch") or {}
         if worst and worst.get("ratio", 1.0) < pinch_tolerance:
@@ -4148,13 +4148,13 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
                            "bone": worst.get("bone"), "value": worst.get("ratio"),
                            "note": f"{worst.get('bone')} keeps only "
                                    f"{worst.get('ratio', 0) * 100:.0f}% of its "
-                                   "cross-section — candy-wrapper twist"})
+                                   "cross-section, candy-wrapper twist"})
         new_pairs = pose.get("new_self_pairs")
         if new_pairs is not None and new_pairs > budget:
             issues.append({"pose": label, "kind": "intersection",
                            "value": new_pairs,
                            "note": f"{new_pairs} face pairs that did not "
-                                   "intersect at rest do in this pose — the "
+                                   "intersect at rest do in this pose, the "
                                    "limb is passing through the body"})
     return {"passed": not issues, "issues": issues,
             "checked": len(report.get("poses") or []),
@@ -4169,8 +4169,8 @@ def _unmeasured(report: dict, measured, empty_note: str) -> list[dict]:
 
     AN UNKNOWN IS NOT A PASS. Each of these verdicts is a loop over a
     collection that appends an issue per fault and returns `passed=not issues`,
-    which means an empty collection — a failed run, a model with no armature, a
-    bind with no weights, a sweep where every pose was skipped — sails through
+    which means an empty collection, a failed run, a model with no armature, a
+    bind with no weights, a sweep where every pose was skipped, sails through
     as a clean bill of health. flex_verdict shipped exactly this bug and had an
     inertness clause added after a real run passed a mesh that was never bound
     to the skeleton sitting inside it; these three then reintroduced it, and a
@@ -4180,7 +4180,7 @@ def _unmeasured(report: dict, measured, empty_note: str) -> list[dict]:
     """
     if not report.get("ok", False):
         return [{"kind": "unmeasured",
-                 "note": "the measurement itself did not run — "
+                 "note": "the measurement itself did not run, "
                          + (str(report.get("error") or "no report") )
                          + "; nothing was checked, so nothing can pass"}]
     if not measured:
@@ -4206,7 +4206,7 @@ def adjacency(bm):
     back as two to six vertices at an identical position with no edge joining
     them. Measured on this project's own bind fixture: 940 authored vertices
     exported and re-imported as 1559, and every bone's weight set duly fell
-    apart along those seams — RightUpperLeg read 14 islands where the welded
+    apart along those seams, RightUpperLeg read 14 islands where the welded
     graph shows 2. Uncorrected, this flags every bone of every clean automatic
     bind, which is worse than not checking at all: a gate that is always red
     teaches the agent to ignore it.
@@ -4214,7 +4214,7 @@ def adjacency(bm):
     Fusing only EXACT position matches is the point, and it keeps the promise
     the edge-only version was written to keep: two vertices a millimetre apart
     across a genuine seam still share no edge and still count separately. An
-    exporter split is not a millimetre apart — it is one coordinate written
+    exporter split is not a millimetre apart, it is one coordinate written
     twice, bit for bit, because both copies came from the same source vertex.
     """
     at = {}
@@ -4323,11 +4323,11 @@ def weight_islands(model: str | os.PathLike[str], *, threshold: float = 0.02,
 
     A bone that legitimately drives one contiguous patch of the mesh reports
     one island. More than one means paint landed on a second, unconnected
-    patch too — a hand weighted partly to Spine because a brush stroke
+    patch too, a hand weighted partly to Spine because a brush stroke
     crossed empty space in the viewport rather than the mesh surface.
 
     Returns {ok, bones: {name: {vertex_count, islands, sizes, largest_fraction}}}.
-    Measurement only — judge the result with weight_islands_verdict.
+    Measurement only, judge the result with weight_islands_verdict.
     """
     src = Path(model)
     if not src.is_file():
@@ -4344,10 +4344,10 @@ def weight_islands(model: str | os.PathLike[str], *, threshold: float = 0.02,
 
 
 def weight_islands_verdict(report: dict, *, min_bleed_vertices: int = 3) -> dict:
-    """The judgement, kept OUT of the Blender script — same split as flex_verdict.
+    """The judgement, kept OUT of the Blender script, same split as flex_verdict.
 
     A bone is flagged when its weights form MORE islands than the number of
-    mesh shells it touches — paint that split inside a single connected piece
+    mesh shells it touches, paint that split inside a single connected piece
     of surface, which nothing but a stray stroke explains. Spanning several
     shells is not itself a fault; see the script's own note.
 
@@ -4356,7 +4356,7 @@ def weight_islands_verdict(report: dict, *, min_bleed_vertices: int = 3) -> dict
     """
     issues = _unmeasured(report, report.get("bones"),
                          "no deform bone carried a single weight above the "
-                         "threshold — nothing here was measured, and a pass "
+                         "threshold, nothing here was measured, and a pass "
                          "would mean 'clean' when it means 'empty'")
     if issues:
         return {"passed": False, "issues": issues, "checked": 0,
@@ -4372,7 +4372,7 @@ def weight_islands_verdict(report: dict, *, min_bleed_vertices: int = 3) -> dict
                            "largest_fraction": info.get("largest_fraction"),
                            "note": f"{name}'s weight paint splits into "
                                    f"{islands} regions across {shells} piece"
-                                   f"{'s' if shells != 1 else ''} of mesh — "
+                                   f"{'s' if shells != 1 else ''} of mesh, "
                                    f"{bleed} vertices sit off the bone's own "
                                    "patch on a surface it could not have "
                                    "reached by following the geometry"})
@@ -4395,7 +4395,7 @@ def weight_islands_verdict(report: dict, *, min_bleed_vertices: int = 3) -> dict
 #   landmark fitting alone ..................... 5 of 23
 #   plate conditioned on this reference alone .. 8 of 23
 #   both ....................................... 0 of 23, and 0 unweighted
-# NOT templates/3d — that directory IS the Godot project scaffold that
+# NOT templates/3d, that directory IS the Godot project scaffold that
 # `bgate init --kind 3d` copies wholesale into a user's game, so anything
 # dropped there lands in every new project root. templates/humanoid is
 # shipped by the same package-data glob and copied by nothing.
@@ -4416,13 +4416,13 @@ HUMANOID_BONES = (
 
 # THE SAME 15 NAMES godot.py's retarget_check calls `essential` (see
 # godot.py's _RETARGET_GD, "what retargeting actually needs is the trunk and
-# the four limbs"). Kept in sync by hand, not by import — one lives in
-# embedded GDScript, the other in Python — so a change to either needs its
+# the four limbs"). Kept in sync by hand, not by import, one lives in
+# embedded GDScript, the other in Python, so a change to either needs its
 # twin updated too. This subset is checked HERE, in Blender, right after
 # rig(), purely as a fast pre-check: a misnamed or missing essential bone is
 # then visible before the Godot round-trip retarget_check requires, not
 # instead of it. Coverage is the only question Blender can answer for
-# itself — HIERARCHY (does rotating a shoulder move the hand) and BINDING
+# itself, HIERARCHY (does rotating a shoulder move the hand) and BINDING
 # (does a clip drive it) need Skeleton3D's own transform propagation and
 # cannot be faked here, which is why retarget_check remains the authority on
 # those two.
@@ -4492,16 +4492,16 @@ def humanoid_template() -> dict:
         "bones": list(HUMANOID_BONES),
         "pose_clause": POSE_CLAUSE,
         "reason": "" if present else
-                  f"template assets missing from {TEMPLATE_DIR} — a source "
+                  f"template assets missing from {TEMPLATE_DIR}, a source "
                   "checkout without them, or a wheel built before they shipped",
         "how": [
-            "image_generate(..., ref_images=[pose_front]) — the plate comes "
+            "image_generate(..., ref_images=[pose_front]), the plate comes "
             "back in the template's stance instead of inventing one",
             "KEY THE PLATE. An opaque background becomes geometry: measured "
             "2.8x slower and 21% non-manifold against 16% for the same subject",
-            "blender_generate(plate, out) — draft mesh",
-            "blender_rig(mesh, out) — adopt, fit, bind, and prove the bind",
-            "godot_deliver_asset(project, rigged) — .tscn, verified in-engine",
+            "blender_generate(plate, out), draft mesh",
+            "blender_rig(mesh, out), adopt, fit, bind, and prove the bind",
+            "godot_deliver_asset(project, rigged), .tscn, verified in-engine",
         ],
     }
 
@@ -4523,7 +4523,7 @@ def lengths_of(armature, height):
     are never in the same stance: rig() defaults to pose="a" while a reference
     is built in whatever stance it was asked for. The first version of this
     check reported both hands 0.154 body-heights out against a 0.08 threshold,
-    perfectly mirrored left to right, with every non-arm bone at exactly 0.0 —
+    perfectly mirrored left to right, with every non-arm bone at exactly 0.0 -
     it was measuring the arm swing, not a fit fault, and it failed every
     correctly-rigged character in the pipeline.
 
@@ -4533,8 +4533,8 @@ def lengths_of(armature, height):
     kept the 23 names but rewired the chain is still caught.
 
     ONE RULE FOR BOTH SIDES: a bone with children is measured to its FIRST
-    CHILD'S HEAD, not to its own tail. That is what glTF can carry — it stores
-    joints, not tails — so it is what an imported candidate's length already
+    CHILD'S HEAD, not to its own tail. That is what glTF can carry, it stores
+    joints, not tails, so it is what an imported candidate's length already
     is, and applying it to a generated reference too is what keeps the two
     comparable. Measured when it was not applied: bg_human authors Root's tail
     at 0.1 of chin height while its child Hips sits at 0.26, so the reference
@@ -4569,7 +4569,7 @@ def from_file(path):
     if not meshes:
         # NOT a fallback to height 1.0. That silently left one side of the
         # comparison in metres while the other was height-normalised.
-        return None, 0.0, None, ("no mesh in %s — body height is what every "
+        return None, 0.0, None, ("no mesh in %s, body height is what every "
                                  "length here is a fraction of" % path)
     mesh = max(meshes, key=lambda o: len(o.data.polygons))
     height = max(mesh.dimensions[2], 1e-6)
@@ -4643,7 +4643,7 @@ def template_deviation(model: str | os.PathLike[str], *,
                        heads: Optional[float] = None,
                        limbs: Optional[float] = None,
                        timeout: int = 300) -> dict:
-    """How far a rigged character's proportions sit from the canon's — at ITS
+    """How far a rigged character's proportions sit from the canon's, at ITS
     OWN head count, not an adult's.
 
     WHAT CHANGED AND WHY. This used to compare every character against one
@@ -4654,14 +4654,14 @@ def template_deviation(model: str | os.PathLike[str], *,
     reference is now built at the candidate's own values for them.
 
     DERIVED, NEVER SOLVED. The axes come from landmarks measured off the
-    candidate's MESH — crown, neck base, crotch — and never from whatever
+    candidate's MESH, crown, neck base, crotch, and never from whatever
     values would minimise the deviation. The safety property is structural
     rather than careful: the parameters come from the mesh and the comparison
     is of BONES, so moving a bone cannot move the reference it is judged
     against. See bodymeasure.derive_parameters, and the acceptance test that
     breaks a rig and checks the derivation does not absorb it.
 
-    Two axes are deliberately NOT derived — `build`, which changes no length
+    Two axes are deliberately NOT derived, `build`, which changes no length
     this compares, and `shoulders`, which changes only the single row it would
     be fitted to. Deriving that one would be solving.
 
@@ -4704,8 +4704,8 @@ def template_deviation(model: str | os.PathLike[str], *,
 def _invented_tails(*tables: dict) -> set:
     """The bones whose LENGTH in these reports is an importer's invention.
 
-    GLTF DOES NOT STORE BONE TAILS. It stores joint nodes — translation,
-    rotation, scale, children — and nothing else; read straight out of the JSON
+    GLTF DOES NOT STORE BONE TAILS. It stores joint nodes, translation,
+    rotation, scale, children, and nothing else; read straight out of the JSON
     chunk of the files this compares, the joint nodes carry exactly
     ['children', 'name', 'rotation', 'scale', 'translation'] and the files
     declare no extensions at all. So there is no field a tail could hide in.
@@ -4720,7 +4720,7 @@ def _invented_tails(*tables: dict) -> set:
 
     That matters because of what it did to `checked`. Five of 23 rows carried
     no information of their own and every one read dev 0.0000, so a verdict
-    reported 23 bones compared when 18 were compared and 5 were echoes —
+    reported 23 bones compared when 18 were compared and 5 were echoes -
     coverage overstated by 28%. An unknown is not a pass, and a number derived
     from an importer's guess is not a measurement; neither gets counted.
 
@@ -4758,13 +4758,13 @@ def _invented_tails(*tables: dict) -> set:
 
 
 def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> dict:
-    """The judgement, kept OUT of the Blender script — same split as flex_verdict.
+    """The judgement, kept OUT of the Blender script, same split as flex_verdict.
 
     max_deviation is how far ONE bone's length may differ from the template's,
     as a fraction of body height. 0.08 carries over the tolerance band of the
     6 cm-on-a-1.8m-figure incident documented against humanoid_template, but
     note it is applied to a different quantity than it was when this compared
-    joint positions — it is a gross-error line (a limb collapsed to nothing, or
+    joint positions, it is a gross-error line (a limb collapsed to nothing, or
     stretched across the body), not a proportional-fidelity one, and it has not
     been validated against a corpus of known-good characters. Fitting is MEANT
     to adapt the template to each body; only a length that no fit would produce
@@ -4772,7 +4772,7 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
     against and changing HOW MUCH deviation it tolerates are two decisions, and
     only the first has been made.
 
-    LEAF BONES ARE EXCLUDED FROM THE LENGTH COMPARISON — see _invented_tails
+    LEAF BONES ARE EXCLUDED FROM THE LENGTH COMPARISON, see _invented_tails
     for why their lengths are an importer's echo of their parents rather than a
     second measurement. Their PARENT is stored, so their hierarchy is still
     checked; `checked` counts only the lengths actually compared, and
@@ -4780,13 +4780,13 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
 
     WHAT THIS DELIBERATELY LEAVES DARK, so it is not filed as a bug: with the
     leaves out, the gate says nothing about hand size, foot size or head size.
-    It never honestly did — those five rows only ever repeated the forearm, the
+    It never honestly did, those five rows only ever repeated the forearm, the
     foot and the neck.
 
     DEFERRED, LABELLED: THERE IS NO FLOOR UNDER `checked`, AND IT NOW MOVES.
     Excluding the leaves turned coverage into a quantity that varies with the
     candidate, and nothing here refuses a nearly-empty comparison. `passed:
-    True, checked: 2` is reachable two ways — a candidate sharing only a
+    True, checked: 2` is reachable two ways, a candidate sharing only a
     handful of names with the template, or a cascade of the only-child knock-off
     above, where reparenting one leaf costs its old parent too. Either way the
     verdict reads as "proportions verified" on a twelfth of a skeleton.
@@ -4799,7 +4799,7 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
     The fix is to report coverage as a ratio beside `checked` and refuse below
     a justified floor. It is deliberately NOT done here: it is small, and small
     is exactly why it must land alone rather than riding along with a change
-    that moves the skeleton — every step in this sequence has been provable
+    that moves the skeleton, every step in this sequence has been provable
     because only one thing moved at a time.
     """
     ref = report.get("reference_bones") or {}
@@ -4814,7 +4814,7 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
                 "issues": _unmeasured(report, shared, "")}
     # THE HIERARCHY PASS RUNS EVEN WHEN NO LENGTH DOES. An early return here
     # meant a rig whose every shared bone was a leaf reported "unmeasured" and
-    # never looked at the chain — but a leaf's PARENT is stored, so a rewired
+    # never looked at the chain, but a leaf's PARENT is stored, so a rewired
     # skeleton was going unreported by the one check that could still see it.
     issues = []
     deviations = {}
@@ -4830,7 +4830,7 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
                                "reference": ref_len, "candidate": cand_len,
                                "note": f"{name} is {cand_len:.3f} body-heights "
                                        f"long where the template makes it "
-                                       f"{ref_len:.3f} — a fit that mis-solved "
+                                       f"{ref_len:.3f}, a fit that mis-solved "
                                        "this limb rather than scaling it to "
                                        "the character"})
         # THE PARENT IS STORED even when the tail is not, so a leaf is still
@@ -4841,10 +4841,10 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
                            "note": f"{name} hangs off "
                                    f"{cand_parent or '(root)'} here and off "
                                    f"{ref_parent or '(root)'} in the template "
-                                   "— same names, different chain, so nothing "
+                                   "- same names, different chain, so nothing "
                                    "retargeted onto this rig will land right"})
     issues = _unmeasured(report, shared,
-                         "no bone here has a length worth comparing — either "
+                         "no bone here has a length worth comparing, either "
                          "the two skeletons share no name (a candidate on a "
                          "different scheme, mixamorig:Hips and friends), or "
                          "every name they do share is a leaf whose tail the "
@@ -4852,28 +4852,28 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
                          "bones wrong") + issues
     return {"passed": not issues, "issues": issues, "checked": len(shared),
             "excluded": excluded, "hierarchy_checked": len(both),
-            "excluded_note": "leaf bones — glTF stores no tail for them, so "
+            "excluded_note": "leaf bones, glTF stores no tail for them, so "
                              "their length is the importer repeating their "
                              "parent's and not a measurement of this rig",
             "deviations": deviations, "threshold": max_deviation}
 
 
 # ---------------------------------------------------------------------------
-# Silhouette across the flex pose sweep — EXPERIMENTAL
+# Silhouette across the flex pose sweep, EXPERIMENTAL
 # ---------------------------------------------------------------------------
 # WHY THIS IS A DIFFERENT QUESTION FROM flex(). Volume and pinch are 3D
 # measures against the mesh itself; neither can see a failure that only shows
-# up from a CAMERA'S point of view — a limb that folds directly behind the
+# up from a CAMERA'S point of view, a limb that folds directly behind the
 # torso and vanishes from the silhouette while its 3D volume stays intact, or
 # a shoulder that balloons outward on screen without losing any measured
 # volume. This projects the SAME pose sweep flex() already runs through the
-# SAME fixed, rest-fitted camera (never refit per pose — a refit-per-pose
+# SAME fixed, rest-fitted camera (never refit per pose, a refit-per-pose
 # camera would reframe a collapsed limb back to looking normal-sized, which
 # is precisely the failure flex()'s own docstring already warns about for its
 # own camera) and measures the projected 2D convex-hull area.
 #
 # EXPERIMENTAL, and said so on purpose: no production rig-QA tool automates a
-# pose-sweep silhouette check anywhere this project's research found — studios
+# pose-sweep silhouette check anywhere this project's research found, studios
 # render sweeps and a human watches them. "Preserved" here means SANITY
 # BOUNDS, not "unchanged": a pose is EXPECTED to change how a character reads
 # on screen, so the verdict only flags collapse (the character nearly
@@ -4882,7 +4882,7 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
 #
 # _hull_area is a real, standalone, unit-tested function rather than logic
 # only inside the embedded bpy script, because this project cannot execute
-# bpy code in every environment it develops in — the algorithm is validated
+# bpy code in every environment it develops in, the algorithm is validated
 # here in plain Python (squares, triangles, degenerate/collinear inputs) and
 # then copied verbatim into the script string below, so a bug in the geometry
 # math would already have shown up in a test that runs anywhere.
@@ -4890,7 +4890,7 @@ def _hull_area(points: list[tuple[float, float]]) -> float:
     """2D convex hull area via the shoelace formula on Andrew's monotone chain.
 
     Degenerate inputs (fewer than 3 distinct points, or all collinear) report
-    0.0 rather than raising — a limb that foreshortens to a line from this
+    0.0 rather than raising, a limb that foreshortens to a line from this
     camera IS the pathology this exists to catch, not an error case to hide.
     """
     pts = sorted(set(points))
@@ -4923,7 +4923,7 @@ def _hull_area(points: list[tuple[float, float]]) -> float:
 
 _SILHOUETTE_MARK = "BGATE_SIL:"
 
-# The hull_area()/cross() pair below is _hull_area ABOVE, copied verbatim —
+# The hull_area()/cross() pair below is _hull_area ABOVE, copied verbatim -
 # see the section note for why this is a deliberate duplication rather than a
 # shared import (run_script's headless scripts are self-contained source
 # text, not importable modules).
@@ -5064,7 +5064,7 @@ def silhouette(model: str | os.PathLike[str], *, poses: Optional[list] = None,
     is marked experimental.
 
     Returns {ok, rest_area, rest_points, poses:[{label, area, points,
-    area_ratio}]}. Judge with silhouette_verdict — this call only measures.
+    area_ratio}]}. Judge with silhouette_verdict, this call only measures.
     """
     src = Path(model)
     if not src.is_file():
@@ -5083,7 +5083,7 @@ def silhouette(model: str | os.PathLike[str], *, poses: Optional[list] = None,
 
 def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
                        max_ratio: float = 4.0) -> dict:
-    """SANITY BOUNDS ONLY — see silhouette()'s section note for why
+    """SANITY BOUNDS ONLY, see silhouette()'s section note for why
     'preserved' does not mean 'unchanged'. A ratio this far from 1.0 in
     either direction is not an ordinary pose change; it is the character
     nearly vanishing from this camera or geometry ballooning past anything a
@@ -5092,7 +5092,7 @@ def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
     measured = [p for p in (report.get("poses") or [])
                 if not p.get("skipped") and p.get("area_ratio") is not None]
     issues = _unmeasured(report, measured,
-                         "every pose in the sweep was skipped — the bones it "
+                         "every pose in the sweep was skipped, the bones it "
                          "rotates are not on this armature, so no silhouette "
                          "was ever compared against rest")
     if issues:
@@ -5101,7 +5101,7 @@ def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
 
     # INERTNESS, THE SAME CLAUSE flex_verdict NEEDED. A mesh no bone drives
     # projects to the identical outline in every pose, so each ratio comes back
-    # at exactly 1.0 and the sanity bounds — which only fire far from 1.0 —
+    # at exactly 1.0 and the sanity bounds, which only fire far from 1.0 -
     # report a perfect sweep. Measured on this file's own unbound.glb fixture:
     # six poses, area_ratio 1.0 to the digit, passed.
     if all(abs(p["area_ratio"] - 1.0) < 1e-6 for p in measured):
@@ -5109,7 +5109,7 @@ def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
                 "issues": [{"pose": "*", "kind": "inert",
                             "value": 1.0,
                             "note": "every pose projects the identical outline "
-                                    "as rest — nothing in this sweep moved, so "
+                                    "as rest, nothing in this sweep moved, so "
                                     "the mesh is not bound to the skeleton "
                                     "posing it and every ratio here is vacuous"}],
                 "thresholds": {"min_ratio": min_ratio, "max_ratio": max_ratio}}
@@ -5122,13 +5122,13 @@ def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
         if ratio < min_ratio:
             issues.append({"pose": label, "kind": "collapsed", "value": ratio,
                            "note": f"projected silhouette shrank to "
-                                   f"{ratio * 100:.0f}% of rest — the "
+                                   f"{ratio * 100:.0f}% of rest, the "
                                    "character nearly vanished from this "
                                    "camera in this pose"})
         elif ratio > max_ratio:
             issues.append({"pose": label, "kind": "exploded", "value": ratio,
                            "note": f"projected silhouette grew to "
-                                   f"{ratio * 100:.0f}% of rest — geometry "
+                                   f"{ratio * 100:.0f}% of rest, geometry "
                                    "is blowing out far past what this "
                                    "joint's rotation should produce"})
     return {"passed": not issues, "issues": issues, "checked": checked,
@@ -5139,7 +5139,7 @@ def _plate_provider(name: str, root=None):
     """The module that generates a plate. krea or the gpt-image path.
 
     A blank name consults the project's preference (art.provider) and the
-    identity routing before defaulting — the old shape was krea-only-if-
+    identity routing before defaulting, the old shape was krea-only-if-
     literally-named, else openai, so the stored preference could never reach
     the one generation that decides what the whole character looks like. Only
     krea and openai can paint a plate here; any other answer (kie, local)
@@ -5161,8 +5161,8 @@ def _plate_provider(name: str, root=None):
         return imagegen
     # ANY OTHER CONFIGURED PROVIDER GOES THROUGH THE ART GATEWAY, because it is
     # the only thing that knows how to ANCHOR that provider. This used to fall
-    # through to gpt-image, so provider="kie" — this project's own character
-    # provider, and on catnip-fiend the only funded one — silently painted the
+    # through to gpt-image, so provider="kie", this project's own character
+    # provider, and on catnip-fiend the only funded one, silently painted the
     # plate at openai and died on a 429 naming an account nobody had chosen.
     # The seat then read "no credit" as "the pipeline is closed", which is the
     # exact turn that ends in a hand-modelled character.
@@ -5171,7 +5171,7 @@ def _plate_provider(name: str, root=None):
     # reference fields are URLs, and it already uploads a local ref, picks a
     # model that declares reference capacity, and REFUSES rather than buying an
     # unanchored frame. keyed=False because this path keys its own plate with
-    # despill off (see _key_plate) and must not be handed the sprite contract —
+    # despill off (see _key_plate) and must not be handed the sprite contract -
     # that was tried on this path and failed twice, which is why the plate
     # prompt above carries its own backdrop clause.
     return _GatewayPlate(chosen)
@@ -5201,7 +5201,7 @@ def _key_plate(src: str, dst: str) -> tuple[float, str]:
     how close the subject's darkest tones sit to the backdrop and a single
     guess gets it wrong in both directions: too low leaves a halo the
     reconstructor turns into geometry, too high eats the character. Measured on
-    one plate — tol 5 to 20 all landed at ~0.12 opacity, the true subject area,
+    one plate, tol 5 to 20 all landed at ~0.12 opacity, the true subject area,
     and 30 dropped it to 0.09 by biting into her coat. So the sweep stops at the
     plateau rather than the first value that "works".
     """
@@ -5223,7 +5223,7 @@ def _key_plate(src: str, dst: str) -> tuple[float, str]:
         else:
             break
     if not best:
-        return 0.0, ("nothing keyed cleanly — the plate's background is not "
+        return 0.0, ("nothing keyed cleanly, the plate's background is not "
                      "flat, or the subject fills the frame")
     return best, ""
 
@@ -5239,14 +5239,14 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
               godot_project: str = "", root: Any = None, dry_run: bool = False,
               timeout: int = 2400,
               ref_images: Sequence[str] = (), ref_strength: float = 0.6) -> dict:
-    """"A model that looks like X" — plate, mesh, rig, and into the engine.
+    """"A model that looks like X", plate, mesh, rig, and into the engine.
 
     THE ONE CALL THIS PIPELINE DID NOT HAVE. Every stage existed and every stage
     was reachable, and a caller still had to know: condition the plate on the
     template or the skeleton will not fit; key it or the background becomes
     geometry; which backend takes which knobs; that a bind reports success
     having weighted nothing. Get any of them wrong and you find out ten GPU
-    minutes later. Those are not judgement calls — they are the same five steps
+    minutes later. Those are not judgement calls, they are the same five steps
     in the same order every time, which is what a tool is for.
 
     Each stage GATES the next, so a failure costs the stage that found it rather
@@ -5256,13 +5256,13 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
         gate. The same subject keyed: 216 s and 16%, passes.
       * a plate under 1024px on the short side: detail in the result is
         invented rather than read.
-      * a collapse that met its triangle budget and destroyed the asset —
+      * a collapse that met its triangle budget and destroyed the asset -
         20,799 of 39,803 faces inside out, reported met=True.
       * a bind that created all 22 vertex groups and filled none of them:
         64,878 of 64,878 vertices carrying no weight, every other check green.
 
     dry_run quotes the plate and the mesh and stops. It is the honest default
-    for a caller who has not decided to spend — `usd` is the sum, and
+    for a caller who has not decided to spend, `usd` is the sum, and
     a backend that publishes no rate reports None rather than 0.0.
 
     Returns every artifact by path, the gate result from each stage, and
@@ -5307,7 +5307,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
 
     picked = backend or (imageto3d.choose(root) or {}).get("backend", "")
     mesh_quote = imageto3d.price_for(picked) if picked else None
-    # An unnamed backend is not an error here — choose() REFUSES a conditional
+    # An unnamed backend is not an error here, choose() REFUSES a conditional
     # licence on purpose, and the caller naming one after reading its terms is
     # the design, not a workaround. Say so rather than picking for them.
     if not picked:
@@ -5333,7 +5333,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
     # GENERATE FLAT, THEN KEY. NOT chroma.generate(keyed=True), which is the
     # 2D SPRITE path: it asks the model for a flat chroma background, audits
     # the result, and applies a sprite form clause. Tried on this path and it
-    # failed twice — the model returned a mottled backdrop the audit correctly
+    # failed twice, the model returned a mottled backdrop the audit correctly
     # refused, and the sprite clause turned a character sheet into pixel art.
     # A plate for reconstruction wants an illustration on an even background,
     # which is a different job from a sprite that must key perfectly.
@@ -5343,15 +5343,15 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
     # EXACTLY THE CALL THAT PRODUCED THE WORKING CHARACTER: the pose reference
     # as a conditioning image at 0.45, task_kind="character", 1024x1536, and
     # the project root so the key comes from the project.
-    # The reference carries the STANCE — arms out, feet flat, symmetrical,
-    # framed head to feet — which is what made the skeleton fit at limbs=1.0
+    # The reference carries the STANCE, arms out, feet flat, symmetrical,
+    # framed head to feet, which is what made the skeleton fit at limbs=1.0
     # with no compensation. Drop it and the generator invents a stance and the
     # skeleton has to be bent to whatever it chose.
     #
     # THE SUBJECT REFERENCE GOES IN FRONT OF THE POSE TEMPLATE. The template
     # alone says "a human, standing like this" and nothing about WHICH human,
     # so every re-run invented a different figure and no two plates of one
-    # character matched. `ref_images` — the pinned concept — is what makes a
+    # character matched. `ref_images`, the pinned concept, is what makes a
     # re-generation the SAME owner in a new pose rather than a new owner.
     # Ordered subject-first because the edit models read the first image as
     # the thing to edit and the rest as context, and carried at a higher
@@ -5441,7 +5441,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
     if not rigged.get("rigged") or not rigged.get("ok"):
         result["stage"] = "rig"
         result["error"] = (rigged.get("reason") or rigged.get("error")
-                           or "the bind weighted nothing — see steps")
+                           or "the bind weighted nothing, see steps")
         result["rig"] = rigged
         result["rigged"] = str(rigged_path) if rigged.get("rigged") else None
         return result
@@ -5482,11 +5482,11 @@ def _sum_usd(steps: list[dict]) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Clip authoring — the animation layer
+# Clip authoring, the animation layer
 # ---------------------------------------------------------------------------
 # WHY THIS EXISTS. rig() produces a bound humanoid with Godot's profile bone
 # names, flex() proves it can bend, retarget_check proves an engine can drive
-# it — and nothing could put a CLIP on it. Every agent asked for animations
+# it, and nothing could put a CLIP on it. Every agent asked for animations
 # wrote its own bpy script from scratch, and the one that shipped assumed the
 # rig faced +Y with its left on -X, aimed bones at absolute directions, and
 # interpolated nine keys. MEASURED: every clip strode backwards, the torso
@@ -5495,7 +5495,7 @@ def _sum_usd(steps: list[dict]) -> Optional[float]:
 # The authoring lives in humanpose.py, PURE Python, spliced into this script
 # by source the way bodymeasure.py is (see _measured): the same bytes the unit
 # tests run are the bytes Blender runs. This script's own job is the part that
-# needs bpy — dump the rig, check the SKIN agrees with the SKELETON about which
+# needs bpy, dump the rig, check the SKIN agrees with the SKELETON about which
 # way is forward, key what humanpose baked, and render the proof.
 HUMANPOSE = Path(__file__).with_name("humanpose.py")
 _ANIMATE_MARK = "BGATE_ANIMATE:"
@@ -5566,7 +5566,7 @@ def set_engine(scene, name):
 
 
 def rig_dump(arm):
-    """Every bone's rest frame in ARMATURE space — what humanpose composes on."""
+    """Every bone's rest frame in ARMATURE space, what humanpose composes on."""
     out = {}
     for b in arm.data.bones:
         m = b.matrix_local
@@ -5579,7 +5579,7 @@ def rig_dump(arm):
 
 def facing_of(mesh, forward, up=Vector((0.0, 0.0, 1.0))):
     """Does the SKIN's front agree with the skeleton's? Reads the toe reach
-    of the lowest slab along the rig's own forward — bg_facing's rule, run
+    of the lowest slab along the rig's own forward, bg_facing's rule, run
     against the direction the bones claim rather than an axis."""
     pts = [mesh.matrix_world @ v.co for v in mesh.data.vertices]
     if not pts:
@@ -5597,7 +5597,7 @@ def facing_of(mesh, forward, up=Vector((0.0, 0.0, 1.0))):
             "ratio": round(ratio, 3),
             "why": ("the toes reach %.2fx further than the heel along the "
                     "skeleton's forward" % ratio) if readable else
-                   ("no readable front — the two sides reach %.2fx, which is "
+                   ("no readable front, the two sides reach %.2fx, which is "
                     "not a foot" % ratio)}
 
 
@@ -5809,7 +5809,7 @@ if out.get("applied_transforms"):
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
 if not arms:
-    out.update(ok=False, error="no armature in %s — blender_animate needs a "
+    out.update(ok=False, error="no armature in %s, blender_animate needs a "
                "RIGGED model, which is what blender_rig produces" % P["model"])
     report_and_exit(out)
 else:
@@ -5884,7 +5884,7 @@ else:
                 out["facing"]["after"] = facing_of(mesh, Vector(rigf.forward))
             elif P["facing"] == "skeleton":
                 out["facing"]["note"] = ("mismatch overridden by facing="
-                                         "'skeleton' — the bones' front wins")
+                                         "'skeleton', the bones' front wins")
             else:
                 out.update(ok=False, refused=True, error=(
                     "THE SKIN AND THE SKELETON DISAGREE ABOUT WHICH WAY IS "
@@ -6129,7 +6129,17 @@ else:
                 bm.free()
                 ev.to_mesh_clear()
                 return n
+            # THE BASELINE IS THE REST POSE, NOT THE LAST KEYED ONE. Clearing
+            # the action stops the animation driving the bones; it does not
+            # move them back. With clips=[walk, pickup], the pose bones still
+            # held pickup's final frame, the "rest" count carried its arm and
+            # chest overlaps, and a colliding walk passed by under-counting.
             arm.animation_data.action = None
+            for pb in arm.pose.bones:
+                pb.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+                pb.rotation_euler = (0.0, 0.0, 0.0)
+                pb.location = (0.0, 0.0, 0.0)
+                pb.scale = (1.0, 1.0, 1.0)
             rest_overlap = _overlap_count(1)
             out["self_intersection"] = {"rest": rest_overlap, "clips": {}}
             for clip in out["clips"]:
@@ -6228,7 +6238,7 @@ else:
 
 def _with_humanpose(script: str) -> str:
     """A Blender script with bodymeasure.py, humanpose.py and quadpose.py
-    spliced in ahead of it — by source, for the same reason _measured
+    spliced in ahead of it, by source, for the same reason _measured
     splices bodymeasure.py. quadpose's import of humanpose is guarded, so
     the order here IS its import. A `from __future__` line is legal only at
     the top of a file, and three files are being made into one, so those
@@ -6240,7 +6250,7 @@ def _with_humanpose(script: str) -> str:
         return "\n\n".join(parts) + "\n\n" + script
     except OSError as exc:
         raise BlenderNotFound(
-            "the pose module %s is not on disk, so no clip can be authored — "
+            "the pose module %s is not on disk, so no clip can be authored, "
             "a build that shipped bgate_adapters without its source (%s)"
             % (HUMANPOSE.name, exc)) from exc
 
@@ -6255,7 +6265,7 @@ def animate(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
             timeout: int = 900) -> dict:
     """Author clips on a rigged humanoid, export them, and render the proof.
 
-    clips     [{"name", "kind", ...}] — see humanpose.CLIP_KINDS. None ships
+    clips     [{"name", "kind", ...}], see humanpose.CLIP_KINDS. None ships
               DEFAULT_CLIPS. A "keyed" clip carries its own keys in character
               terms (lean, hips_up, reach_r, ...), never bone rotations.
     facing    "check" refuses when the skin's toes and the skeleton's foot
@@ -6264,7 +6274,7 @@ def animate(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
               skin's toes; "skeleton" trusts the bones.
     Returns {ok, clips:[{name, action, frames, loop, notes, support}],
              renders, sheets, rig, facing, strays, out_path}. `ok` False with
-             `refused` True is the facing gate — read `error`.
+             `refused` True is the facing gate, read `error`.
     """
     src = Path(model)
     if not src.is_file():
@@ -6370,7 +6380,7 @@ def collision_verdict(report: dict, *, max_pct: float = COLLISION_MAX_PCT) -> di
 
 def _proof_sheets(report: dict, out: Path, stem: str) -> list:
     """One PNG per clip: the side row over the three-quarter row. THE PICTURE
-    IS THE ACCEPTANCE — a number cannot say whether a walk reads as a walk."""
+    IS THE ACCEPTANCE, a number cannot say whether a walk reads as a walk."""
     try:
         from PIL import Image
     except ImportError:

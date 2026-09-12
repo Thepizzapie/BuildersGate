@@ -308,7 +308,7 @@ def _scratch(project_dir: Path) -> Path:
 
 def _batch(project_dir: str, verb: list[str], *, timeout: int,
            stem: str, graphics: bool = False,
-           env: Optional[dict[str, str]] = None) -> dict:
+           env: Optional[dict[str, str]] = None, quit: bool = True) -> dict:
     """One batchmode editor run. Returns {ok, exit_code, seconds, log, log_path, errors}."""
     project = Path(project_dir)
     if not is_project(project):
@@ -324,8 +324,14 @@ def _batch(project_dir: str, verb: list[str], *, timeout: int,
     except UnityNotFound as exc:
         return {"ok": False, "error": str(exc)}
     log_path = _scratch(project) / f"{stem}_{int(time.time())}.log"
-    args = [exe, "-batchmode", "-quit", "-projectPath", str(project),
+    args = [exe, "-batchmode", "-projectPath", str(project),
             "-logFile", str(log_path), *verb]
+    # -quit ends the editor as soon as the command line is processed. The
+    # Test Framework runs asynchronously after that point, so a test run
+    # with -quit writes no results file; the runner exits on its own when
+    # the suite finishes. Every other verb wants -quit.
+    if quit:
+        args.insert(1, "-quit")
     if not graphics:
         args.insert(1, "-nographics")
     started = time.monotonic()
@@ -465,7 +471,8 @@ def test_run(project_dir: str, platform: str = "EditMode",
     if filter:
         verb += ["-testFilter", filter]
     got = _batch(str(project), verb, timeout=timeout,
-                 stem=f"tests_{platform}", graphics=platform == "PlayMode")
+                 stem=f"tests_{platform}", graphics=platform == "PlayMode",
+                 quit=False)
     got["platform"] = platform
     got["results_path"] = str(results)
     try:
