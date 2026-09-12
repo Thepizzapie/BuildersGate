@@ -1,7 +1,7 @@
 """The aggregate dependency check, and the per-call project root.
 
 Two things are being pinned here. First: `doctor.check` answers in one fixed
-shape whether the binaries are there or not, and never raises — a broken probe
+shape whether the binaries are there or not, and never raises, a broken probe
 must degrade to a row, because the caller is asking precisely when things are
 broken. Second: a tool call's project comes from the CALL, not from whatever
 some earlier call left behind on the server.
@@ -52,7 +52,7 @@ def everything_present(monkeypatch):
                         lambda: {"available": True, "python": "C:/py.exe",
                                  "version": "1.2.1"})
     # A GPU, stubbed like everything else here. The imageto3d row asks
-    # nvidia-smi, and `shutil.which` above answers None for it — so on a
+    # nvidia-smi, and `shutil.which` above answers None for it, so on a
     # machine WITH a GPU this fixture was accidentally honest and on a CI
     # runner it was not, which is exactly how this test passed on two
     # developer machines and failed on every runner.
@@ -72,6 +72,20 @@ def everything_present(monkeypatch):
     monkeypatch.setattr("bgate_adapters.aseprite.version",
                         lambda: {"path": "C:/aseprite.exe",
                                  "version": "Aseprite 1.3.18.2-x64"})
+    # The web and Unity engines' rows, stubbed like the Godot one.
+    monkeypatch.setattr("bgate_adapters.web.available",
+                        lambda: {"available": True, "path": "C:/node.exe"})
+    monkeypatch.setattr("bgate_adapters.web.version",
+                        lambda: {"available": True, "path": "C:/node.exe",
+                                 "version": "22.16.0"})
+    monkeypatch.setattr("bgate_adapters.web.browser_available",
+                        lambda: {"available": True, "package": True,
+                                 "browser": True, "path": "C:/chromium.exe"})
+    monkeypatch.setattr("bgate_adapters.unity.available",
+                        lambda: {"available": True, "path": "C:/Unity.exe"})
+    monkeypatch.setattr("bgate_adapters.unity.version",
+                        lambda path=None: {"available": True, "path": "C:/Unity.exe",
+                                           "version": "2022.3.10f1"})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
 
 
@@ -81,7 +95,7 @@ def nothing_present(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda name: None)
     # A BARE MACHINE HAS NO ~/.bgate/bin EITHER. ffmpegbin.resolve prefers a
     # binary deliberately placed there over PATH, and it reads the filesystem
-    # rather than shutil.which — so without this the developing machine's own
+    # rather than shutil.which, so without this the developing machine's own
     # ffmpeg walks into a test whose entire premise is that there is none.
     monkeypatch.setattr("bgate_core.runtime.ffmpegbin.local_bin", lambda: None)
     monkeypatch.setattr("bgate_adapters.blender.available",
@@ -103,7 +117,7 @@ def nothing_present(monkeypatch):
                         lambda: {"name": "local_image", "available": False,
                                  "detail": "BGATE_COMFY_T2I_WORKFLOW is not set",
                                  "optional": True})
-    # find_aseprite reads real install dirs off the filesystem, not just PATH —
+    # find_aseprite reads real install dirs off the filesystem, not just PATH -
     # same trap as ffmpegbin.local_bin above: the developing machine owns a
     # copy, and "a bare machine" must not inherit it.
     monkeypatch.setattr("bgate_adapters.aseprite.available",
@@ -153,7 +167,7 @@ def test_absent_binaries_report_a_reason_not_an_exception(nothing_present):
 
     This used to name the seven rows and assert the string "7 unavailable".
     Adding the imageto3d row broke both halves, and only on machines without a
-    GPU — so it passed on the two boxes it was written on and failed on every
+    GPU, so it passed on the two boxes it was written on and failed on every
     runner. A count and a list that have to be edited in step with CHECKS will
     be forgotten again; asking CHECKS cannot be.
     """
@@ -165,7 +179,7 @@ def test_absent_binaries_report_a_reason_not_an_exception(nothing_present):
         assert row["available"] is False, name
         assert row["reason"], name
         assert row["path"] in ("", "C:/py.exe"), name
-    # python is the interpreter running this — it is always there.
+    # python is the interpreter running this, it is always there.
     assert report["python"]["available"]
     # Counted from the report, not from `absent`: summary() counts every row it
     # found unavailable, including the SUMMARY_CHECKS this test does not make
@@ -179,7 +193,7 @@ def test_export_templates_must_match_the_editor_version(monkeypatch, tmp_path):
     """A near miss is the common case and the confusing one.
 
     Godot refuses to export against templates from another version, and the
-    error it prints reads like a broken preset — so this reports unavailable
+    error it prints reads like a broken preset, so this reports unavailable
     AND names the versions, rather than saying 'not installed' about a
     directory that visibly contains web templates.
     """
@@ -321,7 +335,7 @@ async def test_project_select_no_longer_switches_the_active_project(root, other_
 
 
 def test_no_tool_reads_a_mutable_module_global():
-    """The guard the fix exists for — assert the global is gone, not just unused."""
+    """The guard the fix exists for, assert the global is gone, not just unused."""
     assert not hasattr(server, "_ACTIVE_ROOT")
 
 

@@ -12,7 +12,7 @@ from bgate_core import seattools
 
 
 # The tools each seat was MEASURED calling across 76 real agent runs. Not a
-# wish list — this is what the logs showed, and it is the floor.
+# wish list, this is what the logs showed, and it is the floor.
 MEASURED = {
     "gameplay": ("godot_test_run", "godot_run", "godot_screenshot",
                  "godot_check_project", "scene_set_property", "scene_wire",
@@ -71,15 +71,27 @@ def test_prefixes_cover_tools_that_do_not_exist_yet():
 
 
 def test_every_named_seat_is_a_real_seat():
-    """A typo here would silently hand a seat the unknown-seat fallback —
-    everything — which is the opposite of what this module is for."""
+    """A typo here would silently hand a seat the unknown-seat fallback -
+    everything, which is the opposite of what this module is for."""
     from bgate_core.board import seats as _seats
 
     known = set(_seats.DEFAULT_SEATS)
     unknown = set(seattools.SEATS) - known
     assert not unknown, f"seattools names seats that do not exist: {unknown}"
     # And the reverse, which is the one that actually bites: a seat the product
-    # ships but this file forgot gets the unknown-seat fallback — every tool —
+    # ships but this file forgot gets the unknown-seat fallback, every tool -
     # so the saving silently does not apply to it.
     forgotten = known - set(seattools.SEATS)
     assert not forgotten, f"seats with no toolset, so they pay full price: {forgotten}"
+
+
+def test_every_seat_gets_the_engine_neutral_spine_and_the_engine_families():
+    """A seat brief on a web or Unity project names engine_check,
+    engine_screenshot, web_test_run and unity_test_run as the way to verify;
+    a seat that cannot register them is told to call tools it does not have."""
+    from bgate_core.seattools import seat_registers as ok
+    for seat in ("gameplay", "tech", "art", "audio", "cinematic", "qa", "narrative", "director"):
+        assert ok("engine_status", seat) and ok("engine_check", seat) and ok("engine_screenshot", seat), seat
+    assert ok("web_build", "gameplay") and ok("web_test_run", "qa") and ok("unity_test_run", "qa")
+    assert ok("unity_check", "tech") and ok("project_set_engine", "tech")
+    assert not ok("web_build", "narrative")

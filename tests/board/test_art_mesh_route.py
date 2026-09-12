@@ -16,7 +16,7 @@ def test_mesh_route_defaults_to_artifact_aware_routing(tmp_path):
     db.connect(tmp_path)
     assert settings.get(tmp_path, "art.mesh_route") == "smart"
     rule = seats.dispatch_rules(tmp_path, "art")
-    assert "3D CREATION ROUTE — SMART" in rule
+    assert "3D CREATION ROUTE, SMART" in rule
     assert "character_generate" in rule
     assert "blender_run" in rule
     assert "an apple" in rule

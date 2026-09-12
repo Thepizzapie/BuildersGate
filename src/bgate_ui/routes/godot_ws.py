@@ -255,7 +255,10 @@ def engine_status() -> dict:
                          "not driven: there is no adapter")
         return out
     if engine == "godot":
-        return {**godot_status(), **out}
+        # The probe's `project` wins over the None seeded above; the other
+        # way round showed "no project.godot was found" on every Godot
+        # project the Tech pane opened.
+        return {**out, **godot_status()}
     adapter = _engines.adapter(engine)
     probe = adapter.available()
     info = {**probe, **(adapter.version() if probe.get("available") else {})}

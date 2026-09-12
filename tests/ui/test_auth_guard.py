@@ -60,7 +60,7 @@ class TestMutationGuard:
 
 class TestCrossOrigin:
     def test_foreign_origin_is_refused_even_with_a_token(self, guarded):
-        """The token is in .bgate/; a hostile page cannot read it — but if it
+        """The token is in .bgate/; a hostile page cannot read it, but if it
         ever leaked, same-origin is the second lock on the door."""
         client, token = guarded
         got = client.post("/api/queue", json={"seat": "tech", "title": "x"},
@@ -75,6 +75,21 @@ class TestCrossOrigin:
                           headers={"X-Bgate-Token": token,
                                    "Sec-Fetch-Site": "cross-site"})
         assert got.status_code == 403
+
+
+    def test_a_running_game_can_report_telemetry_without_the_token(self, guarded):
+        """The Godot web export in the /play iframe and a vite dev server
+        through its proxy (Origin 127.0.0.1:5173) both POST events to the
+        live recording and neither can carry the token. Measured: 403 on the
+        proxied origin, 401 without one, and no web telemetry ever landed.
+        Only the events ingest is open; the session controls keep the token."""
+        client, _ = guarded
+        got = client.post("/api/playtest/1/events", json={"events": []},
+                          headers={"Origin": "http://127.0.0.1:5173"})
+        assert got.status_code != 401 and got.status_code != 403, got.text
+        got = client.post("/api/playtest/1/start", json={},
+                          headers={"Origin": "http://127.0.0.1:5173"})
+        assert got.status_code in (401, 403)
 
 
 class TestToken:

@@ -1,6 +1,6 @@
 """The arcade: what ships, what does not, and what the host will accept.
 
-The expensive half of publishing (Godot's exporter) is stubbed here — these
+The expensive half of publishing (Godot's exporter) is stubbed here, these
 tests are about the site around the build, and a suite that shells out to a
 40-second engine export is a suite nobody runs. The export itself is covered by
 tests/adapters/test_godot.py and, for the preset, by an actual export on a real machine.
@@ -27,7 +27,7 @@ def _game_files(root: Path, name: str = "Test Game") -> None:
 
 
 def _fake_build(root: Path, wasm_bytes: int = 1024) -> Path:
-    """A stand-in for export/web — same filenames the engine writes."""
+    """A stand-in for export/web, same filenames the engine writes."""
     web = root / "export" / "web"
     web.mkdir(parents=True, exist_ok=True)
     (web / "index.html").write_text("<html>godot shell</html>", encoding="utf-8")
@@ -124,7 +124,7 @@ def test_publish_writes_a_playable_tree(tmp_path, game):
 def test_the_published_index_carries_no_local_paths(tmp_path, game):
     """games.json goes on the public web; the report stays on this machine.
 
-    The report's `root` is an absolute path to the game — on Windows that
+    The report's `root` is an absolute path to the game, on Windows that
     names the user's own home directory, so publishing it verbatim put a
     username and a directory layout on a page anyone can read. Everything a
     visitor needs is keyed by slug and url.
@@ -199,7 +199,7 @@ def test_an_unknown_host_is_refused_before_anything_is_written(tmp_path, game):
 
 
 # ---------------------------------------------------------------------------
-# host limits — the part that decides whether the deploy is accepted
+# host limits, the part that decides whether the deploy is accepted
 # ---------------------------------------------------------------------------
 def test_a_file_over_the_host_limit_is_gzipped_under_its_own_name(tmp_path, game):
     _fake_build(game, wasm_bytes=8 * builder.MIB)
@@ -215,7 +215,7 @@ def test_a_file_over_the_host_limit_is_gzipped_under_its_own_name(tmp_path, game
 
     wasm = out / "games" / "ember-run" / "build" / "index.wasm"
     assert wasm.stat().st_size <= limit
-    # Same URL, gzip body — which is only correct if the header says so.
+    # Same URL, gzip body, which is only correct if the header says so.
     assert gzip.decompress(wasm.read_bytes())[:4] == bytes(range(4))
     headers = (out / "_headers").read_text(encoding="utf-8")
     assert "/games/ember-run/build/index.wasm" in headers
@@ -247,7 +247,7 @@ def test_host_none_leaves_the_build_untouched(tmp_path, game):
 
 
 # ---------------------------------------------------------------------------
-# escaping — the games' own text ends up in HTML
+# escaping, the games' own text ends up in HTML
 # ---------------------------------------------------------------------------
 def test_project_text_cannot_inject_markup(tmp_path, game):
     (game / ".bgate" / "site.json").write_text(json.dumps({
@@ -281,7 +281,7 @@ def test_the_shipped_web_preset_is_a_web_preset():
     """The scaffold's export_presets.cfg is what makes publishing possible at
     all; a rename or a typo in it fails far away from here."""
     preset = Path(builder.__file__).resolve().parents[1] / "templates" / \
-        "shared" / "export_presets.cfg"
+        "godot" / "shared" / "export_presets.cfg"
     text = preset.read_text(encoding="utf-8")
     assert 'name="Web"' in text and 'platform="Web"' in text
     # Threads would need cross-origin isolation on the host; the site does not

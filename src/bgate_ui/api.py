@@ -3,7 +3,7 @@
 The QA audit's loudest cross-cutting finding: two mutually exclusive error
 conventions coexisted (FastAPI's ``{detail}`` at 4xx and ``200 {ok: false,
 error}``), so the frontend gave up and wrapped every fetch in
-``.catch(() => ({}))`` — which does not even fire on a 500, because a 500 body
+``.catch(() => ({}))``, which does not even fire on a 500, because a 500 body
 is still valid JSON. Every failure in the product rendered as a blank panel.
 
 One envelope, always::
@@ -12,7 +12,7 @@ One envelope, always::
     {"ok": false, "error": {"code": "not_found", "message": "...", "detail": {...}}}
 
 ``code`` is machine-readable and stable; ``message`` is a sentence a human can
-act on. Handlers raise :class:`ApiError` (or any HTTPException — it is coerced)
+act on. Handlers raise :class:`ApiError` (or any HTTPException, it is coerced)
 and never hand-roll an error body.
 
 Also here because every router needs it and nobody should re-derive it:
@@ -22,6 +22,7 @@ same-origin + bearer-token guard on the mutating surface.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -56,7 +57,7 @@ CODES = {
 class ApiError(Exception):
     """An error with a machine-readable code and a message worth showing.
 
-    ``detail`` carries structured context the UI can render — the conflicting
+    ``detail`` carries structured context the UI can render, the conflicting
     lock's owner, the limit that was exceeded, the field that failed.
     """
 
@@ -88,7 +89,7 @@ def forbidden(msg: str, **detail: Any) -> ApiError:
 
 
 def locked(msg: str, **detail: Any) -> ApiError:
-    """423 — a seat holds this path. Distinct from 403 on purpose: the caller is
+    """423, a seat holds this path. Distinct from 403 on purpose: the caller is
     allowed to do this, just not right now, and the UI offers `force` for it."""
     return ApiError(423, msg, detail=detail or None)
 
@@ -108,7 +109,7 @@ def ok(data: Any = None, **extra: Any) -> dict:
 # Turning an exception into something safe to put in a response
 # ---------------------------------------------------------------------------
 #
-# WHY safe_error IS A CONSTANT — see its docstring. The scrubbing that used to
+# WHY safe_error IS A CONSTANT, see its docstring. The scrubbing that used to
 # live here (bgate_core.board.streamer, via a cached Redactor) is gone with it: it
 # could not clear the finding, and every response it protected now carries no
 # exception text to protect. The streamer-mode middleware in bgate_ui.redact is
@@ -118,7 +119,7 @@ def safe_error(exc: BaseException) -> str:
 
     THE REASON IT IS A CONSTANT AND NOT A SCRUBBED MESSAGE. CodeQL's
     py/stack-trace-exposure query has an abstract Sanitizer class with ZERO
-    implementations — read it: python/ql/lib/semmle/python/security/dataflow/
+    implementations, read it: python/ql/lib/semmle/python/security/dataflow/
     StackTraceExposureCustomizations.qll. There is no sanitizer, so no amount of
     redaction clears the finding; the only thing that does is the taint not
     reaching an HTTP response body at all. Earlier attempts here scrubbed the
@@ -128,15 +129,15 @@ def safe_error(exc: BaseException) -> str:
     WHAT THIS DOES NOT COST, WHICH IS THE POINT. It is only reached from an
     `except` block wrapping an unexpected failure. Every DELIBERATE refusal in
     the product raises ApiError with a message written as a literal in our
-    source — "a sequence needs a name", "first_frame ... resolves outside the
-    project" — and those never touch this function, never carried taint, and are
+    source, "a sequence needs a name", "first_frame ... resolves outside the
+    project", and those never touch this function, never carried taint, and are
     unchanged. What is lost is the text of failures nobody anticipated, which
     are the ones whose message was never read by a human anyway.
 
     A developer diagnosing one still has the traceback: the exception is not
     swallowed here, only excluded from the response.
     """
-    return ("the operation failed unexpectedly — the message is withheld "
+    return ("the operation failed unexpectedly, the message is withheld "
             "because an unanticipated exception can name paths or values that "
             "are not ours to repeat. The traceback is on the server.")
 
@@ -154,7 +155,7 @@ def error_body(status: int, message: str, *, code: Optional[str] = None,
 
 
 def install_error_handlers(app) -> None:
-    """Coerce every failure — ApiError, HTTPException, and the unexpected — into
+    """Coerce every failure, ApiError, HTTPException, and the unexpected, into
     the one envelope. Without the bare-Exception handler a stray KeyError still
     escapes as an HTML traceback the UI cannot parse."""
     from fastapi.exceptions import RequestValidationError
@@ -170,7 +171,7 @@ def install_error_handlers(app) -> None:
 
     # Starlette's HTTPException, not FastAPI's: an unmatched route raises the
     # base class, so registering only the subclass leaves every 404 and 405 in
-    # the old {detail} shape — the exact inconsistency this module exists to end.
+    # the old {detail} shape, the exact inconsistency this module exists to end.
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(_request: Request, exc: StarletteHTTPException):
         # Legacy raises across app.py pass through here and come out shaped
@@ -197,7 +198,7 @@ def install_error_handlers(app) -> None:
     @app.exception_handler(Exception)
     async def _unhandled(_request: Request, exc: Exception):
         # THE WIDEST EXPOSURE IN THE PRODUCT, because it catches what nobody
-        # anticipated — and an unanticipated exception is exactly the one whose
+        # anticipated, and an unanticipated exception is exactly the one whose
         # message was never read by a human. See safe_error.
         return JSONResponse(
             status_code=500,
@@ -207,7 +208,7 @@ def install_error_handlers(app) -> None:
 
 def _jsonable(errors: Sequence[dict]) -> list[dict]:
     """Pydantic v2 stuffs the offending exception object into ``ctx``, which is
-    not JSON-serialisable — stringify anything that is not a primitive."""
+    not JSON-serialisable, stringify anything that is not a primitive."""
     out = []
     for err in errors:
         out.append({k: (v if isinstance(v, (str, int, float, bool, type(None), list))
@@ -262,7 +263,7 @@ class Page:
 
 # Re-exported, not re-declared. The prefix, the identity fallback and the
 # human/agent predicate below all live in bgate_core.board.activity, which is the layer
-# the MCP server, the hook and the CLI also go through — a second copy here is a
+# the MCP server, the hook and the CLI also go through, a second copy here is a
 # second thing to keep in step, and "only a human may approve" is not a rule that
 # survives two definitions of "human".
 AGENT_PREFIX = _activity.AGENT_PREFIX
@@ -273,7 +274,7 @@ def current_actor(request: Optional[Request] = None) -> str:
 
     An agent's spawned session carries BGATE_ACTOR=agent:item-<id> in its env;
     anything else is a human at the dashboard. This is what makes 'approved'
-    mean something — see :func:`is_human`.
+    mean something, see :func:`is_human`.
     """
     env = os.environ.get("BGATE_ACTOR", "").strip()
     if env:
@@ -283,7 +284,7 @@ def current_actor(request: Optional[Request] = None) -> str:
     #
     # BGATE_ACTOR is the explicit stamp, but it is one line in one spawn path,
     # and this gate is only worth having if forgetting that line cannot silently
-    # disable it. It was in fact forgotten — a dispatched agent resolved to the
+    # disable it. It was in fact forgotten, a dispatched agent resolved to the
     # machine's human identity and could approve its own art, which is the exact
     # thing the human-only rule exists to prevent. BGATE_WORK_ITEM/BGATE_SEAT are
     # set by every spawn because the hook needs them, so they are the honest
@@ -312,7 +313,7 @@ is_human = _activity.is_human
 def require_human(actor: str, action: str = "approve") -> None:
     if not is_human(actor):
         raise forbidden(
-            f"{action} requires a human — {actor or 'an unidentified caller'} is an agent",
+            f"{action} requires a human, {actor or 'an unidentified caller'} is an agent",
             actor=actor, action=action)
 
 
@@ -348,6 +349,16 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "testserver"}
 # Everything the browser needs before it can present a token.
 _OPEN_PATHS = ("/static/", "/play/", "/api/preview", "/favicon")
 
+# THE ONE MUTATION A GAME MAKES WITHOUT A TOKEN. A running game reports its
+# telemetry to the live recording: the Godot web export from the /play iframe,
+# a vite dev server through its proxy (Origin 127.0.0.1:5173, which the
+# origin check below would refuse), a player build on the same machine. None
+# of them can carry the dashboard token, and the endpoint only appends events
+# to a session that is already recording. Loopback is still required, and
+# nothing else under /api/playtest is opened by this: start, stop and promote
+# keep the token.
+_OPEN_POST_RE = re.compile(r"^/api/playtest/\d+/events$")
+
 
 def token_path(root: Path) -> Path:
     return Path(root) / ".bgate" / TOKEN_FILENAME
@@ -356,7 +367,7 @@ def token_path(root: Path) -> Path:
 def ensure_token(root: Path) -> str:
     """Read (or mint) this project's dashboard token.
 
-    Written 0600 into .bgate/ — the same directory the DB lives in, which is
+    Written 0600 into .bgate/, the same directory the DB lives in, which is
     already gitignored, so the token never travels with the game repo.
     """
     path = token_path(root)
@@ -391,7 +402,7 @@ def install_guard(app, root_fn) -> None:
     """Reject cross-origin and unauthenticated mutations.
 
     The dashboard binds to 127.0.0.1, which is not a security boundary: any page
-    in the browser can POST to localhost. Two cheap gates close it — the request
+    in the browser can POST to localhost. Two cheap gates close it, the request
     must be same-origin, and it must carry the token only something with read
     access to .bgate/ could know.
 
@@ -433,6 +444,8 @@ def install_guard(app, root_fn) -> None:
         path = request.url.path
         if any(path.startswith(p) for p in _OPEN_PATHS):
             return await call_next(request)
+        if request.method == "POST" and _OPEN_POST_RE.match(path):
+            return await call_next(request)
 
         site = request.headers.get("sec-fetch-site")
         if site and site not in {"same-origin", "none"}:
@@ -457,7 +470,7 @@ def install_guard(app, root_fn) -> None:
                              .removeprefix("Bearer ").strip()))
             if not secrets.compare_digest(presented or "", expected):
                 return JSONResponse(status_code=401, content=error_body(
-                    401, "missing or stale dashboard token — reload the page",
+                    401, "missing or stale dashboard token, reload the page",
                     code="unauthorized"))
 
         return await call_next(request)

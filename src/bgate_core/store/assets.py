@@ -583,7 +583,10 @@ _SKIP_DIRS = {".git", ".godot", ".bgate", ".bgate_out", ".import",
               # Build output. The web export copies icons in beside the wasm;
               # they are not assets anybody wires, and reporting them as
               # orphans is exactly the noise that gets a report ignored.
-              "export", "builds", "dist"}
+              "export", "builds", "dist",
+              # Unity's generated trees: Library/PackageCache carries every
+              # package's textures, none of them this game's assets.
+              "Library", "Temp", "Logs", "obj", "UserSettings"}
 
 _MAX_SCAN_BYTES = 4 << 20      # a source file past this is generated data
 _MAX_REPORT = 60
