@@ -1,11 +1,11 @@
-"""Every registered route answers something — never a 500.
+"""Every registered route answers something, never a 500.
 
 Route modules are auto-discovered (bgate_ui/routes/__init__.py imports every
 sibling and includes its `router`), so the dashboard's surface grows without
 anyone editing a list. This smoke test therefore enumerates ``app.routes``
 rather than hardcoding paths: a route added tomorrow is covered tonight.
 
-What counts as a pass is deliberately loose — 4xx is fine (a made-up id SHOULD
+What counts as a pass is deliberately loose, 4xx is fine (a made-up id SHOULD
 404, a bad body SHOULD 422). The bar is: the handler ran and answered in the
 project's envelope instead of blowing up. A 5xx here is a real bug in whoever
 owns that route.
@@ -23,7 +23,7 @@ from bgate_core.board import queue
 from bgate_ui import api as _api
 from bgate_ui.app import app
 
-# Values for path params, by name. Anything unlisted falls back to "1" — enough
+# Values for path params, by name. Anything unlisted falls back to "1", enough
 # to reach the handler, which is the whole point.
 PARAM_VALUES = {
     "seat": "art",
@@ -50,7 +50,7 @@ def _walk(routes) -> list:
     Starlette 1.0 stopped flattening `include_router` into `app.routes`: an
     included router now sits there as ONE opaque object holding the real routes
     behind `.original_router`. Walking only the top level therefore saw 39 of
-    this app's 159 routes on new Starlette and 159 on old — and because this
+    this app's 159 routes on new Starlette and 159 on old, and because this
     module parametrizes off the result, the coverage silently shrank by 120
     tests rather than failing. Recurse, and both shapes give the same answer.
     """
@@ -76,7 +76,7 @@ def _api_routes() -> list[tuple[str, str]]:
             if method in ("HEAD", "OPTIONS"):
                 continue
             out.append((method, route.path))
-    assert out, "no routes registered — did the app fail to import?"
+    assert out, "no routes registered, did the app fail to import?"
     return sorted(set(out))
 
 
@@ -112,7 +112,7 @@ def client(seeded):
 
 @pytest.fixture(scope="module")
 def bare(seeded):
-    """A client that presents NO token — for probing the mutation guard."""
+    """A client that presents NO token, for probing the mutation guard."""
     import os
 
     os.environ["BGATE_ROOT"] = str(seeded["root"])
@@ -144,13 +144,13 @@ class TestEveryRouteAnswers:
                              ids=[f"{m} {p}" for m, p in MUTATING_ROUTES])
     def test_mutating_routes_are_guarded_not_crashed(self, method, path,
                                                      bare, seeded, monkeypatch):
-        """Mutations are NOT executed here — spawning agents and starting Godot
+        """Mutations are NOT executed here, spawning agents and starting Godot
         from a smoke test is not smoke, it is arson. What is checked is that
         every one of them sits behind the guard and that the refusal is the
         shared envelope: an unauthenticated mutation comes back 401/403 with
         {ok: false, error: {...}}, never a 500 and never an HTML page.
 
-        conftest disables the guard suite-wide, so it is re-armed here — and
+        conftest disables the guard suite-wide, so it is re-armed here, and
         the canary confirms the re-arming worked before any request is aimed at
         a route that would otherwise DO something."""
         monkeypatch.delenv("BGATE_NO_AUTH", raising=False)
@@ -161,6 +161,16 @@ class TestEveryRouteAnswers:
                         f"(canary -> {canary.status_code}); refusing to fire "
                         f"unauthenticated mutations at live routes")
         res = bare.request(method, _concrete(path), json={})
+        if method == "POST" and _api._OPEN_POST_RE.match(_concrete(path)):
+            # THE ONE MUTATION THE GUARD OPENS ON PURPOSE: a running game's
+            # telemetry, which no export or dev server can sign. It must
+            # still answer in the shared envelope and never 500; here, with
+            # no session recording, that is the 409 the ingest refuses with.
+            assert res.status_code not in (401, 403, 500), (
+                f"{method} {_concrete(path)} -> {res.status_code}: {res.text[:300]}")
+            body = res.json()
+            assert "ok" in body
+            return
         assert res.status_code in (401, 403), (
             f"{method} {_concrete(path)} -> {res.status_code} unguarded: "
             f"{res.text[:300]}")
