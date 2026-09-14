@@ -284,6 +284,63 @@ blender_animate(model="out/hero_rigged.glb", out_path="out/hero_anim.glb")
    → strays            unbound meshes found inside the rig, dropped
 ```
 
+### Editing the rig, not just fitting one
+
+`blender_rig` fits a fixed template: `HUMANOID_BONES` is 23 bones,
+`QUADRUPED_BONES` its four-legged counterpart. Where it put each one is a
+measurement, and measurements are occasionally wrong. Four routes make that
+editable from the surface holding the model.
+
+```text
+GET  /api/model3d/skeleton     every bone's head, tail, roll, parent and how
+                               many vertices are actually weighted to it, in
+                               the viewer's frame. Coincident endpoints are
+                               grouped into JOINTS: an elbow is the forearm's
+                               head and the upper arm's tail at one
+                               coordinate, and moving one without the other
+                               is a limb that comes apart when it bends
+POST /api/model3d/skeleton     write moved joints back, re-bind on the same
+                               heat-then-envelope ladder rig() uses, prove it
+                               by the unweighted count. Writes <name>.bones.glb
+POST /api/model3d/weights/repair
+                               move each bleeding bone's stray vertices to the
+                               deform bone whose segment passes nearest, then
+                               renormalise and optionally smooth. Writes
+                               <name>.weights.glb and grades nothing: re-run
+                               the check against the result
+POST /api/model3d/animate      with a clip of kind "bones", keys carrying the
+                               POSE itself - one bone-local rotation delta per
+                               bone, which is what a rotate gizmo in a
+                               viewport hands back
+```
+
+Rebinding after a joint move is the default, and off costs an explicit
+choice: weights were solved by heat around the joints that existed at bind
+time, so keeping them after moving one ships a character that tears at
+exactly that joint.
+
+### A Blender that stays open
+
+`blender.run_script` launches a fresh headless Blender per call. `blender_live`
+talks to one the user started, over the socket its MCP extension opens on
+localhost, so the scene persists and the viewport they are looking at is the
+one being driven.
+
+```text
+GET  /api/model3d/live         is anything answering, which Blender, is the
+                               kit loaded. Never an error: nothing listening
+                               is the normal state
+POST /api/model3d/live/import  push the model the viewer has open across
+POST /api/model3d/live/view    photograph the live viewport
+POST /api/model3d/live/export  bring the scene back as a .glb in the project
+POST /api/model3d/live/run     a kit script in the live session
+POST /api/model3d/live/reset   empty it
+```
+
+`/live/run` executes Python inside the user's Blender, which is what the
+feature is. It carries the same authority the MCP tool already has, behind the
+dashboard's same-origin and bearer-token guard on mutations.
+
 ### The same step from the viewer
 
 The model editor's draft-to-asset column runs the whole chain against the file

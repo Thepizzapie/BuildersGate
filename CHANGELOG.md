@@ -22,6 +22,23 @@ repository at first publication. There is no earlier release history to record.
   skeleton that disagree about forward comes back 200 with nothing written and
   the two overrides that fix it, instead of an error that reads like a crash
 
+- **The skeleton is editable, not just fittable**: `GET/POST
+  /api/model3d/skeleton` reads every bone and writes moved joints back,
+  re-binding and proving it by the unweighted count. The unit of editing is
+  the joint, since an elbow is two bone ends at one coordinate and moving one
+  is a limb that comes apart when it bends
+- **Weight repair**: the island check has named the bleeding bone since it
+  landed and could do nothing about it. `POST /api/model3d/weights/repair`
+  moves each stray vertex to the deform bone whose segment passes nearest,
+  renormalises, and optionally smooths
+- **Posing and keying in the viewport**: a clip kind whose keys carry the pose
+  itself, one bone-local rotation delta per bone. The editor drives the loaded
+  glTF's own skeleton, so the mesh deforms as you drag and scrubbing costs
+  nothing; baking still goes through Blender and the same gates
+- **The live Blender bridge reaches the dashboard**: six routes over the
+  socket its MCP extension opens, including pushing the open model across and
+  pulling the scene back as a .glb in the project
+
 ### Fixed
 - **The viewer's clip scrub was ranged on a hard-coded second**, so on the
   three-second walk cycles this pipeline authors the slider ran out mid-stride
@@ -29,6 +46,16 @@ repository at first publication. There is no earlier release history to record.
 - **The scrub never moved while a clip played**, and there was no time readout,
   no loop control, no playback speed and no way to step a single frame: a foot
   plant is one frame wide and a mouse cannot land on it
+- **A pose timeline clamped to its last key could never grow**: the first key
+  pinned the playhead at zero, so no second key could be set later than the
+  first
+- **`int(payload.get(k) or default)` swallowed a legitimate zero** in five
+  request fields: min_bleed 0 became 3, threshold 0 became 0.02 and fps 0
+  became 30, so the one input the bound check exists to refuse got a silent
+  substitution
+- **A sibling module could not repaint the tools column**: `tick()` only
+  rebuilds when the model changed, so the joints panel sat on its pre-read
+  text with a skeleton already drawn in the viewport behind it
 
 ## [0.1.46] - 2026-09-12
 

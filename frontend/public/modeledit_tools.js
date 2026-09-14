@@ -135,6 +135,10 @@ window.ModelTools = (() => {
   let fixMode = "nearest", fixSmooth = 1;
   let retarget = null, rtBusy = false, rtErr = "";
   let blOpened = null, blBusy = false, blErr = "";
+  // The WARM Blender: one that is already open, driven over the add-on's
+  // socket, as against the cold one the panel below launches and forgets.
+  let live = null, liveBusy = false, liveErr = "", liveMsg = "";
+  let livePort = 9876, liveWipe = false, liveShot = null, livePulled = "";
   let engine = null, enBusy = false, enErr = "";
 
   // The clip authoring step. cat is the server's catalogue — what
@@ -317,6 +321,7 @@ window.ModelTools = (() => {
       flex = null; fErr = ""; retarget = null; rtErr = "";
       fix = null; fixErr = "";
       blOpened = null; blErr = ""; engine = null; enErr = "";
+      liveMsg = ""; liveShot = null; livePulled = "";
       // The CHOICES survive a model change, the RESULT does not. Someone
       // rigging a cast picks the same six clips for every character, and
       // making them re-tick the list per model would be the panel forgetting
@@ -717,6 +722,27 @@ window.ModelTools = (() => {
     rtBusy = false; render();
   }
 
+  /* ── the warm Blender ──────────────────────────────────────────────────
+     Every call here is one socket round trip to a Blender the user started.
+     None of them costs a cold start, which is the point: at forty seconds a
+     launch, a round trip you take twice is a round trip you stop taking. */
+  async function liveDo(what, body, then){
+    if (liveBusy) return;
+    liveBusy = true; liveErr = ""; render();
+    try {
+      const got = what === "check"
+        ? await getJSON("/api/model3d/live?port=" + livePort)
+        : await postJSON("/api/model3d/live/" + what, {port: livePort, ...body});
+      if (what === "check") live = got;
+      if (then) then(got);
+    } catch (e) {
+      liveErr = String((e && e.message) || e).slice(0, 300);
+      if (what === "check") live = {available: false, port: livePort};
+      say("live Blender: " + liveErr, "err");
+    }
+    liveBusy = false; render();
+  }
+
   /* ── the escape hatch ──────────────────────────────────────────────────
      Every check above can tell you a mesh is broken and none of them can fix
      a torn shoulder. Blender is already a hard dependency — doctor gates on
@@ -793,6 +819,29 @@ window.ModelTools = (() => {
     if (act === "retarget") { runRetarget(); return; }
     if (act === "blender") { openInBlender(); return; }
     if (act === "engine") { runEngine(); return; }
+    if (act === "livecheck") { liveDo("check"); return; }
+    if (act === "livewipe") { liveWipe = !liveWipe; render(); return; }
+    if (act === "livepush") {
+      const S = ME();
+      if (S) liveDo("import", {rel: S.rel, wipe: liveWipe},
+        g => { liveMsg = "sent " + S.name + " \u2014 " + (g.count || 0) +
+                         " object(s) in the live scene"; liveShot = null; });
+      return;
+    }
+    if (act === "liveshot") { liveDo("view", {}, g => { liveShot = g; liveMsg = ""; }); return; }
+    if (act === "livepull") {
+      const S = ME();
+      if (!S) return;
+      const out = S.rel.replace(/\.[^.]+$/, "") + ".live.glb";
+      liveDo("export", {rel: out}, g => {
+        livePulled = g.rel; liveMsg = "wrote " + g.rel + " (" + K(g.bytes) + " bytes)";
+      });
+      return;
+    }
+    if (act === "livereset") {
+      liveDo("reset", {}, () => { liveMsg = "the live scene is empty"; liveShot = null; });
+      return;
+    }
     if (act === "anfam") { animFamily = val; render(); return; }
     if (act === "ankind") {
       const i = animPick.indexOf(val);
@@ -837,6 +886,7 @@ window.ModelTools = (() => {
     if (f === "anproof") animProof = clamp(Math.round(num(el.value, 6)), 0, 24);
     // Same rule for the pose module's fields, and for the same reason.
     if (window.PoseEdit) PoseEdit.field(f, el);
+    if (f === "liveport") livePort = clamp(Math.round(num(el.value, 9876)), 1, 65535);
   }
 
   /* ── render ────────────────────────────────────────────────────────────*/
@@ -859,7 +909,7 @@ window.ModelTools = (() => {
         secInspect() + secScale() + secOrient() + secOrigin() +
         secClean() + secBake() +
         secRig() + secJoints() + secWeights() + secFlex() +
-        secPose() + secAnimate() + secRetarget() + secBlender() +
+        secPose() + secAnimate() + secRetarget() + secBlender() + secLive() +
       '</div>';
     const body1 = host.querySelector(".mt-body");
     if (body1 && keepScroll) body1.scrollTop = keepScroll;
@@ -1578,6 +1628,67 @@ window.ModelTools = (() => {
       (blOpened.imported ? " and imported the mesh" : "") +
       '. Reopen the model here when you have saved.</div>';
     return panel("k-doc", "edit", "open in Blender", "", "", body);
+  }
+
+  /* 12b. LIVE BLENDER ────────────────────────────────────────────────────
+     The panel above launches a COLD Blender and forgets about it. This talks
+     to one that is already open: the scene persists between calls and the
+     viewport the person is looking at is the one being driven. The round trip
+     is what makes it worth having - push the model across, fix what no
+     automatic pass can fix, pull it back, and run the gates over the result
+     without either side going through a file dialogue. */
+  function secLive(){
+    const S = ME();
+    const on = live && live.available;
+    const act = `<button class="qbtn ghost small" data-mt="livecheck" ${liveBusy ? "disabled" : ""}>` +
+      (liveBusy ? "…" : "check") + "</button>";
+    let body = '<div class="mt-note">A Blender that stays open, driven over the ' +
+      'MCP add-on’s socket on localhost. The scene persists between calls, so this ' +
+      'is a conversation rather than a batch job.</div>';
+
+    body += '<div class="mt-row" style="margin-top:var(--s-3)">' +
+      `<input type="number" min="1" max="65535" step="1" value="${livePort}" data-mtf="liveport">` +
+      '<span class="mt-unit">port</span>' +
+      '</div>';
+
+    if (liveErr) body += `<div class="mt-note bad">${E(liveErr)}</div>`;
+    if (live && !on) {
+      body += '<div class="mt-note warn">Nothing is answering on ' + livePort + '. ' +
+        'Start Blender, enable its MCP extension, and check the port in that ' +
+        'add-on’s preferences.</div>' +
+        (live.error ? `<div class="mt-note">${E(String(live.error).slice(0, 200))}</div>` : "");
+      return panel("k-doc", "edit", "live Blender", "idle", "", body, act);
+    }
+    if (!live) return panel("k-doc", "edit", "live Blender", "", "", body, act);
+
+    body = '<div class="mt-grid">' +
+      row("Blender", live.version || "?", "good") +
+      row("kit loaded", live.kit_loaded ? "yes" : "not yet",
+          live.kit_loaded ? "good" : "") +
+      row("open file", live.file ? String(live.file).split(/[\\/]/).pop() : "unsaved") +
+      '</div>' + body;
+
+    body += '<div class="mt-row mt-seg" style="margin-top:var(--s-4)">' +
+      `<button class="qbtn" data-mt="livepush" ${liveBusy ? "disabled" : ""}>` +
+        'send ' + E(S ? S.name : "this model") + '</button>' +
+      `<button class="qbtn ghost small ${liveWipe ? "on" : ""}" data-mt="livewipe" ` +
+        'title="empty the live scene first, instead of adding to it">' +
+        (liveWipe ? "replacing" : "adding") + '</button>' +
+      '</div>' +
+      '<div class="mt-row mt-seg" style="margin-top:var(--s-2)">' +
+      `<button class="qbtn ghost small" data-mt="liveshot" ${liveBusy ? "disabled" : ""}>look</button>` +
+      `<button class="qbtn ghost small" data-mt="livepull" ${liveBusy ? "disabled" : ""}>bring it back</button>` +
+      `<button class="qbtn ghost small" data-mt="livereset" ${liveBusy ? "disabled" : ""}>empty it</button>` +
+      '</div>';
+
+    if (liveShot) body += '<div class="mt-shots" style="grid-template-columns:1fr">' +
+      `<figure class="mt-shot"><img src="${E(liveShot.url)}?t=${liveShot.bytes}" alt="the live viewport">` +
+      '<figcaption>the live viewport</figcaption></figure></div>';
+    if (liveMsg) body += `<div class="mt-note">${E(liveMsg)}</div>`;
+    if (livePulled) body += '<div class="mt-row">' +
+      `<button class="qbtn ghost small" data-mt="open" data-v="${E(livePulled)}">open what came back</button></div>`;
+    return panel("k-doc", "edit", "live Blender",
+                 live.version ? "live" : "", "good", body, act);
   }
 
   function stepLine(s){
