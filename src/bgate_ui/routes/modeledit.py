@@ -1289,6 +1289,23 @@ JOINT_EPS = 1e-4
 MAX_JOINT_MOVE = 0.5
 
 
+def _number(payload: dict, key: str, default):
+    """A numeric field, where ZERO IS A VALUE AND NOT AN ABSENCE.
+
+    `float(payload.get(k) or d)` reads naturally and is wrong for every field
+    whose zero means something: min_bleed 0 became 3, threshold 0 became 0.02
+    and fps 0 became 30, so a caller asking for the one thing the bound check
+    exists to refuse got a silent substitution instead of a 400.
+    """
+    value = payload.get(key)
+    if value is None or value == "":
+        return default
+    try:
+        return type(default)(value)
+    except (TypeError, ValueError):
+        raise api.bad_request(f"{key} is not a number", **{key: value}) from None
+
+
 def _joints(bones: list) -> list:
     """Bone endpoints grouped into the joints a person actually drags.
 
@@ -1461,7 +1478,7 @@ def model_edit_skeleton(payload: dict) -> dict:
         limit = 0.0
     edits = _bone_edits(payload, limit)
     rebind = bool(payload.get("rebind", True))
-    tolerance = float(payload.get("tolerance") or 0.01)
+    tolerance = _number(payload, "tolerance", 0.01)
     if not 0.0 <= tolerance <= 0.5:
         raise api.bad_request("tolerance must be between 0 and 0.5",
                               tolerance=tolerance)
@@ -1503,6 +1520,316 @@ def model_edit_skeleton(payload: dict) -> dict:
         "unweighted": report.get("unweighted"),
         "unweighted_pct": report.get("unweighted_pct"),
         "attempts": report.get("attempts") or [],
+        "seconds": report.get("seconds"),
+    })
+
+
+# One pass of weight smoothing touches a vertex's edge neighbours; more than a
+# few turns a local fix into a general blur that undoes the bind everywhere.
+MAX_SMOOTH = 4
+WEIGHTS_REPAIR_SUFFIX = ".weights.glb"
+WEIGHTS_REPAIR_TIMEOUT = 1200
+
+# THE REPAIR IS THE OTHER HALF OF A CHECK THAT ONLY EVER ACCUSED. weight_islands
+# has been able to say "LeftUpperLeg owns a patch of the other thigh, 214
+# vertices" since it landed, and the only thing anyone could do about it was
+# open Blender and paint. Every stray vertex it names already has an answer
+# sitting in the geometry: the bone whose segment actually passes nearest to
+# it. That is not a guess, it is the same nearest-bone rule an envelope bind
+# uses, applied only to the vertices the gate flagged and to nothing else.
+_WEIGHTS_REPAIR_BODY = r'''
+report = {"ok": False}
+
+
+def _islands(mesh, members):
+    """Connected groups of `members`, walked over the mesh's own edges."""
+    adjacent = {}
+    for edge in mesh.data.edges:
+        a, b = edge.vertices
+        if a in members and b in members:
+            adjacent.setdefault(a, []).append(b)
+            adjacent.setdefault(b, []).append(a)
+    seen, groups = set(), []
+    for start in members:
+        if start in seen:
+            continue
+        stack, group = [start], []
+        seen.add(start)
+        while stack:
+            here = stack.pop()
+            group.append(here)
+            for nxt in adjacent.get(here, ()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        groups.append(group)
+    groups.sort(key=len, reverse=True)
+    return groups
+
+
+def _seg_distance(p, a, b):
+    ab = b - a
+    length = ab.length_squared
+    if length < 1e-12:
+        return (p - a).length
+    t = max(0.0, min(1.0, (p - a).dot(ab) / length))
+    return (p - (a + ab * t)).length
+
+
+try:
+    if P["ext"] != ".blend":
+        bg_wipe()
+        _import(P["path"], P["ext"])
+    bpy.context.view_layer.update()
+    kept, dropped = bgate_drop_shapes(list(bpy.context.scene.objects))
+    arms = [o for o in kept if o.type == "ARMATURE"]
+    meshes = [o for o in kept if o.type == "MESH" and o.vertex_groups]
+    if not arms:
+        raise RuntimeError("no armature in this file - fit a skeleton first")
+    if not meshes:
+        raise RuntimeError("no skinned mesh in this file - nothing to repair")
+    arm = arms[0]
+
+    # Bone segments in WORLD space, which is the frame the vertices are
+    # measured in below. A rig whose object is not at the origin would
+    # otherwise be compared against geometry standing somewhere else.
+    segments = {}
+    for bone in arm.data.bones:
+        if not bone.use_deform:
+            continue
+        segments[bone.name] = (arm.matrix_world @ bone.head_local,
+                               arm.matrix_world @ bone.tail_local)
+
+    only = set(P.get("bones") or [])
+    threshold = float(P["threshold"])
+    min_bleed = int(P["min_bleed"])
+    mode = P.get("mode") or "nearest"
+    fixed, skipped, touched_all = [], [], set()
+
+    for mesh in meshes:
+        groups = {g.name: g for g in mesh.vertex_groups}
+        shells = len(_islands(mesh, set(range(len(mesh.data.vertices)))))
+        index_of = {g.name: g.index for g in mesh.vertex_groups}
+        world = mesh.matrix_world
+
+        for name in sorted(groups):
+            if name not in segments:
+                continue                       # not a deform bone
+            if only and name not in only:
+                continue
+            gi = index_of[name]
+            members = set()
+            for vert in mesh.data.vertices:
+                for entry in vert.groups:
+                    if entry.group == gi and entry.weight > threshold:
+                        members.add(vert.index)
+                        break
+            if len(members) < 2:
+                continue
+            parts = _islands(mesh, members)
+            # SPANNING SEVERAL SHELLS IS NOT A FAULT. A character built from
+            # separate pieces legitimately has a bone touching each of them;
+            # only a split INSIDE one connected piece of surface is paint that
+            # went somewhere it was not meant to.
+            if len(parts) <= shells:
+                continue
+            stray = [i for part in parts[shells:] for i in part]
+            if len(stray) < min_bleed:
+                skipped.append({"bone": name, "stray": len(stray),
+                                "why": "below the bleed threshold"})
+                continue
+
+            moved = {}
+            for vi in stray:
+                vert = mesh.data.vertices[vi]
+                point = world @ vert.co
+                groups[name].remove([vi])
+                if mode == "drop":
+                    moved["(dropped)"] = moved.get("(dropped)", 0) + 1
+                else:
+                    best, best_d = "", 1e30
+                    for other, (head, tail) in segments.items():
+                        if other == name:
+                            continue
+                        d = _seg_distance(point, head, tail)
+                        if d < best_d:
+                            best, best_d = other, d
+                    if best:
+                        target = groups.get(best)
+                        if target is None:
+                            target = mesh.vertex_groups.new(name=best)
+                            groups[best] = target
+                            index_of[best] = target.index
+                        # ADD, not REPLACE: the vertex may already carry some
+                        # of this bone, and overwriting would throw away a
+                        # weight the bind got right.
+                        current = 0.0
+                        for entry in vert.groups:
+                            if entry.group == target.index:
+                                current = entry.weight
+                                break
+                        target.add([vi], min(1.0, current + 1.0), "REPLACE")
+                        moved[best] = moved.get(best, 0) + 1
+                touched_all.add((mesh.name, vi))
+            fixed.append({"bone": name, "mesh": mesh.name,
+                          "islands_before": len(parts), "shells": shells,
+                          "stray": len(stray), "moved_to": moved})
+
+        # RENORMALISE, or the mesh inflates. A vertex whose weights sum to 1.7
+        # is pulled 1.7 times as far as the bones actually moved, and it is
+        # the touched vertices that are at risk because one just gained a
+        # whole unit of influence.
+        for mesh_name, vi in [t for t in touched_all if t[0] == mesh.name]:
+            vert = mesh.data.vertices[vi]
+            total = sum(e.weight for e in vert.groups)
+            if total <= 1e-9 or abs(total - 1.0) < 1e-6:
+                continue
+            for entry in list(vert.groups):
+                for group in mesh.vertex_groups:
+                    if group.index == entry.group:
+                        group.add([vi], entry.weight / total, "REPLACE")
+                        break
+
+    # SMOOTHING IS OPTIONAL AND CAPPED. A reassigned vertex sits at a hard
+    # boundary its neighbours do not share, which reads as a crease when the
+    # joint bends; one or two passes over the touched vertices and their
+    # neighbours softens that. More is a general blur that undoes the bind.
+    passes = int(P.get("smooth") or 0)
+    smoothed = 0
+    if passes and touched_all:
+        for mesh in meshes:
+            here = {vi for (m, vi) in touched_all if m == mesh.name}
+            if not here:
+                continue
+            neighbours = {}
+            for edge in mesh.data.edges:
+                a, b = edge.vertices
+                neighbours.setdefault(a, []).append(b)
+                neighbours.setdefault(b, []).append(a)
+            by_index = {g.index: g for g in mesh.vertex_groups}
+            for _ in range(passes):
+                updates = {}
+                for vi in here:
+                    ring = neighbours.get(vi, [])
+                    if not ring:
+                        continue
+                    blend = {}
+                    for other in ring + [vi]:
+                        for entry in mesh.data.vertices[other].groups:
+                            blend[entry.group] = blend.get(entry.group, 0.0) + entry.weight
+                    total = sum(blend.values())
+                    if total <= 1e-9:
+                        continue
+                    updates[vi] = {g: w / total for g, w in blend.items()}
+                for vi, weights in updates.items():
+                    for gi, w in weights.items():
+                        group = by_index.get(gi)
+                        if group is not None:
+                            group.add([vi], w, "REPLACE")
+                    smoothed += 1
+
+    total_verts = sum(len(m.data.vertices) for m in meshes)
+    loose = sum(1 for m in meshes for v in m.data.vertices if not v.groups)
+    report = {"ok": True, "fixed": fixed, "skipped": skipped,
+              "bones_repaired": len(fixed),
+              "vertices_moved": len(touched_all),
+              "smoothed": smoothed, "smooth_passes": passes,
+              "armature": arm.name, "meshes": len(meshes),
+              "vertices": total_verts, "unweighted": loose,
+              "unweighted_pct": round(100.0 * loose / max(total_verts, 1), 3)}
+except Exception as exc:
+    report = {"ok": False, "error": str(exc),
+              "traceback": traceback.format_exc()[-1500:]}
+_write(report)
+print("weights repair done")
+'''
+
+
+@router.post("/api/model3d/weights/repair")
+def model_repair_weights(payload: dict) -> dict:
+    """Move the bled vertices onto the bone that should have had them.
+
+    THE CHECK ONLY EVER ACCUSED. weight_islands names the bone and counts the
+    vertices; painting them was the one thing this surface could not do, so
+    every bleeding bind went to Blender or shipped. The stray vertices already
+    have an answer in the geometry — the deform bone whose segment passes
+    nearest — and that is the same rule an envelope bind uses, applied here
+    only to the vertices the gate flagged.
+
+    Writes ``<stem>.weights.glb``. Re-run ``/api/model3d/weights`` against the
+    result to see the verdict move; this route deliberately does not grade its
+    own work.
+    """
+    rel = str(payload.get("rel") or "")
+    project_root, target = _model(rel)
+    _importable(target)
+
+    mode = str(payload.get("mode") or "nearest")
+    if mode not in ("nearest", "drop"):
+        raise api.bad_request("mode must be nearest or drop", mode=mode)
+    smooth = _number(payload, "smooth", 0)
+    if not 0 <= smooth <= MAX_SMOOTH:
+        raise api.bad_request(f"smooth must be between 0 and {MAX_SMOOTH}",
+                              smooth=smooth)
+    threshold = _number(payload, "threshold", 0.02)
+    if not 0.0 < threshold < 1.0:
+        raise api.bad_request("threshold must be between 0 and 1",
+                              threshold=threshold)
+    min_bleed = _number(payload, "min_bleed", 3)
+    if min_bleed < 1:
+        raise api.bad_request("min_bleed must be at least 1",
+                              min_bleed=min_bleed)
+    bones = payload.get("bones") or []
+    if not isinstance(bones, list) or any(not isinstance(b, str) for b in bones):
+        raise api.bad_request("bones must be a list of bone names")
+
+    mod = _blender()
+    if not mod.available().get("available"):
+        raise api.ApiError(503, "Blender is not installed or not on the path",
+                           detail=mod.available())
+
+    out = target.with_name(target.stem + WEIGHTS_REPAIR_SUFFIX)
+    report = _run(_rig_source() + "\n" + _BLENDER_PRELUDE + _WEIGHTS_REPAIR_BODY,
+                  {"path": str(target), "ext": target.suffix.lower(),
+                   "bones": bones, "mode": mode, "smooth": smooth,
+                   "threshold": threshold, "min_bleed": min_bleed},
+                  WEIGHTS_REPAIR_TIMEOUT, export_glb=str(out))
+    if not report.get("ok"):
+        try:
+            out.unlink()
+        except OSError:
+            pass
+        raise api.ApiError(502, "the weight repair failed inside Blender",
+                           detail={"error": report.get("error")})
+    # NOTHING TO FIX IS NOT A FIX. A run that found no bleeding must not leave
+    # a near-identical copy of the mesh behind for someone to adopt as the new
+    # source of truth; say so and delete it.
+    if not report.get("fixed"):
+        try:
+            out.unlink()
+        except OSError:
+            pass
+        return api.ok({"rel": rel, "out": None, "fixed": [],
+                       "skipped": report.get("skipped") or [],
+                       "bones_repaired": 0, "vertices_moved": 0,
+                       "note": "no bone's weights split inside a connected "
+                               "piece of surface; nothing was written",
+                       "seconds": report.get("seconds")})
+    _inspect_cache.clear()
+    out_rel = (out.relative_to(project_root).as_posix() if out.is_file()
+               else None)
+    return api.ok({
+        "rel": rel, "out": out_rel,
+        "bytes": out.stat().st_size if out.is_file() else 0,
+        "fixed": report.get("fixed") or [],
+        "skipped": report.get("skipped") or [],
+        "bones_repaired": report.get("bones_repaired"),
+        "vertices_moved": report.get("vertices_moved"),
+        "smoothed": report.get("smoothed"),
+        "smooth_passes": report.get("smooth_passes"),
+        "mode": mode,
+        "unweighted": report.get("unweighted"),
+        "unweighted_pct": report.get("unweighted_pct"),
         "seconds": report.get("seconds"),
     })
 
@@ -1638,7 +1965,7 @@ def model_animate(payload: dict) -> dict:
     # not have. The rig and flex routes check availability first because they
     # have nothing to validate.
     clips = _anim_clips(payload)
-    fps = int(payload.get("fps") or 30)
+    fps = _number(payload, "fps", 30)
     if not 5 <= fps <= 120:
         raise api.bad_request("fps must be between 5 and 120", fps=fps)
     proof_frames = int(payload.get("proof_frames", 6) or 0)

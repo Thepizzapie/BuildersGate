@@ -453,6 +453,223 @@ def test_the_skeleton_read_reports_joints_and_a_move_limit(client, game, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# Weight repair
+# ---------------------------------------------------------------------------
+def _from_script(*names):
+    """Pull functions out of the shipped Blender source and run them here.
+
+    THE SOURCE UNDER TEST IS THE SOURCE THAT SHIPS. The island walk is pure
+    graph code and the segment distance is pure arithmetic; both are wrong in
+    ways no stubbed round trip would catch, and neither needs bpy. Copying
+    them into the test would prove the copy.
+    """
+    import ast
+    import textwrap
+
+    from bgate_ui.routes import modeledit
+
+    tree = ast.parse(textwrap.dedent(modeledit._WEIGHTS_REPAIR_BODY))
+    wanted = [n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name in names]
+    assert len(wanted) == len(names), [n.name for n in wanted]
+    scope: dict = {}
+    exec(compile(ast.Module(body=wanted, type_ignores=[]), "<script>", "exec"),
+         scope)
+    return [scope[n] for n in names]
+
+
+class _Vec3:
+    """Enough mathutils.Vector for the distance function."""
+
+    def __init__(self, x, y, z):
+        self.x, self.y, self.z = float(x), float(y), float(z)
+
+    def __sub__(self, o):
+        return _Vec3(self.x - o.x, self.y - o.y, self.z - o.z)
+
+    def __add__(self, o):
+        return _Vec3(self.x + o.x, self.y + o.y, self.z + o.z)
+
+    def __mul__(self, k):
+        return _Vec3(self.x * k, self.y * k, self.z * k)
+
+    def dot(self, o):
+        return self.x * o.x + self.y * o.y + self.z * o.z
+
+    @property
+    def length_squared(self):
+        return self.dot(self)
+
+    @property
+    def length(self):
+        return self.length_squared ** 0.5
+
+
+class _Mesh:
+    def __init__(self, edges):
+        self.data = type("D", (), {"edges": [type("E", (), {"vertices": e})()
+                                             for e in edges]})()
+
+
+def test_islands_walk_the_mesh_edges_not_the_vertex_list():
+    """Two patches of one bone's paint with no edge between them are two
+    islands, however close their indices are. Index adjacency would call a
+    thigh and the OTHER thigh one region and report the bleed as clean."""
+    (islands,) = _from_script("_islands")
+    # 0-1-2 joined, 7-8 joined, nothing between them
+    mesh = _Mesh([(0, 1), (1, 2), (7, 8), (2, 9), (9, 0)])
+    parts = islands(mesh, {0, 1, 2, 7, 8})
+    assert [len(p) for p in parts] == [3, 2], parts
+    assert sorted(parts[0]) == [0, 1, 2]
+    assert sorted(parts[1]) == [7, 8]
+
+
+def test_an_island_walk_ignores_edges_leaving_the_member_set():
+    """Edge 2-9 exists in the mesh and 9 is not weighted to this bone. Walking
+    it would drag unrelated geometry into the bone's region and hide a split."""
+    (islands,) = _from_script("_islands")
+    mesh = _Mesh([(0, 1), (1, 2), (2, 9), (9, 8), (8, 7)])
+    parts = islands(mesh, {0, 1, 2, 7, 8})
+    assert [sorted(p) for p in parts] == [[0, 1, 2], [7, 8]]
+
+
+def test_a_lone_vertex_is_its_own_island():
+    (islands,) = _from_script("_islands")
+    parts = islands(_Mesh([(0, 1)]), {0, 1, 5})
+    assert [len(p) for p in parts] == [2, 1]
+
+
+def test_islands_are_largest_first_because_the_largest_one_is_kept():
+    (islands,) = _from_script("_islands")
+    mesh = _Mesh([(0, 1), (4, 5), (5, 6), (6, 7)])
+    parts = islands(mesh, {0, 1, 4, 5, 6, 7})
+    assert len(parts[0]) == 4 and len(parts[1]) == 2
+
+
+def test_the_nearest_bone_is_measured_to_the_segment_not_the_joint():
+    """A vertex beside the middle of a thigh is nearest THAT thigh, even when
+    the other thigh's hip joint is closer than this thigh's own hip. Measuring
+    to joints would send the mid-thigh strays to the wrong leg."""
+    (distance,) = _from_script("_seg_distance")
+    point = _Vec3(0.10, 0.70, 0.0)
+    left = distance(point, _Vec3(0.09, 0.96, 0), _Vec3(0.09, 0.52, 0))
+    right = distance(point, _Vec3(-0.09, 0.96, 0), _Vec3(-0.09, 0.52, 0))
+    assert left < right
+    assert abs(left - 0.01) < 1e-6
+
+
+def test_a_point_past_the_end_of_a_bone_clamps_to_its_tip():
+    (distance,) = _from_script("_seg_distance")
+    # Straight above the head of an upward bone: the nearest point on the
+    # segment is the head, not an extrapolation of the line.
+    d = distance(_Vec3(0, 2.0, 0), _Vec3(0, 1.0, 0), _Vec3(0, 1.5, 0))
+    assert abs(d - 0.5) < 1e-9
+
+
+def test_a_zero_length_bone_does_not_divide_by_zero(client, game):
+    (distance,) = _from_script("_seg_distance")
+    d = distance(_Vec3(0, 1, 0), _Vec3(0, 0, 0), _Vec3(0, 0, 0))
+    assert abs(d - 1.0) < 1e-9
+
+
+def test_repair_settings_are_validated_before_blender(client, game):
+    for payload, field in (({"mode": "paint"}, "mode"),
+                           ({"smooth": 9}, "smooth"),
+                           ({"threshold": 2.0}, "threshold"),
+                           ({"min_bleed": 0}, "min_bleed")):
+        r = client.post("/api/model3d/weights/repair",
+                        json={"rel": MODEL, **payload})
+        assert r.status_code == 400, (field, r.json())
+        assert field in r.json()["error"]["detail"]
+
+
+def test_a_zero_is_a_value_and_not_an_absence(client, game):
+    """`int(payload.get(k) or default)` reads naturally and is wrong for every
+    field whose zero means something. min_bleed 0 became 3, threshold 0 became
+    0.02 and fps 0 became 30, so the one input the bound check exists to
+    refuse got a silent substitution instead of a 400."""
+    r = client.post("/api/model3d/weights/repair",
+                    json={"rel": MODEL, "min_bleed": 0})
+    assert r.status_code == 400 and "min_bleed" in r.json()["error"]["detail"]
+
+    r = client.post("/api/model3d/weights/repair",
+                    json={"rel": MODEL, "threshold": 0})
+    assert r.status_code == 400 and "threshold" in r.json()["error"]["detail"]
+
+    r = client.post("/api/model3d/animate", json={"rel": MODEL, "fps": 0})
+    assert r.status_code == 400 and "fps" in r.json()["error"]["detail"]
+
+    # And a field that is genuinely absent still gets its default.
+    from bgate_ui.routes import modeledit
+    assert modeledit._number({}, "fps", 30) == 30
+    assert modeledit._number({"fps": None}, "fps", 30) == 30
+    assert modeledit._number({"fps": 0}, "fps", 30) == 0
+
+
+def test_repair_refuses_a_bone_list_that_is_not_names(client, game):
+    r = client.post("/api/model3d/weights/repair",
+                    json={"rel": MODEL, "bones": [1, 2]})
+    assert r.status_code == 400
+
+
+def test_a_repair_that_found_nothing_writes_no_file(client, game, monkeypatch):
+    """A near-identical copy of the mesh left on disk is a second source of
+    truth somebody adopts by accident. Nothing fixed, nothing written."""
+    from bgate_ui.routes import modeledit
+
+    class FakeBlender:
+        _RIG_SOURCE = ""
+
+        @staticmethod
+        def available():
+            return {"available": True}
+
+    def run(script, payload, timeout, export_glb=None):
+        Path(export_glb).write_bytes(FAKE_GLB)
+        return {"ok": True, "fixed": [], "skipped": [], "seconds": 12.0}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    monkeypatch.setattr(modeledit, "_run", run)
+    r = client.post("/api/model3d/weights/repair", json={"rel": MODEL})
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["out"] is None and d["bones_repaired"] == 0
+    assert "nothing was written" in d["note"]
+    assert not (game / "assets" / "models" / "hero.weights.glb").exists()
+
+
+def test_a_repair_reports_where_every_stray_went(client, game, monkeypatch):
+    from bgate_ui.routes import modeledit
+
+    class FakeBlender:
+        _RIG_SOURCE = ""
+
+        @staticmethod
+        def available():
+            return {"available": True}
+
+    def run(script, payload, timeout, export_glb=None):
+        Path(export_glb).write_bytes(FAKE_GLB)
+        return {"ok": True, "seconds": 31.0, "vertices_moved": 214,
+                "bones_repaired": 1, "smoothed": 428, "smooth_passes": 2,
+                "unweighted": 0, "unweighted_pct": 0.0,
+                "fixed": [{"bone": "LeftUpperLeg", "mesh": "Body",
+                           "islands_before": 2, "shells": 1, "stray": 214,
+                           "moved_to": {"RightUpperLeg": 214}}],
+                "skipped": []}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    monkeypatch.setattr(modeledit, "_run", run)
+    r = client.post("/api/model3d/weights/repair",
+                    json={"rel": MODEL, "smooth": 2})
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["out"] == "assets/models/hero.weights.glb"
+    assert d["fixed"][0]["moved_to"] == {"RightUpperLeg": 214}
+    assert d["vertices_moved"] == 214 and d["smooth_passes"] == 2
+
+
+# ---------------------------------------------------------------------------
 # Clip authoring
 # ---------------------------------------------------------------------------
 # THE VALIDATION IS THE POINT. Every refusal below is one that would otherwise

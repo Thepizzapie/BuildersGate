@@ -129,6 +129,10 @@ window.ModelTools = (() => {
   let rigged = null, rigBusy = false, rigErr = "";
   let weights = null, wBusy = false, wErr = "";
   let flex = null, fBusy = false, fErr = "";
+  // The other half of the weights check. It has named the bleeding bone since
+  // it landed and could do nothing about it; repair moves the strays.
+  let fix = null, fixBusy = false, fixErr = "";
+  let fixMode = "nearest", fixSmooth = 1;
   let retarget = null, rtBusy = false, rtErr = "";
   let blOpened = null, blBusy = false, blErr = "";
   let engine = null, enBusy = false, enErr = "";
@@ -309,6 +313,7 @@ window.ModelTools = (() => {
       bakeErr = ""; viewerBox = null; base = null; plan = blankPlan();
       rigged = null; rigErr = ""; weights = null; wErr = "";
       flex = null; fErr = ""; retarget = null; rtErr = "";
+      fix = null; fixErr = "";
       blOpened = null; blErr = ""; engine = null; enErr = "";
       // The CHOICES survive a model change, the RESULT does not. Someone
       // rigging a cast picks the same six clips for every character, and
@@ -650,6 +655,35 @@ window.ModelTools = (() => {
     return base + "_x";
   }
 
+  async function repairWeights(){
+    const S = ME();
+    if (!S || fixBusy) return;
+    const bleeding = ((weights && weights.verdict && weights.verdict.issues) || [])
+      .map(i => i.bone);
+    if (!await confirmAsk({
+        title: "Repair " + (bleeding.length || "the bleeding") + " bone" +
+               (bleeding.length === 1 ? "" : "s") + "?",
+        body: (fixMode === "nearest"
+          ? "Every vertex outside a bone's largest region is moved to the deform "
+            + "bone whose segment actually passes nearest to it, "
+          : "Every vertex outside a bone's largest region loses that bone's weight, ")
+          + "then the touched vertices are renormalised"
+          + (fixSmooth ? " and smoothed " + fixSmooth + "x" : "")
+          + ". Writes a new <name>.weights.glb; the original is untouched.",
+        ok: "repair"})) return;
+    fixBusy = true; fixErr = ""; fix = null; render();
+    try {
+      fix = await postJSON("/api/model3d/weights/repair",
+        {rel: S.rel, bones: bleeding, mode: fixMode, smooth: fixSmooth});
+      say(fix.out ? (fix.vertices_moved + " vertices moved") : "nothing was bleeding",
+          fix.out ? "ok" : "warn");
+    } catch (e) {
+      fixErr = String((e && e.message) || e).slice(0, 300);
+      say("the repair failed: " + fixErr, "err");
+    }
+    fixBusy = false; render();
+  }
+
   async function runFlex(){
     const S = ME();
     if (!S || fBusy) return;
@@ -750,6 +784,9 @@ window.ModelTools = (() => {
     if (act === "rigbudget") { rigBudget = Number(val); render(); return; }
     if (act === "fit") { fitRig(); return; }
     if (act === "weights") { runWeights(); return; }
+    if (act === "fixweights") { repairWeights(); return; }
+    if (act === "fixmode") { fixMode = val; render(); return; }
+    if (act === "fixsmooth") { fixSmooth = Number(val); render(); return; }
     if (act === "flex") { runFlex(); return; }
     if (act === "retarget") { runRetarget(); return; }
     if (act === "blender") { openInBlender(); return; }
@@ -1160,6 +1197,58 @@ window.ModelTools = (() => {
     return window.BoneEdit ? BoneEdit.panel(hasSkeleton()) : "";
   }
 
+  /* The repair, in the panel that found the fault. A check that can only ever
+     accuse sends every bleeding bind to Blender or to the game; the strays it
+     names already have an answer in the geometry. */
+  function repairBlock(){
+    const issues = (weights && weights.verdict && weights.verdict.issues) || [];
+    if (!weights || !issues.length) return "";
+    let body = '<div class="mt-rule"></div>' +
+      '<div class="mt-row mt-seg">' +
+        ["nearest", "drop"].map(m =>
+          `<button class="qbtn ghost small ${fixMode === m ? "on" : ""}" data-mt="fixmode" data-v="${m}" ` +
+          `title="${m === "nearest" ? "give each stray to the deform bone whose segment passes nearest to it"
+                                    : "take the weight away and let the rest of the vertex's bones carry it"}">` +
+          (m === "nearest" ? "to nearest bone" : "just drop it") + "</button>").join("") +
+      '</div>' +
+      '<div class="mt-row mt-seg" style="margin-top:var(--s-2)">' +
+        [0, 1, 2, 4].map(n =>
+          `<button class="qbtn ghost small ${fixSmooth === n ? "on" : ""}" data-mt="fixsmooth" data-v="${n}" ` +
+          'title="passes of weight smoothing over the touched vertices; a reassigned vertex sits at a hard boundary its neighbours do not share">' +
+          (n ? "smooth " + n + "x" : "no smoothing") + "</button>").join("") +
+      '</div>' +
+      '<div class="mt-row" style="margin-top:var(--s-3)">' +
+        `<button class="qbtn" data-mt="fixweights" ${fixBusy ? "disabled" : ""}>` +
+          (fixBusy ? "repairing…" : "repair " + issues.length + " bone" + (issues.length === 1 ? "" : "s")) +
+        '</button>' +
+      '</div>' +
+      '<div class="mt-note">Only the vertices outside each bone’s largest region move. ' +
+      'Writes a new file and re-checks nothing: run the check again on the result, ' +
+      'because a repair that graded its own work would be the only opinion in the room.</div>';
+    if (fixErr) body += `<div class="mt-note bad">${E(fixErr)}</div>`;
+    if (fix && !fix.out) body += `<div class="mt-note warn">${E(fix.note || "nothing was bleeding")}</div>`;
+    else if (fix) {
+      body += '<div class="mt-grid" style="margin-top:var(--s-3)">' +
+        row("bones repaired", K(fix.bones_repaired), "good") +
+        row("vertices moved", K(fix.vertices_moved), "good") +
+        (fix.smooth_passes ? row("smoothed", K(fix.smoothed) + " over " + fix.smooth_passes + " passes") : "") +
+        row("unweighted after", num(fix.unweighted_pct, 0).toFixed(3) + "%",
+            num(fix.unweighted_pct, 0) > 1 ? "bad" : "good") +
+        row("took", num(fix.seconds, 0).toFixed(1) + "s") +
+        '</div>' +
+        (fix.fixed || []).map(f =>
+          '<div class="mt-grid" style="margin-top:var(--s-2)">' +
+          row(f.bone, K(f.stray) + " strays → " +
+              (Object.keys(f.moved_to || {}).join(", ") || "dropped")) +
+          '</div>').join("") +
+        ((fix.skipped || []).length
+          ? `<div class="mt-note">${E(fix.skipped.map(s => s.bone + " (" + s.why + ")").join(", "))}</div>` : "") +
+        `<div class="mt-note">wrote ${E(fix.out)}</div>` +
+        `<div class="mt-row"><button class="qbtn ghost small" data-mt="open" data-v="${E(fix.out)}">open the repaired mesh</button></div>`;
+    }
+    return body;
+  }
+
   /* 8. WEIGHTS ───────────────────────────────────────────────────────────*/
   function secWeights(){
     const v = weights && weights.verdict;
@@ -1183,7 +1272,8 @@ window.ModelTools = (() => {
           row(b.bone, b.islands + " islands · " + K(b.bleed_vertices) + " bled",
               b.islands > 1 ? "warn" : "good") + '</div>').join("") +
         (issues.length ? `<div class="mt-note warn">${E(issues[0].note || "")}</div>` : "") +
-        `<div class="mt-note">${num(weights.seconds, 0).toFixed(1)}s</div>` + body;
+        `<div class="mt-note">${num(weights.seconds, 0).toFixed(1)}s</div>` + body +
+        repairBlock();
     }
     return panel("k-read", "verify", "weights",
                  weights ? (v && v.passed ? "clean" : "bleed") : "",
