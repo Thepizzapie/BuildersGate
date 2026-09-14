@@ -896,6 +896,14 @@ FLEX_DIRNAME = "model_flex"
 RIG_TIMEOUT = 1200
 WEIGHTS_TIMEOUT = 600
 FLEX_TIMEOUT = 900
+ANIM_SUFFIX = ".anim.glb"
+ANIM_DIRNAME = "model_anim"
+# Longer than the rig's, and deliberately: a run authors, exports and then
+# RENDERS every clip from four views. Six clips at six proof frames is
+# twenty-four renders before the support gate reads the file back.
+ANIM_TIMEOUT = 2400
+MAX_CLIPS = 12
+MAX_PROOF_FRAMES = 24
 
 
 @router.get("/api/model3d/rig_template")
@@ -1059,6 +1067,217 @@ def model_flex(payload: dict) -> dict:
     return api.ok({"rel": rel, "rest": report.get("rest"), "poses": poses,
                    "verdict": report.get("verdict"),
                    "seconds": report.get("seconds")})
+
+
+@router.get("/api/model3d/clip_catalogue")
+def model_clip_catalogue() -> dict:
+    """Every clip this pipeline can author, and every library clip it can
+    retarget, without spending a Blender.
+
+    THE PANEL MUST NOT GUESS THIS LIST. humanpose.CLIP_KINDS and
+    quadpose.QUAD_CLIP_KINDS are the authority on what ``blender.animate``
+    accepts, and a hard-coded copy in JavaScript would go stale the first time
+    a kind was added — the caller would then ask for a clip Blender refuses,
+    twenty minutes into a run.
+
+    Library packs are reported from ``animlib.status``, which never downloads.
+    A pack that is not fetched comes back with ``fetched`` false and the
+    command that fetches it, so the panel can say why the clips are missing
+    instead of showing an empty list.
+    """
+    mod = _blender()
+    from bgate_adapters import humanpose as _humanpose
+    from bgate_adapters import quadpose as _quadpose
+
+    def _kinds(names) -> list:
+        return [{"kind": k, "gait": mod.clip_gait(k)} for k in names]
+
+    packs: dict = {}
+    try:
+        from bgate_adapters import animlib as _animlib
+        report = _animlib.status()
+        for key, row in (report.get("packs") or {}).items():
+            entry = {k: row.get(k) for k in
+                     ("title", "license", "source", "fetched", "fetch")}
+            entry["clips"] = []
+            if row.get("fetched"):
+                try:
+                    entry["clips"] = _animlib.clips(key)
+                except Exception as exc:
+                    entry["error"] = f"{type(exc).__name__}: {exc}"
+            packs[key] = entry
+    except Exception:  # animlib is optional the way ffmpeg is
+        packs = {}
+
+    return api.ok({
+        "humanoid": {"kinds": _kinds(_humanpose.CLIP_KINDS),
+                     "defaults": [dict(c) for c in mod.DEFAULT_CLIPS]},
+        "quadruped": {"kinds": _kinds(_quadpose.QUAD_CLIP_KINDS),
+                      "defaults": [dict(c) for c in mod.QUAD_DEFAULT_CLIPS]},
+        "packs": packs, "default_pack": mod.DEFAULT_PACK,
+        "facings": ["check", "repair", "skeleton"],
+        "max_clips": MAX_CLIPS, "default_fps": 30,
+    })
+
+
+def _anim_clips(payload: dict) -> Optional[list]:
+    """Validate the requested clips here, where the answer is instant.
+
+    ``blender.animate`` validates them too — inside a Blender that has already
+    spent a minute importing the mesh. Every refusal this can make first, it
+    should: a typo in a kind is worth a 400 in a millisecond, not a 502 after
+    the import.
+    """
+    raw = payload.get("clips")
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, list):
+        raise api.bad_request("clips must be a list")
+    if len(raw) > MAX_CLIPS:
+        raise api.bad_request(f"at most {MAX_CLIPS} clips in one run",
+                              asked=len(raw))
+    from bgate_adapters import humanpose as _humanpose
+    from bgate_adapters import quadpose as _quadpose
+    known = set(_humanpose.CLIP_KINDS) | set(_quadpose.QUAD_CLIP_KINDS) | {"library"}
+    out, seen = [], set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise api.bad_request("each clip must be an object")
+        spec = {k: v for k, v in item.items()
+                if k in ("name", "kind", "clip", "pack", "frames", "overrides",
+                         "keys", "loop", "ease")}
+        # A library clip names the motion, not a procedural kind.
+        if spec.get("clip") and not spec.get("kind"):
+            spec["kind"] = "library"
+        name = str(spec.get("name") or spec.get("clip") or spec.get("kind") or "")
+        name = name.strip()
+        if not name:
+            raise api.bad_request("a clip needs a name or a kind")
+        if name in seen:
+            raise api.bad_request(f"two clips called {name!r}", clip=name)
+        seen.add(name)
+        spec["name"] = name
+        kind = str(spec.get("kind") or name)
+        if kind not in known:
+            raise api.bad_request(
+                f"no clip kind {kind!r}",
+                clip=name, known=sorted(known))
+        spec["kind"] = kind
+        out.append(spec)
+    return out
+
+
+@router.post("/api/model3d/animate")
+def model_animate(payload: dict) -> dict:
+    """Author gameplay clips on a rigged character and render the proof.
+
+    THE RUNG THIS COLUMN WAS MISSING. rig binds a skeleton, weights says the
+    bind is clean and flex says it survives being bent — and none of the three
+    puts a walk cycle on the thing. blender_animate has done that over MCP
+    since the animation layer landed; the surface with the model open could
+    only ever PLAY clips somebody else authored elsewhere.
+
+    Straight through to bgate_adapters.blender.animate, the same call the MCP
+    tool makes. Its verdicts come back untouched: `support` is the foot-contact
+    gate per clip, `collisions` is the self-intersection gate, and a run that
+    reports ok with a failed gate is a run whose clips play and read wrong —
+    summarising that away would be deciding for the reader which failures
+    matter.
+
+    `refused` is the facing gate and NOT an error: the skin's toes and the
+    skeleton's foot bones disagree about which way is forward, which is the
+    defect that walks a whole character backwards with every other gate green.
+    It comes back 200 with the reason, because the fix (`facing: "repair"`) is
+    a decision for whoever is looking at the mesh.
+    """
+    rel = str(payload.get("rel") or "")
+    project_root, target = _model(rel)
+    _importable(target)
+
+    # THE REQUEST IS CHECKED BEFORE THE MACHINE IS. A misspelled clip kind is
+    # wrong on a box with Blender and wrong on one without, and answering 503
+    # to it would send the caller looking for an installation problem they do
+    # not have. The rig and flex routes check availability first because they
+    # have nothing to validate.
+    clips = _anim_clips(payload)
+    fps = int(payload.get("fps") or 30)
+    if not 5 <= fps <= 120:
+        raise api.bad_request("fps must be between 5 and 120", fps=fps)
+    proof_frames = int(payload.get("proof_frames", 6) or 0)
+    if not 0 <= proof_frames <= MAX_PROOF_FRAMES:
+        raise api.bad_request(
+            f"proof_frames must be between 0 and {MAX_PROOF_FRAMES}",
+            proof_frames=proof_frames)
+    facing = str(payload.get("facing") or "check")
+    if facing not in ("check", "repair", "skeleton"):
+        raise api.bad_request("facing must be check, repair or skeleton",
+                              facing=facing)
+
+    mod = _blender()
+    if not mod.available().get("available"):
+        raise api.ApiError(503, "Blender is not installed or not on the path",
+                           detail=mod.available())
+
+    out = target.with_name(target.stem + ANIM_SUFFIX)
+    out_dir = project_root / ".bgate_out" / ANIM_DIRNAME / target.stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with _blender_lock:
+        report = mod.animate(str(target), str(out), clips=clips, fps=fps,
+                             out_dir=str(out_dir), stem="proof",
+                             proof_frames=proof_frames, facing=facing,
+                             textured=bool(payload.get("textured", True)),
+                             loop_suffix=bool(payload.get("loop_suffix", False)),
+                             orient=bool(payload.get("orient", True)),
+                             timeout=ANIM_TIMEOUT)
+    if not report.get("ok") and not report.get("refused"):
+        raise api.ApiError(502, "authoring the clips failed inside Blender",
+                           detail={k: report.get(k) for k in
+                                   ("error", "facing", "strays")})
+    _inspect_cache.clear()
+    if report.get("refused"):
+        # animate() unlinks the .glb it refused to stand behind. Nothing was
+        # written, so there is nothing to open and nothing to warn about.
+        return api.ok({"rel": rel, "ok": False, "refused": True,
+                       "error": report.get("error") or "",
+                       "facing": report.get("facing"),
+                       "seconds": report.get("seconds")})
+
+    out_rel = (out.relative_to(project_root).as_posix() if out.is_file()
+               else None)
+    return api.ok({
+        "rel": rel, "ok": True, "refused": False, "out": out_rel,
+        "bytes": out.stat().st_size if out.is_file() else 0,
+        "clips": report.get("clips") or [],
+        "rig": report.get("rig"), "facing": report.get("facing"),
+        "strays": report.get("strays") or [],
+        "support": report.get("support") or {},
+        "collisions": report.get("collisions") or {},
+        "sheets": _anim_sheets(project_root, report),
+        "seconds": report.get("seconds"),
+    })
+
+
+def _anim_sheets(project_root: Path, report: dict) -> list:
+    """The per-clip proof sheets as URLs the panel can show.
+
+    A sheet outside the project has no /api/preview address, which is a fact
+    to report rather than a reason to drop the row: the clip still exists and
+    its path is still worth printing.
+    """
+    sheets = []
+    for sheet in report.get("sheets") or []:
+        path = sheet.get("path") if isinstance(sheet, dict) else None
+        if not path:
+            continue
+        url = None
+        try:
+            url = "/api/preview?rel=" + Path(path).relative_to(
+                project_root).as_posix()
+        except ValueError:
+            url = None
+        sheets.append({"clip": sheet.get("clip"), "path": str(path),
+                       "url": url})
+    return sheets
 
 
 @router.get("/api/model3d/retarget")

@@ -218,6 +218,196 @@ def test_snapshot_refuses_garbage_base64(client, game):
 # ---------------------------------------------------------------------------
 from pathlib import Path  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Clip authoring
+# ---------------------------------------------------------------------------
+# THE VALIDATION IS THE POINT. Every refusal below is one that would otherwise
+# happen inside Blender, minutes into a run that has already imported a
+# multi-megabyte mesh — which is the difference between a typo costing a
+# millisecond and costing a coffee break.
+def test_the_clip_catalogue_reports_what_blender_actually_accepts(client, game):
+    """Not a hard-coded list in the browser. humanpose and quadpose are the
+    authority on what animate() takes, and the panel reads them from here."""
+    from bgate_adapters import humanpose, quadpose
+
+    r = client.get("/api/model3d/clip_catalogue")
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert [k["kind"] for k in d["humanoid"]["kinds"]] == list(humanpose.CLIP_KINDS)
+    assert [k["kind"] for k in d["quadruped"]["kinds"]] == list(quadpose.QUAD_CLIP_KINDS)
+    # Each kind carries the gait the support gate will judge it against, so
+    # the panel can say what "walk" is going to be measured for.
+    walk = next(k for k in d["humanoid"]["kinds"] if k["kind"] == "walk")
+    assert walk["gait"] == "walk"
+    assert d["facings"] == ["check", "repair", "skeleton"]
+    assert [c["name"] for c in d["humanoid"]["defaults"]]
+    assert [c["name"] for c in d["quadruped"]["defaults"]]
+
+
+def test_the_catalogue_names_an_unfetched_pack_and_how_to_fetch_it(client, game):
+    """An empty dropdown is a mystery; "not fetched, run this" is an answer.
+    animlib.status never downloads, so this route never does either."""
+    d = client.get("/api/model3d/clip_catalogue").json()["data"]
+    for key, pack in d["packs"].items():
+        assert "fetched" in pack
+        if not pack["fetched"]:
+            assert key in pack["fetch"]
+            assert pack["clips"] == []
+
+
+def test_an_unknown_clip_kind_is_refused_before_blender_is_started(client, game):
+    r = client.post("/api/model3d/animate",
+                    json={"rel": MODEL, "clips": [{"kind": "moonwalk"}]})
+    assert r.status_code == 400
+    detail = r.json()["error"]["detail"]
+    assert detail["clip"] == "moonwalk"
+    assert "walk" in detail["known"]
+
+
+def test_two_clips_with_one_name_are_refused(client, game):
+    """animate() writes one action per name. Two "walk"s is one clip and a
+    silently discarded one, which is worse than a refusal."""
+    r = client.post("/api/model3d/animate", json={
+        "rel": MODEL,
+        "clips": [{"name": "walk", "kind": "walk"},
+                  {"name": "walk", "kind": "run"}]})
+    assert r.status_code == 400
+    assert r.json()["error"]["detail"]["clip"] == "walk"
+
+
+def test_a_library_clip_needs_no_kind(client, game):
+    """{"clip": "Walk_Loop"} is a retargeted library clip and carries no
+    procedural kind. It must not be read as an unknown one."""
+    from bgate_ui.routes import modeledit
+
+    specs = modeledit._anim_clips(
+        {"clips": [{"clip": "Walk_Loop", "name": "walk", "pack": "p"}]})
+    assert specs == [{"clip": "Walk_Loop", "name": "walk", "pack": "p",
+                      "kind": "library"}]
+
+
+def test_no_clips_means_let_the_rig_choose(client, game):
+    """None, not an empty list: animate() ships the humanoid or the quadruped
+    default set depending on bones this route cannot see."""
+    from bgate_ui.routes import modeledit
+
+    assert modeledit._anim_clips({}) is None
+    assert modeledit._anim_clips({"clips": []}) == []
+
+
+def test_out_of_range_settings_are_refused(client, game):
+    for payload, field in (({"fps": 500}, "fps"),
+                           ({"proof_frames": 99}, "proof_frames"),
+                           ({"facing": "sideways"}, "facing")):
+        r = client.post("/api/model3d/animate", json={"rel": MODEL, **payload})
+        assert r.status_code == 400, (field, r.json())
+        assert field in r.json()["error"]["detail"]
+
+
+def test_too_many_clips_in_one_run_are_refused(client, game):
+    from bgate_ui.routes import modeledit
+
+    clips = [{"kind": "idle", "name": f"c{i}"}
+             for i in range(modeledit.MAX_CLIPS + 1)]
+    r = client.post("/api/model3d/animate", json={"rel": MODEL, "clips": clips})
+    assert r.status_code == 400
+    assert r.json()["error"]["detail"]["asked"] == modeledit.MAX_CLIPS + 1
+
+
+def test_animate_refuses_a_path_that_escapes_the_project(client, game):
+    r = client.post("/api/model3d/animate",
+                    json={"rel": "../../etc/passwd.glb"})
+    assert r.status_code in (400, 403, 404, 415)
+
+
+def test_the_facing_gate_comes_back_200_and_writes_nothing(client, game, monkeypatch):
+    """A refusal is a DECISION FOR THE READER, not a server error. The skin's
+    toes and the skeleton's foot bones disagreeing about forward is the defect
+    that walks a whole character backwards with every other gate green, and
+    the fix (facing: repair) belongs to whoever is looking at the mesh."""
+    from bgate_ui.routes import modeledit
+
+    called = {}
+
+    class FakeBlender:
+        @staticmethod
+        def available():
+            return {"available": True}
+
+        @staticmethod
+        def animate(model, out, **kw):
+            called.update(kw)
+            return {"ok": False, "refused": True,
+                    "error": "the toes point -Y and the foot bones point +Y",
+                    "facing": {"verdict": "disagree"}, "seconds": 3.0}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    r = client.post("/api/model3d/animate",
+                    json={"rel": MODEL, "clips": [{"kind": "walk"}]})
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["refused"] is True and d["ok"] is False
+    assert "toes" in d["error"]
+    assert "out" not in d
+    assert called["facing"] == "check"
+
+
+def test_a_successful_run_returns_the_gates_untouched(client, game, monkeypatch):
+    """support and collisions are separate verdicts and both come back whole.
+    A run can report ok with a failed support gate — the clips play and read
+    wrong — and summarising that away would decide for the reader which
+    failures matter."""
+    from bgate_ui.routes import modeledit
+
+    class FakeBlender:
+        @staticmethod
+        def available():
+            return {"available": True}
+
+        @staticmethod
+        def animate(model, out, **kw):
+            Path(out).write_bytes(FAKE_GLB)
+            sheet = Path(kw["out_dir"]) / "proof_walk_sheet.png"
+            sheet.parent.mkdir(parents=True, exist_ok=True)
+            sheet.write_bytes(b"\x89PNG\r\n\x1a\n")
+            return {"ok": True, "seconds": 42.0,
+                    "clips": [{"name": "walk", "action": "walk", "frames": 24,
+                               "loop": True, "ok": True,
+                               "support": {"passed": False, "gait": "walk",
+                                           "reason": "no double support"}}],
+                    "sheets": [{"clip": "walk", "path": str(sheet)}],
+                    "support": {"measured": True, "passed": False,
+                                "failed": ["walk"]},
+                    "collisions": {"measured": True, "passed": True},
+                    "strays": []}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    r = client.post("/api/model3d/animate",
+                    json={"rel": MODEL, "clips": [{"kind": "walk"}], "fps": 24})
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["out"] == "assets/models/hero.anim.glb"
+    assert d["support"]["failed"] == ["walk"]
+    assert d["collisions"]["passed"] is True
+    assert d["clips"][0]["support"]["reason"] == "no double support"
+    # The proof sheet comes back as a URL the panel can just show.
+    assert d["sheets"][0]["url"] == (
+        "/api/preview?rel=.bgate_out/model_anim/hero/proof_walk_sheet.png")
+
+
+def test_animate_needs_blender(client, game, monkeypatch):
+    from bgate_ui.routes import modeledit
+
+    class NoBlender:
+        @staticmethod
+        def available():
+            return {"available": False, "reason": "not on the path"}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: NoBlender)
+    r = client.post("/api/model3d/animate", json={"rel": MODEL})
+    assert r.status_code == 503
+
+
 STATIC = Path(__file__).resolve().parents[2] / "frontend" / "public"
 
 
@@ -232,6 +422,24 @@ def test_the_editor_uses_the_shared_endpoints_not_invented_ones():
     for path in ("/api/model3d/open", "/api/model3d/list", "/api/model3d/save",
                  "/api/model3d/snapshot", "/api/model3d/reset"):
         assert path in js, f"{path} not called from modeledit.js"
+
+
+def test_the_tools_column_calls_the_animation_endpoints_it_needs():
+    js = (STATIC / "modeledit_tools.js").read_text(encoding="utf-8")
+    for path in ("/api/model3d/animate", "/api/model3d/clip_catalogue"):
+        assert path in js, f"{path} not called from modeledit_tools.js"
+
+
+def test_the_viewer_scrubs_the_whole_clip_and_not_the_first_second():
+    """A hard-coded max on the scrub is a bug that only shows on clips longer
+    than a second, which is all of them: the walk cycles this pipeline authors
+    run past three, and the end of a clip — where a bad loop snaps — could not
+    be reached at all."""
+    js = (STATIC / "modeledit.js").read_text(encoding="utf-8")
+    assert 'id="me-scrub"' in js
+    assert 'min="0" max="1" step="0.001"' not in js, (
+        "the scrub is ranged on a hard-coded second again")
+    assert "clipDuration()" in js
 
 
 def test_three_js_is_vendored_not_fetched_from_a_cdn():

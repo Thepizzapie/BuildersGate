@@ -133,6 +133,19 @@ window.ModelTools = (() => {
   let blOpened = null, blBusy = false, blErr = "";
   let engine = null, enBusy = false, enErr = "";
 
+  // The clip authoring step. cat is the server's catalogue — what
+  // humanpose/quadpose actually accept plus whatever animation packs are
+  // fetched — loaded once per page and never guessed at here, because a
+  // hard-coded kind list in the browser goes stale the first time one is
+  // added and the caller finds out twenty minutes into a Blender run.
+  let cat = null;
+  let animFamily = "humanoid";
+  let animPick = [];             // procedural kinds, in the order picked
+  let animLib = [];              // [{pack, clip, name}] library clips
+  let animFps = 30, animProof = 6, animFacing = "check";
+  let animTextured = true, animLoop = false;
+  let anim = null, anBusy = false, anErr = "";
+
   function blankPlan(){
     return {weld: false, join: false, decimate: 0, height: 0,
             turns: 0, origin: "keep", replace: false};
@@ -146,6 +159,7 @@ window.ModelTools = (() => {
     return Number.isFinite(n) ? n : (d || 0);
   };
   const m3 = v => (num(v, 0)).toFixed(3);
+  const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
   const K = n => Number(n || 0).toLocaleString();
 
   /* ── style ─────────────────────────────────────────────────────────────
@@ -204,6 +218,12 @@ window.ModelTools = (() => {
         "background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-xs);",
         "color:var(--text);font-family:var(--mono);font-size:var(--fs-xs);padding:var(--s-2) var(--s-3)}",
       ".mt-col input:focus{outline:none;border-color:var(--accent)}",
+      ".mt-col select{flex:1;min-width:0;max-width:100%;background:var(--surface-3);",
+        "border:1px solid var(--line);border-radius:var(--r-xs);color:var(--text);",
+        "font-family:var(--mono);font-size:var(--fs-3xs);padding:var(--s-2) var(--s-3)}",
+      ".mt-col select:focus{outline:none;border-color:var(--accent)}",
+      ".mt-note code{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-2);",
+        "background:var(--surface-3);border-radius:var(--r-xs);padding:0 var(--s-2)}",
       ".mt-col label{display:flex;align-items:center;gap:var(--s-3);font-size:var(--fs-2xs);color:var(--text-2);cursor:pointer}",
       ".mt-col .qbtn{flex:none}",
       ".mt-seg{display:flex;gap:var(--s-2);flex-wrap:wrap}",
@@ -285,8 +305,14 @@ window.ModelTools = (() => {
       rigged = null; rigErr = ""; weights = null; wErr = "";
       flex = null; fErr = ""; retarget = null; rtErr = "";
       blOpened = null; blErr = ""; engine = null; enErr = "";
+      // The CHOICES survive a model change, the RESULT does not. Someone
+      // rigging a cast picks the same six clips for every character, and
+      // making them re-tick the list per model would be the panel forgetting
+      // the only thing worth remembering.
+      anim = null; anErr = "";
       render();
       if (!tpl) loadTemplate();
+      if (!cat) loadCatalogue();
     }
     if (S.three && S.three.root && !viewerBox) {
       viewerBox = readViewerBox(S);
@@ -556,6 +582,69 @@ window.ModelTools = (() => {
     wBusy = false; render();
   }
 
+  async function loadCatalogue(){
+    try { cat = await getJSON("/api/model3d/clip_catalogue"); render(); }
+    catch (e) { cat = null; }
+  }
+
+  /* THE CLIPS THE RUN WILL ASK FOR, or null for "let the rig decide".
+     animate() reads the skeleton and ships the humanoid or the quadruped
+     default set when it is handed nothing, and that is a better answer than
+     anything this panel could assemble without seeing the bones. */
+  function animRequest(){
+    const picked = animPick.map(kind => ({name: kind, kind}))
+      .concat(animLib.map(c => ({name: c.name, kind: "library",
+                                 clip: c.clip, pack: c.pack})));
+    return picked.length ? picked : null;
+  }
+
+  async function runAnimate(){
+    const S = ME();
+    if (!S || anBusy) return;
+    const asked = animRequest();
+    const count = asked ? asked.length
+      : (((cat && cat[animFamily] && cat[animFamily].defaults) || []).length || 6);
+    if (!await confirmAsk({
+        title: "Author " + count + " clip" + (count === 1 ? "" : "s") + " on " + S.name + "?",
+        body: "Blender poses the rig, exports " + S.name.replace(/\.[^.]+$/, "") +
+              ".anim.glb beside it and renders " + (animProof || 0) +
+              " proof frames per clip from four views. Minutes, not seconds. " +
+              "The original is not touched.",
+        ok: "author"})) return;
+    anBusy = true; anErr = ""; anim = null; render();
+    try {
+      anim = await postJSON("/api/model3d/animate", {
+        rel: S.rel, clips: asked, fps: animFps, proof_frames: animProof,
+        facing: animFacing, textured: animTextured, loop_suffix: animLoop});
+      if (anim.refused) {
+        say("refused: the skin and the skeleton disagree about forward", "err");
+      } else {
+        const failed = ((anim.support || {}).failed || []).length;
+        say(((anim.clips || []).length) + " clips authored" +
+            (failed ? " — " + failed + " failed the support gate" : ""),
+            failed ? "warn" : "ok");
+      }
+    } catch (e) {
+      anErr = String((e && e.message) || e).slice(0, 300);
+      say("the clips failed: " + anErr, "err");
+    }
+    anBusy = false; render();
+  }
+
+  /* A library clip is named by the animator (Walk_Loop, Jog_Fwd_Loop); the
+     clip on the character wants the gameplay word (walk, jog). Strip the
+     pack's own suffixes, lowercase it, and let a collision take a number
+     rather than silently overwriting the earlier pick. */
+  function libName(clip){
+    let base = String(clip || "").replace(/_(Loop|RM)$/g, "")
+      .replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
+    if (!base) base = "clip";
+    const taken = new Set(animPick.concat(animLib.map(c => c.name)));
+    if (!taken.has(base)) return base;
+    for (let n = 2; n < 99; n++) if (!taken.has(base + "_" + n)) return base + "_" + n;
+    return base + "_x";
+  }
+
   async function runFlex(){
     const S = ME();
     if (!S || fBusy) return;
@@ -660,6 +749,25 @@ window.ModelTools = (() => {
     if (act === "retarget") { runRetarget(); return; }
     if (act === "blender") { openInBlender(); return; }
     if (act === "engine") { runEngine(); return; }
+    if (act === "anfam") { animFamily = val; render(); return; }
+    if (act === "ankind") {
+      const i = animPick.indexOf(val);
+      if (i >= 0) animPick.splice(i, 1); else animPick.push(val);
+      render(); return;
+    }
+    if (act === "anlibadd") {
+      const sel = host && host.querySelector('[data-mtf="anlib"]');
+      const clip = sel && sel.value;
+      if (clip) animLib.push({pack: val, clip, name: libName(clip)});
+      if (sel) sel.value = "";
+      render(); return;
+    }
+    if (act === "anlibdrop") { animLib.splice(Number(val), 1); render(); return; }
+    if (act === "anclear") { animPick = []; animLib = []; render(); return; }
+    if (act === "anfacing") { animFacing = val; render(); return; }
+    if (act === "antex") { animTextured = !animTextured; render(); return; }
+    if (act === "anloop") { animLoop = !animLoop; render(); return; }
+    if (act === "animate") { runAnimate(); return; }
   }
 
   function onChange(ev){
@@ -675,6 +783,11 @@ window.ModelTools = (() => {
     const f = el.getAttribute("data-mtf");
     if (f === "height") { plan.height = Math.max(0, num(el.value, 0)); applyPreview(); paintScale(); }
     if (f === "decimate") { plan.decimate = Math.max(0, Math.round(num(el.value, 0))); paintClean(); }
+    // No render() on these two: re-rendering the column on every keystroke
+    // takes the focus out of the field being typed into, which is the bug
+    // the height field above already learned about the hard way.
+    if (f === "anfps") animFps = clamp(Math.round(num(el.value, 30)), 5, 120);
+    if (f === "anproof") animProof = clamp(Math.round(num(el.value, 6)), 0, 24);
   }
 
   /* ── render ────────────────────────────────────────────────────────────*/
@@ -696,7 +809,8 @@ window.ModelTools = (() => {
       '<div class="mt-body">' +
         secInspect() + secScale() + secOrient() + secOrigin() +
         secClean() + secBake() +
-        secRig() + secWeights() + secFlex() + secRetarget() + secBlender() +
+        secRig() + secWeights() + secFlex() + secAnimate() +
+        secRetarget() + secBlender() +
       '</div>';
     const body1 = host.querySelector(".mt-body");
     if (body1 && keepScroll) body1.scrollTop = keepScroll;
@@ -1092,7 +1206,191 @@ window.ModelTools = (() => {
                  body, act);
   }
 
-  /* 10. ENGINE ───────────────────────────────────────────────────────────*/
+  /* 10. CLIPS ────────────────────────────────────────────────────────────
+     The step between "the bind survives being bent" and "will the engine
+     take it". Everything above this panel produces a character that stands
+     still; blender_animate has been able to put a walk on one since the
+     animation layer landed, and the one surface with the model open could
+     only ever PLAY clips authored somewhere else. */
+  function secAnimate(){
+    const fam = (cat && cat[animFamily]) || null;
+    const kinds = (fam && fam.kinds) || [];
+    const defaults = (fam && fam.defaults) || [];
+    const asked = animRequest();
+    const act = `<button class="qbtn ghost small" data-mt="animate" ` +
+      `${(anBusy || !hasSkeleton()) ? "disabled" : ""}>` +
+      (anBusy ? "posing…" : "author") + "</button>";
+
+    let body = '<div class="mt-note">Gameplay clips authored ON THIS RIG - forward, ' +
+      'left, leg length and hip height measured off the bones, feet solved by IK. ' +
+      'Writes &lt;name&gt;.anim.glb beside the model and renders every clip so ' +
+      'you can see whether a walk reads as a walk.</div>';
+    if (!hasSkeleton())
+      return panel("k-read", "animation", "clips", "", "",
+        body + '<div class="mt-note warn">Needs a skeleton first. Geometry cannot be posed.</div>',
+        act);
+
+    // Which family's kinds to offer. The RIG decides this in Blender - a
+    // four-legged skeleton gets the quadruped gaits whatever is ticked here -
+    // so this switch chooses the vocabulary on screen and nothing else.
+    body += '<div class="mt-row mt-seg" style="margin-top:var(--s-4)">' +
+      ["humanoid", "quadruped"].map(f =>
+        `<button class="qbtn ghost small ${animFamily === f ? "on" : ""}" data-mt="anfam" data-v="${f}">${f}</button>`).join("") +
+      '</div>';
+
+    if (!cat) {
+      body += '<div class="mt-note">reading the clip catalogue…</div>';
+      return panel("k-read", "animation", "clips", "", "", body, act);
+    }
+
+    body += '<div class="mt-seg" style="margin-top:var(--s-3)">' +
+      kinds.map(k => {
+        const on = animPick.indexOf(k.kind) >= 0;
+        return `<button class="qbtn ghost small ${on ? "on" : ""}" data-mt="ankind" data-v="${E(k.kind)}" ` +
+          `title="support gate: ${E(k.gait)}">${E(k.kind)}</button>`;
+      }).join("") +
+      '</div>';
+
+    // A library clip is retargeted from a fetched CC0 pack rather than posed
+    // from scratch. Where a pack HAS the motion it is the better clip; where
+    // the pack is not fetched, saying so beats an empty dropdown.
+    const packs = cat.packs || {};
+    const keys = Object.keys(packs);
+    if (keys.length) {
+      const key = keys[0], pack = packs[key];
+      if (pack.fetched && (pack.clips || []).length) {
+        body += '<div class="mt-row" style="margin-top:var(--s-3)">' +
+          `<select data-mtf="anlib">` +
+            `<option value="">${E(key)} — ${(pack.clips || []).length} clips…</option>` +
+            (pack.clips || []).map(c =>
+              `<option value="${E(c.name)}">${E(c.name)}${c.loop ? " · loop" : ""} · ${num(c.seconds, 0).toFixed(1)}s</option>`).join("") +
+          '</select>' +
+          `<button class="qbtn ghost small" data-mt="anlibadd" data-v="${E(key)}">add</button>` +
+        '</div>';
+      } else {
+        body += `<div class="mt-note">${E(pack.title || key)} is not fetched - ` +
+          `<code>${E(pack.fetch || ("bgate animlib fetch " + key))}</code> ` +
+          'adds its retargetable clips to this list.</div>';
+      }
+    }
+
+    if (animLib.length) body += '<div class="mt-seg" style="margin-top:var(--s-3)">' +
+      animLib.map((c, i) =>
+        `<button class="qbtn ghost small on" data-mt="anlibdrop" data-v="${i}" ` +
+        `title="${E(c.pack)} · ${E(c.clip)}">${E(c.name)} ×</button>`).join("") +
+      '</div>';
+
+    body += '<div class="mt-grid" style="margin-top:var(--s-3)">' +
+      row("will author", asked ? asked.length + " picked"
+          : (defaults.length + " defaults (" +
+             defaults.map(d => d.name).join(", ") + ")"),
+          asked ? "good" : "") +
+      row("fps", String(animFps)) +
+      row("proof frames", animProof ? String(animProof) + " per view" : "none", animProof ? "" : "dim") +
+      '</div>';
+
+    body += '<div class="mt-row" style="margin-top:var(--s-3)">' +
+      `<input type="number" min="5" max="120" step="1" value="${animFps}" data-mtf="anfps" title="keys per second">` +
+      '<span class="mt-unit">fps</span>' +
+      `<input type="number" min="0" max="24" step="1" value="${animProof}" data-mtf="anproof" title="proof frames per clip per view; 0 renders nothing">` +
+      '<span class="mt-unit">proof</span>' +
+      (asked ? `<button class="qbtn ghost small" data-mt="anclear">defaults</button>` : "") +
+    '</div>';
+
+    // facing IS THE GATE THAT MATTERS and it is off by default for a reason:
+    // a character whose skin and skeleton disagree about forward walks
+    // backwards with every other check green, so `check` refuses rather than
+    // guessing. repair re-aims the foot bones at the toes.
+    body += '<div class="mt-row mt-seg" style="margin-top:var(--s-3)">' +
+      (cat.facings || ["check", "repair", "skeleton"]).map(f =>
+        `<button class="qbtn ghost small ${animFacing === f ? "on" : ""}" data-mt="anfacing" data-v="${f}" ` +
+        `title="${f === "check" ? "refuse when the toes and the foot bones disagree"
+               : f === "repair" ? "re-aim the foot bones at the skin's toes"
+               : "trust the bones"}">facing: ${f}</button>`).join("") +
+      '</div>' +
+      '<div class="mt-row mt-seg" style="margin-top:var(--s-2)">' +
+      `<button class="qbtn ghost small ${animTextured ? "on" : ""}" data-mt="antex" ` +
+        'title="clay renders read deformation better than a textured one">' +
+        (animTextured ? "textured proof" : "clay proof") + '</button>' +
+      `<button class="qbtn ghost small ${animLoop ? "on" : ""}" data-mt="anloop" ` +
+        `title="name looping clips '<name>-loop' so Godot's importer marks them looping">-loop suffix</button>` +
+      '</div>';
+
+    if (anErr) body += `<div class="mt-note bad">${E(anErr)}</div>`;
+
+    if (anim && anim.refused) {
+      body += '<div class="mt-rule"></div>' +
+        '<div class="mt-note bad">Refused, and nothing was written. ' +
+        E(anim.error || "the skin's toes and the skeleton's foot bones disagree about forward") +
+        '</div>' +
+        '<div class="mt-note">This is the failure that walks a character backwards ' +
+        'with every gate green. <b>facing: repair</b> re-aims the foot bones at the ' +
+        'toes; <b>facing: skeleton</b> overrides the check when the bones are right ' +
+        'and the mesh is the odd one out.</div>';
+    } else if (anim) {
+      const sup = anim.support || {}, col = anim.collisions || {};
+      body += '<div class="mt-rule"></div><div class="mt-grid">' +
+        row("clips", K((anim.clips || []).length), "good") +
+        row("support gate", sup.measured === false ? (sup.reason || "not measured")
+            : (sup.passed ? "clean" : ((sup.failed || []).length + " failing")),
+            sup.measured === false ? "" : (sup.passed ? "good" : "bad")) +
+        row("self-collision", col.measured === false ? (col.reason || "not measured")
+            : (col.passed ? "clear" : ((col.failed || []).length + " clipping")),
+            col.measured === false ? "" : (col.passed ? "good" : "bad")) +
+        (anim.facing ? row("facing", String(anim.facing.verdict || anim.facing)) : "") +
+        ((anim.strays || []).length ? row("strays dropped", K(anim.strays.length), "warn") : "") +
+        row("took", num(anim.seconds, 0).toFixed(1) + "s") +
+        '</div>';
+      body += (anim.clips || []).map(clipLine).join("");
+      const sheets = (anim.sheets || []).filter(sh => sh.url);
+      if (sheets.length) body += '<div class="mt-shots">' + sheets.map(sh =>
+        `<figure class="mt-shot"><img src="${E(sh.url)}" alt="${E(sh.clip || "clip")}" loading="lazy">` +
+        `<figcaption>${E(sh.clip || "clip")}<span>${E(supportWord(sup, sh.clip))}</span></figcaption></figure>`).join("") + '</div>';
+      if (!col.passed && col.note) body += `<div class="mt-note warn">${E(col.note)}</div>`;
+      if (anim.out) body += `<div class="mt-note">wrote ${E(anim.out)}</div>` +
+        `<div class="mt-row"><button class="qbtn ghost small" data-mt="open" data-v="${E(anim.out)}">open the animated mesh</button></div>`;
+    }
+
+    return panel("k-read", "animation", "clips",
+                 anim ? (anim.refused ? "refused" : (anim.clips || []).length + " clips") : "",
+                 anim ? (anim.refused ? "bad"
+                         : ((anim.support || {}).passed === false ? "warn" : "good")) : "",
+                 body, act);
+  }
+
+  /* One line per authored clip. `support` is the foot-contact verdict read
+     back off the EXPORTED file - what the engine will play, not what the
+     poser meant to key - so a clip can be built and still be wrong here.
+
+     THE REASON GETS ITS OWN LINE. mt-grid is label -> number with the label
+     ellipsised, so a verdict sentence in the value column pushed the clip's
+     NAME out of the row entirely - the one thing the reader needs to know
+     which clip failed. */
+  function clipLine(c){
+    const sup = c.support || {};
+    const bad = sup.passed === false;
+    const word = c.ok === false ? "failed"
+      : bad ? "unsupported"
+      : sup.measured === false ? "unmeasured" : "supported";
+    return '<div class="mt-grid" style="margin-top:var(--s-2)">' +
+      row(c.name || c.action || "clip",
+          (c.frames ? c.frames + "f" : "-") +
+          (c.loop ? " · loop" : "") +
+          (sup.gait ? " · " + sup.gait : "") + " · " + word,
+          c.ok === false ? "bad" : (bad ? "warn" : "good")) +
+      '</div>' +
+      (bad && sup.reason ? `<div class="mt-note warn">${E(c.name || "")}: ${E(sup.reason)}</div>` : "");
+  }
+
+  function supportWord(sup, clip){
+    const v = ((sup || {}).clips || {})[clip] ||
+              ((sup || {}).clips || {})[clip + "-loop"];
+    if (!v) return "";
+    if (v.measured === false) return "unmeasured";
+    return v.passed ? (v.gait || "supported") : (v.reason || "support failed");
+  }
+
+  /* 11. ENGINE ───────────────────────────────────────────────────────────*/
   function secRetarget(){
     const act =
       `<button class="qbtn ghost small" data-mt="engine" ${enBusy ? "disabled" : ""}>` +
@@ -1139,7 +1437,7 @@ window.ModelTools = (() => {
                  body, act);
   }
 
-  /* 11. OPEN IN BLENDER ──────────────────────────────────────────────────*/
+  /* 12. OPEN IN BLENDER ──────────────────────────────────────────────────*/
   function secBlender(){
     const S = ME();
     let body =
@@ -1191,6 +1489,9 @@ window.ModelTools = (() => {
     get plan(){ return plan; },
     get inspection(){ return insp; },
     get rig(){ return {kind: rigKind, budget: rigBudget}; },
+    get clips(){ return {family: animFamily, picked: animRequest(),
+                         fps: animFps, facing: animFacing}; },
+    get animation(){ return anim; },
     get result(){ return baked; },
     stop(){ if (timer) { clearInterval(timer); timer = 0; } detach(); },
   };

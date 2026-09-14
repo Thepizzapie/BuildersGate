@@ -9,6 +9,27 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+- **Clips are authored from the 3D viewer**: the draft-to-asset column's chain
+  ran inspect, clean, bake, rig, weights and deform test and stopped at a
+  character that could only stand still. `POST /api/model3d/animate` is
+  `blender_animate` with the model already open, and `GET
+  /api/model3d/clip_catalogue` offers what `humanpose`, `quadpose` and the
+  fetched animation packs actually accept rather than a list typed into the
+  browser. The support and self-intersection gates come back whole, per clip,
+  beside the proof renders
+- **The facing refusal reaches the person who can decide it**: a skin and a
+  skeleton that disagree about forward comes back 200 with nothing written and
+  the two overrides that fix it, instead of an error that reads like a crash
+
+### Fixed
+- **The viewer's clip scrub was ranged on a hard-coded second**, so on the
+  three-second walk cycles this pipeline authors the slider ran out mid-stride
+  and the end of a clip - where a bad loop snaps back - could not be reached
+- **The scrub never moved while a clip played**, and there was no time readout,
+  no loop control, no playback speed and no way to step a single frame: a foot
+  plant is one frame wide and a mouse cannot land on it
+
 ## [0.1.46] - 2026-09-12
 
 ### Added

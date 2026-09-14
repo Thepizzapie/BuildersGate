@@ -174,6 +174,11 @@ window.ModelEdit = (() => {
       ".me-mode.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}",
       ".me-anim-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}",
       ".me-anim-row input[type=range]{flex:1;accent-color:var(--accent)}",
+      ".me-anim-t{font-family:var(--mono);font-size:10px;color:var(--ash2);",
+        "font-variant-numeric:tabular-nums;flex:none;min-width:74px;text-align:right}",
+      ".me-anim-row .me-btn.on{border-color:var(--accent);color:var(--accent)}",
+      ".me-anim-row .me-btn{padding:5px 8px}",
+      ".me-step{font-family:var(--mono);font-size:10px;font-variant-numeric:tabular-nums}",
       ".me-clipname{font-family:var(--mono);font-size:10px;color:var(--ash2)}",
       ".me-navcube{position:absolute;right:10px;top:10px;width:84px;height:84px;pointer-events:none;opacity:.9}",
       ".me-pick{position:fixed;inset:0;z-index:1401;background:rgba(4,5,7,.9);display:flex;align-items:center;justify-content:center;padding:40px}",
@@ -229,6 +234,10 @@ window.ModelEdit = (() => {
         tool: "select", selectedNode: null, selectedSocket: null,
         placeSlot: KNOWN_SLOTS[0] || "socket",
         clips: [], mixer: null, action: null, playing: false,
+        // Playback is per-session, not per-model and not saved: it describes
+        // how someone is LOOKING at a clip, and the sidecar is for what the
+        // model is, not for how the last person watched it.
+        animLoop: true, animSpeed: 1,
         nodeIndex: new Map(), matCache: new WeakMap(), socketObjects: new Map(),
         stats: {tris: 0, nodes: 0, materials: 0},
       };
@@ -513,18 +522,59 @@ window.ModelEdit = (() => {
   /* The count chip is FILLED (.sec-n.live) while a clip is running, which is
      the one piece of live state in this sidebar: the viewport can be showing a
      model mid-walk-cycle with the panel scrolled off, and a hollow pill said
-     nothing about that. */
+     nothing about that.
+
+     THE SCRUB IS RANGED ON THE CLIP, not on a hard-coded second. It was
+     `max="1"` for every clip, so on the three-second walk cycles this
+     pipeline authors the slider ran out two thirds of the way through the
+     stride and the end of a clip could not be inspected at all — which is
+     exactly where a bad loop shows, the frame where it snaps back to the
+     start. Its position is repainted from the render loop (paintAnimTime)
+     rather than by re-rendering this sidebar sixty times a second. */
   function animSection(){
+    const dur = clipDuration();
     return sec("animation", "Animation",
       '<div class="me-anim-row">' +
         `<select class="me-sel" onchange="ModelEdit.setClip(this.value)">` +
         S.clips.map(c => `<option value="${E(c)}" ${c === S.activeClipName ? "selected" : ""}>${E(c)}</option>`).join("") +
         '</select>' +
-        `<button class="me-btn" onclick="ModelEdit.togglePlay()">${I(S.playing ? "pause" : "run", 14)}</button>` +
+        '<button class="me-btn me-step" onclick="ModelEdit.stepFrame(-1)" title="a frame back">&minus;1f</button>' +
+        `<button class="me-btn" onclick="ModelEdit.togglePlay()" title="${S.playing ? "pause" : "play"}">${I(S.playing ? "pause" : "run", 14)}</button>` +
+        '<button class="me-btn me-step" onclick="ModelEdit.stepFrame(1)" title="a frame on">+1f</button>' +
       '</div>' +
-      '<div class="me-anim-row"><input type="range" min="0" max="1" step="0.001" value="0" ' +
-        'id="me-scrub" oninput="ModelEdit.scrub(this.value)"></div>',
+      '<div class="me-anim-row">' +
+        `<input type="range" min="0" max="${dur.toFixed(3)}" step="0.001" value="${animTime().toFixed(3)}" ` +
+          'id="me-scrub" oninput="ModelEdit.scrub(this.value)">' +
+        `<span class="me-anim-t" id="me-anim-t">${animTime().toFixed(2)} / ${dur.toFixed(2)}s</span>` +
+      '</div>' +
+      '<div class="me-anim-row">' +
+        [0.25, 0.5, 1, 2].map(v =>
+          `<button class="me-btn ${S.animSpeed === v ? "on" : ""}" onclick="ModelEdit.setSpeed(${v})">${v}×</button>`).join("") +
+        `<button class="me-btn ${S.animLoop ? "on" : ""}" onclick="ModelEdit.toggleLoop()" ` +
+          `title="${S.animLoop ? "looping" : "plays once and holds the last frame"}">${I("loop", 13)}</button>` +
+      '</div>',
       { kind: "k-list", n: S.clips.length, tone: S.playing ? "live" : "" });
+  }
+
+  const clipDuration = () => {
+    const a = S && S.three && S.three.action;
+    return a ? (a.getClip().duration || 0) : 0;
+  };
+  const animTime = () => {
+    const a = S && S.three && S.three.action;
+    return a ? (a.time || 0) : 0;
+  };
+
+  /* Called from the render loop while a clip runs. Touches two nodes by id
+     and nothing else — renderSide() rebuilds the whole sidebar, which would
+     take the focus out of a field and re-collapse an open section on every
+     single frame of playback. */
+  function paintAnimTime(){
+    const bar = document.getElementById("me-scrub");
+    if (bar && document.activeElement !== bar) bar.value = String(animTime());
+    const out = document.getElementById("me-anim-t");
+    if (out) out.textContent = animTime().toFixed(2) + " / " +
+      clipDuration().toFixed(2) + "s";
   }
 
   function nodeRow(name, obj){
@@ -728,17 +778,51 @@ window.ModelEdit = (() => {
     if (S.three.mixer) S.three.mixer.stopAllAction();
     if (clip) {
       S.three.action = S.three.mixer.clipAction(clip);
+      applyPlayback();
       S.three.action.play();
       S.playing = true;
     }
     renderSide();
   }
+
+  /* Loop mode and speed live on the SESSION, not on the action, so switching
+     clip keeps whatever the person set. LoopOnce clamps: without
+     clampWhenFinished the model snaps back to its rest pose the instant a
+     one-shot ends, which reads as a broken clip rather than a finished one. */
+  function applyPlayback(){
+    const a = S && S.three && S.three.action;
+    if (!a) return;
+    a.setLoop(S.animLoop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+    a.clampWhenFinished = !S.animLoop;
+    a.timeScale = S.animSpeed;
+    a.enabled = true;
+  }
+
   function togglePlay(){
     if (!S || !S.three || !S.three.action) return;
+    const a = S.three.action;
+    // A one-shot sitting on its last frame has nowhere to go; play means
+    // play it again, not resume a clip that already ended.
+    if (!S.playing && !S.animLoop && a.time >= a.getClip().duration - 1e-4) a.time = 0;
     S.playing = !S.playing;
-    S.three.action.paused = !S.playing;
+    a.paused = !S.playing;
     renderSide();
   }
+
+  function setSpeed(v){
+    if (!S) return;
+    S.animSpeed = v;
+    applyPlayback();
+    renderSide();
+  }
+
+  function toggleLoop(){
+    if (!S) return;
+    S.animLoop = !S.animLoop;
+    applyPlayback();
+    renderSide();
+  }
+
   function scrub(v){
     if (!S || !S.three || !S.three.action) return;
     S.playing = false;
@@ -746,7 +830,27 @@ window.ModelEdit = (() => {
     const clip = S.three.action.getClip();
     S.three.action.time = clamp(parseFloat(v), 0, clip.duration);
     S.three.mixer.update(0);
+    paintAnimTime();
     requestRender();
+  }
+
+  /* Frame stepping is what a scrub cannot do: a foot plant is one frame wide
+     and a mouse cannot land on it. glTF carries no fps, so the step is the
+     project's authoring rate (blender.animate defaults to 30) and the clip's
+     own keys are what actually get sampled. */
+  function stepFrame(dir){
+    if (!S || !S.three || !S.three.action) return;
+    const a = S.three.action, dur = a.getClip().duration || 0;
+    S.playing = false;
+    a.paused = true;
+    let t = a.time + dir / 30;
+    if (t < 0) t = S.animLoop ? Math.max(0, dur + t) : 0;
+    if (t > dur) t = S.animLoop ? t - dur : dur;
+    a.time = t;
+    S.three.mixer.update(0);
+    paintAnimTime();
+    requestRender();
+    renderSide();
   }
 
   // ── three.js ──────────────────────────────────────────────────────────
@@ -913,7 +1017,7 @@ window.ModelEdit = (() => {
       const dt = t.clock.getDelta();
       let animating = false;
       if (t.controls.update()) animating = true; // damping in flight
-      if (t.mixer && S.playing) { t.mixer.update(dt); animating = true; }
+      if (t.mixer && S.playing) { t.mixer.update(dt); paintAnimTime(); animating = true; }
       if (S.model.display.autorotate && t.root) { t.root.rotation.y += dt * 0.4; animating = true; }
       if (animating || t.dirty) {
         t.dirty = false;
@@ -1095,8 +1199,17 @@ window.ModelEdit = (() => {
     S.clips = S.three.gltfAnimations.map(c => c.name || "clip");
     if (S.clips.length) {
       S.three.mixer = new THREE.AnimationMixer(root);
+      // A one-shot that reaches its end stops itself. Without this the button
+      // still says pause and pressing it "resumes" a clip that is already
+      // over, which reads as a dead control rather than a finished clip.
+      S.three.mixer.addEventListener("finished", () => {
+        if (!S || !S.three) return;
+        S.playing = false;
+        renderSide();
+      });
       S.activeClipName = S.clips[0];
       S.three.action = S.three.mixer.clipAction(S.three.gltfAnimations[0]);
+      applyPlayback();
       S.three.action.play();
       S.playing = true;
     }
@@ -1405,7 +1518,7 @@ window.ModelEdit = (() => {
     setTool, toggleDisplay, setDisplayMode, setBackground,
     selectNode, toggleNode, nodeColor, nodeOpacity,
     selectSocket, deleteSocket, renameSocket, socketAxis, socketNote,
-    setClip, togglePlay, scrub, notesField,
+    setClip, togglePlay, scrub, setSpeed, toggleLoop, stepFrame, notesField,
     get state(){ return S; },
   };
 })();

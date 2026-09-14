@@ -284,6 +284,38 @@ blender_animate(model="out/hero_rigged.glb", out_path="out/hero_anim.glb")
    → strays            unbound meshes found inside the rig, dropped
 ```
 
+### The same step from the viewer
+
+The model editor's draft-to-asset column runs the whole chain against the file
+it has open: inspect, clean, bake, rig, weights, deform test and now clips.
+`POST /api/model3d/animate` is `blender_animate` with the model already chosen;
+`GET /api/model3d/clip_catalogue` is what the panel offers, read from
+`humanpose.CLIP_KINDS`, `quadpose.QUAD_CLIP_KINDS` and whichever animation
+packs `animlib` finds fetched - never a list typed into the browser, which
+would go stale the first time a kind was added.
+
+```text
+POST /api/model3d/animate  {rel, clips[], fps, proof_frames, facing,
+                            textured, loop_suffix}
+   → out                <name>.anim.glb, beside the model; the draft is
+                        never touched
+   → clips[]            each with its own support verdict
+   → support            the foot-contact gate, whole
+   → collisions         the self-intersection gate, whole
+   → sheets[]           proof PNGs as /api/preview URLs
+   → refused            the facing gate, 200 and not an error: nothing was
+                        written and the panel says which override fixes it
+```
+
+The refusal comes back 200 on purpose. `facing: "repair"` re-aims the foot
+bones at the skin's toes and `facing: "skeleton"` trusts the bones, and
+choosing between them is a judgement about the mesh that belongs to whoever is
+looking at it.
+
+Clips already on a mesh play in the viewer itself: pick one, scrub it, step a
+frame at a time, run it at a quarter speed, or drop the loop and watch it hold
+its last pose.
+
 ## Putting it in the game
 
 `godot_character_wire` is the step nothing did: it writes
