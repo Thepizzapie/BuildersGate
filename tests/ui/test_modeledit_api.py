@@ -10,6 +10,7 @@ import inspect
 import io
 
 import pytest
+from pathlib import Path
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -219,6 +220,239 @@ def test_snapshot_refuses_garbage_base64(client, game):
 from pathlib import Path  # noqa: E402
 
 # ---------------------------------------------------------------------------
+# The skeleton, as something you can move
+# ---------------------------------------------------------------------------
+def test_coincident_endpoints_group_into_one_joint():
+    """AN ELBOW IS TWO BONE ENDS AT ONE COORDINATE. Move the forearm's head
+    without the upper arm's tail and the limb comes apart when it bends: the
+    exporter keeps the gap and the engine renders it. The joint is therefore
+    the unit of editing, and this is the grouping that makes that true."""
+    from bgate_ui.routes.modeledit import _joints
+
+    bones = [
+        {"name": "Hips", "parent": "", "head": [0, 1.0, 0], "tail": [0, 1.15, 0]},
+        {"name": "Spine", "parent": "Hips", "head": [0, 1.15, 0], "tail": [0, 1.35, 0]},
+        {"name": "UpperArm", "parent": "Spine", "head": [0.18, 1.35, 0], "tail": [0.45, 1.35, 0]},
+        {"name": "LowerArm", "parent": "UpperArm", "head": [0.45, 1.35, 0], "tail": [0.7, 1.35, 0]},
+    ]
+    joints = _joints(bones)
+    elbow = next(j for j in joints if j["position"] == [0.45, 1.35, 0.0])
+    assert sorted((e["bone"], e["end"]) for e in elbow["ends"]) == [
+        ("LowerArm", "head"), ("UpperArm", "tail")]
+    # Named for the bone that STARTS there: an elbow is where the forearm begins.
+    assert elbow["label"] == "LowerArm"
+    assert elbow["leaf"] is False
+    tip = next(j for j in joints if j["position"] == [0.7, 1.35, 0.0])
+    assert tip["leaf"] is True and tip["label"].endswith("tip")
+
+
+def test_endpoints_a_float_apart_are_still_one_joint():
+    """A rig that survived a glTF round trip carries coincident endpoints back
+    at float precision, not bit-identical. Grouping on equality would split
+    every joint in the skeleton into two that drag apart."""
+    from bgate_ui.routes.modeledit import _joints
+
+    joints = _joints([
+        {"name": "A", "head": [0, 0, 0], "tail": [0, 1.0, 0]},
+        {"name": "B", "head": [0, 1.0000001, 0], "tail": [0, 2.0, 0]},
+    ])
+    shared = [j for j in joints if len(j["ends"]) == 2]
+    assert len(shared) == 1, [j["ends"] for j in joints]
+
+
+def test_a_bone_edit_must_change_something(client, game):
+    r = client.post("/api/model3d/skeleton",
+                    json={"rel": MODEL, "bones": {"Hips": {}}})
+    assert r.status_code == 400
+    assert r.json()["error"]["detail"]["bone"] == "Hips"
+
+
+def test_a_nan_coordinate_is_refused(client, game):
+    """NaN fails every comparison including its own, so a range check alone
+    lets it through and Blender writes a corrupted armature."""
+    import json as _json
+
+    body = _json.dumps({"rel": MODEL,
+                        "bones": {"Hips": {"head": [0, float("nan"), 0]}}})
+    r = client.post("/api/model3d/skeleton", content=body,
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 400
+    assert "finite" in r.json()["error"]["message"]
+
+
+def test_a_malformed_coordinate_is_refused(client, game):
+    for point in ([0, 1], "here", [0, "up", 0], [0, 1, 2, 3]):
+        r = client.post("/api/model3d/skeleton",
+                        json={"rel": MODEL, "bones": {"Hips": {"head": point}}})
+        assert r.status_code == 400, point
+
+
+def test_an_empty_edit_is_refused(client, game):
+    for payload in ({}, {"bones": {}}, {"bones": []}):
+        r = client.post("/api/model3d/skeleton", json={"rel": MODEL, **payload})
+        assert r.status_code == 400, payload
+
+
+def test_a_drag_further_than_the_model_allows_is_refused(client, game):
+    """The gizmo works in world units, and one slipped drag against a distant
+    camera plane throws a wrist across the room. The limit is a fraction of
+    the model's own height, so it means the same thing on a mug and a tower."""
+    r = client.post("/api/model3d/skeleton", json={
+        "rel": MODEL, "limit": 0.9,
+        "bones": {"Hips": {"head": [0, 40.0, 0], "was": {"head": [0, 1.0, 0]}}}})
+    assert r.status_code == 400
+    detail = r.json()["error"]["detail"]
+    assert detail["bone"] == "Hips" and detail["moved"] > 0.9
+
+
+def test_a_move_inside_the_limit_reaches_blender(client, game, monkeypatch):
+    from bgate_ui.routes import modeledit
+
+    seen = {}
+
+    class FakeBlender:
+        _RIG_SOURCE = "# rig kit\n"
+
+        @staticmethod
+        def available():
+            return {"available": True}
+
+        @staticmethod
+        def run_script(body, **kw):
+            seen["export"] = kw.get("export_glb")
+            Path(kw["export_glb"]).write_bytes(FAKE_GLB)
+            return {"ok": True, "seconds": 9.0}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    monkeypatch.setattr(modeledit, "_run", lambda script, payload, timeout, export_glb=None: (
+        seen.update(payload=payload, script=script),
+        Path(export_glb).write_bytes(FAKE_GLB),
+        {"ok": True, "armature": "Skeleton", "bones": 23, "seconds": 9.0,
+         "applied": [{"name": "Hips"}], "missing": [], "max_move": 0.02,
+         "rebound": True, "rigged": True, "bound_with": "ARMATURE_AUTO",
+         "unweighted": 3, "unweighted_pct": 0.01, "attempts": []})[-1])
+    r = client.post("/api/model3d/skeleton", json={
+        "rel": MODEL, "limit": 0.9,
+        "bones": {"Hips": {"head": [0, 1.02, 0], "was": {"head": [0, 1.0, 0]}}}})
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["out"] == "assets/models/hero.bones.glb"
+    assert d["rebound"] is True and d["rigged"] is True
+    # `was` is a client-side guard rail, not something Blender should be told.
+    assert seen["payload"]["bones"] == {"Hips": {"head": [0.0, 1.02, 0.0]}}
+    assert seen["payload"]["rebind"] is True
+    # The rig kit has to be PREPENDED: run_script only appends it, and only
+    # when exporting, so a script calling bgate_rig_enter at its top level
+    # would not see it.
+    assert seen["script"].startswith("# rig kit")
+
+
+def test_keeping_the_weights_is_an_explicit_choice(client, game, monkeypatch):
+    """Weights were solved by heat around the joints that existed at bind
+    time. Moving one and keeping them ships a character that tears at exactly
+    that joint, so rebind defaults on and off has to be asked for."""
+    from bgate_ui.routes import modeledit
+
+    seen = {}
+
+    class FakeBlender:
+        _RIG_SOURCE = ""
+
+        @staticmethod
+        def available():
+            return {"available": True}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    monkeypatch.setattr(modeledit, "_run", lambda script, payload, timeout, export_glb=None: (
+        seen.update(payload=payload),
+        Path(export_glb).write_bytes(FAKE_GLB),
+        {"ok": True, "rebound": False, "rigged": None, "applied": [],
+         "missing": [], "max_move": 0.0, "bones": 23})[-1])
+
+    client.post("/api/model3d/skeleton",
+                json={"rel": MODEL, "bones": {"Hips": {"roll": 0.1}}})
+    assert seen["payload"]["rebind"] is True
+
+    r = client.post("/api/model3d/skeleton", json={
+        "rel": MODEL, "rebind": False, "bones": {"Hips": {"roll": 0.1}}})
+    assert seen["payload"]["rebind"] is False
+    # `rigged` is None, not False: nothing was measured, and saying "not
+    # rigged" would be a verdict this run never reached.
+    assert r.json()["data"]["rigged"] is None
+
+
+def test_a_failed_edit_leaves_no_half_written_export(client, game, monkeypatch):
+    """The runner exports whatever the script left behind, refusal or not, and
+    a .glb on disk after a failed run reads as delivered work."""
+    from bgate_ui.routes import modeledit
+
+    class FakeBlender:
+        _RIG_SOURCE = ""
+
+        @staticmethod
+        def available():
+            return {"available": True}
+
+    def boom(script, payload, timeout, export_glb=None):
+        Path(export_glb).write_bytes(b"half a mesh")
+        return {"ok": False, "error": "Hips would be 0.000001 m long"}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    monkeypatch.setattr(modeledit, "_run", boom)
+    r = client.post("/api/model3d/skeleton",
+                    json={"rel": MODEL, "bones": {"Hips": {"roll": 0.1}}})
+    assert r.status_code == 502
+    assert not (game / "assets" / "models" / "hero.bones.glb").exists()
+
+
+def test_the_skeleton_read_needs_blender(client, game, monkeypatch):
+    from bgate_ui.routes import modeledit
+
+    class NoBlender:
+        _RIG_SOURCE = ""
+
+        @staticmethod
+        def available():
+            return {"available": False, "reason": "not on the path"}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: NoBlender)
+    r = client.get("/api/model3d/skeleton", params={"rel": MODEL})
+    assert r.status_code == 503
+
+
+def test_the_skeleton_read_reports_joints_and_a_move_limit(client, game, monkeypatch):
+    from bgate_ui.routes import modeledit
+
+    class FakeBlender:
+        _RIG_SOURCE = ""
+
+        @staticmethod
+        def available():
+            return {"available": True}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    monkeypatch.setattr(modeledit, "_run", lambda *a, **k: {
+        "ok": True, "seconds": 2.0, "meshes": 1, "measure": {"height": 1.8},
+        "armatures": [{"name": "Skeleton", "at_origin": True, "bones": [
+            {"name": "Hips", "parent": "", "head": [0, 1.0, 0],
+             "tail": [0, 1.15, 0], "influences": 900},
+            {"name": "Spine", "parent": "Hips", "head": [0, 1.15, 0],
+             "tail": [0, 1.35, 0], "influences": 0}]}]})
+    r = client.get("/api/model3d/skeleton", params={"rel": MODEL})
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["height"] == 1.8
+    assert d["max_move"] == round(1.8 * modeledit.MAX_JOINT_MOVE, 4)
+    joints = d["armatures"][0]["joints"]
+    assert len(joints) == 3
+    waist = next(j for j in joints if j["label"] == "Spine")
+    assert len(waist["ends"]) == 2
+    # A bone nothing is weighted to is the one worth seeing, so the count is
+    # reported per bone rather than rolled into a total.
+    assert d["armatures"][0]["bones"][1]["influences"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Clip authoring
 # ---------------------------------------------------------------------------
 # THE VALIDATION IS THE POINT. Every refusal below is one that would otherwise
@@ -422,6 +656,25 @@ def test_the_editor_uses_the_shared_endpoints_not_invented_ones():
     for path in ("/api/model3d/open", "/api/model3d/list", "/api/model3d/save",
                  "/api/model3d/snapshot", "/api/model3d/reset"):
         assert path in js, f"{path} not called from modeledit.js"
+
+
+def test_the_skeleton_editor_is_loaded_and_calls_its_own_endpoints():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert 'src="/static/modeledit_bones.js"' in html
+    js = (STATIC / "modeledit_bones.js").read_text(encoding="utf-8")
+    assert "/api/model3d/skeleton" in js
+    # It renders into the tools column rather than owning one, so it must go
+    # through that module's shared markup and not a second copy of it.
+    assert "ModelTools.repaint" in js and "ModelTools.ui" in js
+
+
+def test_a_sibling_module_can_repaint_the_tools_column():
+    """tick() only rebuilds when the MODEL changed. Without a repaint the
+    joints panel sat on its pre-read text with a skeleton already drawn in the
+    viewport behind it."""
+    js = (STATIC / "modeledit_tools.js").read_text(encoding="utf-8")
+    assert "repaint: render," in js
+    assert "ui: {panel, row" in js
 
 
 def test_the_tools_column_calls_the_animation_endpoints_it_needs():

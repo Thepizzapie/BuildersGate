@@ -291,7 +291,12 @@ window.ModelTools = (() => {
   function tick(){
     const S = ME();
     const body = document.querySelector("#me-back .me-body");
-    if (!S || !body || !S.viewable) { if (host) detach(); return; }
+    if (!S || !body || !S.viewable) {
+      if (host) detach();
+      if (window.BoneEdit) BoneEdit.sync("");
+      return;
+    }
+    if (window.BoneEdit) BoneEdit.sync(S.rel);
     ensureMounted(body);
     if (S.rel !== shownRel) {
       dropOverlay(); revertPreview();
@@ -768,6 +773,8 @@ window.ModelTools = (() => {
     if (act === "antex") { animTextured = !animTextured; render(); return; }
     if (act === "anloop") { animLoop = !animLoop; render(); return; }
     if (act === "animate") { runAnimate(); return; }
+    // Anything this column does not own goes to the module that does.
+    if (window.BoneEdit && BoneEdit.handle(act, val)) return;
   }
 
   function onChange(ev){
@@ -809,7 +816,7 @@ window.ModelTools = (() => {
       '<div class="mt-body">' +
         secInspect() + secScale() + secOrient() + secOrigin() +
         secClean() + secBake() +
-        secRig() + secWeights() + secFlex() + secAnimate() +
+        secRig() + secJoints() + secWeights() + secFlex() + secAnimate() +
         secRetarget() + secBlender() +
       '</div>';
     const body1 = host.querySelector(".mt-body");
@@ -1143,6 +1150,14 @@ window.ModelTools = (() => {
     return panel("k-list", "rig", "skeleton",
                  sk ? sk.bones + " bones" : (insp ? "none" : ""),
                  sk ? "good" : (insp ? "warn" : ""), body);
+  }
+
+  /* 7b. JOINTS ───────────────────────────────────────────────────────────
+     modeledit_bones.js draws the skeleton in the viewport and drags it; this
+     is where its panel lands, between the bind and the checks that judge the
+     bind, because moving a joint invalidates both of them. */
+  function secJoints(){
+    return window.BoneEdit ? BoneEdit.panel(hasSkeleton()) : "";
   }
 
   /* 8. WEIGHTS ───────────────────────────────────────────────────────────*/
@@ -1486,11 +1501,20 @@ window.ModelTools = (() => {
 
   return {
     start, tick, measure, bake,
+    // tick() only rebuilds when the MODEL changed. A sibling module whose own
+    // state moved (the skeleton editor reading a rig, staging a drag) needs
+    // the column repainted on demand, and calling tick() for that was a
+    // no-op: the joints panel sat on its pre-read text with a skeleton
+    // already drawn in the viewport behind it.
+    repaint: render,
     get plan(){ return plan; },
     get inspection(){ return insp; },
     get rig(){ return {kind: rigKind, budget: rigBudget}; },
     get clips(){ return {family: animFamily, picked: animRequest(),
                          fps: animFps, facing: animFacing}; },
+    // Lent to modeledit_bones.js so the joints panel is built out of THIS
+    // column's markup rather than a second copy that drifts from it.
+    ui: {panel, row, E, I, num, K, m3},
     get animation(){ return anim; },
     get result(){ return baked; },
     stop(){ if (timer) { clearInterval(timer); timer = 0; } detach(); },

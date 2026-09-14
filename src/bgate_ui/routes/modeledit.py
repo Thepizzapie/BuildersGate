@@ -429,6 +429,212 @@ def _write(report):
         json.dump(report, fh)
 '''
 
+# THE RIG KIT IS NOT IN THE DEFAULT PRELUDE. run_script appends
+# blender._RIG_SOURCE only when it is exporting a .glb, and it appends it
+# AFTER the caller's script, so a script that calls bgate_rig_dump at its own
+# top level cannot see it. blender.combine solves this by prepending the same
+# source itself; so does everything below that reads or writes a bone.
+def _rig_source() -> str:
+    return _blender()._RIG_SOURCE
+
+
+_SKELETON_BODY = r'''
+report = {"ok": False}
+try:
+    if P["ext"] != ".blend":
+        bg_wipe()
+        _import(P["path"], P["ext"])
+    bpy.context.view_layer.update()
+    kept, dropped = bgate_drop_shapes(list(bpy.context.scene.objects))
+    arms = [o for o in kept if o.type == "ARMATURE"]
+    meshes = [o for o in kept if o.type == "MESH"]
+
+    # WHICH VERTICES EACH BONE ACTUALLY MOVES, not how many groups exist. A
+    # bind that created all 23 vertex groups and filled none of them is the
+    # documented failure (blender.rig: 64,878 of 64,878 unweighted with every
+    # other check green), so a joint editor that showed the group list would
+    # draw a skeleton attached to a mesh it does not touch.
+    influence = {}
+    for mesh in meshes:
+        names = [g.name for g in mesh.vertex_groups]
+        for vert in mesh.data.vertices:
+            for entry in vert.groups:
+                if entry.weight <= 0.0 or entry.group >= len(names):
+                    continue
+                key = names[entry.group]
+                influence[key] = influence.get(key, 0) + 1
+
+    out = []
+    for arm in arms:
+        world = arm.matrix_world
+        deform = {b.name: bool(b.use_deform) for b in arm.data.bones}
+        bones = []
+        state = bgate_rig_enter(arm)
+        try:
+            for bone in arm.data.edit_bones:
+                bones.append({
+                    "name": bone.name,
+                    "parent": bone.parent.name if bone.parent else "",
+                    # glTF frame, so the panel can draw these straight over the
+                    # mesh the viewer already loaded. Through the object's own
+                    # matrix first: an armature that is not at the origin would
+                    # otherwise draw its skeleton beside the body.
+                    "head": _gltf3(world @ bone.head),
+                    "tail": _gltf3(world @ bone.tail),
+                    "roll": round(bone.roll, 6),
+                    "length": round(bone.length, 6),
+                    "connect": bool(bone.use_connect),
+                    "deform": deform.get(bone.name, True),
+                    "influences": influence.get(bone.name, 0),
+                })
+        finally:
+            bgate_rig_leave(state)
+        out.append({"name": arm.name, "bones": bones,
+                    "at_origin": bool(world.translation.length < 1e-6)})
+
+    report = {"ok": True, "armatures": out, "meshes": len(meshes),
+              "dropped_shapes": dropped, "measure": _measure()}
+except Exception as exc:
+    report = {"ok": False, "error": str(exc),
+              "traceback": traceback.format_exc()[-1500:]}
+_write(report)
+print("skeleton done")
+'''
+
+
+# Moving a joint invalidates the bind that was solved around the old one, so
+# this is ONE script and not two: apply the edits, re-solve the weights in the
+# same session, export. Split, a caller could ship a skeleton whose weights
+# belong to a different skeleton.
+_BONES_EDIT_BODY = r'''
+report = {"ok": False}
+try:
+    if P["ext"] != ".blend":
+        bg_wipe()
+        _import(P["path"], P["ext"])
+    bpy.context.view_layer.update()
+    kept, dropped = bgate_drop_shapes(list(bpy.context.scene.objects))
+    arms = [o for o in kept if o.type == "ARMATURE"]
+    meshes = [o for o in kept if o.type == "MESH"]
+    if not arms:
+        raise RuntimeError("no armature in this file - fit a skeleton first")
+    want = P.get("armature") or ""
+    arm = next((a for a in arms if a.name == want), None) if want else arms[0]
+    if arm is None:
+        raise RuntimeError("no armature called %r; this file has %s"
+                           % (want, ", ".join(a.name for a in arms)))
+
+    into = arm.matrix_world.inverted()
+
+    def _blend3(v):
+        """The viewer's xyz back into Blender. Y-up -Z fwd -> Z-up +Y fwd."""
+        return Vector((float(v[0]), -float(v[2]), float(v[1])))
+
+    edits = P.get("bones") or {}
+    applied, missing = [], []
+    moved = 0.0
+    state = bgate_rig_enter(arm)
+    try:
+        present = {b.name for b in arm.data.edit_bones}
+        missing = sorted(n for n in edits if n not in present)
+        for name in sorted(edits):
+            bone = arm.data.edit_bones.get(name)
+            if bone is None:
+                continue
+            spec = edits[name] or {}
+            was_head, was_tail = bone.head.copy(), bone.tail.copy()
+            if spec.get("head") is not None:
+                target = into @ _blend3(spec["head"])
+                moved = max(moved, (target - bone.head).length)
+                bone.head = target
+            if spec.get("tail") is not None:
+                target = into @ _blend3(spec["tail"])
+                moved = max(moved, (target - bone.tail).length)
+                bone.tail = target
+            if spec.get("roll") is not None:
+                bone.roll = float(spec["roll"])
+            # A ZERO-LENGTH BONE IS DELETED BY BLENDER when edit mode closes,
+            # silently, and the export then carries a skeleton with a hole in
+            # it. Refuse the whole edit rather than ship that.
+            if bone.length < 1e-5:
+                raise RuntimeError(
+                    "%s would be %.6f m long; a bone that short is removed "
+                    "when edit mode closes" % (name, bone.length))
+            applied.append({
+                "name": name,
+                "head": _gltf3(arm.matrix_world @ bone.head),
+                "tail": _gltf3(arm.matrix_world @ bone.tail),
+                "roll": round(bone.roll, 6),
+                "was_head": _gltf3(arm.matrix_world @ was_head),
+                "was_tail": _gltf3(arm.matrix_world @ was_tail)})
+    finally:
+        bgate_rig_leave(state)
+
+    report["applied"] = applied
+    report["missing"] = missing
+    report["max_move"] = round(moved, 6)
+    report["armature"] = arm.name
+    report["bones"] = len(arm.data.bones)
+
+    # REBIND, AND PROVE IT THE ONLY WAY THAT WORKS. parent_set returns cleanly
+    # and creates every vertex group whether or not one weight was written;
+    # the unweighted count is the only witness. Same two-attempt ladder rig()
+    # uses: heat first because it deforms properly, envelope as the fallback.
+    if P.get("rebind") and meshes:
+        attempts = []
+        for how in ("ARMATURE_AUTO", "ARMATURE_ENVELOPE"):
+            for mesh in meshes:
+                for vg in mesh.vertex_groups[:]:
+                    mesh.vertex_groups.remove(vg)
+                for mod in [m for m in mesh.modifiers if m.type == "ARMATURE"]:
+                    mesh.modifiers.remove(mod)
+            bpy.ops.object.select_all(action="DESELECT")
+            for mesh in meshes:
+                mesh.select_set(True)
+            arm.select_set(True)
+            bpy.context.view_layer.objects.active = arm
+            err = ""
+            try:
+                with bpy.context.temp_override(
+                        object=arm, active_object=arm,
+                        selected_objects=meshes + [arm],
+                        selected_editable_objects=meshes + [arm]):
+                    bpy.ops.object.parent_set(type=how)
+            except Exception as exc:
+                err = str(exc)[:160]
+            bpy.context.view_layer.update()
+            total = sum(len(m.data.vertices) for m in meshes)
+            loose = sum(1 for m in meshes for v in m.data.vertices
+                        if not v.groups)
+            attempts.append({"bind": how, "verts": total, "unweighted": loose,
+                             "pct": round(100.0 * loose / max(total, 1), 3),
+                             "error": err})
+            if not err and loose <= max(8, total * P["tolerance"]):
+                break
+        best = min(attempts, key=lambda a: a["unweighted"])
+        report["attempts"] = attempts
+        report["bound_with"] = best["bind"]
+        report["unweighted"] = best["unweighted"]
+        report["unweighted_pct"] = best["pct"]
+        report["rebound"] = True
+        report["rigged"] = bool(best["unweighted"] <=
+                                max(8, best["verts"] * P["tolerance"]))
+    else:
+        report["rebound"] = False
+        # The weights were solved around the OLD joint positions and are still
+        # attached to them. Right for a roll or a tail tidy, wrong for a moved
+        # head, and the caller is the one who knows which this was.
+        report["rigged"] = None
+
+    report["ok"] = True
+except Exception as exc:
+    report = {"ok": False, "error": str(exc),
+              "traceback": traceback.format_exc()[-1500:]}
+_write(report)
+print("bones done")
+'''
+
+
 _INSPECT_SCRIPT = _BLENDER_PRELUDE + r'''
 report = {"ok": False}
 try:
@@ -1067,6 +1273,238 @@ def model_flex(payload: dict) -> dict:
     return api.ok({"rel": rel, "rest": report.get("rest"), "poses": poses,
                    "verdict": report.get("verdict"),
                    "seconds": report.get("seconds")})
+
+
+BONES_SUFFIX = ".bones.glb"
+SKELETON_TIMEOUT = 300
+BONES_TIMEOUT = 1800
+# Two endpoints closer together than this are ONE joint. Blender writes a
+# child's head and its parent's tail to the same coordinate when the bones are
+# connected, and a rig that survived a glTF round trip carries them back at
+# float precision rather than bit-identical.
+JOINT_EPS = 1e-4
+# A drag further than this many times the model's height is a slip, not an
+# edit. The gizmo works in world units and a stray drag against a distant
+# camera plane can throw a wrist into the next postcode.
+MAX_JOINT_MOVE = 0.5
+
+
+def _joints(bones: list) -> list:
+    """Bone endpoints grouped into the joints a person actually drags.
+
+    A SKELETON EDITOR THAT MOVED ONE BONE'S HEAD WOULD TEAR THE RIG. An elbow
+    is the forearm's head AND the upper arm's tail, written to the same
+    coordinate; moving one of the two leaves a gap the exporter keeps and the
+    engine renders as a limb that comes apart when it bends. So the unit of
+    editing here is the joint, and every endpoint sitting on it moves together.
+    """
+    joints: list = []
+    for bone in bones:
+        for end in ("head", "tail"):
+            point = bone.get(end) or [0.0, 0.0, 0.0]
+            hit = None
+            for joint in joints:
+                if all(abs(joint["position"][i] - point[i]) <= JOINT_EPS
+                       for i in range(3)):
+                    hit = joint
+                    break
+            if hit is None:
+                hit = {"id": "j%d" % len(joints),
+                       "position": [round(float(c), 6) for c in point],
+                       "ends": []}
+                joints.append(hit)
+            hit["ends"].append({"bone": bone["name"], "end": end})
+    for joint in joints:
+        # The name a person recognises. A joint is usually one bone's head and
+        # its parent's tail; the head owns the name (an elbow is where the
+        # forearm starts), and a pure tail is a leaf tip.
+        heads = [e["bone"] for e in joint["ends"] if e["end"] == "head"]
+        joint["label"] = heads[0] if heads else (
+            joint["ends"][0]["bone"] + " tip")
+        joint["leaf"] = not heads
+    return joints
+
+
+@router.get("/api/model3d/skeleton")
+def model_skeleton(rel: str) -> dict:
+    """Every bone, where it starts and ends, and what it actually moves.
+
+    THE FIRST THING IN THIS PRODUCT THAT TREATS THE SKELETON AS EDITABLE. The
+    rig step fits a fixed 23-bone template and the panel could report how many
+    bones came back; where any one of them SAT was answerable only by opening
+    Blender. Positions come back in the viewer's own frame (glTF, Y-up, -Z
+    forward), so the panel draws them over the mesh it already loaded without
+    a second opinion about which way is up.
+
+    `influences` per bone is vertices actually weighted to it, not the size of
+    the vertex-group list: a bind that made every group and filled none of
+    them is the failure this pipeline has measured, and a skeleton drawn as
+    connected to a mesh it does not move would hide exactly that.
+    """
+    project_root, target = _model(rel)
+    _importable(target)
+    mod = _blender()
+    if not mod.available().get("available"):
+        raise api.ApiError(503, "Blender is not installed or not on the path",
+                           detail=mod.available())
+    report = _run(_rig_source() + "\n" + _BLENDER_PRELUDE + _SKELETON_BODY,
+                  {"path": str(target), "ext": target.suffix.lower()},
+                  SKELETON_TIMEOUT)
+    if not report.get("ok"):
+        raise api.ApiError(502, "reading the skeleton failed inside Blender",
+                           detail={"error": report.get("error")})
+    arms = report.get("armatures") or []
+    for arm in arms:
+        arm["joints"] = _joints(arm.get("bones") or [])
+    height = float(((report.get("measure") or {}).get("height")) or 0.0)
+    return api.ok({
+        "rel": rel, "armatures": arms, "count": len(arms),
+        "height": height,
+        # What a drag is allowed to be, decided from the model rather than
+        # from a constant that means something different on a mug and a tower.
+        "max_move": round(height * MAX_JOINT_MOVE, 4) if height else 0.0,
+        "seconds": report.get("seconds"),
+    })
+
+
+def _bone_edits(payload: dict, limit: float) -> dict:
+    """Turn the panel's joint drags into per-bone head/tail writes.
+
+    Validated here rather than in Blender for the usual reason: a NaN in a
+    coordinate is worth a 400 in a millisecond, and inside Blender it is a
+    corrupted armature exported over a file the caller wanted kept.
+    """
+    raw = payload.get("bones")
+    if not isinstance(raw, dict) or not raw:
+        raise api.bad_request("bones must be a non-empty object keyed by name")
+    if len(raw) > 512:
+        raise api.bad_request("too many bones in one edit", asked=len(raw))
+    out: dict = {}
+    for name, spec in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            raise api.bad_request("a bone edit needs a bone name")
+        if not isinstance(spec, dict):
+            raise api.bad_request(f"the edit for {name!r} must be an object")
+        clean: dict = {}
+        for end in ("head", "tail"):
+            if spec.get(end) is None:
+                continue
+            point = spec[end]
+            if (not isinstance(point, (list, tuple)) or len(point) != 3):
+                raise api.bad_request(f"{name}.{end} must be [x, y, z]",
+                                      bone=name)
+            try:
+                triple = [float(c) for c in point]
+            except (TypeError, ValueError):
+                raise api.bad_request(f"{name}.{end} is not three numbers",
+                                      bone=name) from None
+            for c in triple:
+                # NaN fails every comparison including its own, which is what
+                # makes it worth naming: a bound check alone would let it past.
+                if c != c or abs(c) > 1e6:
+                    raise api.bad_request(
+                        f"{name}.{end} is not a finite coordinate", bone=name)
+            clean[end] = triple
+        if spec.get("roll") is not None:
+            try:
+                roll = float(spec["roll"])
+            except (TypeError, ValueError):
+                raise api.bad_request(f"{name}.roll is not a number",
+                                      bone=name) from None
+            if roll != roll or abs(roll) > 100:
+                raise api.bad_request(f"{name}.roll is out of range", bone=name)
+            clean["roll"] = roll
+        if not clean:
+            raise api.bad_request(f"the edit for {name!r} changes nothing",
+                                  bone=name)
+        was = spec.get("was") or {}
+        for end in ("head", "tail"):
+            if end in clean and isinstance(was.get(end), (list, tuple)) \
+                    and len(was[end]) == 3 and limit > 0:
+                try:
+                    delta = sum((float(clean[end][i]) - float(was[end][i])) ** 2
+                                for i in range(3)) ** 0.5
+                except (TypeError, ValueError):
+                    continue
+                if delta > limit:
+                    raise api.bad_request(
+                        f"{name}.{end} moved {delta:.3f} m, past the "
+                        f"{limit:.3f} m this model allows in one edit",
+                        bone=name, moved=round(delta, 4), limit=limit)
+        out[name] = clean
+    return out
+
+
+@router.post("/api/model3d/skeleton")
+def model_edit_skeleton(payload: dict) -> dict:
+    """Write moved joints back into the armature, re-bind, and prove it.
+
+    Writes ``<stem>.bones.glb``. The draft is never touched, the same way the
+    bake and the rig leave theirs alone.
+
+    REBINDING IS THE DEFAULT AND SHOULD BE. Weights were solved by heat around
+    the joint positions that existed when the bind ran; move an elbow two
+    centimetres and every weight near it now belongs to a skeleton that is no
+    longer there. ``rebind: false`` is for the edits where that is not true —
+    a roll, a leaf tail grown to reach the geometry — and it costs the caller
+    an explicit decision because getting it wrong ships a character that tears
+    at exactly one joint.
+    """
+    rel = str(payload.get("rel") or "")
+    project_root, target = _model(rel)
+    _importable(target)
+
+    limit = 0.0
+    try:
+        limit = float(payload.get("limit") or 0.0)
+    except (TypeError, ValueError):
+        limit = 0.0
+    edits = _bone_edits(payload, limit)
+    rebind = bool(payload.get("rebind", True))
+    tolerance = float(payload.get("tolerance") or 0.01)
+    if not 0.0 <= tolerance <= 0.5:
+        raise api.bad_request("tolerance must be between 0 and 0.5",
+                              tolerance=tolerance)
+
+    mod = _blender()
+    if not mod.available().get("available"):
+        raise api.ApiError(503, "Blender is not installed or not on the path",
+                           detail=mod.available())
+
+    out = target.with_name(target.stem + BONES_SUFFIX)
+    report = _run(_rig_source() + "\n" + _BLENDER_PRELUDE + _BONES_EDIT_BODY,
+                  {"path": str(target), "ext": target.suffix.lower(),
+                   "armature": str(payload.get("armature") or ""),
+                   "bones": edits, "rebind": rebind, "tolerance": tolerance},
+                  BONES_TIMEOUT, export_glb=str(out))
+    if not report.get("ok"):
+        # A refused edit must not leave the half-written export standing: the
+        # runner exports whatever the script left behind, refusal or not, and
+        # a .glb on disk after a failed run reads as delivered work.
+        try:
+            out.unlink()
+        except OSError:
+            pass
+        raise api.ApiError(502, "the skeleton edit failed inside Blender",
+                           detail={"error": report.get("error"),
+                                   "missing": report.get("missing")})
+    _inspect_cache.clear()
+    out_rel = (out.relative_to(project_root).as_posix() if out.is_file()
+               else None)
+    return api.ok({
+        "rel": rel, "out": out_rel,
+        "bytes": out.stat().st_size if out.is_file() else 0,
+        "armature": report.get("armature"), "bones": report.get("bones"),
+        "applied": report.get("applied") or [],
+        "missing": report.get("missing") or [],
+        "max_move": report.get("max_move"),
+        "rebound": report.get("rebound"), "rigged": report.get("rigged"),
+        "bound_with": report.get("bound_with"),
+        "unweighted": report.get("unweighted"),
+        "unweighted_pct": report.get("unweighted_pct"),
+        "attempts": report.get("attempts") or [],
+        "seconds": report.get("seconds"),
+    })
 
 
 @router.get("/api/model3d/clip_catalogue")

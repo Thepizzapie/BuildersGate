@@ -1463,6 +1463,9 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
      is a Node3D; same import map, same vendored three. -->
 <script type="module" src="/static/sceneview3d.js"></script>
 <script type="module" src="/static/modeledit_tools.js"></script>
+<!-- The skeleton editor. Draws the bones into the viewer's own scene and
+     hands its panel to the draft-to-asset column, so it loads after both. -->
+<script type="module" src="/static/modeledit_bones.js"></script>
 <script src="/static/assetlib.js"></script>
 <!-- The Work history panel. Self-contained: it injects its own style and
      mounts itself into #view-overview, so nothing above needs to know it
