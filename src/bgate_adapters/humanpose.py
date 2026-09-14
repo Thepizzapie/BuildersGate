@@ -829,6 +829,92 @@ def keyed_clip(rig: RigFrame, keys: list, fps=30, loop=False,
                    "ignored_fields": unknown}
 
 
+def posed_clip(rig: RigFrame, keys: list, fps=30, loop=False,
+               ease="inout") -> tuple[list, dict]:
+    """Poses from PER-BONE keys: [{"t": seconds, "bones": {name: (w,x,y,z)},
+    "root": (x, y, z)}, ...], slerped between them.
+
+    THE OTHER WAY TO AUTHOR, and the one a person at a viewport wants.
+    keyed_clip takes twenty character-level fields — lean, hips_up, reach_r —
+    which is the right vocabulary for a gait generator and the wrong one for
+    somebody who has just rotated a wrist and wants that. This takes the pose
+    itself: a bone-local rotation delta per bone, exactly what Blender's
+    matrix_basis holds and what a browser can hand back after dragging a
+    rotate gizmo on a skinned mesh.
+
+    EACH KEY IS A WHOLE POSE. A bone a key does not mention is at REST there,
+    not holding whatever it had at the previous key. Sparse per-channel keys
+    are the other reasonable reading and they make "what is this bone doing at
+    t=2" a question you answer by scanning backwards; a full pose per key
+    makes every key readable on its own, and the caller that has a rig on
+    screen already knows every bone's rotation.
+
+    Quaternions are normalised and hemisphere-corrected against the key before
+    them: q and -q are the same rotation, and a sign flip between two keys
+    slerps the long way round, which reads as a bone taking a full turn to get
+    somewhere it was already next to.
+    """
+    if not keys:
+        raise ValueError("a posed clip needs at least one key")
+    fn = EASES.get(ease, ease_inout)
+    clean = []
+    for raw in sorted(keys, key=lambda k: float(k.get("t", 0.0))):
+        rots = {}
+        for name, q in (raw.get("bones") or {}).items():
+            if name not in rig.bones:
+                continue                      # a bone this rig does not have
+            rots[name] = q_norm(tuple(float(c) for c in q))
+        root = raw.get("root")
+        clean.append({"t": float(raw.get("t", 0.0)), "bones": rots,
+                      "root": tuple(float(c) for c in root) if root else (0.0, 0.0, 0.0)})
+    if loop and len(clean) > 1:
+        first, last = clean[0], clean[-1]
+        same = (first["root"] == last["root"] and
+                set(first["bones"]) == set(last["bones"]) and
+                all(all(abs(a - b) < 1e-9 for a, b in
+                        zip(first["bones"][n], last["bones"][n]))
+                    for n in first["bones"]))
+        if not same:
+            span = last["t"] - clean[0]["t"]
+            step = span / max(len(clean) - 1, 1)
+            clean.append({**first, "t": last["t"] + step})
+
+    # Hemisphere continuity is fixed on the KEYS, before any interpolation:
+    # correcting the samples afterwards cannot undo a slerp that already went
+    # the long way round between two of them.
+    for i in range(1, len(clean)):
+        prev, here = clean[i - 1], clean[i]
+        for name, q in here["bones"].items():
+            was = prev["bones"].get(name, Q_IDENTITY)
+            if sum(a * b for a, b in zip(was, q)) < 0.0:
+                here["bones"][name] = tuple(-c for c in q)
+
+    length = clean[-1]["t"] - clean[0]["t"]
+    n = max(1, int(round(length * fps)))
+    poses = []
+    for i in range(n if loop else n + 1):
+        t = clean[0]["t"] + i / float(fps)
+        lo = max((k for k in clean if k["t"] <= t), key=lambda k: k["t"],
+                 default=clean[0])
+        hi = min((k for k in clean if k["t"] >= t), key=lambda k: k["t"],
+                 default=clean[-1])
+        span = hi["t"] - lo["t"]
+        u = 0.0 if span <= 1e-9 else fn((t - lo["t"]) / span)
+        pose = Pose(rig)
+        for name in set(lo["bones"]) | set(hi["bones"]):
+            a = lo["bones"].get(name, Q_IDENTITY)
+            b = hi["bones"].get(name, Q_IDENTITY)
+            pose.rot[name] = q_to_m(q_slerp(a, b, u))
+        pose.hips_offset = tuple(lo["root"][k] + (hi["root"][k] - lo["root"][k]) * u
+                                 for k in range(3))
+        pose._invalidate()
+        poses.append(pose)
+    named = sorted({n for k in clean for n in k["bones"]})
+    return poses, {"kind": "bones", "frames": len(poses), "keys": len(clean),
+                   "loop": bool(loop), "posed_bones": named,
+                   "seconds": round(length, 4)}
+
+
 # The shipped vocabulary. Each preset is a keyed clip in character terms; the
 # numbers are fractions of leg length where they are distances.
 def presets(rig: RigFrame) -> dict:
@@ -906,7 +992,7 @@ def presets(rig: RigFrame) -> dict:
 
 
 CLIP_KINDS = ("idle", "walk", "run", "sneak", "crouch_idle", "pickup",
-              "look_around", "wave", "hit", "jump", "keyed")
+              "look_around", "wave", "hit", "jump", "keyed", "bones")
 
 
 def build_clip(rig: RigFrame, spec: dict, fps=30) -> tuple[list, dict]:
@@ -914,7 +1000,9 @@ def build_clip(rig: RigFrame, spec: dict, fps=30) -> tuple[list, dict]:
 
     kind  idle | walk | run | sneak — cycles, parameters under "overrides"
           crouch_idle | pickup | look_around | wave | hit | jump — presets
-          keyed — {"keys": [...], "loop": bool, "ease": str}
+          keyed — {"keys": [...], "loop": bool, "ease": str}, character terms
+          bones — {"keys": [{"t", "bones": {name: quat}, "root"}], ...}, the
+                  pose itself, which is what a viewport hands back
     """
     kind = spec.get("kind") or spec.get("name")
     if kind in GAITS:
@@ -930,6 +1018,10 @@ def build_clip(rig: RigFrame, spec: dict, fps=30) -> tuple[list, dict]:
                                   loop=bool(spec.get("loop")),
                                   ease=spec.get("ease", "inout"))
         notes["loop"] = bool(spec.get("loop"))
+    elif kind == "bones":
+        poses, notes = posed_clip(rig, spec.get("keys") or [], fps=fps,
+                                  loop=bool(spec.get("loop")),
+                                  ease=spec.get("ease", "inout"))
     elif kind in presets(rig):
         pre = presets(rig)[kind]
         poses, notes = keyed_clip(rig, pre["keys"], fps=fps, loop=pre["loop"])

@@ -1466,6 +1466,9 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
 <!-- The skeleton editor. Draws the bones into the viewer's own scene and
      hands its panel to the draft-to-asset column, so it loads after both. -->
 <script type="module" src="/static/modeledit_bones.js"></script>
+<!-- Posing and keying. Drives the loaded rig's own bones, so it needs the
+     viewer's scene and the tools column both already up. -->
+<script type="module" src="/static/modeledit_pose.js"></script>
 <script src="/static/assetlib.js"></script>
 <!-- The Work history panel. Self-contained: it injects its own style and
      mounts itself into #view-overview, so nothing above needs to know it

@@ -1885,6 +1885,85 @@ def model_clip_catalogue() -> dict:
     })
 
 
+# A posed clip comes straight from a browser, so its size is somebody else's
+# choice until it is bounded here. 120 keys at 30 fps is a four-second clip
+# with a key on every frame, which is past what anyone hand-poses.
+MAX_POSE_KEYS = 120
+MAX_POSED_BONES = 256
+MAX_CLIP_SECONDS = 600.0
+
+
+def _posed_keys(spec: dict, clip: str) -> list:
+    """Validate per-bone pose keys: [{"t", "bones": {name: [w,x,y,z]}, "root"}].
+
+    humanpose.posed_clip normalises the quaternions and fixes their
+    hemisphere, so this checks SHAPE and SIZE — the things that are a 400 here
+    and an unbounded loop or a corrupt track inside Blender.
+    """
+    raw = spec.get("keys")
+    if not isinstance(raw, list) or not raw:
+        raise api.bad_request(f"the {clip!r} clip needs a list of keys",
+                              clip=clip)
+    if len(raw) > MAX_POSE_KEYS:
+        raise api.bad_request(f"at most {MAX_POSE_KEYS} keys in one clip",
+                              clip=clip, asked=len(raw))
+    out = []
+    for key in raw:
+        if not isinstance(key, dict):
+            raise api.bad_request("each key must be an object", clip=clip)
+        try:
+            when = float(key.get("t", 0.0))
+        except (TypeError, ValueError):
+            raise api.bad_request("a key's t is not a number", clip=clip) from None
+        if when != when or not 0.0 <= when <= MAX_CLIP_SECONDS:
+            raise api.bad_request(
+                f"a key's t must be between 0 and {MAX_CLIP_SECONDS:g} seconds",
+                clip=clip, t=key.get("t"))
+        rots = key.get("bones") or {}
+        if not isinstance(rots, dict):
+            raise api.bad_request("a key's bones must be an object", clip=clip)
+        if len(rots) > MAX_POSED_BONES:
+            raise api.bad_request(f"at most {MAX_POSED_BONES} bones in a key",
+                                  clip=clip, asked=len(rots))
+        clean = {}
+        for name, quat in rots.items():
+            if not isinstance(name, str) or not name.strip():
+                raise api.bad_request("a posed bone needs a name", clip=clip)
+            if not isinstance(quat, (list, tuple)) or len(quat) != 4:
+                raise api.bad_request(f"{name} must be a quaternion [w,x,y,z]",
+                                      clip=clip, bone=name)
+            try:
+                values = [float(c) for c in quat]
+            except (TypeError, ValueError):
+                raise api.bad_request(f"{name}'s quaternion is not four numbers",
+                                      clip=clip, bone=name) from None
+            # NaN fails every comparison including its own, and a zero
+            # quaternion has no rotation to normalise toward: both reach
+            # Blender as a bone that vanishes rather than as an error.
+            if any(c != c or abs(c) > 1e6 for c in values):
+                raise api.bad_request(f"{name}'s quaternion is not finite",
+                                      clip=clip, bone=name)
+            if sum(c * c for c in values) < 1e-12:
+                raise api.bad_request(f"{name}'s quaternion is zero",
+                                      clip=clip, bone=name)
+            clean[name] = values
+        entry = {"t": when, "bones": clean}
+        root = key.get("root")
+        if root is not None:
+            if not isinstance(root, (list, tuple)) or len(root) != 3:
+                raise api.bad_request("a key's root must be [x, y, z]", clip=clip)
+            try:
+                triple = [float(c) for c in root]
+            except (TypeError, ValueError):
+                raise api.bad_request("a key's root is not three numbers",
+                                      clip=clip) from None
+            if any(c != c or abs(c) > 1e4 for c in triple):
+                raise api.bad_request("a key's root is not finite", clip=clip)
+            entry["root"] = triple
+        out.append(entry)
+    return out
+
+
 def _anim_clips(payload: dict) -> Optional[list]:
     """Validate the requested clips here, where the answer is instant.
 
@@ -1928,6 +2007,10 @@ def _anim_clips(payload: dict) -> Optional[list]:
                 f"no clip kind {kind!r}",
                 clip=name, known=sorted(known))
         spec["kind"] = kind
+        # A posed clip carries the pose itself rather than a parameter, so its
+        # keys are the payload and are checked as one.
+        if kind == "bones":
+            spec["keys"] = _posed_keys(spec, name)
         out.append(spec)
     return out
 

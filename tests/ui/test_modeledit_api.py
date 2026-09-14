@@ -670,6 +670,199 @@ def test_a_repair_reports_where_every_stray_went(client, game, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Posed clips: the keys a viewport hands back
+# ---------------------------------------------------------------------------
+def _quat(axis, degrees):
+    import math
+
+    half = math.radians(degrees) / 2.0
+    s = math.sin(half)
+    return (math.cos(half), axis[0] * s, axis[1] * s, axis[2] * s)
+
+
+def test_a_posed_clip_arcs_between_its_keys_and_leaves_the_rest_at_rest():
+    """The whole point of the kind: rotate one bone, key it, and get a track
+    that goes there and comes back with nothing else moving."""
+    import math
+
+    from bgate_adapters import humanpose as hp
+
+    rig = hp.RigFrame(**hp.canonical_rig())
+    poses, notes = hp.posed_clip(rig, [
+        {"t": 0.0, "bones": {}},
+        {"t": 0.5, "bones": {"LeftLowerArm": _quat((1, 0, 0), 90)}},
+        {"t": 1.0, "bones": {}}], fps=30)
+    assert notes["kind"] == "bones" and notes["frames"] == 31
+    assert notes["posed_bones"] == ["LeftLowerArm"]
+    track = hp.bake(rig, poses)["rotations"]
+    arm = track["LeftLowerArm"]
+    assert abs(arm[0][0] - 1.0) < 1e-6                      # rest at the start
+    assert abs(arm[15][0] - math.cos(math.radians(45))) < 1e-3   # 90 at the peak
+    assert abs(arm[-1][0] - 1.0) < 1e-6                     # rest at the end
+    # EVERY frame carries EVERY bone, identity where nothing was said: a
+    # channel that appears mid-clip is a pop.
+    assert all(abs(q[0] - 1.0) < 1e-9 for q in track["RightLowerArm"])
+    assert len(track["RightLowerArm"]) == notes["frames"]
+
+
+def test_a_key_is_a_whole_pose_so_an_omitted_bone_returns_to_rest():
+    """The other reading, holding the previous key's value, makes "what is
+    this bone doing at t=2" a question you answer by scanning backwards."""
+    from bgate_adapters import humanpose as hp
+
+    rig = hp.RigFrame(**hp.canonical_rig())
+    poses, _ = hp.posed_clip(rig, [
+        {"t": 0.0, "bones": {"LeftLowerArm": _quat((1, 0, 0), 90)}},
+        {"t": 1.0, "bones": {"RightLowerArm": _quat((1, 0, 0), 90)}}], fps=10)
+    end = hp.bake(rig, poses)["rotations"]["LeftLowerArm"][-1]
+    assert abs(end[0] - 1.0) < 1e-6, end
+
+
+def test_a_sign_flipped_key_does_not_slerp_the_long_way_round():
+    """q and -q are the same rotation. Slerped naively the bone takes a full
+    turn to reach somewhere it was already next to, and correcting the SAMPLES
+    afterwards cannot undo an interpolation that already went the wrong way."""
+    from bgate_adapters import humanpose as hp
+
+    rig = hp.RigFrame(**hp.canonical_rig())
+    q = _quat((1, 0, 0), 90)
+    poses, _ = hp.posed_clip(rig, [
+        {"t": 0.0, "bones": {"LeftLowerArm": q}},
+        {"t": 1.0, "bones": {"LeftLowerArm": tuple(-c for c in q)}}], fps=30)
+    track = hp.bake(rig, poses)["rotations"]["LeftLowerArm"]
+    worst = max(abs(track[i][0] - track[i - 1][0]) for i in range(1, len(track)))
+    assert worst < 0.01, f"the bone travelled: largest step {worst}"
+
+
+def test_an_unnormalised_quaternion_is_normalised_not_refused():
+    from bgate_adapters import humanpose as hp
+
+    rig = hp.RigFrame(**hp.canonical_rig())
+    poses, _ = hp.posed_clip(
+        rig, [{"t": 0.0, "bones": {"LeftLowerArm": (2.0, 0.0, 0.0, 0.0)}},
+              {"t": 0.5, "bones": {}}], fps=10)
+    first = hp.bake(rig, poses)["rotations"]["LeftLowerArm"][0]
+    assert abs(sum(c * c for c in first) - 1.0) < 1e-6
+
+
+def test_a_posed_clip_closes_its_loop():
+    from bgate_adapters import humanpose as hp
+
+    rig = hp.RigFrame(**hp.canonical_rig())
+    _, notes = hp.posed_clip(rig, [
+        {"t": 0.0, "bones": {}},
+        {"t": 1.0, "bones": {"LeftLowerArm": _quat((1, 0, 0), 40)}}],
+        fps=10, loop=True)
+    assert notes["keys"] == 3 and notes["loop"] is True
+
+
+def test_a_bone_the_rig_does_not_have_is_ignored_not_fatal():
+    """A browser sends the skeleton it loaded; a rig re-fitted since then can
+    legitimately have lost a bone, and one stale name must not sink the clip."""
+    from bgate_adapters import humanpose as hp
+
+    rig = hp.RigFrame(**hp.canonical_rig())
+    _, notes = hp.posed_clip(rig, [
+        {"t": 0.0, "bones": {"NoSuchBone": _quat((1, 0, 0), 30),
+                             "LeftLowerArm": _quat((1, 0, 0), 30)}},
+        {"t": 0.5, "bones": {}}], fps=10)
+    assert notes["posed_bones"] == ["LeftLowerArm"]
+
+
+def test_the_new_kind_is_reachable_through_build_clip():
+    from bgate_adapters import humanpose as hp
+
+    assert "bones" in hp.CLIP_KINDS
+    rig = hp.RigFrame(**hp.canonical_rig())
+    _, notes = hp.build_clip(rig, {"name": "point", "kind": "bones", "keys": [
+        {"t": 0.0, "bones": {}},
+        {"t": 0.4, "bones": {"LeftLowerArm": _quat((1, 0, 0), 30)}}]}, fps=24)
+    assert notes["kind"] == "bones" and notes["name"] == "point"
+
+
+def test_posed_keys_are_bounded_because_a_browser_chose_them(client, game):
+    from bgate_ui.routes import modeledit
+
+    too_many = [{"t": i * 0.01, "bones": {}}
+                for i in range(modeledit.MAX_POSE_KEYS + 1)]
+    r = client.post("/api/model3d/animate", json={
+        "rel": MODEL, "clips": [{"name": "a", "kind": "bones", "keys": too_many}]})
+    assert r.status_code == 400
+    assert r.json()["error"]["detail"]["asked"] == modeledit.MAX_POSE_KEYS + 1
+
+
+def test_a_posed_clip_needs_keys(client, game):
+    for spec in ({"name": "a", "kind": "bones"},
+                 {"name": "a", "kind": "bones", "keys": []},
+                 {"name": "a", "kind": "bones", "keys": "soon"}):
+        r = client.post("/api/model3d/animate",
+                        json={"rel": MODEL, "clips": [spec]})
+        assert r.status_code == 400, spec
+
+
+def test_a_broken_quaternion_is_refused_before_blender(client, game):
+    """A zero quaternion has no rotation to normalise toward and a NaN passes
+    every bound check. Both reach Blender as a bone that vanishes."""
+    import json as _json
+
+    bad = [([1, 0, 0], "four numbers"), ([0, 0, 0, 0], "zero"),
+           (["a", 0, 0, 1], "four numbers")]
+    for quat, _why in bad:
+        r = client.post("/api/model3d/animate", json={"rel": MODEL, "clips": [
+            {"name": "a", "kind": "bones",
+             "keys": [{"t": 0, "bones": {"Hips": quat}}]}]})
+        assert r.status_code == 400, quat
+        assert r.json()["error"]["detail"]["clip"] == "a"
+
+    body = _json.dumps({"rel": MODEL, "clips": [
+        {"name": "a", "kind": "bones",
+         "keys": [{"t": 0, "bones": {"Hips": [float("nan"), 0, 0, 1]}}]}]})
+    r = client.post("/api/model3d/animate", content=body,
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 400 and "finite" in r.json()["error"]["message"]
+
+
+def test_a_key_outside_the_clip_window_is_refused(client, game):
+    for when in (-1.0, 100000.0):
+        r = client.post("/api/model3d/animate", json={"rel": MODEL, "clips": [
+            {"name": "a", "kind": "bones",
+             "keys": [{"t": when, "bones": {}}]}]})
+        assert r.status_code == 400, when
+
+
+def test_a_valid_posed_clip_reaches_blender_intact(client, game, monkeypatch):
+    """The exact payload the browser posts after posing a bone and keying it."""
+    from bgate_ui.routes import modeledit
+
+    seen = {}
+
+    class FakeBlender:
+        _RIG_SOURCE = ""
+
+        @staticmethod
+        def available():
+            return {"available": True}
+
+        @staticmethod
+        def animate(model, out, **kw):
+            seen.update(kw)
+            Path(out).write_bytes(FAKE_GLB)
+            return {"ok": True, "clips": [{"name": "point", "ok": True}],
+                    "support": {}, "collisions": {}, "sheets": [], "seconds": 1}
+
+    monkeypatch.setattr(modeledit, "_blender", lambda: FakeBlender)
+    r = client.post("/api/model3d/animate", json={"rel": MODEL, "fps": 24, "clips": [
+        {"name": "point", "kind": "bones", "loop": False, "keys": [
+            {"t": 0, "bones": {"Hips": [1, 0, 0, 0], "Spine": [1, 0, 0, 0]}},
+            {"t": 0.5, "bones": {"Hips": [1, 0, 0, 0],
+                                 "Spine": [0.955336, 0, 0, 0.29552]}}]}]})
+    assert r.status_code == 200, r.json()
+    clip = seen["clips"][0]
+    assert clip["kind"] == "bones" and len(clip["keys"]) == 2
+    assert clip["keys"][1]["bones"]["Spine"] == [0.955336, 0.0, 0.0, 0.29552]
+
+
+# ---------------------------------------------------------------------------
 # Clip authoring
 # ---------------------------------------------------------------------------
 # THE VALIDATION IS THE POINT. Every refusal below is one that would otherwise
@@ -892,6 +1085,25 @@ def test_a_sibling_module_can_repaint_the_tools_column():
     js = (STATIC / "modeledit_tools.js").read_text(encoding="utf-8")
     assert "repaint: render," in js
     assert "ui: {panel, row" in js
+
+
+def test_the_pose_editor_is_loaded_and_bakes_through_the_animate_route():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert 'src="/static/modeledit_pose.js"' in html
+    js = (STATIC / "modeledit_pose.js").read_text(encoding="utf-8")
+    # It bakes through the clip route rather than inventing a second one, so
+    # the support and self-intersection gates still run over the result.
+    assert "/api/model3d/animate" in js
+    assert '"bones"' in js and "kind:" in js
+
+
+def test_the_pose_timeline_is_not_clamped_to_its_last_key():
+    """Clamping the playhead to the last key means the first key pins it at
+    zero and no second key can be set later: the clip cannot grow past the
+    moment it was started."""
+    js = (STATIC / "modeledit_pose.js").read_text(encoding="utf-8")
+    assert "clamp(num(t, 0), 0, clipLen)" in js
+    assert "clamp(num(t, 0), 0, Math.max(clipSeconds()" not in js
 
 
 def test_the_tools_column_calls_the_animation_endpoints_it_needs():

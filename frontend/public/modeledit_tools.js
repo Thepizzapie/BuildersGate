@@ -298,9 +298,11 @@ window.ModelTools = (() => {
     if (!S || !body || !S.viewable) {
       if (host) detach();
       if (window.BoneEdit) BoneEdit.sync("");
+      if (window.PoseEdit) PoseEdit.sync("");
       return;
     }
     if (window.BoneEdit) BoneEdit.sync(S.rel);
+    if (window.PoseEdit) PoseEdit.sync(S.rel);
     ensureMounted(body);
     if (S.rel !== shownRel) {
       dropOverlay(); revertPreview();
@@ -812,6 +814,7 @@ window.ModelTools = (() => {
     if (act === "animate") { runAnimate(); return; }
     // Anything this column does not own goes to the module that does.
     if (window.BoneEdit && BoneEdit.handle(act, val)) return;
+    if (window.PoseEdit && PoseEdit.handle(act, val)) return;
   }
 
   function onChange(ev){
@@ -832,6 +835,8 @@ window.ModelTools = (() => {
     // the height field above already learned about the hard way.
     if (f === "anfps") animFps = clamp(Math.round(num(el.value, 30)), 5, 120);
     if (f === "anproof") animProof = clamp(Math.round(num(el.value, 6)), 0, 24);
+    // Same rule for the pose module's fields, and for the same reason.
+    if (window.PoseEdit) PoseEdit.field(f, el);
   }
 
   /* ── render ────────────────────────────────────────────────────────────*/
@@ -853,8 +858,8 @@ window.ModelTools = (() => {
       '<div class="mt-body">' +
         secInspect() + secScale() + secOrient() + secOrigin() +
         secClean() + secBake() +
-        secRig() + secJoints() + secWeights() + secFlex() + secAnimate() +
-        secRetarget() + secBlender() +
+        secRig() + secJoints() + secWeights() + secFlex() +
+        secPose() + secAnimate() + secRetarget() + secBlender() +
       '</div>';
     const body1 = host.querySelector(".mt-body");
     if (body1 && keepScroll) body1.scrollTop = keepScroll;
@@ -1309,6 +1314,15 @@ window.ModelTools = (() => {
                  flex ? ((flex.verdict || {}).passed ? "holds" : "fails") : "",
                  flex ? ((flex.verdict || {}).passed ? "good" : "bad") : "",
                  body, act);
+  }
+
+  /* 9b. POSE ─────────────────────────────────────────────────────────────
+     modeledit_pose.js drives the loaded rig's own bones. It sits before the
+     clip authoring below it because a pose you keyed by hand and a gait the
+     generator wrote are the same kind of thing, and this is the one you make
+     yourself. */
+  function secPose(){
+    return window.PoseEdit ? PoseEdit.panel(hasSkeleton()) : "";
   }
 
   /* 10. CLIPS ────────────────────────────────────────────────────────────
