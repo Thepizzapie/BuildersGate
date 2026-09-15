@@ -2177,7 +2177,46 @@ def _serving_elsewhere(port: int, root) -> str:
     return "" if same else theirs
 
 
-def serve(port: int = 7788) -> None:
+def _remote_bind(port: int, detect=None):
+    """Resolve the tailnet bind IP + allowed hosts for remote mode.
+
+    Returns (bind_ip, allowed_hosts) or None when no tailnet is present.
+    Never returns 0.0.0.0.
+    """
+    from bgate_ui import tailnet as _tailnet
+    detect = detect or _tailnet.detect
+    addr = detect()
+    if addr is None:
+        return None
+    hosts = [addr.ip] + ([addr.name] if addr.name else [])
+    return addr.ip, hosts
+
+
+def _print_pairing(port, host, root):
+    """Print the phone-pairing URL + token and a scannable QR (segno)."""
+    from bgate_ui import tailnet as _tailnet
+    url = f"http://{host}:{port}"
+    token = ""
+    try:
+        token = _api.ensure_token(root) if root else ""
+    except Exception:                                            # noqa: BLE001
+        pass
+    project = root.name if root else "(no project)"
+    print(f"builders gate · REMOTE (Tailscale) mode on {url}")
+    print(f"  project: {project}")
+    print(f"  token  : {token}")
+    payload = _tailnet.pairing_payload(url, token, project)
+    try:
+        import segno
+        segno.make(payload, error="m").terminal(compact=True)
+        print("  scan the QR above in a Builders Gate companion app")
+    except Exception:                                            # noqa: BLE001
+        print("  (install `segno` for a scannable QR; or enter URL+token "
+              "manually in the app)")
+    print("  ctrl-c to stop")
+
+
+def serve(port: int = 7788, remote: bool = False) -> None:
     """Run the dashboard, and SAY WHERE IT IS.
 
     `python -m bgate_ui` printed literally nothing — no URL, no port, no project
@@ -2247,5 +2286,19 @@ def serve(port: int = 7788) -> None:
             print("  " + notice.replace("\n", "\n  "))
     print("  ctrl-c to stop")
 
-    # 127.0.0.1 on purpose: this is a local window into a local store.
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    # 127.0.0.1 on purpose by default: a local window into a local store.
+    # Opt-in remote mode binds the tailnet IP so a phone can reach it over
+    # Tailscale — never 0.0.0.0, and it refuses rather than falling back.
+    bind_host = "127.0.0.1"
+    if remote:
+        got = _remote_bind(port)
+        if got is None:
+            print("builders gate · REFUSING to start remote mode")
+            print("  no Tailscale address found — is `tailscale` up? "
+                  "(try: tailscale status)")
+            raise SystemExit(2)
+        bind_host, allowed = got
+        os.environ["BGATE_REMOTE_HOSTS"] = ",".join(allowed)
+        _print_pairing(port, bind_host, root)
+
+    uvicorn.run(app, host=bind_host, port=port, log_level="warning")
