@@ -346,6 +346,20 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 # in the Host gate re-opened exactly the rebinding hole the gate exists to
 # close, so it is refused like any other non-loopback name.
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "testserver"}
+
+
+def _remote_hosts() -> set[str]:
+    """Extra hosts admitted in opt-in remote (Tailscale) mode.
+
+    serve() populates BGATE_REMOTE_HOSTS with the detected tailnet IP. Read per
+    request so tests and a late-set env still apply. Stays a known-host
+    allowlist: anti-DNS-rebinding is preserved (MagicDNS names are not detected
+    or admitted here — deferred to a later phase).
+    """
+    raw = os.environ.get("BGATE_REMOTE_HOSTS", "")
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
 # Everything the browser needs before it can present a token.
 _OPEN_PATHS = ("/static/", "/play/", "/api/preview", "/favicon")
 
@@ -431,7 +445,8 @@ def install_guard(app, root_fn) -> None:
         # attack cannot forge without giving up the same-origin illusion it
         # depends on.
         host = (request.headers.get("host") or "").strip().lower()
-        if host and host.rsplit(":", 1)[0].strip("[]") not in _LOOPBACK_HOSTS:
+        allowed = _LOOPBACK_HOSTS | _remote_hosts()
+        if host and host.rsplit(":", 1)[0].strip("[]") not in allowed:
             return JSONResponse(status_code=403, content=error_body(
                 403, "request Host is not loopback", code="bad_host"))
 

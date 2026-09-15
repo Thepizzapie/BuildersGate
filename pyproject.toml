@@ -27,6 +27,7 @@ dependencies = [
     "Pillow>=12.3.0",
     "numpy>=1.26",
     "openai>=1.30",
+    "segno>=1.6",
 ]
 
 [project.optional-dependencies]

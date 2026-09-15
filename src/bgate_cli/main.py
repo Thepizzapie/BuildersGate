@@ -1446,8 +1446,9 @@ def main() -> int:
         port = 7788
         if "--port" in args:
             port = int(args[args.index("--port") + 1])
+        remote = "--remote" in args
         from bgate_ui.app import serve
-        serve(port=port)
+        serve(port=port, remote=remote)
         return 0
 
     if cmd == "app":
