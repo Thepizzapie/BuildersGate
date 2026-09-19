@@ -9,9 +9,7 @@ hook refusal that makes it more than a note.
 """
 from __future__ import annotations
 
-import os
 
-import pytest
 
 from bgate_cli import hook
 from bgate_core.board import canon
