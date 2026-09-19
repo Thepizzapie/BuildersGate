@@ -72,6 +72,17 @@ class TestTheMcpEntryPoint:
     def test_mcp_never_opens_a_window(self, launcher, monkeypatch, spy):
         assert "WINDOW" not in spy
 
+    def test_hook_runs_the_pretooluse_hook(self, launcher, monkeypatch, spy):
+        """A Codex seat's hook entry is `BuildersGate.exe hook` when frozen -
+        the same reasoning as `mcp`: no interpreter to hand `-m` to."""
+        import bgate_cli.hook
+        seen: list[list[str]] = []
+        monkeypatch.setattr(bgate_cli.hook, "main",
+                            lambda argv=None: (seen.append(list(argv or [])), 0)[1])
+        assert run(launcher, monkeypatch, ["hook", "--status"]) == 0
+        assert seen == [["--status"]]
+        assert "WINDOW" not in spy
+
 
 class TestNoDashedArgvOpensAWindow:
     def test_the_exact_reported_command(self, launcher, monkeypatch, spy):
@@ -111,6 +122,46 @@ class TestTheWindowStillOpensWhenItShould:
         assert run(launcher, monkeypatch, ["serve"]) == 0
         assert spy == ["serve"]
 
+    def test_serve_remote_reaches_serve(self, launcher, monkeypatch):
+        """`serve --remote` on the frozen binary must mean what it means on
+        the CLI: the launcher dropped the flag and served loopback-only."""
+        import bgate_ui.app
+        seen: dict = {}
+        monkeypatch.setattr(bgate_ui.app, "serve",
+                            lambda *a, **k: seen.update(k))
+        assert run(launcher, monkeypatch, ["serve", "--remote"]) == 0
+        assert seen.get("remote") is True
+        assert run(launcher, monkeypatch, ["serve"]) == 0
+        assert seen.get("remote") is False
+
+
+class TestWindowedStdStreams:
+    """A console=False exe has sys.stdout is None. serve's banner — and the
+    remote pairing token + QR — must reach the terminal it was typed into,
+    and a double-click with no console must still not crash uvicorn."""
+
+    def test_attaches_parent_console_before_falling_back(
+            self, launcher, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(launcher, "_attach_parent_console",
+                            lambda: calls.append("attach") or False)
+        monkeypatch.setattr(sys, "stdout", None)
+        monkeypatch.setattr(sys, "stderr", None)
+        launcher._ensure_std_streams()
+        assert calls == ["attach"]
+        assert sys.stdout is not None and sys.stderr is not None
+        sys.stdout.write("no console, no crash\n")
+
+    def test_real_streams_are_left_alone(self, launcher, monkeypatch):
+        called = []
+        monkeypatch.setattr(launcher, "_attach_parent_console",
+                            lambda: called.append(1) or True)
+        before = sys.stdout
+        launcher._ensure_std_streams()
+        assert sys.stdout is before
+        assert called == []
+
 
 class TestRegistrationMatchesTheLauncher:
     """The args written into a registration must be args the launcher accepts."""
@@ -121,6 +172,7 @@ class TestRegistrationMatchesTheLauncher:
         importlib.reload(agentcli)
         try:
             assert agentcli.MODULE_ARGS == ["mcp"]
+            assert agentcli.HOOK_ARGS == ["hook"]
         finally:
             monkeypatch.undo()
             importlib.reload(agentcli)
@@ -128,6 +180,7 @@ class TestRegistrationMatchesTheLauncher:
     def test_from_source_registers_the_module(self):
         import bgate_ui.agents.agentcli as agentcli
         assert agentcli.MODULE_ARGS == ["-m", "bgate_mcp.server"]
+        assert agentcli.HOOK_ARGS == ["-m", "bgate_cli.hook"]
 
     def test_runners_uses_the_same_answer(self):
         """Two places writing the registration must not drift apart."""

@@ -50,7 +50,9 @@ finding turned into a precondition.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -179,8 +181,16 @@ def claude_mcp_config(server_name: str = MCP_SERVER_NAME) -> list[str]:
 
 def _toml_str(value: str) -> str:
     """A TOML literal string. `-c` parses the value as TOML, and a Windows path
-    in a basic string turns \\U into a bad unicode escape and fails the parse."""
-    return "'" + str(value).replace("'", "") + "'"
+    in a basic string turns \\U into a bad unicode escape and fails the parse.
+
+    A literal string cannot hold an apostrophe, so a value with one (a user
+    named O'Brien, in an interpreter path) becomes a basic string with the
+    backslashes and quotes escaped - deleting the apostrophe, as this used to,
+    named a path that does not exist and silently launched nothing."""
+    text = str(value)
+    if "'" not in text:
+        return "'" + text + "'"
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 @dataclass(frozen=True)
@@ -337,22 +347,85 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
     cost-not-tracked wherever they are shown, and unbounded turns are the same
     class of fact about the same runner.
     """
-    # --approve-for-me already selects the workspace-write sandbox and Codex
-    # rejects using the two switches together.
     # A dispatched seat is an isolated harness run, not the user's interactive
     # Codex session. Loading the ambient config also loads personal MCP
     # servers and hooks that are unrelated to the dispatched task.
     # Codex keeps CODEX_HOME authentication when this flag is set, while the
     # one MCP server the seat needs is injected immediately below.
-    args = [exe, "exec", "--json", "--ignore-user-config"]
-    args += (["--approve-for-me"] if auto_approve
-             else ["--sandbox", "workspace-write"])
-    args += ["--cd", cwd]
+    #
+    # NO REVIEWER, EVER. `auto_approve` used to swap the sandbox for
+    # `--approve-for-me`: a second model reviewing the first one's request to
+    # leave the workspace-write sandbox (network, writes outside the tree).
+    # That put a judgment call at the one boundary that should not have one -
+    # an art seat that wants `pip install` has left its brief, and a reviewer
+    # is a thing it can persuade. Workers now run `approval_policy = never`:
+    # there is no request to review, a sandboxed command that needs more just
+    # fails, and the agent reads the failure. The argument is accepted and
+    # ignored so the one call site in dispatch does not branch on runner name.
+    args = [exe, "exec", "--json", "--ignore-user-config",
+            "--sandbox", "workspace-write", "--cd", cwd,
+            "-c", 'approval_policy="never"',
+            "-c", "sandbox_workspace_write.network_access=false"]
+    if os.name == "nt":
+        # THE SANDBOX HAS TO BE SWITCHED ON. `[windows] sandbox = "elevated"`
+        # lives in the user's config.toml, which --ignore-user-config skips -
+        # and without it Codex has no Windows sandbox at all, treats
+        # workspace-write as read-only and asks for approval on EVERY command
+        # and patch. MEASURED (0.154): `echo` -> "rejected: blocked by
+        # policy", apply_patch -> "writing is blocked by read-only sandbox".
+        # That is the whole reason --approve-for-me ever looked necessary: a
+        # reviewer was granting every ordinary command an escalation out of a
+        # sandbox that was not there. With the backend named, the same run
+        # echoes, writes its file and stays inside the workspace as a
+        # restricted user (CodexSandboxOffline) with the network cut.
+        args += ["-c", 'windows.sandbox="elevated"']
     args += mcp_overrides(env_vars=mcp_env_vars)
+    # Under `never` an MCP tool that would have asked is REFUSED ("MCP tool
+    # call requires approval, but approval policy is never" - MEASURED, on
+    # bgate_doctor, with the default and with "auto"). "approve" is the mode
+    # that runs the seat's own toolset without a prompt; it is the one server
+    # the seat has, and its tools are the surface the hook and the board were
+    # built to supervise.
+    args += ["-c", f'mcp_servers.{MCP_SERVER_NAME}.default_tools_approval_mode="approve"']
+    args += hook_overrides()
     args += ["--enable" if native_images else "--disable", "image_generation"]
     if model:
         args += ["--model", model]
     return args
+
+
+def hook_overrides() -> list[str]:
+    """The Builders Gate PreToolUse hook, for ONE Codex invocation.
+
+    Codex fires `PreToolUse` with the same stdin JSON Claude Code does
+    (tool_name, tool_input, cwd, session_id) and honours the same exit 2, so
+    the seat runs the same `bgate_cli.hook` the Claude runner has always run:
+    containment, lanes, locks, and the egress gate (no installs, no network,
+    no push, no other agent). Injected with `-c`, like the MCP server, so the
+    user's config.toml is never edited and `--ignore-user-config` still holds.
+
+    `--dangerously-bypass-hook-trust` is what makes this fire in a
+    non-interactive run: Codex trusts non-managed hooks only after a human
+    reviews them in the TUI. The flag is meant for "automation that already
+    vets hook sources", and this is that automation - the hook is ours and the
+    interpreter is pinned. Without it the entry loads, is marked for review,
+    and silently never runs, which is the fail-open the hook's own selftest
+    exists to expose.
+    """
+    from bgate_ui.agents.agentcli import HOOK_ARGS
+    command = subprocess.list2cmdline([sys.executable, *HOOK_ARGS])         if os.name == "nt" else shlex.join([sys.executable, *HOOK_ARGS])
+    entry = ('{matcher=' + _toml_str(HOOK_MATCHER)
+             + ",hooks=[{type='command',command=" + _toml_str(command)
+             + ',timeout=30}]}')
+    return ["-c", "features.hooks=true",
+            "-c", f"hooks.PreToolUse=[{entry}]",
+            "--dangerously-bypass-hook-trust"]
+
+
+# Every tool Codex reports to a PreToolUse hook that can write or read a
+# path: its shell (`Bash`, also what unified exec is reported as), its own
+# editor, and the Claude-shaped names it uses for direct edits.
+HOOK_MATCHER = "^(Bash|PowerShell|apply_patch|Write|Edit|MultiEdit|Read|Glob|Grep)$"
 
 
 def _codex_director_args(exe: str, *, model: Optional[str], cwd: str,

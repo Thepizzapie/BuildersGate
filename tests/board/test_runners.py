@@ -13,6 +13,8 @@ is the whole reason it is done this way.
 """
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 
 from bgate_core.board import queue
@@ -188,12 +190,53 @@ class TestModelRouting:
         monkeypatch.setattr(codexmeta, "snapshot", lambda: {"models": []})
         assert dispatch._model_for(root, "art") is None
 
-    def test_codex_auto_approval_uses_the_supported_cli_flag(self):
+    def test_codex_workers_never_get_a_reviewer(self):
+        """auto_approve=True used to swap the sandbox for --approve-for-me: a
+        second model reviewing the first one's request to leave the
+        workspace. Workers now run approval_policy=never inside the
+        workspace-write sandbox whatever the flag says; the Director's
+        console is the only Codex surface the setting still touches."""
         argv = runners.get("codex").build_args(
             "codex", permission_mode="acceptEdits", model=None,
             cwd="C:/game", native_images=False, auto_approve=True)
-        assert "--approve-for-me" in argv
-        assert "--sandbox" not in argv
+        assert "--approve-for-me" not in argv
+        assert argv[argv.index("--sandbox") + 1] == "workspace-write"
+        assert 'approval_policy="never"' in argv
+        assert "sandbox_workspace_write.network_access=false" in argv
+        # MEASURED: without the backend named, --ignore-user-config leaves
+        # Windows with no sandbox at all and every command is refused.
+        if os.name == "nt":
+            assert 'windows.sandbox="elevated"' in argv
+        # ...and under `never` the seat's own MCP tools would be refused too.
+        assert (f'mcp_servers.{runners.MCP_SERVER_NAME}.'
+                'default_tools_approval_mode="approve"') in argv
+
+    def test_an_apostrophe_in_the_interpreter_path_survives_toml(self):
+        """A literal TOML string cannot hold `'`; deleting it named a path
+        that does not exist and the hook silently never launched."""
+        assert runners._toml_str(r"C:\Users\adria\python.exe") == r"'C:\Users\adria\python.exe'"
+        quoted = runners._toml_str(r"C:\Users\O'Brien\python.exe")
+        import tomllib
+        assert tomllib.loads(f"v = {quoted}")["v"] == r"C:\Users\O'Brien\python.exe"
+
+    def test_codex_workers_carry_the_builders_gate_hook(self):
+        """The PreToolUse hook - containment, lanes, locks, egress - is
+        injected per invocation with -c, matches every path-bearing tool
+        Codex reports, and is trusted by the flag meant for automation that
+        vets its own hooks. Without the flag the entry loads and never runs."""
+        argv = runners.get("codex").build_args(
+            "codex", permission_mode="acceptEdits", model=None,
+            cwd="C:/game", native_images=False)
+        assert "features.hooks=true" in argv
+        assert "--dangerously-bypass-hook-trust" in argv
+        hooks = [a for a in argv if a.startswith("hooks.PreToolUse=")]
+        assert len(hooks) == 1
+        entry = hooks[0]
+        for tool in ("Bash", "apply_patch", "Write", "Edit", "Read"):
+            assert tool in entry
+        assert "bgate_cli.hook" in entry or "'hook'" in entry
+        assert 'type="command"' not in entry, "double quotes: a shell strips them"
+        assert "type='command'" in entry
 
     def test_codex_forwards_the_dispatch_identity_to_its_mcp_server(self):
         argv = " ".join(runners.get("codex").build_args(

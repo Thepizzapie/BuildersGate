@@ -373,6 +373,18 @@ def _lines(root) -> list[str]:
     except Exception:
         pass
 
+    # --- which world ---------------------------------------------------------
+    # The tree can carry the old map beside the new one and look identical
+    # from inside a file; this is the one line that says which is the game.
+    try:
+        from bgate_core.board import canon as _canon
+        from bgate_core.store import project as _project
+        block = _canon.block(root, _project.game_dir(root) or "")
+        if block:
+            out.extend(block.splitlines())
+    except Exception:
+        pass
+
     # --- is anything actually enforced --------------------------------------
     try:
         from bgate_cli import hook as _hook

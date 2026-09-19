@@ -788,6 +788,51 @@ class TestPreviewSceneText:
         top_y = float(line.rstrip(")").split(",")[-2])
         assert top_y < -0.9, line
 
+    def test_the_offset_a_kept_scene_applied_is_read_back_from_the_file(self):
+        """A rewired scene was written under whatever default held at the
+        time; scenes older than normalize_origin=False recentred the model.
+        The preview must frame the file's offset, not the flag's."""
+        recentred = godot.character_scene_text(
+            "res://assets/hero.glb", node_name="Hero",
+            bounds_size=(0.6, 1.8, 0.4), bounds_position=(-0.3, 0.0, -0.2),
+            recentre=True)
+        assert godot.model_offset_in_scene(recentred) == pytest.approx((0.0, -0.9, 0.0))
+        kept = godot.character_scene_text(
+            "res://assets/hero.glb", node_name="Hero",
+            bounds_size=(0.6, 1.8, 0.4), bounds_position=(-0.3, 0.0, -0.2),
+            recentre=False)
+        assert godot.model_offset_in_scene(kept) == (0.0, 0.0, 0.0)
+        assert godot.model_offset_in_scene("[gd_scene format=3]\n") == (0.0, 0.0, 0.0)
+
+    def test_an_authored_origin_is_framed_where_the_model_actually_is(self):
+        """normalize_origin defaults OFF, so a feet-at-zero rig keeps its
+        origin and its box runs y 0..1.8 in the delivered scene. The stage
+        used to aim at the origin (the feet) with the floor at -0.9: every
+        such character was photographed floating with its head off the top
+        of the frame - the whole Meridian cast, all then "approved". The
+        camera must aim at the box centre and the floor must meet its
+        bottom."""
+        text = godot.preview_scene_text("res://scenes/hero.tscn",
+                                        longest_axis=1.8, floor_y=0.0,
+                                        centre=(0.0, 0.9, 0.0))
+        camera = text.split('[node name="PreviewCamera"', 1)[1]
+        line = [ln for ln in camera.splitlines()
+                if ln.startswith("transform = Transform3D")][0]
+        eye = [float(v) for v in line.rstrip(")").split("(", 1)[1].split(",")][-3:]
+        assert abs(eye[1] - (0.9 + 1.8 * 0.12)) < 1e-3, f"eye not at centre height: {eye}"
+        # The camera looks at the centre: the vector eye->aim is the basis'
+        # -Z column, so eye + dist * (-z) lands on (0, 0.9, 0).
+        rows = [float(v) for v in line.rstrip(")").split("(", 1)[1].split(",")][:9]
+        z_col = (rows[2], rows[5], rows[8])
+        dist = sum((e - a) ** 2 for e, a in zip(eye, (0.0, 0.9, 0.0))) ** 0.5
+        hit = [e - d * z for e, z, d in zip(eye, z_col, (dist,) * 3)]
+        assert all(abs(h - a) < 1e-3 for h, a in zip(hit, (0.0, 0.9, 0.0))), hit
+        floor = text.split('[node name="Floor"', 1)[1]
+        fline = [ln for ln in floor.splitlines()
+                 if ln.startswith("transform = Transform3D")][0]
+        top_y = float(fline.rstrip(")").split(",")[-2])
+        assert -0.5 < top_y < 0.0, fline
+
     def test_ambient_light_is_on(self):
         """A single directional light leaves every surface facing away from it
         pure black, and the frame reads as a broken import."""

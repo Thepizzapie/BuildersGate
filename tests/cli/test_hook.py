@@ -1130,14 +1130,10 @@ class TestPowerShellWrites:
         monkeypatch.setattr(aegis, "allowlist_dirs", lambda: [])
 
     @pytest.mark.parametrize("command", [
-        "Set-Content game/scripts/player.gd 'x'",
-        "'x' | Out-File -FilePath game/scripts/player.gd",
-        "Add-Content -Path game/scripts/player.gd -Value 'x'",
         "New-Item -Path game/scripts -Name new.gd -ItemType File",
         "Copy-Item C:/elsewhere/a.gd -Destination game/scripts/a.gd",
         "Move-Item game/scripts/a.gd game/scripts/b.gd",
         "Remove-Item game/scripts/old.gd -Force",
-        "echo hi > game/scripts/notes.gd",
         "echo hi 2>&1",
     ])
     def test_a_target_in_lane_lands(self, root, monkeypatch, command):
@@ -1145,6 +1141,23 @@ class TestPowerShellWrites:
         code, _ = hook.decide(self._ps(command, root), "gameplay", "item-1",
                               "warn")
         assert code == hook.ALLOW
+
+    @pytest.mark.parametrize("command", [
+        "Set-Content game/scripts/player.gd 'x'",
+        "'x' | Out-File -FilePath game/scripts/player.gd",
+        "Add-Content -Path game/scripts/player.gd -Value 'x'",
+        "echo hi > game/scripts/notes.gd",
+    ])
+    def test_inline_text_in_lane_is_sent_to_write_edit(self, root, monkeypatch,
+                                                       command):
+        """The lane passes these; the inline-text gate does not. A seat's
+        file CONTENT goes through Write/Edit, never a command line - see
+        test_hook_egress.TestShellContent for why (Defender, 2026-09-16)."""
+        self.seated(monkeypatch, root)
+        code, msg = hook.decide(self._ps(command, root), "gameplay", "item-1",
+                                "warn")
+        assert code == hook.BLOCK
+        assert "Write/Edit" in msg
 
     @pytest.mark.parametrize("command", [
         "Set-Content game/assets/rock.png 'x'",
