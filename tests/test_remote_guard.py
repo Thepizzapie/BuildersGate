@@ -77,9 +77,10 @@ def _serve_env(tmp_path, monkeypatch):
 
 
 def test_serve_remote_binds_to_tailnet_ip_and_sets_env(_serve_env, monkeypatch):
-    """serve(remote=True) must bind uvicorn to the DETECTED TAILNET IP, never
-    127.0.0.1, and must publish it via BGATE_REMOTE_HOSTS so the guard (see
-    the tailnet_host_* tests above) admits it."""
+    """serve(remote=True) binds uvicorn to every interface (a bind to the
+    single tailnet IP dropped a phone's packets), never 127.0.0.1 only, and
+    publishes the detected tailnet IP via BGATE_REMOTE_HOSTS so the guard
+    (see the tailnet_host_* tests above) admits it and nothing else."""
     appmod = _serve_env
     import uvicorn
 
@@ -97,8 +98,7 @@ def test_serve_remote_binds_to_tailnet_ip_and_sets_env(_serve_env, monkeypatch):
 
     appmod.serve(port=7788, remote=True)
 
-    assert calls.get("host") == "100.64.0.9"
-    assert calls.get("host") != "127.0.0.1"
+    assert calls.get("host") == "0.0.0.0"
     assert os.environ["BGATE_REMOTE_HOSTS"] == "100.64.0.9"
 
 
@@ -122,3 +122,103 @@ def test_serve_remote_refuses_before_bind_when_no_tailnet(_serve_env, monkeypatc
 
     assert exc_info.value.code == 2
     assert called["run"] is False
+
+
+# ── /pair: the QR page the desktop app opens (it has no terminal) ─────────
+
+def test_pair_page_is_404_when_remote_off(client, monkeypatch):
+    c, _ = client
+    monkeypatch.delenv("BGATE_REMOTE_HOSTS", raising=False)
+    assert c.get("/pair").status_code == 404
+
+
+def test_pair_page_serves_token_and_qr_on_loopback(client, monkeypatch):
+    c, token = client
+    monkeypatch.setenv("BGATE_REMOTE_HOSTS", "100.64.0.9")
+    r = c.get("/pair", headers={"host": "127.0.0.1:7788"})
+    assert r.status_code == 200
+    assert token in r.text
+    assert "http://100.64.0.9:7788" in r.text
+    pytest.importorskip("segno")
+    assert 'src="data:image/svg+xml' in r.text
+
+
+def test_pair_page_refused_from_the_tailnet_side(client, monkeypatch):
+    """The phone has no business fetching the page that hands out the
+    credential the phone is supposed to scan."""
+    c, token = client
+    monkeypatch.setenv("BGATE_REMOTE_HOSTS", "100.64.0.9")
+    r = c.get("/pair", headers={"host": "100.64.0.9:7788"})
+    assert r.status_code == 404
+    assert token not in r.text
+
+
+# ── bgate app --remote: the window binds loopback AND the tailnet IP ──────
+
+@pytest.fixture
+def _desktop_env(tmp_path, monkeypatch):
+    (tmp_path / ".bgate").mkdir()
+    monkeypatch.setenv("BGATE_ROOT", str(tmp_path))
+    monkeypatch.delenv("BGATE_REMOTE_HOSTS", raising=False)
+    from bgate_ui.window import desktop
+    monkeypatch.setattr(desktop, "_claim_singleton", lambda: True)
+    monkeypatch.setattr(desktop, "_wait_for_server", lambda port, timeout=20.0: True)
+    monkeypatch.setattr(desktop, "_notify", lambda *a, **k: None)
+    monkeypatch.setattr(desktop, "_free_port", lambda: 7790)
+    # Stop before any window opens: the native path is the first thing after
+    # the server is up, and a failing import lands in the pywebview fallback.
+    monkeypatch.setattr(desktop, "_run_native", lambda *a, **k: 0)
+    from bgate_ui.window import webview2
+    monkeypatch.setattr(webview2, "available", lambda: (True, ""))
+    return desktop
+
+
+def test_app_remote_listens_on_both_addresses(_desktop_env, monkeypatch):
+    desktop = _desktop_env
+    import uvicorn
+    from bgate_ui import app as appmod
+    monkeypatch.setattr(appmod, "_remote_bind",
+                        lambda port: ("100.64.0.9", ["100.64.0.9"]))
+    bound = []
+    monkeypatch.setattr(desktop, "_listen",
+                        lambda host, port: bound.append((host, port)) or object())
+    seen = {}
+    monkeypatch.setattr(uvicorn.Server, "run",
+                        lambda self, sockets=None: seen.update(sockets=sockets))
+    opened = []
+    import webbrowser
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+
+    assert desktop.run(port=7790, remote=True) == 0
+    import time
+    time.sleep(0.05)  # the server "runs" on its daemon thread
+
+    assert bound == [("127.0.0.1", 7790), ("100.64.0.9", 7790)]
+    assert len(seen["sockets"]) == 2
+    assert os.environ["BGATE_REMOTE_HOSTS"] == "100.64.0.9"
+    assert opened == ["http://127.0.0.1:7790/pair"]
+
+
+def test_app_without_remote_is_loopback_only(_desktop_env, monkeypatch):
+    desktop = _desktop_env
+    import uvicorn
+    seen = {}
+    monkeypatch.setattr(uvicorn.Server, "run",
+                        lambda self, sockets=None: seen.update(sockets=sockets))
+    monkeypatch.setattr(desktop, "_listen",
+                        lambda *a: pytest.fail("no socket should be pre-bound"))
+    assert desktop.run(port=7790) == 0
+    import time
+    time.sleep(0.05)
+    assert seen["sockets"] is None
+    assert "BGATE_REMOTE_HOSTS" not in os.environ
+
+
+def test_app_remote_refuses_without_tailnet(_desktop_env, monkeypatch):
+    desktop = _desktop_env
+    import uvicorn
+    from bgate_ui import app as appmod
+    monkeypatch.setattr(appmod, "_remote_bind", lambda port: None)
+    monkeypatch.setattr(uvicorn.Server, "run",
+                        lambda self, sockets=None: pytest.fail("must not start"))
+    assert desktop.run(port=7790, remote=True) == 2
