@@ -96,11 +96,27 @@ def _active_path() -> Path:
     return user_dir() / ACTIVE_FILENAME
 
 
+def _read_registry_raw() -> dict[str, str]:
+    """Every row in the file, dead or alive, or {} when the file is absent.
+
+    Raises on a file that exists but will not parse: a writer that swallowed
+    that and wrote back an empty dict is how ten registered projects became
+    one (2026-09-19). Readers that want the filtered view use
+    :func:`_read_registry`.
+    """
+    path = _registry_path()
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} is not a registry object")
+    return {str(k): str(v) for k, v in data.items()}
+
+
 def _read_registry() -> dict[str, str]:
     try:
-        return {k: v for k, v in json.loads(
-            _registry_path().read_text(encoding="utf-8")).items()
-            if (Path(v) / db.DB_DIRNAME / db.DB_FILENAME).exists()}
+        return {k: v for k, v in _read_registry_raw().items()
+                if (Path(v) / db.DB_DIRNAME / db.DB_FILENAME).exists()}
     except Exception:
         return {}
 
@@ -158,7 +174,11 @@ def register(root: str | os.PathLike[str], name: str = "") -> None:
                 name = get(resolved)["slug"]
             except Exception:
                 name = Path(resolved).name
-        reg = _read_registry()
+        # Merge into the RAW file, never the filtered view: filtering is for
+        # readers. Writing the filtered dict back pruned every project whose
+        # folder was unavailable for that one instant (an unplugged drive, a
+        # DB mid-rewrite), and a parse failure pruned all of them.
+        reg = _read_registry_raw()
         reg[name] = resolved
         path = _registry_path()
         path.parent.mkdir(parents=True, exist_ok=True)
