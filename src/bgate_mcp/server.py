@@ -248,7 +248,6 @@ TOOL_CEILING_S = float(os.environ.get("BGATE_TOOL_CEILING_S", "1200") or 1200)
 
 
 def _run_with_ceiling(fn, args, kwargs):
-    import concurrent.futures as _cf
 
     ctx = contextvars.copy_context()
     box: dict = {}
