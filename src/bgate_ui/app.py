@@ -782,8 +782,14 @@ def _no_project(root: Optional[Path]) -> dict:
 
 
 @app.get("/api/state")
-def state() -> dict:
-    """Everything the dashboard shows, one poll — or the absence of a project."""
+def state(lean: bool = False) -> dict:
+    """Everything the dashboard shows, one poll — or the absence of a project.
+
+    ``lean=1`` drops the sections a phone poll never reads (assets, artifacts,
+    asset_groups, verify, bible, lore, notes). MEASURED: the full payload was
+    1.4 MB, 1.08 MB of it asset_groups; a phone companion polled it every 2.5 s
+    with a 12 s timeout over Tailscale and every poll ended -1001 or -999.
+    """
     root = _root_or_none()
     if root is None:
         return _no_project(None)
@@ -834,7 +840,7 @@ def state() -> dict:
             session["processing_worker"] = _pt_processing.get(
                 session["id"], "stalled")
 
-    return {
+    out = {
         "project": proj,
         "root": str(root),
         "seats": [
@@ -846,6 +852,13 @@ def state() -> dict:
             }
             for role, cfg in seat_table.items()
         ],
+        "sessions": session_rows,
+        "previews": previews,
+    }
+    if lean:
+        return out
+    return {
+        **out,
         "assets": assets.list_assets(root),
         "artifacts": artifacts.list_revisions(root, limit=100),
         "asset_groups": artifacts.workspace(root),
@@ -855,9 +868,7 @@ def state() -> dict:
             "canon": lore.list_entities(root, status="canon"),
             "draft": lore.list_entities(root, status="draft"),
         },
-        "sessions": session_rows,
         "notes": seats.read_notes(root, limit=15),
-        "previews": previews,
     }
 
 
@@ -2192,8 +2203,12 @@ def _remote_bind(port: int, detect=None):
     return addr.ip, hosts
 
 
-def _print_pairing(port, host, root):
-    """Print the phone-pairing URL + token and a scannable QR (segno)."""
+def _pairing(port, host, root) -> dict:
+    """The phone-pairing facts: URL, token, project, and the QR payload.
+
+    One source for the terminal print (serve --remote) and the /pair page
+    (the desktop app, which has no terminal to print into).
+    """
     from bgate_ui import tailnet as _tailnet
     url = f"http://{host}:{port}"
     token = ""
@@ -2202,18 +2217,83 @@ def _print_pairing(port, host, root):
     except Exception:                                            # noqa: BLE001
         pass
     project = root.name if root else "(no project)"
-    print(f"builders gate · REMOTE (Tailscale) mode on {url}")
-    print(f"  project: {project}")
-    print(f"  token  : {token}")
-    payload = _tailnet.pairing_payload(url, token, project)
+    return {"url": url, "token": token, "project": project,
+            "payload": _tailnet.pairing_payload(url, token, project)}
+
+
+def _print_pairing(port, host, root):
+    """Print the phone-pairing URL + token and a scannable QR (segno)."""
+    pair = _pairing(port, host, root)
+    print(f"builders gate · REMOTE (Tailscale) mode on {pair['url']}")
+    print(f"  project: {pair['project']}")
+    print(f"  token  : {pair['token']}")
     try:
         import segno
-        segno.make(payload, error="m").terminal(compact=True)
+        segno.make(pair["payload"], error="m").terminal(compact=True)
         print("  scan the QR above in a Builders Gate companion app")
     except Exception:                                            # noqa: BLE001
         print("  (install `segno` for a scannable QR; or enter URL+token "
               "manually in the app)")
     print("  ctrl-c to stop")
+
+
+def _remote_host() -> str:
+    """The tailnet host remote mode is serving on, or "" when it is off."""
+    raw = os.environ.get("BGATE_REMOTE_HOSTS", "")
+    return next((h.strip() for h in raw.split(",") if h.strip()), "")
+
+
+@app.get("/pair", response_class=HTMLResponse)
+def pair_page(request: Request) -> str:
+    """The pairing QR as a page, for the desktop app.
+
+    `bgate serve --remote` prints the QR into the terminal it was started
+    from. The desktop window has no terminal, so the app opens this instead.
+    Loopback only: the token is the credential the QR hands the phone, and
+    the phone has no reason to fetch the page that hands it out. 404 when
+    remote mode is off, so nothing here is reachable on a default run.
+    """
+    host = _remote_host()
+    if not host:
+        raise HTTPException(404, "remote mode is off")
+    asked = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+    if asked.lower() not in _api._LOOPBACK_HOSTS:
+        raise HTTPException(404, "not found")
+    pair = _pairing(request.url.port or 7788, host, _root_or_none())
+    try:
+        import segno
+        qr = segno.make(pair["payload"], error="m").svg_data_uri(
+            scale=8, border=2, dark="#111", light="#fff")
+        img = f'<img alt="pairing QR" src="{qr}">'
+    except Exception:                                            # noqa: BLE001
+        img = "<p>(segno is not installed; enter the URL and token by hand)</p>"
+    esc = _html_escape
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<title>Pair your phone — Builders Gate</title>
+<style>
+body{{font:15px system-ui,sans-serif;background:#f6f5f2;color:#111;margin:0;
+ display:flex;justify-content:center;padding:32px 16px}}
+main{{max-width:520px;text-align:center}}
+img{{width:min(100%,360px);image-rendering:pixelated;background:#fff;
+ border-radius:12px;padding:8px}}
+code{{font:13px ui-monospace,monospace;background:#e9e7e2;padding:2px 6px;
+ border-radius:4px;word-break:break-all}}
+dl{{text-align:left;display:grid;grid-template-columns:auto 1fr;gap:6px 14px}}
+dt{{opacity:.6}}
+</style></head><body><main>
+<h1>Scan in a Builders Gate companion app</h1>
+{img}
+<dl><dt>project</dt><dd>{esc(pair['project'])}</dd>
+<dt>url</dt><dd><code>{esc(pair['url'])}</code></dd>
+<dt>token</dt><dd><code>{esc(pair['token'])}</code></dd></dl>
+<p>Both phone and PC must be on the same Tailscale network. Close this tab
+once the phone is paired.</p>
+</main></body></html>"""
+
+
+def _html_escape(s: str) -> str:
+    import html
+    return html.escape(str(s), quote=True)
 
 
 def serve(port: int = 7788, remote: bool = False) -> None:
@@ -2297,8 +2377,12 @@ def serve(port: int = 7788, remote: bool = False) -> None:
             print("  no Tailscale address found — is `tailscale` up? "
                   "(try: tailscale status)")
             raise SystemExit(2)
-        bind_host, allowed = got
+        tailnet_ip, allowed = got
+        # Listen on every interface: the bind
+        # to the single tailnet IP dropped the phone's packets (-1001). The
+        # Host allow-list and the per-project token still gate every request.
+        bind_host = "0.0.0.0"
         os.environ["BGATE_REMOTE_HOSTS"] = ",".join(allowed)
-        _print_pairing(port, bind_host, root)
+        _print_pairing(port, tailnet_ip, root)
 
     uvicorn.run(app, host=bind_host, port=port, log_level="warning")
