@@ -233,6 +233,47 @@ def _keys(root: Optional[str] = None) -> None:
 # against the same pinned BGATE_ROOT dispatch stamps at spawn. Two processes,
 # one decision function, no shared state - see that module's docstring for why
 # it is pure.
+# A TOOL BODY THAT NEVER RETURNS IS THE WORST OUTCOME THIS PROCESS CAN
+# PRODUCE. MEASURED on boswell-edition (2026-09-19): animation_generate
+# finished its first Retro Diffusion job in 90 s, wrote the sheet, and then
+# blocked silently - no socket, no CPU, nothing more written - for the rest
+# of a 60-minute item ceiling, three attempts in a row; the server that held
+# the call outlived the killed agent by ten hours. tileset_generate did the
+# same on item #9 twice. Whatever the body is waiting on, the caller must not
+# wait with it: the body runs on its own thread and this returns a resumable
+# error at the ceiling, so the agent gets a result it can act on (the resume
+# checks re-adopt whatever landed) instead of a heartbeat until it is killed.
+# The stuck thread is leaked deliberately: joining it is the hang again.
+TOOL_CEILING_S = float(os.environ.get("BGATE_TOOL_CEILING_S", "1200") or 1200)
+
+
+def _run_with_ceiling(fn, args, kwargs):
+    import concurrent.futures as _cf
+
+    ctx = contextvars.copy_context()
+    box: dict = {}
+
+    def _body():
+        try:
+            box["value"] = ctx.run(fn, *args, **kwargs)
+        except BaseException as exc:                              # noqa: BLE001
+            box["error"] = exc
+
+    t = threading.Thread(target=_body, name=f"tool:{fn.__name__}", daemon=True)
+    t.start()
+    t.join(TOOL_CEILING_S)
+    if t.is_alive():
+        return {"ok": False, "timed_out": True,
+                "error": (f"{fn.__name__} did not return within "
+                          f"{TOOL_CEILING_S:.0f}s and was abandoned. Whatever "
+                          "it wrote is on disk; call it again with a "
+                          "narrower scope (one direction, one asset) and it "
+                          "resumes from what landed. Do not wait on it.")}
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 _CALL_TOOL: contextvars.ContextVar[str] = contextvars.ContextVar(
     "bgate_call_tool", default="")
 
@@ -279,7 +320,7 @@ _READ_ONLY_TOOLS = frozenset({
     "seat_list", "seat_brief", "seat_can_write", "seat_notes", "handoff_read",
     "queue_list", "queue_get", "queue_next", "board_digest", "plan_status",
     "pending_decisions", "decision_list", "not_building_list",
-    "iteration_status", "asset_status",
+    "iteration_status", "asset_status", "canon_status", "canon_audit",
     # design, canon and lore, read side
     "bible_read", "bible_ref_list", "lore_list", "lore_brief", "canon_check",
     "recall", "ref_list", "profile_get", "quest_list", "quest_read",
@@ -745,7 +786,7 @@ def _tool(fn: Optional[Callable] = None, *,
                 except Exception:                                 # noqa: BLE001
                     flight = ""
             try:
-                payload = _normalize(fn(*args, **kwargs))
+                payload = _normalize(_run_with_ceiling(fn, args, kwargs))
                 if images is None or not isinstance(payload, dict):
                     return payload
                 try:
@@ -1285,7 +1326,102 @@ def project_status() -> dict:
             # sprite sheet go" has an answer nothing on any surface states,
             # and the honest one - a directory under ~/.bgate that was
             # created for you - is not a place anyone would think to look.
-            "scratch": _project.is_scratch(root)}
+            "scratch": _project.is_scratch(root),
+            # WHICH WORLD. The first thing an agent should know about a tree
+            # that has carried two of everything.
+            "canon": _canon_summary(root)}
+
+
+def _canon_summary(root) -> dict:
+    from bgate_core.board import canon as _canon
+    from bgate_core.store import project as _proj
+    game = _proj.game_dir(root)
+    doc = _canon.get(root)
+    return {"world": _canon.world(root, game or ""),
+            "entries": doc.get("entries", {}),
+            "retired": doc.get("retired", [])}
+
+
+@_tool
+def canon_status() -> dict:
+    """Which world, scene, script and asset is CURRENT here, and which is
+    retired. Read this before copying any scene or extending any script:
+    a tree that carries its old map beside its new one looks identical
+    from inside a file. `world` is the scene the game is; `retired` paths
+    are refused to a seat by the hook, and each names its successor.
+    """
+    return _canon_summary(_root())
+
+
+@_tool
+def canon_set(name: str, path: str, kind: str = "", note: str = "") -> dict:
+    """Name the current file for a logical thing: `world` sets the scene the
+    game is; anything else (`reporter`, `hollis_farm`, `player_car`) records
+    the path an agent should use for it. Paths are res:// or project-relative.
+    Refused to a seated worker: what is current is the director's and the
+    human's call, and the seat that could redefine it is the seat that just
+    built a second copy.
+    """
+    from bgate_core.board import canon as _canon
+    if _seat():
+        raise PermissionError(
+            f"seat {_seat()!r} may not change the canon. Say in your result "
+            "which file you believe is current and why; the director sets it.")
+    root = _root()
+    if str(name).strip().lower() == "world":
+        _canon.set_world(root, path)
+    else:
+        _canon.set_entry(root, name, path, kind=kind, note=note)
+    return _canon_summary(root)
+
+
+@_tool
+def canon_retire(pattern: str, successor: str = "", reason: str = "") -> dict:
+    """Mark a path or glob (`scenes/main.tscn`, `scripts/districts/**`,
+    `tools/build_*`) as no longer the game. From then on the hook refuses a
+    seat's reads and writes there and names `successor`; briefs list it
+    under RETIRED. Refused to a seated worker. `canon_unretire` reverses it.
+    """
+    from bgate_core.board import canon as _canon
+    if _seat():
+        raise PermissionError(
+            f"seat {_seat()!r} may not retire files. Name the file and why in "
+            "your result; the director retires it.")
+    root = _root()
+    _canon.retire(root, pattern, successor=successor, reason=reason)
+    return _canon_summary(root)
+
+
+@_tool
+def canon_unretire(pattern: str) -> dict:
+    """Take a pattern off the retired list. Refused to a seated worker."""
+    from bgate_core.board import canon as _canon
+    if _seat():
+        raise PermissionError(f"seat {_seat()!r} may not un-retire files.")
+    root = _root()
+    _canon.unretire(root, pattern)
+    return _canon_summary(root)
+
+
+@_tool
+def canon_audit(godot_project: Optional[str] = None) -> dict:
+    """The tree read against the canon: every scene or script that still
+    references a retired path, every scene basename that lives under more
+    than one directory (two copies, nobody knows which is real), and every
+    scene the world does not reach through ext_resource/preload/load paths
+    and no tool loads. Static text reading - a path built at runtime from
+    pieces is seen only through its directory prefix.
+    """
+    from bgate_core.board import canon as _canon
+    from bgate_core.store import project as _proj
+    _contained_path(godot_project, "godot_project")
+    root = _root()
+    game = godot_project or _proj.game_dir(root)
+    if not game:
+        return {"ok": False, "error": "no engine project found under this root"}
+    report = _canon.audit(root, game)
+    report["ok"] = True
+    return report
 
 
 @_tool
