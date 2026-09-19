@@ -2482,6 +2482,47 @@ func _rect_of(node: Node) -> Variant:
 		return ci.get_global_transform_with_canvas() * (node.get_rect() as Rect2)
 	return null
 
+## Texture size behind a sprite and the string width behind a label: the two
+## numbers the screen audit needs that bounds alone cannot give. A sprite's
+## bounds over its texture height is its on-screen pixel density; a label's
+## string width over its rect is whether it clips.
+func _extra_of(node: Node) -> Variant:
+	var tex: Texture2D = null
+	if node is Sprite2D:
+		tex = (node as Sprite2D).texture
+	elif node is TextureRect:
+		tex = (node as TextureRect).texture
+	elif node is AnimatedSprite2D:
+		var a := node as AnimatedSprite2D
+		if a.sprite_frames != null and a.sprite_frames.has_animation(a.animation):
+			tex = a.sprite_frames.get_frame_texture(a.animation, a.frame)
+	if tex != null:
+		var ts := tex.get_size()
+		return {"texture": tex.resource_path, "texture_px": [ts.x, ts.y]}
+	if node is Label or node is Button or node is RichTextLabel:
+		var c := node as Control
+		var text: String = ""
+		var autowrap := false
+		if node is Label:
+			text = (node as Label).text
+			autowrap = (node as Label).autowrap_mode != TextServer.AUTOWRAP_OFF
+		elif node is Button:
+			text = (node as Button).text
+		else:
+			text = (node as RichTextLabel).get_parsed_text()
+			autowrap = true
+		var font := c.get_theme_font("font")
+		var fsize := c.get_theme_font_size("font_size")
+		var out := {"font_size": fsize, "autowrap": autowrap}
+		if font != null:
+			var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fsize).x
+			out["text_px"] = snappedf(w, 0.1)
+			out["fits"] = autowrap or w <= c.size.x + 0.5
+			if font is FontFile:
+				out["font_fixed_size"] = (font as FontFile).fixed_size
+		return out
+	return null
+
 func _value_of(node: Node) -> Variant:
 	if node is Range:
 		var r := node as Range
@@ -2535,6 +2576,10 @@ func _scan(node: Node, depth: int) -> void:
 		}
 		if node is CanvasItem:
 			entry["z"] = (node as CanvasItem).z_index
+		var extra: Variant = _extra_of(node)
+		if extra != null:
+			for k in extra:
+				entry[k] = extra[k]
 		var value: Variant = _value_of(node)
 		if value != null:
 			entry["value"] = value

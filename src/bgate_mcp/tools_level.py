@@ -15,6 +15,8 @@ wall_source contract) ride with it.
 """
 from __future__ import annotations
 
+import json
+
 from typing import Annotated, Optional
 
 from pydantic import Field
@@ -2253,6 +2255,50 @@ def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = N
                  + (f" ({label})" if label else ""),
                  ref=result.get("beauty_preview") or result.get("beauty") or "")
         return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def screen_audit(godot_project: str = "", manifest_path: str = "",
+                 scene: Optional[str] = None, at: float = 1.0,
+                 party_height: float = 0.0, party: str = "", enemy: str = "",
+                 label: str = "") -> dict:
+    """THE COMPOSITION AUDIT: the faults a screenshot shows that no asset
+    check measures. Over one evidence manifest it reports party_scale (the
+    party is not the bible's on-screen height), scale_clash (an enemy is more
+    than 4x the party), label_overflow (a label's string is wider than its
+    rect), font_scale (a bitmap font drawn at a non-multiple of its native
+    size - the blur) and pixel_density (sprites at a different pixel density
+    than the backdrop plate). Pass `manifest_path` from a godot_evidence you
+    already ran, or `godot_project` (+ `scene`) to capture one now.
+    `party_height` is the bible's number in viewport pixels; 0 skips that
+    check. `party`/`enemy` are node-path regexes; the defaults match
+    Party/Player/Hero/Leader/Follower and Enem/Boss/Foe/Monster.
+    Full notes: docs/tools.md#screen_audit
+    """
+    from bgate_core.qa import screen_audit as _audit
+    try:
+        if not manifest_path:
+            if not godot_project:
+                return {"ok": False, "error": "pass manifest_path or godot_project"}
+            captured = godot_evidence.__wrapped__(godot_project, at=at, scene=scene,
+                                                  overlay=False, label=label or "audit")
+            if not captured.get("ok"):
+                return captured
+            manifest_path = captured.get("manifest", "")
+        data = json.loads(_Path(manifest_path).read_text(encoding="utf-8"))
+        kwargs = {"party_height": float(party_height or 0)}
+        if party:
+            kwargs["party"] = party
+        if enemy:
+            kwargs["enemy"] = enemy
+        out = _audit.audit(data, **kwargs)
+        out["manifest"] = str(manifest_path)
+        _log("evidence",
+             f"screen audit: {out['counts']['fail']} fail / {out['counts']['warn']} warn"
+             + (f" ({label})" if label else ""), ref=out.get("frame", ""))
+        return out
     except Exception as exc:
         return _fail(exc)
 
