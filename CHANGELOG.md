@@ -10,6 +10,16 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Changed
+- **`screen_audit`: the composition faults a screenshot shows.** Over one
+  `godot_evidence` manifest - which now records the texture size behind every
+  sprite and the string width behind every label - it reports `party_scale`,
+  `scale_clash`, `label_overflow`, `font_scale` (a bitmap font drawn off its
+  native multiple) and `pixel_density` (sprites at a different density than
+  the backdrop). `godot_check_project` gains `presentation`: every
+  `font_size` checked against every `.fnt`'s native size, and the default
+  texture filter. MEASURED: a battle frame with every asset passing
+  `scale_check` drew the party at 40px against 260px enemies and clipped the
+  enemy name; nothing measured the frame.
 - **A rejected asset cannot come back.** Reviewing a revision `rejected`, or
   approving a newer one, retires the old file in the canon with the live
   revision as its successor: the hook refuses a seated agent's read or write of

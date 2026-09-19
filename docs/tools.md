@@ -2570,6 +2570,37 @@ is what let a two-tailed character ship for a day.
 godot_project: the directory holding project.godot.
 ```
 
+## screen_audit
+
+The composition audit: the faults a screenshot shows and no asset-level
+check measures. It reads one `godot_evidence` manifest (which now records the
+texture size behind every sprite and the string width behind every label) and
+reports:
+
+| code | severity | what it measured |
+|---|---|---|
+| `party_scale` | fail | the party's median on-screen height is more than 25% off `party_height` |
+| `scale_clash` | fail | the tallest enemy is more than 4x the party's height |
+| `label_overflow` | fail | a Label/Button's string is wider than its rect and it does not autowrap |
+| `font_scale` | fail | a bitmap (.fnt) font drawn at a size that is not a multiple of its native size - the blur |
+| `pixel_density` | warn | a sprite's on-screen pixel density is outside 0.67-1.5x of the backdrop plate's |
+
+Pass `manifest_path` from an evidence capture you already have, or
+`godot_project` (+ `scene`, `at`) to capture one now. `party_height` is the
+bible's number in viewport pixels (0 skips that check); `party` / `enemy` are
+node-path regexes when the defaults (Party/Player/Hero/Leader/Follower and
+Enem/Boss/Foe/Monster) do not match your tree.
+
+MEASURED, on the game that motivated it: a battle frame with every asset
+passing `scale_check` drew the party at 40px against 260px enemies, clipped
+the enemy name at "El Nino Flood (The Return of", and drew its 8px pixel font
+resampled. The first run on the Oracle scene named the one real fault left:
+the mechanic window's label needs 336px in a 216px rect.
+
+The static half rides on `godot_check_project` as `presentation`: every
+`font_size` in the project checked against every `.fnt`'s native size, and
+the default texture filter checked for nearest.
+
 ## godot_import_asset
 
 ```text

@@ -5936,7 +5936,17 @@ def godot_check_project(godot_project: str, timeout: int = 180) -> dict:
     godot_project: the directory holding project.godot.
     """
     _contained_path(godot_project, "godot_project")
-    return _godot.check_project(godot_project, timeout=timeout)
+    result = _godot.check_project(godot_project, timeout=timeout)
+    # The static half of the screen audit rides on the build check: a bitmap
+    # font used at a size it cannot draw crisply, or a linear default texture
+    # filter under one, is a presentation fault every seat should see before
+    # a frame is ever captured. Reported, never a reason the build "fails".
+    try:
+        from bgate_core.qa import screen_audit as _audit
+        result["presentation"] = _audit.font_check(godot_project)
+    except Exception:                                            # noqa: BLE001
+        pass
+    return result
 
 
 @_tool

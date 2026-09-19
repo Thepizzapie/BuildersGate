@@ -248,7 +248,11 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  # ...and the diff that does the looking: editor load vs pck
                  # load of one scene.
                  "godot_export_verify",
-                 "evidence_check_ui"),
+                 "evidence_check_ui",
+                 # The composition audit over an evidence manifest: party
+                 # scale, clipped labels, resampled bitmap fonts, mixed pixel
+                 # density. Same seats, same evidence, one more reading of it.
+                 "screen_audit"),
     "dialogue": ("dialogue_",),
     "quest": ("quest_",),
     # game_view_ is READ-ONLY-ish shared ground: the level craft
