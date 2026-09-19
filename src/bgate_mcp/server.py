@@ -463,6 +463,26 @@ def _contained_path(target, what: str = "path"):
     return target
 
 
+def _asset_gate(path: str, what: str = "asset") -> Optional[dict]:
+    """Refuse a file this project rejected, superseded or retired.
+
+    The review row and the canon are the two places a 'do not use this'
+    decision lives; before this, neither was consulted by the tools that put
+    a file into a scene, so a rejected candidate was one scene_wire away
+    from the build. Returns the refusal (ok False, successor named) or None.
+    """
+    try:
+        verdict = _artifacts.usable(_root(), path)
+    except Exception:                                            # noqa: BLE001
+        return None
+    if verdict.get("ok", True):
+        return None
+    _log("art", f"refused {what} {verdict.get('path')}: {verdict.get('status')}",
+         ref=verdict.get("successor", ""))
+    return {"ok": False, "error": verdict["reason"], "refused": verdict["status"],
+            "path": verdict.get("path", ""), "successor": verdict.get("successor", "")}
+
+
 def _res_pair(godot_project: str, path: str, suffix: str) -> tuple:
     """A res:// path and its file on disk, from either form.
 
@@ -5934,6 +5954,9 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
     Full notes: docs/tools.md#godot_import_asset
     """
     _contained_path(godot_project, "godot_project")
+    refused = _asset_gate(src_path, "import source")
+    if refused:
+        return refused
     result = _godot.import_asset(godot_project, src_path, dest_rel=dest_rel,
                                  timeout=timeout)
     warning = (result.get("alpha_mode") or {}).get("warning")
@@ -5991,6 +6014,9 @@ def godot_deliver_asset(godot_project: Annotated[str, Field(description='Directo
     stem = name or _Path(glb).stem
     try:
         _contained_path(godot_project, "godot_project")
+        refused = _asset_gate(glb, "delivery")
+        if refused:
+            return refused
         shot_dir = str(_Path(_root()) / ".bgate_out" / "3d" /
                        _run_tag(label or stem))
     except Exception:
@@ -6209,6 +6235,9 @@ def scene_wire(godot_project: str, scene: str, asset: str,
     Full notes: docs/tools.md#scene_wire
     """
     asset_disk, asset_res = _res_pair(godot_project, asset, "")
+    refused = _asset_gate(str(asset_disk), "asset")
+    if refused:
+        return refused
     return _scene_edit(
         godot_project, scene,
         lambda text: _scenewire.wire(
@@ -6294,6 +6323,9 @@ def scene_swap_resource(godot_project: str, scene: str, node: str, asset: str,
     that counts references - including Atlas's dead-asset rail.
     """
     asset_disk, asset_res = _res_pair(godot_project, asset, "")
+    refused = _asset_gate(str(asset_disk), "asset")
+    if refused:
+        return refused
     return _scene_edit(
         godot_project, scene,
         lambda text: _scenewire.swap_resource(

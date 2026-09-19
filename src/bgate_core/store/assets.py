@@ -961,6 +961,15 @@ def verify(root: str | os.PathLike[str]) -> dict:
         wiring["freshness"] = _godot.import_freshness(wiring["engine_project"])
         if not wiring["freshness"].get("ok", True):
             wiring["ok"] = False
+        # A REJECTED FILE THAT IS STILL WIRED IS THE STALE ASSET THE HUMAN
+        # KEEPS SEEING. The review table knows it was thrown away; the scene
+        # does not. Named here per consumer so the fix is a scene_swap away.
+        from bgate_core.store import artifacts as _artifacts
+
+        wiring["stale_wired"] = _artifacts.stale_wired(root, wiring["engine_project"])
+        wiring["stale_wired_count"] = len(wiring["stale_wired"])
+        if wiring["stale_wired"]:
+            wiring["ok"] = False
     except Exception as exc:  # noqa: BLE001 - a scan must not take the audit down
         wiring = {"ok": True, "error": f"{type(exc).__name__}: {exc}",
                   "unreferenced": [], "dangling": []}
@@ -977,5 +986,6 @@ def verify(root: str | os.PathLike[str]) -> dict:
                    "modified": len(modified), "missing": len(missing),
                    "pending": len(pending),
                    "unreferenced": wiring.get("unreferenced_count", 0),
-                   "dangling": wiring.get("dangling_count", 0)},
+                   "dangling": wiring.get("dangling_count", 0),
+                   "stale_wired": wiring.get("stale_wired_count", 0)},
     }

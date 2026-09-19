@@ -381,8 +381,13 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
         metadata = {**metadata, "integration": promotion}
         if promotion["promoted"]:
             status = "integrated"
+    displaced: list[str] = []
     with db.tx(root) as conn:
         if status in ("approved", "integrated"):
+            displaced = [r["path"] for r in conn.execute(
+                "SELECT path FROM artifact_revision WHERE logical_name = ? "
+                "AND id <> ? AND status IN ('approved','integrated')",
+                (artifact["logical_name"], artifact_id))]
             conn.execute(
                 "UPDATE artifact_revision SET status = 'superseded', "
                 "reviewed_at = COALESCE(reviewed_at, datetime('now')) "
@@ -397,6 +402,7 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
             (status, note.strip()[:1000], (who or "")[:120],
              json.dumps(metadata), artifact_id),
         )
+    _sync_canon(root, artifact, status, displaced)
     tail = ""
     if promotion and promotion["promoted"]:
         tail = f" (installed at {promotion['path']})"
@@ -483,6 +489,129 @@ def qa_verdict(root: str | os.PathLike[str], artifact_id: int, *, passed: bool,
 # ---------------------------------------------------------------------------
 # Reference provenance
 # ---------------------------------------------------------------------------
+DEAD_STATUSES = ("rejected", "superseded")
+
+
+def live_path(root: str | os.PathLike[str], logical_name: str) -> str:
+    """The path the build reads for this logical name: its approved or
+    integrated revision, or '' when nothing has been approved yet."""
+    with db.connect(root) as conn:
+        row = conn.execute(
+            "SELECT path FROM artifact_revision WHERE logical_name = ? "
+            "AND status IN ('approved','integrated') "
+            "ORDER BY revision DESC LIMIT 1", (logical_name,)).fetchone()
+    return row["path"] if row else ""
+
+
+def _sync_canon(root, artifact: dict, status: str, displaced: list[str]) -> None:
+    """A review decision is a canon decision. A rejected or superseded
+    revision's file is retired with the live revision as its successor, so
+    the hook refuses a seated agent's read of it and every wiring tool refuses
+    to put it in a scene; an approved file is un-retired. Best-effort: the
+    review row is already written, and a canon write that fails must not
+    unwind it. MEASURED: agents kept wiring rejected candidates because the
+    reject was a row in a table nothing on the write path consulted."""
+    try:
+        from bgate_core.board import canon
+        name = artifact["logical_name"]
+        if status in DEAD_STATUSES:
+            live = live_path(root, name)
+            if artifact["path"] != live:
+                canon.retire(root, artifact["path"], successor=live,
+                             reason=f"{name} r{artifact['revision']} {status}")
+        elif status in ("approved", "integrated"):
+            canon.unretire(root, artifact["path"])
+            for old in displaced:
+                if old != artifact["path"]:
+                    canon.retire(root, old, successor=artifact["path"],
+                                 reason=f"{name} superseded by r{artifact['revision']}")
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
+def usable(root: str | os.PathLike[str], path: str | os.PathLike[str]) -> dict:
+    """May a seat put this file into the game? {ok, reason, successor, status}.
+
+    Refused when the canon retired the path, and when the file is a revision
+    this project rejected or superseded (unless that same path is also the
+    live revision of its name - a re-approved file is live, whatever an older
+    row says). A path nobody registered is usable: this gate exists for the
+    assets the pipeline knows it threw away, not to quarantine hand-made art.
+    """
+    try:
+        rel = assets.normalize_path(root, path)
+    except Exception:                                            # noqa: BLE001
+        rel = str(path).replace("\\", "/")
+    try:
+        from bgate_core.board import canon
+        row = canon.retired_match(root, rel)
+    except Exception:                                            # noqa: BLE001
+        row = None
+    if row:
+        return {"ok": False, "status": "retired", "path": rel,
+                "successor": row.get("successor", ""),
+                "reason": (f"{rel} is retired ({row.get('reason', '')}); "
+                           f"use {row.get('successor') or 'what canon_status names'}")}
+    with db.connect(root) as conn:
+        latest = conn.execute(
+            "SELECT logical_name, revision, status FROM artifact_revision "
+            "WHERE path = ? ORDER BY id DESC LIMIT 1", (rel,)).fetchone()
+    if latest and latest["status"] in DEAD_STATUSES:
+        live = live_path(root, latest["logical_name"])
+        if live != rel:
+            return {"ok": False, "status": latest["status"], "path": rel,
+                    "successor": live,
+                    "reason": (f"{rel} is {latest['logical_name']} r{latest['revision']}, "
+                               f"which was {latest['status']}; "
+                               + (f"the live revision is {live}" if live
+                                  else "nothing approved has replaced it yet"))}
+    return {"ok": True, "status": latest["status"] if latest else "", "path": rel,
+            "successor": "", "reason": ""}
+
+
+_SCENE_SUFFIXES = (".tscn", ".tres", ".gd", ".godot")
+
+
+def stale_wired(root: str | os.PathLike[str],
+                engine_project: str | os.PathLike[str] | None = None) -> list[dict]:
+    """Scenes, resources and scripts that still name a rejected or superseded
+    revision's file. Each row: {path, status, logical_name, revision,
+    successor, referenced_by: [...]}. A dead asset with no references is
+    nobody's problem; one that is still wired is the thing this catches."""
+    with db.connect(root) as conn:
+        dead = [dict(r) for r in conn.execute(
+            "SELECT id, logical_name, revision, path, status FROM artifact_revision "
+            "WHERE status IN ('rejected','superseded') ORDER BY id")]
+    if not dead:
+        return []
+    live_by_name = {r["logical_name"]: live_path(root, r["logical_name"]) for r in dead}
+    dead = [r for r in dead if live_by_name[r["logical_name"]] != r["path"]]
+    if not dead:
+        return []
+    base = Path(engine_project or root)
+    files = [p for p in base.rglob("*") if p.suffix in _SCENE_SUFFIXES
+             and ".bgate" not in p.parts and ".godot" not in p.parts]
+    hits: dict[str, list[str]] = {}
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for r in dead:
+            if r["path"] in text:
+                hits.setdefault(r["path"], []).append(
+                    str(f.relative_to(base)).replace("\\", "/"))
+    out, seen = [], set()
+    for r in dead:
+        if r["path"] in hits and r["path"] not in seen:
+            seen.add(r["path"])
+            out.append({"path": r["path"], "status": r["status"],
+                        "logical_name": r["logical_name"], "revision": r["revision"],
+                        "successor": live_by_name[r["logical_name"]],
+                        "referenced_by": sorted(set(hits[r["path"]]))})
+    return out
+
+
 def _pin_snapshot(root: str | os.PathLike[str], names: list[str]) -> list[dict]:
     """{name, revision, path, hash} for every ref that resolves to a pin."""
     from ..art import refs as _refs
