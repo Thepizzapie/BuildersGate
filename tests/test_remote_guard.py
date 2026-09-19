@@ -1,5 +1,6 @@
 import os
 import sys
+import types
 import pytest
 from fastapi.testclient import TestClient
 
@@ -174,6 +175,9 @@ def _desktop_env(tmp_path, monkeypatch):
     # three tests are not about anything that can run.
     if sys.platform != "win32":
         pytest.skip("the native window is Win32 only")
+    # run() imports pywebview only to refuse without it; CI has no desktop
+    # extra, and nothing after the import is exercised here.
+    monkeypatch.setitem(sys.modules, "webview", types.ModuleType("webview"))
     from bgate_ui.window import webview2
     monkeypatch.setattr(webview2, "available", lambda: (True, ""))
     return desktop
