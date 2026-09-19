@@ -343,6 +343,12 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "recall", "ref_list", "ref_pin", "ref_unpin",
         "seat_brief", "seat_can_write", "seat_configure", "seat_list",
         "seat_notes", "seat_post_note",
+        # WHICH WORLD. Every seat holds these: a tree that carries its old
+        # map beside its new one looks identical from inside a file, and the
+        # seat that cannot ask which is current extends the wrong one. The
+        # writers refuse a seated caller themselves.
+        "canon_status", "canon_audit", "canon_set", "canon_retire",
+        "canon_unretire",
         # The map of this surface, and the way to grow it. Universal by
         # definition.
         "tool_index", "tool_unlock",

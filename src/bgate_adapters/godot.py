@@ -1874,9 +1874,41 @@ def _rewire_model_ext_resource(text: str, model_res: str,
     return _EXT_RESOURCE_LINE.sub(replace, text), rewired
 
 
+_MODEL_TRANSFORM = re.compile(r"transform = Transform3D\(([^)]*)\)")
+
+
+def model_offset_in_scene(scene_text: str) -> tuple:
+    """The translation character_scene_text gave the Model node, read back
+    from a .tscn on disk; (0, 0, 0) when the node carries no transform."""
+    parts = scene_text.split('[node name="Model"', 1)
+    if len(parts) < 2:
+        return (0.0, 0.0, 0.0)
+    body = parts[1].split("\n[node", 1)[0]
+    found = _MODEL_TRANSFORM.search(body)
+    if not found:
+        return (0.0, 0.0, 0.0)
+    try:
+        numbers = [float(v) for v in found.group(1).split(",")]
+    except ValueError:
+        return (0.0, 0.0, 0.0)
+    return tuple(numbers[-3:]) if len(numbers) >= 12 else (0.0, 0.0, 0.0)
+
+
 def preview_scene_text(character_res: str, *, longest_axis: float,
-                       character_uid: str = "", floor_y: float = 0.0) -> str:
+                       character_uid: str = "", floor_y: float = 0.0,
+                       centre: tuple = (0.0, 0.0, 0.0)) -> str:
     """A lit stage that frames the character — what the screenshot photographs.
+
+    `centre` is the model's bounding-box centre IN THE DELIVERED SCENE'S
+    FRAME and `floor_y` its lowest point - both measured, both passed in. The
+    stage used to aim at the body origin and put the floor half a height
+    below it, which was right only while character_scene_text recentred every
+    model unconditionally. normalize_origin has defaulted OFF since the
+    authored origin became a thing worth keeping (feet at y=0), and from then
+    on every character delivered with its own origin was photographed
+    floating 0.9 m above the floor with its head off the top of the frame -
+    OBSERVED on the whole Meridian cast, and every one of those frames was
+    then "approved". A photo that cannot show the face is not a review.
 
     Deliberately its own scene rather than the game's main scene: the point is to
     see THIS asset, under Godot's renderer, at a framing that does not depend on
@@ -1896,18 +1928,19 @@ def preview_scene_text(character_res: str, *, longest_axis: float,
     # degrees delivered a screenshot of the front from the old +Z eye. A
     # turnaround catches a bad model; a preview that only ever shows the back
     # is the thing that lets one through.
-    # AIM AT THE ORIGIN, and do not "improve" this to the subject's mid-height:
-    # character_scene_text already recentres the model onto the body origin
-    # (MEASURED: `transform` origin (0, -0.9, 0.0365) for a 1.8 m figure), so
-    # the origin IS the middle. Aiming at reach*0.5 aims at the top of the
-    # head and drops the legs out of frame — done, photographed, reverted.
-    aim = (0.0, 0.0, 0.0)
+    # AIM AT THE MEASURED CENTRE. With normalize_origin on, that is the body
+    # origin (the model was moved there); with it off, it is wherever the
+    # authored origin left the box - typically half a height UP from a
+    # feet-at-zero rig. Aiming at reach*0.5 above the centre aims at the top
+    # of the head and drops the legs out of frame — done, photographed,
+    # reverted; aiming at the origin regardless of the centre drops the head.
+    aim = (float(centre[0]), float(centre[1]), float(centre[2]))
     # Distance is derived, not guessed: a 40 degree vertical lens sees
     # 2*d*tan(20) of height, so d ~= 2.0*reach frames the figure at about two
     # thirds with margin top and bottom. The eye stays near the subject's own
     # centre height — a raised camera tilting down spends vertical frame on
     # near floor, and the feet are where a scale or float error shows first.
-    eye = (reach * 0.6, reach * 0.12, reach * -2.0)
+    eye = (aim[0] + reach * 0.6, aim[1] + reach * 0.12, aim[2] + reach * -2.0)
     basis = _look_at_basis(eye, aim)
     sun = _look_at_basis((2.0, 3.0, 2.5), (0.0, 0.0, 0.0))
     ext = ('[ext_resource type="PackedScene" '
@@ -3291,13 +3324,28 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
     # frame THIS asset's measured bounds, produced alongside the screenshot and
     # thrown away with it. It is output, not a file anyone is meant to edit.
     preview_file = scenes_dir / f"{stem}_preview.tscn"
+    # Where the model sits in the scene the preview instances. For a scene
+    # written this run that is the flag: recentred, the box is centred on
+    # the body origin; not, it stays where the author put it. For a scene
+    # that was KEPT (rewired or left alone) the flag says nothing - the
+    # offset is whatever that file applied, and files written before
+    # normalize_origin defaulted off recentred unconditionally - so it is
+    # read off the Model node. The floor meets the box's lowest point either
+    # way, and the camera aims at its middle.
+    if scene_action == "written":
+        offset = ((-(float(origin[i]) + float(size[i]) * 0.5)
+                   for i in range(3)) if normalize_origin else (0.0, 0.0, 0.0))
+    else:
+        offset = model_offset_in_scene(scene_file.read_text(encoding="utf-8"))
+    offset = tuple(offset)
+    box_centre = tuple(float(origin[i]) + float(size[i]) * 0.5 + offset[i]
+                       for i in range(3))
+    box_bottom = float(origin[1]) + offset[1]
     preview_file.write_text(
         preview_scene_text(scene_res,
                            longest_axis=view.get("size_check", {}).get(
-                               "longest_axis_m", 2.0),
-                           # The capsule is centred on the body origin, so its
-                           # bottom — where the feet are — is half a height down.
-                           floor_y=-float(size[1]) * 0.5),
+                               "longest_axis_m") or 2.0,
+                           floor_y=box_bottom, centre=box_centre),
         encoding="utf-8")
     preview_res = "res://" + str(preview_file.relative_to(project)).replace(
         "\\", "/")

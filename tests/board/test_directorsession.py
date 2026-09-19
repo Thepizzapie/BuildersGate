@@ -229,6 +229,20 @@ def test_codex_auto_approval_stays_inside_the_project_and_bgate(root):
         "kind": "permissions", "cwd": str(root)})
 
 
+def test_codex_auto_approval_reads_the_command_not_just_its_cwd(root):
+    """cwd inside the project used to be the whole test: `pip install x` or
+    `git push` from the project root was accepted unread. The hook's egress
+    gate decides now; those go back to the human."""
+    settings.set(root, "dispatch.codex_auto_approve", True)
+    assert directorsession._auto_approve(root, {
+        "kind": "command", "cwd": str(root), "command": "git status"})
+    for command in ("pip install requests", "git push origin main",
+                    "curl https://x", ["npm", "install", "left-pad"],
+                    "python -m pip install x", "claude -p 'do it'"):
+        assert not directorsession._auto_approve(root, {
+            "kind": "command", "cwd": str(root), "command": command}), command
+
+
 def test_runner_and_model_switch_keep_native_sessions(root, monkeypatch):
     monkeypatch.setattr(runners, "find_codex", lambda: "codex")
     monkeypatch.setattr(codexmeta, "snapshot", lambda force=False: {

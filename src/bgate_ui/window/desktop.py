@@ -41,6 +41,19 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _listen(host: str, port: int) -> socket.socket:
+    """A bound, listening socket for uvicorn to adopt (Server.run(sockets=))."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if sys.platform != "win32":
+        # On Windows SO_REUSEADDR lets a second process bind a port that is
+        # already listening — the opposite of what it means elsewhere.
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((host, port))
+    s.listen(128)
+    s.set_inheritable(True)
+    return s
+
+
 def _wait_for_server(port: int, timeout: float = 20.0) -> bool:
     """Block until the server accepts a connection, or give up.
 
@@ -87,8 +100,16 @@ def _claim_singleton() -> bool:
         return False
 
 
-def run(port: Optional[int] = None, debug: bool = False) -> int:
-    """Open the dashboard in a native window. Returns a process exit code."""
+def run(port: Optional[int] = None, debug: bool = False,
+        remote: bool = False) -> int:
+    """Open the dashboard in a native window. Returns a process exit code.
+
+    remote=True is `bgate serve --remote` for the window: the same server
+    also listens on this machine's Tailscale address so the phone app can
+    reach it, and the pairing QR opens in the default browser, because a
+    window has no terminal to print one into. Loopback stays bound either
+    way — the window itself always talks to 127.0.0.1.
+    """
     if not _claim_singleton():
         # Same trap as the failure path below: a console=False build has no
         # stderr, so a second double-click did nothing whatsoever and looked
@@ -132,10 +153,33 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
 
+    # Remote mode adds a second listener on the tailnet IP — never 0.0.0.0,
+    # and it refuses rather than falling back to loopback-only, same as
+    # serve(). uvicorn takes pre-bound sockets, which is how one server
+    # answers on two addresses without binding the whole machine.
+    sockets = None
+    pair_url = ""
+    if remote:
+        from bgate_ui.app import _remote_bind
+        got = _remote_bind(port)
+        if got is None:
+            print("builders gate · REFUSING to start remote mode: no Tailscale "
+                  "address found — is tailscale up?", file=sys.stderr)
+            _notify("Builders Gate: no Tailscale address",
+                    "Remote mode needs Tailscale running on this PC. "
+                    "Start Tailscale, then open the app again.")
+            return 2
+        bind_ip, allowed = got
+        os.environ["BGATE_REMOTE_HOSTS"] = ",".join(allowed)
+        sockets = [_listen("127.0.0.1", port), _listen(bind_ip, port)]
+        pair_url = f"{url}/pair"
+        print(f"  remote: http://{bind_ip}:{port}  (pairing page: {pair_url})")
+
     # daemon=True is what lets closing the window end the process. uvicorn
     # installs signal handlers only on the main thread, so it gets none here and
     # would otherwise keep the interpreter alive after the GUI loop returns.
-    thread = threading.Thread(target=server.run, name="bgate-uvicorn", daemon=True)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": sockets},
+                              name="bgate-uvicorn", daemon=True)
     thread.start()
 
     if not _wait_for_server(port):
@@ -144,6 +188,13 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
             file=sys.stderr,
         )
         return 1
+
+    if pair_url:
+        # The QR goes to a browser tab rather than into the dashboard window:
+        # it is a one-time credential hand-off, not a panel, and a tab is
+        # something the user closes when the phone is paired.
+        import webbrowser
+        webbrowser.open(pair_url)
 
     # On Windows, host WebView2 through its COM API directly. pywebview reaches
     # the same control through .NET (pythonnet -> clr_loader -> hostfxr), and

@@ -1622,6 +1622,60 @@ you can write the plan yourself in that same shape - the review step is what
 matters, not which model drafted it.
 ```
 
+## canon_status
+
+```text
+WHICH WORLD. The scene the game IS (`world` - the explicit canon entry, else
+project.godot's main scene), the named current files (`reporter`,
+`world_layout`, ...) and the RETIRED list: paths and globs that are no longer
+the game, each with its successor and why.
+
+Read it before copying any scene or extending any script. A tree that carries
+its old map beside its new one looks identical from inside a file - on
+Meridian forty items were dispatched into exactly that tree and the agents
+read the first street's probes as the pattern to copy. The same block is
+printed at the top of every dispatched brief and in the SessionStart context.
+
+The hook enforces it: a SEATED agent's Read, Glob, Grep, Write or Edit of a
+retired path is refused with the successor's name. Reads too - reading the
+old map as the example is how it got extended. A human's own session is not
+gated.
+```
+
+## canon_set / canon_retire / canon_unretire
+
+```text
+`canon_set("world", path)` names the scene the game is. `canon_set(name,
+path, kind, note)` names the current file for anything else. `canon_retire
+(pattern, successor, reason)` marks a path or glob (`scenes/main.tscn`,
+`scripts/districts/**`, `tools/build_*`) as no longer the game;
+`canon_unretire(pattern)` reverses it.
+
+REFUSED TO A SEATED WORKER. What is current is the director's and the
+human's call: the seat that could redefine it is the seat that just built a
+second copy. Say in your result which file you believe is current and why.
+```
+
+## canon_audit
+
+```text
+The tree read against the canon, from the world scene, the [autoload]
+scripts and every tool:
+
+  references_to_retired   live scene/script -> the retired paths it names
+  duplicate_scenes        one basename under several directories (two
+                          copies, nobody knows which is real)
+  unreachable_scenes /    reached by nothing: not the world's ext_resource
+  unreachable_scripts     chain, not a res:// string in a reached script,
+                          not under a directory prefix a reached script
+                          builds paths from, not a class_name a reached
+                          script mentions, not loaded by a tool
+
+Static text reading. A path assembled at runtime from pieces is seen only
+through its directory prefix, so treat an "unreachable" row as a question
+to answer, not a verdict to act on.
+```
+
 ## causal_chains
 
 ```text

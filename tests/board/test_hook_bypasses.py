@@ -160,14 +160,26 @@ class TestCdEscapesAreContained:
 
     def test_the_same_write_without_the_cd_is_in_lane(self, root, monkeypatch):
         # The control: the refusal above is the cd resolution, not the path.
+        # Containment and lanes pass this write; what refuses it now is the
+        # inline-text gate (a seat echoes no file content through the shell,
+        # see test_hook_egress.TestShellContent), so the message names
+        # Write/Edit, never another project.
         from bgate_core.board import aegis
         monkeypatch.setenv("BGATE_SEAT", "gameplay")
         monkeypatch.setenv("BGATE_ROOT", str(root))
         monkeypatch.setenv("BGATE_AEGIS", "block")
         monkeypatch.setattr(aegis, "allowlist_dirs", list)
-        code, _ = hook.decide(
+        code, msg = hook.decide(
             {"tool_name": "Bash", "cwd": str(root),
              "tool_input": {"command": "echo x > game/scripts/player.gd"}},
+            "gameplay", "item-1", "block")
+        assert code == hook.BLOCK
+        assert "Write/Edit" in msg
+        assert "different Builders Gate project" not in msg
+        # ...and program output into the same in-lane file is allowed.
+        code, _ = hook.decide(
+            {"tool_name": "Bash", "cwd": str(root),
+             "tool_input": {"command": "python gen.py > game/scripts/player.gd"}},
             "gameplay", "item-1", "block")
         assert code == hook.ALLOW
 
@@ -207,10 +219,18 @@ class TestPowerShellIsFenced:
         assert code == hook.BLOCK
         assert "PowerShell" in msg and "lanes" in msg
 
-    def test_an_in_lane_write_passes_the_seat(self, root):
-        code, _ = hook.decide(self._payload(
+    def test_an_in_lane_write_passes_the_seat(self, root, monkeypatch):
+        # Lane and containment pass; the inline-text gate then sends a SEAT
+        # to Write/Edit (Set-Content carries its text on the command line).
+        # An in-lane write of PROGRAM output is what still passes.
+        monkeypatch.setenv("BGATE_SEAT", "gameplay")
+        code, msg = hook.decide(self._payload(
             "Set-Content game/scripts/player.gd 'x'", str(root)), "gameplay",
             mode="block")
+        assert code == hook.BLOCK and "Write/Edit" in msg
+        code, _ = hook.decide(self._payload(
+            "Copy-Item game/scripts/base.gd game/scripts/player.gd", str(root)),
+            "gameplay", mode="block")
         assert code == hook.ALLOW
 
     def test_an_unreadable_target_is_refused_in_block_mode(self, root):

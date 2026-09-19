@@ -400,7 +400,15 @@ def _approval_result(row: dict, decision: str) -> dict:
 
 
 def _auto_approve(root, approval: dict) -> bool:
-    """Auto-review only the surfaces already bounded by this orchestration."""
+    """Auto-review only the surfaces already bounded by this orchestration.
+
+    A command is accepted on its cwd AND its text: cwd inside the project
+    used to be the whole test, so `pip install x` or `git push` run from the
+    project root was accepted without anyone reading it. The same egress
+    gate the PreToolUse hook applies to a seated worker decides here -
+    installers, network clients, pushes and other agent CLIs go back to the
+    human, who is the reviewer this setting never claimed to replace.
+    """
     if not _setting(root, "dispatch.codex_auto_approve", False):
         return False
     kind = approval.get("kind")
@@ -408,6 +416,15 @@ def _auto_approve(root, approval: dict) -> bool:
         return str(approval.get("server") or "") == _runners.MCP_SERVER_NAME
     if kind != "command":
         return False
+    command = approval.get("command")
+    if isinstance(command, (list, tuple)):
+        command = " ".join(str(c) for c in command)
+    try:
+        from bgate_cli import hook as _hook
+        if _hook.egress_hits(str(command or "")):
+            return False
+    except Exception:
+        return False   # a gate that cannot be read does not open
     cwd = str(approval.get("cwd") or "").strip()
     if not cwd:
         return True

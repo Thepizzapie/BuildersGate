@@ -37,8 +37,39 @@ LOG_FILE = "engine-tests.jsonl"
 
 # The convention this project's .gd tests already print. Inventing a framework
 # nobody's tests use would make the runner answer about nothing.
-FAIL_MARKER = re.compile(r"\bFAIL(?:ED|URE|URES)?\b", re.I)
-PASS_MARKER = re.compile(r"\bPASS(?:ES|ED)?\b", re.I)
+#
+# A marker followed by "=0" / ": 0", or preceded by "0 ", is a ZERO count, not
+# a failure: a probe whose summary line is `STORY_ISLAND_PROBE failures=0`
+# scored assertions_ok=false on a fully green run, and the agent sent to fix
+# the "failure" spent its round proving the runner wrong.
+FAIL_MARKER = re.compile(r"(?<!\b0 )\bFAIL(?:ED|URE|URES)?\b(?!\s*[=:]\s*0\b)", re.I)
+PASS_MARKER = re.compile(r"(?<!\b0 )\bPASS(?:ES|ED)?\b(?!\s*[=:]\s*0\b)", re.I)
+# The same zero-count exemption as the markers above: a line that LEADS with
+# `failures=0` or `FAILED: 0` is a summary, not a failing assertion.
+_LINE_PASS = re.compile(
+    r"^\s*(?:\[\w+\]\s*)?PASS(?:ES|ED)?\b(?!\s*[=:]\s*0\b)", re.I)
+_LINE_FAIL = re.compile(
+    r"^\s*(?:\[\w+\]\s*)?FAIL(?:ED|URE|URES)?\b(?!\s*[=:]\s*0\b)", re.I)
+
+
+def count_markers(output: str) -> tuple[int, int]:
+    """(passes, fails) in a test script's output.
+
+    A line that LEADS with a marker is that marker's line and nothing else on
+    it counts: `PASS Walt signs (the fail state)` is one pass, not a pass and a
+    failure, which is how a green farm_probe read as red. Everything else is
+    scanned for markers, minus zero counts (see FAIL_MARKER).
+    """
+    passes = fails = 0
+    for line in output.splitlines():
+        if _LINE_PASS.match(line):
+            passes += 1
+        elif _LINE_FAIL.match(line):
+            fails += 1
+        else:
+            passes += len(PASS_MARKER.findall(line))
+            fails += len(FAIL_MARKER.findall(line))
+    return passes, fails
 
 
 def _log_path(root: str | os.PathLike[str]) -> Path:
@@ -465,8 +496,7 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
             continue
         output = (got.get("stdout") or "") + (got.get("stderr") or "")
         transcript.append(f"===== {rel} =====\n{output}\n")
-        passes = len(PASS_MARKER.findall(output))
-        fails = len(FAIL_MARKER.findall(output))
+        passes, fails = count_markers(output)
         errors = got.get("errors") or []
         # THE TWO QUESTIONS, ASKED SEPARATELY.
         assertions_ok = fails == 0

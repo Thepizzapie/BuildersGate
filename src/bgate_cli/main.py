@@ -11,6 +11,7 @@
     bgate serve [--port 7788]   run the dashboard in your browser
     bgate app [--port N]        run the dashboard in a native desktop window
                                 (needs: pip install "builders-gate[desktop]")
+    bgate app --remote          the window, plus phone access over Tailscale
     bgate publish [--out DIR]   build the arcade: every game, as a static site
     bgate connect [CLIENT...] [--all] [--check] [--show] [--remove] [--json]
                                 wire your coding agent to the Builders Gate MCP
@@ -1456,7 +1457,8 @@ def main() -> int:
         if "--port" in args:
             port = int(args[args.index("--port") + 1])
         from bgate_ui.window.desktop import run as run_desktop
-        return run_desktop(port=port, debug="--debug" in args)
+        return run_desktop(port=port, debug="--debug" in args,
+                           remote="--remote" in args)
 
     print(__doc__)
     return 0

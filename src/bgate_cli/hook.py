@@ -306,6 +306,429 @@ _RAW_WRITES = re.compile(
 # Sinks that are not files anyone owns.
 _NOT_A_FILE = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul"}
 
+# ---------------------------------------------------------------------------
+# EGRESS - a seat may not install anything or reach the network. Refused, not
+# reviewed.
+#
+# The Codex runner used to hand every worker `--approve-for-me`: a second
+# model that reviews the first one's request to leave the sandbox. That is a
+# judgment call at the exact boundary that should not have one - a worker that
+# wants `pip install` has left its brief, and the right answer is a refusal it
+# can read, not a reviewer it can persuade. This gate is the deterministic
+# version: the program name is on the list or it is not. It applies to a SEATED
+# session only; a human's own session installs what it likes.
+#
+# Same honesty as the write gate: this catches the command line, not what a
+# program does once it runs. The sandbox (network off, workspace-only writes)
+# and `approval_policy = never` are what make `python fetch.py` fail; this
+# gate is what makes `pip install requests` fail with a sentence.
+# ---------------------------------------------------------------------------
+_EGRESS_PROGRAMS = {
+    # package managers - any invocation
+    "pip", "pip3", "pipx", "conda", "mamba", "gem", "composer", "winget",
+    "choco", "scoop", "apt", "apt-get", "brew", "snap", "dnf", "yum", "pacman",
+    "msiexec", "nuget",
+    # the network itself
+    "curl", "wget", "aria2c", "ssh", "scp", "sftp", "nc", "ncat", "netcat",
+    "telnet", "ftp", "gh",
+    # another agent - a seat spawning a CLI nobody seated is a seat without a
+    # boundary
+    "codex", "claude", "gemini", "opencode", "cursor-agent", "aider",
+}
+# program -> the subcommands that install or leave the machine. Everything else
+# (`npm run`, `npm test`, `git status`, `cargo build`, `go build`) stays open.
+_EGRESS_VERBS = {
+    "npm": {"install", "i", "add", "ci", "update", "up", "upgrade", "link",
+            "exec", "x", "publish", "login", "adduser", "audit"},
+    "pnpm": {"install", "i", "add", "update", "up", "dlx", "publish", "link"},
+    "yarn": {"install", "add", "up", "upgrade", "dlx", "publish", "link"},
+    "bun": {"install", "i", "add", "update", "x", "publish", "link"},
+    "npx": set(),          # empty = every invocation
+    "uv": {"pip", "add", "sync", "tool", "lock", "publish", "python"},
+    "poetry": {"add", "install", "update", "publish", "lock"},
+    "cargo": {"install", "add", "publish", "update", "fetch"},
+    "go": {"install", "get", "mod"},
+    "dotnet": {"add", "tool", "nuget", "restore"},
+    "git": {"clone", "push", "fetch", "pull", "remote", "submodule", "lfs"},
+}
+# `python -m <module>` that installs.
+_EGRESS_MODULES = {"pip", "ensurepip", "pipx", "twine", "venv", "virtualenv"}
+# PowerShell cmdlets and aliases. Invoke-Expression is here because
+# `(iwr url) | iex` is the download-and-run idiom and the text it runs is not
+# readable from the command line.
+_EGRESS_CMDLETS = {
+    "invoke-webrequest", "iwr", "invoke-restmethod", "irm",
+    "start-bitstransfer", "install-module", "install-package",
+    "install-script", "save-module", "save-package", "update-module",
+    "add-appxpackage", "add-appxprovisionedpackage", "register-packagesource",
+    "register-psrepository", "invoke-expression", "iex",
+    "new-object",           # New-Object System.Net.WebClient
+}
+# Inline interpreter code that plainly reaches out.
+_SNIPPET_EGRESS = re.compile(
+    r"""pip\s+install|npm\s+(?:install|i|ci)\b|urllib\.request|urlopen|"""
+    r"""requests\.(?:get|post|put|delete|Session)|http\.client|"""
+    r"""\bsocket\.|aiohttp|httpx|WebClient|HttpClient|fetch\s*\(|"""
+    r"""Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer""",
+    re.I | re.X)
+
+
+def egress_hits(command: str, *, _embedded: bool = False) -> list[str]:
+    """Programs in a Bash command line that install or leave the machine.
+
+    Returns one short description per hit (`pip install x`, `git push ...`),
+    empty when the command is local. Reads through the same wrappers the write
+    gate does - `sudo`, `env`, `bash -c`, `eval`, a `powershell -Command`
+    payload - because those were the write gate's bypasses too.
+    """
+    hits: list[str] = []
+    for line, heredoc in _logical_lines(command):
+        if not line.strip():
+            continue
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            tokens = list(lex)
+        except ValueError:
+            # Unparseable: a command that MENTIONS an installer or the network
+            # is refused, since it cannot be read past the mention.
+            if _SNIPPET_EGRESS.search(line) or re.search(
+                    r"\b(pip|npm|curl|wget|winget|choco|scoop)\b", line, re.I):
+                hits.append("an unparseable command that names an installer "
+                            "or a network client")
+            continue
+        for segment in _split_segments(_collapse_fd_dups(tokens)):
+            args = [t for t in segment
+                    if t not in _REDIRECT_WRITE and t not in _REDIRECT_READ]
+            program, rest = _program(args)
+            if not program:
+                continue
+            hits.extend(_egress_program(program, rest))
+            if program in _SHELLS or program == "eval":
+                inner = " ".join(rest) if program == "eval" else ""
+                for snippet in ([inner] if inner else _snippets(rest)):
+                    hits.extend(egress_hits(snippet, _embedded=True))
+            elif program in ("powershell", "pwsh"):
+                # -EncodedCommand is judged in _egress_program: a payload
+                # that exists only to be unreadable here is refused.
+                for snippet in _snippets(rest):
+                    hits.extend(egress_hits_powershell(snippet))
+            elif program in _INTERPRETERS:
+                for snippet in _snippets(rest):
+                    if _SNIPPET_EGRESS.search(snippet):
+                        hits.append(f"a {program} -c snippet that installs "
+                                    "or reaches the network")
+                if heredoc and _SNIPPET_EGRESS.search(heredoc):
+                    hits.append(f"a {program} heredoc script that installs "
+                                "or reaches the network")
+    return hits
+
+
+def _ps_encoded(args: list[str]) -> bool:
+    """`-EncodedCommand`, and every prefix PowerShell accepts for it."""
+    return any(a.lower() in ("-e", "-ec", "-en", "-enc", "-enco", "-encod",
+                             "-encode", "-encoded", "-encodedc",
+                             "-encodedco", "-encodedcom", "-encodedcomm",
+                             "-encodedcomma", "-encodedcomman",
+                             "-encodedcommand") for a in args)
+
+
+def _is_python(name: str) -> bool:
+    """`python`, `python3`, `python3.12`, `py` - the versioned names are not
+    in _INTERPRETERS and `-m pip` through them was a hole."""
+    return name in ("py", "pypy", "pypy3") or bool(
+        re.fullmatch(r"python\d*(?:\.\d+)?", name))
+
+
+def _egress_program(program: str, rest: list[str]) -> list[str]:
+    """The hits for ONE program and its arguments, shared by both shells."""
+    name = program.lower()
+    for suffix in (".exe", ".cmd", ".bat", ".ps1"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    positional = [a for a in rest if not a.startswith("-")]
+    head = " ".join([name] + rest[:3])
+    if name in _EGRESS_PROGRAMS:
+        return [head]
+    if name in _EGRESS_VERBS:
+        verbs = _EGRESS_VERBS[name]
+        if name == "npx" and any(a in ("--no-install", "--no", "--offline")
+                                 for a in rest):
+            return []      # runs what is already in node_modules, fetches nothing
+        if not verbs or (positional and positional[0].lower() in verbs):
+            return [head]
+        return []
+    if _is_python(name):
+        modules = _flag_value(rest, {"-m"})
+        if any(m.lower() in _EGRESS_MODULES for m in modules):
+            return [head]
+    if name in ("powershell", "pwsh") and _ps_encoded(rest):
+        return [f"{name} -EncodedCommand (unreadable)"]
+    return []
+
+
+def egress_hits_powershell(command: str) -> list[str]:
+    """The PowerShell reading of :func:`egress_hits`."""
+    try:
+        tokens = _ps_tokens(command)
+    except ValueError:
+        if _SNIPPET_EGRESS.search(command) or re.search(
+                r"\b(pip|npm|curl|wget|winget|choco|scoop|iwr|irm|iex)\b",
+                command, re.I):
+            return ["an unparseable PowerShell command that names an "
+                    "installer or a network client"]
+        return []
+    hits: list[str] = []
+    segment: list[str] = []
+    for tok in tokens + [";"]:
+        if tok in _PS_SEPARATORS:
+            if segment:
+                hits.extend(_ps_egress_segment(segment))
+            segment = []
+            continue
+        segment.append(tok)
+    return hits
+
+
+def _ps_egress_segment(tokens: list[str]) -> list[str]:
+    args = list(tokens)
+    # `& pip install x` and `. .\x.ps1` - the call operators carry the command
+    # in their tail; `Start-Process pip -ArgumentList install` names it by
+    # -FilePath or first positional.
+    while args and args[0] in ("&", "."):
+        args = args[1:]
+    if not args:
+        return []
+    head = os.path.basename(args[0].strip("'\"")).lower()
+    if head in ("start-process", "saps", "start"):
+        target = _flag_value(args[1:], {"-filepath", "-FilePath"})
+        target = target or [a for a in args[1:] if not a.startswith("-")][:1]
+        if not target:
+            return []
+        args = [target[0]] + [a for a in args[1:] if a != target[0]]
+        head = os.path.basename(args[0].strip("'\"")).lower()
+    if head in _EGRESS_CMDLETS:
+        return [" ".join(args[:4])]
+    return _egress_program(head, args[1:])
+
+
+def allow_egress(root=None) -> bool:
+    """The machine-wide, human-only override. Never raises."""
+    if os.environ.get("BGATE_ALLOW_EGRESS", "").strip().lower() in {
+            "1", "true", "yes", "on"}:
+        return True
+    try:
+        from bgate_core.store import settings as _settings
+
+        return bool(_settings.get(root, "dispatch.allow_egress"))
+    except Exception:
+        return False
+
+
+def _both_readings(command: str, shell: str, bash_reader, ps_reader) -> list[str]:
+    """Which shell a `Bash`-named tool call actually runs under is not in
+    the payload: Claude Code's Bash tool is Git Bash, Codex's shell tool on
+    Windows is PowerShell - MEASURED, a Codex worker's `Set-Content f 'hi'`
+    and `iwr http://x` arrive as tool_name Bash. On Windows a Bash-named
+    command therefore gets both readings; a hit from either is a hit."""
+    if shell == "powershell":
+        return ps_reader(command)
+    hits = bash_reader(command)
+    if os.name == "nt":
+        hits += [h for h in ps_reader(command) if h not in hits]
+    return hits
+
+
+def _judge_egress(command: str, payload: dict, seat: str,
+                  shell: str = "bash") -> tuple[int, str]:
+    """BLOCK for a seated session that installs or reaches out; ALLOW else."""
+    if seat == DIRECTOR_SEAT and not os.environ.get("BGATE_SEAT", "").strip():
+        return ALLOW, ""
+    hits = _both_readings(command, shell, egress_hits, egress_hits_powershell)
+    if not hits:
+        return ALLOW, ""
+    if allow_egress(_payload_root(payload)):
+        return ALLOW, ""
+    _log_containment({"verdict": "egress", "scope": "installs/network",
+                      "reason": "; ".join(hits[:3])}, command[:200], shell,
+                     "block", payload)
+    return BLOCK, (
+        "[builders-gate] refused: " + "; ".join(f"`{h}`" for h in hits[:3])
+        + ". A dispatched seat cannot install packages, fetch from the "
+        "network, push, or start another agent - there is no reviewer to "
+        "persuade, the gate is the list. If the item genuinely needs a "
+        "dependency, finish with queue_complete(next_approach=...) naming it "
+        "and a human installs it; the machine-wide override is Settings > "
+        "Dispatch > 'Let seats install and reach the network'.")
+
+
+# ---------------------------------------------------------------------------
+# FILE CONTENT DOES NOT TRAVEL ON A COMMAND LINE. A seated agent writes files
+# with Write/Edit (Codex: apply_patch), never with `cat > f <<EOF`, `echo ... >
+# f`, `tee f` or `Set-Content -Value`.
+#
+# Two reasons, one of them new. The old one: the precise write gate checks a
+# Write/Edit target exactly, while a shell write is read off a command line
+# this module admits it cannot fully parse. The new one, OBSERVED 2026-09-16:
+# a file's text on a `bash -c` command line is what the client's Bash tool
+# sends to the OS, and Windows Defender classifies that command line - a
+# heredoc that happened to carry `iwr ... | iex` and `curl ... | sh` strings
+# was killed as Trojan:Win32/ClickFix. Any agent, on any user's machine, can
+# produce that shape by writing a file through the shell. The shape is the
+# problem, so the shape is what a seat is refused.
+# ---------------------------------------------------------------------------
+_CONTENT_PROGRAMS = {"echo", "printf"}
+_PS_CONTENT_WRITERS = {"set-content", "add-content", "out-file", "sc", "ac"}
+_PS_INLINE_WRITE = re.compile(
+    r"WriteAllText|WriteAllLines|WriteAllBytes|AppendAllText", re.I)
+_NO_SHELL_CONTENT = (
+    "[builders-gate] refused: {what}. A seated agent writes file contents "
+    "with the Write/Edit tools (Codex: apply_patch), not through the shell. "
+    "Text on a command line is checked imprecisely by this gate and is read "
+    "by antivirus as a paste-and-run attack - Windows Defender killed exactly "
+    "this shape on 2026-09-16. PROGRAM output may still be redirected "
+    "(`godot ... > run.log`, `godot ... | Out-File run.log`); it is the "
+    "inline text that is refused.")
+
+
+def _redirects_to_a_file(tokens: list[str]) -> bool:
+    """A write redirect whose target is a real file - `> /dev/null` is not."""
+    for i, tok in enumerate(tokens):
+        if tok in _REDIRECT_WRITE:
+            target = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if target.strip().lower() not in _NOT_A_FILE:
+                return True
+    return False
+
+
+def inline_content_writes(command: str, *, _embedded: bool = False) -> list[str]:
+    """Shell writes whose CONTENT is on the command line, for a Bash command."""
+    hits: list[str] = []
+    for line, heredoc in _logical_lines(command):
+        if not line.strip():
+            continue
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            tokens = list(lex)
+        except ValueError:
+            if "<<" in line or re.search(r"\b(echo|printf|tee)\b", line):
+                hits.append("an unparseable command that writes inline text")
+            continue
+        tokens = _collapse_fd_dups(tokens)     # `2>&1` is a stream, not a file
+        if heredoc and _redirects_to_a_file(tokens):
+            hits.append("a heredoc redirected into a file")
+            continue
+        for segment in _split_segments(tokens):
+            args = [t for t in segment
+                    if t not in _REDIRECT_WRITE and t not in _REDIRECT_READ]
+            program, rest = _program(args)
+            if program in _CONTENT_PROGRAMS and _redirects_to_a_file(segment):
+                hits.append(f"`{program}` redirected into a file")
+            elif program == "tee":
+                hits.append("`tee` writing its input to a file")
+            elif program == "eval":
+                hits.extend(inline_content_writes(" ".join(rest), _embedded=True))
+            elif program in _SHELLS:
+                for snippet in _snippets(rest):
+                    hits.extend(inline_content_writes(snippet, _embedded=True))
+            elif program in ("powershell", "pwsh"):
+                for snippet in _snippets(rest):
+                    hits.extend(inline_content_writes_powershell(snippet))
+    return hits
+
+
+# A pipeline source that IS text: a quoted string, a here-string, a
+# variable, or the cmdlets that echo their arguments.
+_PS_LITERAL = re.compile(r"""^(?:['"]|@['"]|\$)""")
+_PS_TEXT_SOURCES = {"echo", "write-output", "write-host"}
+
+
+def inline_content_writes_powershell(command: str) -> list[str]:
+    """The PowerShell reading: Set-Content/Add-Content/Out-File with text on
+    the command line (`-Value`, a piped literal) and the .NET File.Write*
+    calls. `godot ... | Out-File run.log` is program output and passes."""
+    hits: list[str] = []
+    if _PS_INLINE_WRITE.search(command):
+        hits.append("a [IO.File]::Write* call with inline text")
+    try:
+        # Quotes are KEPT here (posix=False): whether the segment upstream of
+        # `| Out-File` was `'text'` or a program is the whole question, and
+        # _ps_tokens strips the quotes that answer it.
+        lex = shlex.shlex(command, posix=False, punctuation_chars=";|&()<>{}")
+        lex.whitespace_split = True
+        lex.commenters = "#"
+        tokens = list(lex)
+    except ValueError:
+        if re.search(r"set-content|add-content|out-file|\bsc\b|\bac\b",
+                     command, re.I):
+            hits.append("an unparseable command that writes inline text")
+        return hits
+    segment: list[str] = []
+    piped_from_program = False     # the previous segment was a PROGRAM, and `|`
+    pending_call = False           # a `&` separator with nothing before it
+    for tok in tokens + [";"]:
+        if tok in _PS_SEPARATORS:
+            args = list(segment)
+            # `& 'C:\x.exe'`: the call operator is lexed as a separator, so
+            # a `&` with an empty segment before it names the NEXT segment a
+            # program however its path is quoted.
+            called = pending_call or (bool(args) and args[0] in ("&", "."))
+            pending_call = tok == "&" and not args
+            while args and args[0] in ("&", "."):
+                args = args[1:]
+            if args:
+                head = os.path.basename(args[0].strip("'\"")).lower()
+                inline = any(_ps_param(a)[0] in ("value", "inputobject")
+                             for a in args[1:] if a.startswith("-"))
+                if head in _PS_CONTENT_WRITERS and (inline or not piped_from_program):
+                    hits.append(f"`{args[0]}` writing inline text")
+                elif head in _PS_TEXT_SOURCES and any(
+                        t.startswith(">") and "&" not in t for t in segment):
+                    # `2>&1` is a stream, not a file - same rule _ps_segment
+                    # applies to the write gate.
+                    hits.append(f"`{args[0]}` redirected into a file")
+                piped_from_program = (
+                    tok == "|" and head not in _PS_TEXT_SOURCES
+                    and (called or not _PS_LITERAL.match(args[0])))
+            else:
+                piped_from_program = False
+            segment = []
+            continue
+        segment.append(tok)
+    return hits
+
+
+def _judge_shell_content(command: str, payload: dict, seat: str,
+                         shell: str = "bash") -> tuple[int, str]:
+    """BLOCK for a seated session that writes file text through the shell."""
+    if seat == DIRECTOR_SEAT and not os.environ.get("BGATE_SEAT", "").strip():
+        return ALLOW, ""
+    hits = _both_readings(command, shell, inline_content_writes,
+                          inline_content_writes_powershell)
+    if not hits:
+        return ALLOW, ""
+    _log_containment({"verdict": "shell_content", "scope": "inline text",
+                      "reason": "; ".join(hits[:3])}, command[:200], shell,
+                     "block", payload)
+    return BLOCK, _NO_SHELL_CONTENT.format(what="; ".join(hits[:3]))
+
+
+# Codex's apply_patch: one text blob, file paths on its own header lines.
+_PATCH_TARGETS = re.compile(
+    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$", re.M)
+
+
+def patch_targets(patch: str) -> list[str]:
+    return [m.group(1) for m in _PATCH_TARGETS.finditer(str(patch or ""))]
+
+
+def _command_text(value) -> str:
+    """Codex hands the shell tool's command as an argv LIST; Claude as text."""
+    if isinstance(value, (list, tuple)):
+        return " ".join(shlex.quote(str(v)) for v in value)
+    return str(value or "")
+
 
 def _collapse_fd_dups(tokens: list[str]) -> list[str]:
     """Drop `2>&1`-style descriptor duplication before anything else looks at it.
@@ -697,15 +1120,34 @@ def decide(payload: dict, seat: str, owner: str = "",
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     if tool == "Bash":
-        return _decide_bash(str(tool_input.get("command") or ""), payload,
-                            seat, owner, mode)
+        # Codex names its shell tool `Bash` in hook payloads too, with the
+        # command as an argv list; on Windows that list is routinely
+        # ["powershell", "-Command", "..."], which the Bash analyser already
+        # reads through as an interpreter snippet.
+        command = _command_text(tool_input.get("command"))
+        return _decide_shell(command, payload, seat, owner, mode, "bash")
     if tool == "PowerShell":
-        return _decide_powershell(str(tool_input.get("command") or ""),
-                                  payload, seat, owner, mode)
+        command = _command_text(tool_input.get("command"))
+        return _decide_shell(command, payload, seat, owner, mode, "powershell")
+    if tool == "apply_patch":
+        # Codex's own editor: every file the patch adds, updates, deletes or
+        # moves to is a write, judged one by one like a Write call.
+        # MEASURED (codex 0.154): the patch text arrives as `command`.
+        patch = (tool_input.get("command") or tool_input.get("input")
+                 or tool_input.get("patch") or "")
+        warning = ""
+        for target in patch_targets(str(patch)):
+            code, message = _judge_path(target, payload, seat, owner, mode)
+            if code == BLOCK:
+                return BLOCK, message
+            if code == WARN and not warning:
+                warning = message
+        return (WARN, warning) if warning else (ALLOW, "")
 
     key = _PATH_KEYS.get(tool)
     if key is not None:
-        target = tool_input.get(key)
+        # Codex spells the same tools with `path`; accept either.
+        target = tool_input.get(key) or tool_input.get("path")
         if not target:
             return ALLOW, ""
         return _judge_path(str(target), payload, seat, owner, mode)
@@ -715,6 +1157,29 @@ def decide(payload: dict, seat: str, owner: str = "",
         return _judge_read(tool_input.get(read_key), payload, tool)
 
     return ALLOW, ""  # neither a read nor a write - not this hook's business
+
+
+def _decide_shell(command: str, payload: dict, seat: str, owner: str,
+                  mode: str, shell: str) -> tuple[int, str]:
+    """The three shell gates in the order their messages should win.
+
+    Egress first: an installer or a network client is refused before anyone
+    reads where it writes. Then containment/lanes/locks, so a write into
+    another project or another seat's file is named as exactly that. Then,
+    for a write that WOULD have been allowed, the inline-text gate: a seat
+    that echoes or heredocs file content is sent to Write/Edit.
+    """
+    code, message = _judge_egress(command, payload, seat, shell)
+    if code == BLOCK:
+        return code, message
+    judge = _decide_powershell if shell == "powershell" else _decide_bash
+    code, message = judge(command, payload, seat, owner, mode)
+    if code == BLOCK:
+        return code, message
+    refused, why = _judge_shell_content(command, payload, seat, shell)
+    if refused == BLOCK:
+        return refused, why
+    return code, message
 
 
 def _payload_root(payload: dict) -> Optional[str]:
@@ -824,15 +1289,87 @@ def _contain(target: str, payload: dict, tool: str = "",
 
 
 def _judge_read(target, payload: dict, tool: str) -> tuple[int, str]:
-    """Containment, and nothing else, for the tools that only look.
+    """Containment, then the canon, for the tools that only look.
 
     A missing path is not "nothing to judge": Glob and Grep default it to the
     session's own directory, so that is what gets judged. Treating absent as
     exempt would make `Grep(pattern)` with the cwd parked in another project the
     one read that walks straight past this gate.
+
+    READS ARE CANON-GATED TOO, for a seat. The way agents ended up extending
+    a retired map was not by writing to it first - it was by READING it as
+    the example to follow. A Read of a retired scene is refused with the
+    successor's name; the agent opens that one instead.
     """
-    return _contain(str(target or _session_cwd(payload)), payload, tool,
-                    verb="read")
+    code, message = _contain(str(target or _session_cwd(payload)), payload,
+                             tool, verb="read")
+    if code == BLOCK:
+        return code, message
+    retired = _judge_retired(target, payload, "read")
+    return retired if retired[0] == BLOCK else (code, message)
+
+
+def _project_rel(target, payload: dict) -> tuple[str, str]:
+    """(bgate root, path relative to the GODOT project) for a target, or
+    ('', '') when it is not under the pinned project. The canon speaks
+    res:// paths, which are relative to the engine project (`game/`), not to
+    the Builders Gate root - the two are one directory apart and a pattern
+    matched in the wrong frame is a gate that never fires."""
+    root = _payload_root(payload)
+    if not root or not target:
+        return "", ""
+    path = str(target)
+    if not os.path.isabs(path):
+        path = os.path.join(_session_cwd(payload) or root, path)
+    try:
+        rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    except ValueError:
+        return root, ""
+    if rel.startswith(".."):
+        return root, ""
+    rel = rel.replace("\\", "/")
+    try:
+        from bgate_core.store import project as _project
+        game = _project.game_dir(root)
+    except Exception:
+        game = None
+    if game is not None:
+        try:
+            game_rel = os.path.relpath(os.path.abspath(str(game)),
+                                       os.path.abspath(root)).replace("\\", "/")
+        except ValueError:
+            game_rel = "."
+        if game_rel not in (".", "") and rel.startswith(game_rel + "/"):
+            rel = rel[len(game_rel) + 1:]
+    return root, rel
+
+
+def _judge_retired(target, payload: dict, verb: str) -> tuple[int, str]:
+    """BLOCK a seated agent's read or write of a path the canon retired."""
+    if not os.environ.get("BGATE_SEAT", "").strip():
+        return ALLOW, ""
+    root, rel = _project_rel(target, payload)
+    if not rel:
+        return ALLOW, ""
+    try:
+        from bgate_core.board import canon as _canon
+        row = _canon.retired_match(root, rel)
+    except Exception:
+        return ALLOW, ""
+    if row is None:
+        return ALLOW, ""
+    successor = row.get("successor") or ""
+    reason = row.get("reason") or ""
+    _log_containment({"verdict": "retired", "scope": row.get("pattern", ""),
+                      "reason": reason}, rel, verb, "block", payload)
+    return BLOCK, (
+        f"[builders-gate] {rel} is RETIRED - it is not the game any more"
+        + (f" ({reason})" if reason else "") + ". "
+        + (f"The current file is {successor}; {verb} that instead."
+           if successor else
+           f"Do not {verb} it; canon_status names what is current.")
+        + " If this item genuinely needs the old file, say so in your result "
+          "and stop - a human or the director un-retires, a seat does not.")
 
 
 def _judge_path(target: str, payload: dict, seat: str,
@@ -855,6 +1392,9 @@ def _judge_path(target: str, payload: dict, seat: str,
                                str((payload or {}).get("tool_name", "")))
     if contained == BLOCK:
         return BLOCK, note
+    retired = _judge_retired(target, payload, "write")
+    if retired[0] == BLOCK:
+        return retired
     code, message = _judge_lanes(target, payload, seat, owner, mode)
     if contained == WARN and code == ALLOW:
         return WARN, note
@@ -1628,6 +2168,36 @@ def _describe_enforcement(root) -> str:
         return ""
 
 
+def _is_codex(payload: dict) -> bool:
+    """Codex's PreToolUse payload carries `turn_id`; Claude Code's does not."""
+    return "turn_id" in payload
+
+
+def _answer_codex(code: int, message: str) -> int:
+    """Codex reads the DECISION FROM STDOUT JSON, not the exit code.
+
+    MEASURED (codex 0.154, Windows): a hook that printed its refusal to
+    stderr and exited 2 - the contract Claude Code honours and Codex's own
+    docs list as "option 2" - was logged as a block by this module and the
+    command ran anyway, `pip install requests` included. The same refusal as
+    `{"hookSpecificOutput": {"permissionDecision": "deny"}}` on stdout with
+    exit 0 stopped it, and the reason reached the model verbatim. So for a
+    Codex payload the verdict goes out as JSON and the process exits 0; a
+    WARN becomes a `systemMessage`, which is the non-blocking channel Codex
+    offers in place of exit 1.
+    """
+    if code == BLOCK:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": message or "refused by Builders Gate",
+        }}))
+        return 0
+    if code == WARN and message:
+        print(json.dumps({"systemMessage": message}))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--selftest" in argv or "--status" in argv:
@@ -1672,6 +2242,8 @@ def main(argv: list[str] | None = None) -> int:
                 # something wrong.
                 return ALLOW
         code, message = decide(payload, seat, owner, mode)
+        if _is_codex(payload):
+            return _answer_codex(code, message)
         if message:
             print(message, file=sys.stderr)
         return code

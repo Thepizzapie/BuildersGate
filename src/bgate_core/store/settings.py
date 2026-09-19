@@ -178,7 +178,8 @@ LABELS: dict[str, str] = {
     "console.poll_idle_ms": "Idle refresh interval",
     "console.runner": "Director console CLI",
     "console.model": "Director console model",
-    "dispatch.codex_auto_approve": "Automatically review Codex approvals",
+    "dispatch.codex_auto_approve": "Auto-answer the Director's Codex approvals",
+    "dispatch.allow_egress": "Let seats install and reach the network",
     "graph.phase_cap": "Visible phases per graph item",
     "brainstorm.runner": "Brainstorm CLI",
     "brainstorm.model": "Brainstorm model",
@@ -240,7 +241,8 @@ DESCRIPTIONS: dict[str, str] = {
     "graph.phase_cap": "Maximum phase rows shown for each item in the agent graph.",
     "console.runner": "Coding CLI used by the Director console.",
     "console.model": "Model used by the Director console.",
-    "dispatch.codex_auto_approve": "Auto-review approvals for dispatched Codex workers and trust Builders Gate tools in the Director.",
+    "dispatch.codex_auto_approve": "Codex Director console only: accept Builders Gate tool calls and local in-project commands unasked. Workers never get a reviewer.",
+    "dispatch.allow_egress": "Off: seats cannot run installers, network clients, git push or other agent CLIs; the hook refuses them by name. On: the sandbox alone applies.",
     "brainstorm.runner": "CLI used by the read-only Brainstorm room.",
     "brainstorm.model": "Model used by the Brainstorm room.",
     "privacy.streamer": "Hide local paths and personal identifiers in visible output.",
@@ -835,8 +837,20 @@ SETTINGS: tuple[Setting, ...] = (
         key="dispatch.codex_auto_approve", group="Dispatch", kind=BOOL,
         default=False, store=("registry", "dispatch.codex_auto_approve"),
         scope=MACHINE, human_only=True, guard=True,
-        help="Use Codex automatic approval review for dispatched workers. The "
-             "Director trusts Builders Gate MCP calls only."),
+        help="The Codex DIRECTOR console answers its own approvals for "
+             "Builders Gate MCP calls and for commands inside the project "
+             "that the hook's egress gate passes. Nothing else is auto-"
+             "accepted. Dispatched WORKERS are not affected: they run with "
+             "approval_policy=never and never see a reviewer (0.1.47)."),
+    Setting(
+        key="dispatch.allow_egress", group="Dispatch", kind=BOOL,
+        default=False, store=("registry", "dispatch.allow_egress"),
+        scope=MACHINE, human_only=True, guard=True, env="BGATE_ALLOW_EGRESS",
+        help="Off: the PreToolUse hook refuses a seated agent's installers "
+             "(pip, npm install, winget, ...), network clients (curl, wget, "
+             "Invoke-WebRequest, ssh), git push/clone/fetch and other agent "
+             "CLIs, by program name, with a message the agent can act on. "
+             "On: those pass the hook; the runner's sandbox still applies."),
     Setting(
         key="brainstorm.runner", group="Console", kind=STRING, default="claude",
         store=("registry", "brainstorm.runner"), scope=MACHINE,

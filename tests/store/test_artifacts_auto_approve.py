@@ -52,6 +52,28 @@ class TestSwitchedOn:
         out = artifacts.review(root, art["id"], "approved", actor="agent:item-1")
         assert out["status"] in ("approved", "integrated")
 
+    def test_a_failed_required_check_is_never_auto_approved(self, root):
+        """A delivery registers its frame even when its gate failed, so a
+        reviewer can look. With the human gate waived, that frame was being
+        promoted to approved with `failed_checks` in its own metadata (the
+        Meridian cast: untextured revisions, approved on arrival). A machine
+        verdict is not the human gate and no setting waives it."""
+        settings.set(root, "art.auto_approve", True)
+        f = root / "assets" / "walt.png"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"frame")
+        art = artifacts.register(
+            root, "walt-in-engine", f, producer="godot_deliver_asset",
+            metadata={"failed_checks": ["materials_carry_a_texture"],
+                      "checks": [{"check": "materials_carry_a_texture",
+                                  "required": True, "ok": False}]})
+        assert art["status"] == "candidate"
+        # ...and a clean delivery under the same switch still approves.
+        clean = artifacts.register(
+            root, "walt-in-engine", f, producer="godot_deliver_asset",
+            metadata={"failed_checks": [], "checks": []})
+        assert clean["status"] in ("approved", "integrated")
+
     def test_a_failed_auto_approve_still_keeps_the_revision(self, root, monkeypatch):
         """The registration is the thing that matters. Losing it because the
         convenience step raised would be a far worse bug than a stray card."""

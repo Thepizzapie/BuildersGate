@@ -189,7 +189,32 @@ lock-violating writes with exit 2 plus guidance. It also writes a SessionStart
 entry that preloads the board.
 
 A session that sets `BGATE_SEAT=<role>` gets full enforcement: out of lane is
-refused, and so is a file another seat holds.
+refused, and so is a file another seat holds. A seat is also refused two
+things a human session is not:
+
+- **Egress.** Installers (`pip`, `npm install`, `winget`, `cargo install`,
+  …), network clients (`curl`, `wget`, `ssh`, `Invoke-WebRequest`, …),
+  `git push/clone/fetch/pull` and other agent CLIs, by program name, read
+  through `sudo`/`bash -c`/`eval`/`powershell -Command`. The refusal says
+  what to do instead: finish the item with `next_approach` naming the
+  dependency and a human installs it. `dispatch.allow_egress` (Settings >
+  Dispatch, machine-wide, human-only) lifts it.
+- **File text on a command line.** `cat > f <<EOF`, `echo … > f`, `tee`,
+  `Set-Content`, `Out-File` are refused and the agent is sent to Write/Edit
+  (Codex: `apply_patch`). Program output may still redirect (`godot … >
+  run.log`). Antivirus reads a command line carrying file text as a
+  paste-and-run attack — Windows Defender killed exactly that shape once —
+  and the precise write gate cannot check it anyway.
+
+**Codex seats get the same hook without `hook-install`.** A dispatched
+`codex exec` run is launched with the hook injected for that invocation
+(`-c hooks.PreToolUse=…`, trusted with `--dangerously-bypass-hook-trust`,
+which is the flag for automation that vets its own hooks), inside the
+workspace-write sandbox with `approval_policy = never` and the network off.
+There is no reviewer: a command the sandbox refuses simply fails, and the
+agent reads the failure. On Windows the sandbox backend is passed
+explicitly (`windows.sandbox = "elevated"`), because `--ignore-user-config`
+otherwise leaves Codex with no sandbox and it refuses every command.
 
 A session you started yourself sets no seat. It holds the director seat, and how
 hard it is checked comes from `BGATE_DIRECTOR_MODE`:

@@ -46,3 +46,15 @@ def test_serve_port_still_works_without_remote(monkeypatch):
 
     assert cli.main() == 0
     assert calls == {"port": 9000, "remote": False}
+
+
+def test_app_passes_remote_flag(monkeypatch):
+    calls = {}
+    from bgate_ui.window import desktop
+    monkeypatch.setattr(desktop, "run", lambda **k: calls.update(k) or 0)
+
+    import bgate_cli.main as cli
+    monkeypatch.setattr(sys, "argv", ["bgate", "app", "--remote"])
+
+    assert cli.main() == 0
+    assert calls == {"port": None, "debug": False, "remote": True}
