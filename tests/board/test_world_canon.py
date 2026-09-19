@@ -141,7 +141,7 @@ class TestTheHook:
         assert code != hook.BLOCK
 
     def test_a_relative_path_is_judged_in_the_engine_projects_frame(self, root, monkeypatch):
-        game = _game(root)
+        _game(root)
         canon.retire(root, "scenes/old/main.tscn")
         monkeypatch.setenv("BGATE_SEAT", "art")
         monkeypatch.setenv("BGATE_ROOT", str(root))
