@@ -38,6 +38,21 @@ def _iface_addrs() -> list[str]:
     return out
 
 
+def _dns_name(runner=subprocess.run) -> str | None:
+    """The node's MagicDNS name (<host>.<tailnet>.ts.net), so a
+    `tailscale serve` proxy - whose requests arrive with that Host - passes
+    the same-origin gate. tailscaled is the only listener that path opens;
+    the dashboard process itself stays unreachable from the network, which
+    is the point on a machine whose firewall blocks python inbound."""
+    try:
+        res = runner(["tailscale", "status", "--json"], capture_output=True,
+                     text=True, timeout=3)
+        name = (json.loads(res.stdout or "{}").get("Self") or {}).get("DNSName") or ""
+        return name.rstrip(".") or None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def detect(runner=subprocess.run, interfaces=_iface_addrs) -> TailnetAddr | None:
     try:
         res = runner(["tailscale", "ip", "-4"], capture_output=True,
@@ -46,7 +61,7 @@ def detect(runner=subprocess.run, interfaces=_iface_addrs) -> TailnetAddr | None
         if ip:
             first = ip[0].strip()
             if is_tailnet_ip(first):
-                return TailnetAddr(ip=first)
+                return TailnetAddr(ip=first, name=_dns_name(runner))
     except (OSError, subprocess.SubprocessError):
         pass
     for ip in interfaces():
