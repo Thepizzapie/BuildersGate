@@ -10,6 +10,15 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Changed
+- **A rejected asset cannot come back.** Reviewing a revision `rejected`, or
+  approving a newer one, retires the old file in the canon with the live
+  revision as its successor: the hook refuses a seated agent's read or write of
+  it, and `scene_wire`, `scene_swap_resource`, `godot_import_asset` and
+  `godot_deliver_asset` refuse to put it in the game, naming what to use
+  instead. `asset_verify` reports `stale_wired`: every scene, resource or script
+  still naming a rejected or superseded file. MEASURED: agents kept wiring
+  rejected candidates because the reject was a row nothing on the write path
+  read.
 - **Codex workers: no reviewer, a real sandbox, and the hook.** `codex exec`
   seats no longer run with `--approve-for-me`. They run `workspace-write`
   with `approval_policy = never`, network off, and — on Windows —
