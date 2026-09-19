@@ -168,7 +168,9 @@ def _desktop_env(tmp_path, monkeypatch):
     # Stop before any window opens: the native path is the first thing after
     # the server is up, and a failing import lands in the pywebview fallback.
     monkeypatch.setattr(desktop, "_run_native", lambda *a, **k: 0)
-    from bgate_ui.window import webview2
+    # The native window is Win32 (ctypes.WinDLL at import); elsewhere these
+    # three tests are not about anything that can run.
+    webview2 = pytest.importorskip("bgate_ui.window.webview2")
     monkeypatch.setattr(webview2, "available", lambda: (True, ""))
     return desktop
 

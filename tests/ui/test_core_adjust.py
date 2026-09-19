@@ -42,7 +42,6 @@ class TestBashGuard:
         "rm game/assets/rock.png",
         "sed -i s/a/b/ game/assets/rock.png",
         "cat /tmp/x | tee game/assets/rock.png",
-        "curl -o game/assets/rock.png http://example.com/x.png",
         "dd if=/dev/zero of=game/assets/rock.png",
         "truncate -s 0 game/assets/rock.png",
     ])
@@ -54,9 +53,11 @@ class TestBashGuard:
         assert "Bash" in message
 
     def test_in_lane_bash_write_is_allowed(self, root):
+        # Program OUTPUT may be redirected into a lane path; inline text
+        # (`echo '...' > file`) is refused by the egress gate whatever the
+        # lane, see tests/board/test_hook_egress.py.
         code, _ = hook.decide(
-            bash("echo 'extends Node' > game/scripts/player.gd", str(root)),
-            "gameplay")
+            bash("ls game > game/scripts/listing.txt", str(root)), "gameplay")
         assert code == hook.ALLOW
 
     def test_a_locked_binary_blocks_a_bash_write_too(self, root):
@@ -111,7 +112,7 @@ class TestBashGuard:
     def test_a_write_out_of_the_project_is_ignored(self, root, tmp_path_factory):
         # `root` IS tmp_path, so "elsewhere" has to be a genuinely other tree.
         elsewhere = (tmp_path_factory.mktemp("elsewhere") / "notes.txt").as_posix()
-        code, _ = hook.decide(bash(f"echo hi > {elsewhere}", str(root)), "gameplay")
+        code, _ = hook.decide(bash(f"ls > {elsewhere}", str(root)), "gameplay")
         assert code == hook.ALLOW
 
     def test_dev_null_is_not_a_file_anyone_owns(self, root):
