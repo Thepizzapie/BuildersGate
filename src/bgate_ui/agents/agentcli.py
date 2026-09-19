@@ -76,6 +76,9 @@ SERVER = _runners.MCP_SERVER_NAME
 # what a correct entry looks like: everything downstream compares against this.
 FROZEN = bool(getattr(sys, "frozen", False))
 MODULE_ARGS = ["mcp"] if FROZEN else ["-m", "bgate_mcp.server"]
+# The PreToolUse hook, same shape: the launcher hosts it under `hook` for the
+# same reason it hosts the server under `mcp`.
+HOOK_ARGS = ["hook"] if FROZEN else ["-m", "bgate_cli.hook"]
 
 # A registration whose command is one of these AND carries no directory part is
 # the documented failure. The "no directory part" half is load-bearing: an

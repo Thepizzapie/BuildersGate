@@ -113,12 +113,31 @@ def register(root: str | os.PathLike[str], logical_name: str,
     # Approving here rather than leaving it to a later sweep keeps the promise the
     # setting makes: no card, and the live file IS this revision (review() calls
     # _promote, which reinstalls the archived render over the stable path).
+    # ...BUT NEVER OVER A FAILED GATE. A delivery registers its frame whether or
+    # not its required checks held, so the reviewer has something to look at;
+    # with the human gate off, that frame was promoted to "approved" with
+    # `failed_checks` sitting right there in its metadata. OBSERVED: Meridian
+    # cast revisions whose materials carried no texture, approved on arrival,
+    # superseded by the fix a minute later - the approval said nothing. A
+    # failed required check is a machine's own verdict, and no setting that
+    # waives the HUMAN gate can waive it.
+    failed = [str(c) for c in (metadata.get("failed_checks") or []) if c]
+    if failed:
+        activity.log(root, "artifact",
+                     f"{name} r{revision} stays a candidate: required checks "
+                     f"failed ({', '.join(failed)})", ref=str(artifact_id))
+        return get(root, artifact_id)
     if _auto_approve(root):
         try:
+            why = ("art.auto_approve is on for this project"
+                   if _art_auto_approve_on(root)
+                   else "gate.mode is none for this project")
             return review(root, artifact_id, "approved",
-                          note="auto-approved: art.auto_approve is on for this "
-                               "project, so no human gate was applied",
-                          actor="setting:art.auto_approve")
+                          note=f"auto-approved: {why}, so no human gate "
+                               "was applied",
+                          actor=("setting:art.auto_approve"
+                                 if _art_auto_approve_on(root)
+                                 else "setting:gate.mode"))
         except Exception as exc:
             # A failed auto-approval must not lose the registration — the
             # revision row already exists and is the thing that matters.
@@ -270,6 +289,15 @@ def _promote(root: str | os.PathLike[str], artifact: dict) -> dict:
                 "detail": f"could not write {artifact['path']}: {exc}"}
     return {"ok": True, "promoted": True, "path": artifact["path"],
             "from": str(archive), "detail": "installed at the live path"}
+
+
+def _art_auto_approve_on(root: str | os.PathLike[str]) -> bool:
+    """The narrow switch alone, for naming WHICH setting waived the gate."""
+    try:
+        from . import settings as _settings
+        return bool(_settings.get(root, "art.auto_approve"))
+    except Exception:
+        return False
 
 
 def _auto_approve(root: str | os.PathLike[str]) -> bool:

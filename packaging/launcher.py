@@ -227,13 +227,50 @@ def _ensure_std_streams() -> None:
     os.devnull rather than a log file: with no console there is nobody to read
     the stream, and the two things worth keeping — the crash log and the
     message box — are written by main()'s own except block.
+
+    EXCEPT WHEN THERE IS A CONSOLE RIGHT THERE. A windowed exe typed into a
+    terminal does not inherit that terminal: Windows gives a GUI-subsystem
+    process no std handles even when its parent is cmd or PowerShell, so
+    ``BuildersGate.exe serve`` printed its URL, and ``serve --remote`` its
+    pairing token and QR, into nothing — the one command whose whole output
+    is the point was the one that showed none. AttachConsole(ATTACH_PARENT_
+    PROCESS) joins the parent's console when one exists; CONOUT$ is then a
+    real stdout. When there is no parent console (Explorer, a shortcut) the
+    call fails and the devnull path below stands.
     """
+    if sys.platform == "win32" and (
+            getattr(sys, "stdout", None) is None
+            or getattr(sys, "stderr", None) is None):
+        _attach_parent_console()
     for name in ("stdout", "stderr"):
         if getattr(sys, name, None) is None:
             try:
                 setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
             except OSError:
                 pass
+
+
+def _attach_parent_console() -> bool:
+    """Bind stdout/stderr to the console this process was typed into, if any.
+
+    UTF-8 on the console too (SetConsoleOutputCP 65001): the pairing QR is
+    drawn in half-block characters, and the default OEM code page turns it
+    into a wall of question marks that no phone camera reads.
+    """
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        ATTACH_PARENT_PROCESS = ctypes.c_uint32(0xFFFFFFFF)
+        if not k32.AttachConsole(ATTACH_PARENT_PROCESS):
+            return False
+        k32.SetConsoleOutputCP(65001)
+        for name in ("stdout", "stderr"):
+            if getattr(sys, name, None) is None:
+                setattr(sys, name, open("CONOUT$", "w", encoding="utf-8",
+                                        errors="replace", buffering=1))
+        return True
+    except Exception:                                          # noqa: BLE001
+        return False
 
 
 def main() -> int:
@@ -260,7 +297,7 @@ def main() -> int:
 
         if cmd == "serve":
             from bgate_ui.app import serve
-            serve(port=_port(7788))
+            serve(port=_port(7788), remote="--remote" in argv)
             return 0
 
         if cmd == "selftest":
@@ -281,6 +318,14 @@ def main() -> int:
             from bgate_mcp.server import main as mcp_main
             mcp_main()
             return 0
+
+        if cmd == "hook":
+            # THE PRETOOLUSE HOOK, HOSTED BY THIS BINARY - a dispatched Codex
+            # or Claude seat runs `BuildersGate.exe hook` on every tool call,
+            # JSON on stdin, exit 2 to refuse. Same reasoning as `mcp`: a
+            # frozen build has no interpreter to hand `-m bgate_cli.hook` to.
+            from bgate_cli.hook import main as hook_main
+            return hook_main(argv[1:])
 
         if cmd == "whisper":
             # The app running its own speech-to-text runner as a subprocess.
@@ -305,14 +350,15 @@ def main() -> int:
         # `BuildersGate.exe -m bgate_mcp.server` opened a desktop window. Only
         # the flags the app itself takes may reach run(); anything else falls
         # through to the usage error below.
-        _APP_FLAGS = {"--port", "--debug"}
+        _APP_FLAGS = {"--port", "--debug", "--remote"}
         dashed = [a for a in argv if a.startswith("-")]
         if cmd == "" and argv and not set(dashed) <= _APP_FLAGS:
             cmd = argv[0]                      # report it, do not run it
 
         if cmd in ("", "app"):
             from bgate_ui.window.desktop import run
-            return run(port=_port(), debug="--debug" in argv)
+            return run(port=_port(), debug="--debug" in argv,
+                       remote="--remote" in argv)
 
         # ── everything else opens NOTHING ──────────────────────────────────
         # This used to fall through to run(), so ANY argv the launcher did not
@@ -329,6 +375,8 @@ def main() -> int:
             "  BuildersGate.exe              open the desktop window\n"
             "  BuildersGate.exe app          same, explicitly\n"
             "  BuildersGate.exe serve [--port N]   browser dashboard\n"
+            "  BuildersGate.exe --remote     the window, plus phone access over Tailscale\n"
+            "  BuildersGate.exe serve --remote     same, in the browser\n"
             "  BuildersGate.exe selftest     check the bundle, open nothing\n"
             f"\nunrecognised argument: {argv[0]!r}\n"
         )

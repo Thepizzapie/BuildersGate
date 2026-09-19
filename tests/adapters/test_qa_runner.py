@@ -191,6 +191,35 @@ class TestScoring:
         red = [s for s in got["scripts"] if s["script"].endswith("red_test.gd")][0]
         assert red["errors"] and red["ok"] is False
 
+    async def test_a_zero_count_summary_is_not_a_fail_marker(self, wired,
+                                                             monkeypatch):
+        # `failures=0` on a probe's summary line matched the FAIL scan and
+        # scored a fully green run assertions_ok=false (Meridian
+        # story_island_probe, 41 PASS, 2026-09-16).
+        self._suite(wired)
+        _fake_engine(monkeypatch, {
+            # ...and a PASS line whose description contains the word "fail"
+            # (`PASS Walt signs (the fail state)`, farm_probe) is one pass.
+            "GREEN": {"stdout": "PASS one\nPASS Walt signs (the fail state)\n"
+                                "PROBE failures=0 passed=2\n"},
+            "RED": {"stdout": "PASS one\nFAIL two\nPROBE failures=1 passed=1\n"},
+        })
+        got = await call("godot_test_run", mode="full")
+        by_name = {s["script"]: s for s in got["scripts"]}
+        green, red = by_name["tests/green_test.gd"], by_name["tests/red_test.gd"]
+        assert green["ok"] is True and green["failed"] == 0 and green["passed"] == 2
+        # `failures=1` still counts: a non-zero summary is a failure signal.
+        assert red["ok"] is False and red["failed"] >= 1
+
+    def test_a_zero_count_summary_leading_the_line_is_not_a_fail_marker(self):
+        """The first fix exempted `failures=0` mid-line and still counted it
+        when it LED the line - the most common summary shape."""
+        from bgate_core.runtime.enginetests import count_markers
+        assert count_markers("PASS a\nfailures=0\n") == (1, 0)
+        assert count_markers("FAILED: 0\nPASSED: 0\n") == (0, 0)
+        assert count_markers("failures=2\n") == (0, 1)
+        assert count_markers("FAIL b\n") == (0, 1)
+
     async def test_an_explicit_subset_runs_only_that(self, wired, monkeypatch):
         self._suite(wired)
         _fake_engine(monkeypatch, {"GREEN": {"stdout": "PASS\n"},

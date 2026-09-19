@@ -576,6 +576,21 @@ def _prompt_template(seat: str) -> str:
     return "".join(base.values())
 
 
+def _canon_block(root: str) -> str:
+    """Which world this seat is in, or '' when the project has not said.
+    Printed right under the item, before the protocol: the agents that
+    extended a retired map did so in their first ten turns, reading the
+    wrong scene as the example, and a rule buried under the protocol is a
+    rule read after that."""
+    try:
+        from bgate_core.board import canon as _canon
+        from bgate_core.store import project as _project
+        block = _canon.block(root, _project.game_dir(root) or "")
+    except Exception:
+        return ""
+    return ("\n" + block + "\n") if block else ""
+
+
 def _prompt_for(root: str, item: dict, native_images: bool = False,
                 worktree: str = "") -> str:
     from bgate_core.board.seats import SEAT_IDENTITY
@@ -598,6 +613,7 @@ def _prompt_for(root: str, item: dict, native_images: bool = False,
                "Write project files and tool output paths inside the editable "
                "worktree." if worktree else
                "Use that exact project_dir on every Builders Gate tool call.")),
+        "canon_block": _canon_block(root),
         "seat_rule_block": (seat_rule + "\n\n") if seat_rule else "",
         "policy_block": (policy + "\n\n") if policy else "",
         "verify_rule": _verify_rule(root),
