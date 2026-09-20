@@ -650,12 +650,14 @@ def _store_usage(root, runner: str, tokens: dict, context_limit=0) -> None:
         used = sum(int(tokens.get(k) or 0)
                    for k in ("input", "cache_read", "cache_write"))
     else:
-        used = int(tokens.get("input") or tokens.get("input_tokens") or 0)
+        used = int(tokens.get("context_used") or tokens.get("input")
+                   or tokens.get("input_tokens") or 0)
     note = _read_sidecar(root)
     all_usage = note.get("usage") if isinstance(note.get("usage"), dict) else {}
     runner_usage = all_usage.get(runner) if isinstance(all_usage.get(runner), dict) else {}
     runner_usage["context"] = {"used": max(0, used),
-                               "limit": max(0, int(context_limit or 0))}
+                               "limit": max(0, int(context_limit or 0)),
+                               "at": int(time.time()), "source": "session"}
     all_usage[runner] = runner_usage
     _remember(root, usage=all_usage)
 
@@ -672,7 +674,8 @@ def _rate_window(info: dict) -> tuple[str, dict]:
         percent = max(0, min(100, round(percent)))
     except (TypeError, ValueError):
         percent = None
-    row = {"status": str(info.get("status") or "")}
+    row = {"status": str(info.get("status") or ""), "at": int(time.time()),
+           "source": "session"}
     if percent is not None:
         row["used_percent"] = percent
     reset = info.get("resetsAt", info.get("resetAt"))
@@ -707,10 +710,40 @@ def usage(root) -> dict:
             out["context"] = context
     elif runner == "claude":
         from bgate_ui.agents import claudeusage
-        out.update(claudeusage.usage())
+        out = _merge_claude_usage(out, claudeusage.usage())
     return {"context": out.get("context") or {},
             "five_hour": out.get("five_hour") or {},
             "weekly": out.get("weekly") or {}}
+
+
+def _merge_claude_usage(session: dict, bridge: dict) -> dict:
+    """The director's own numbers first; the bridge fills what the stream
+    cannot say.
+
+    CONTEXT IS THE SESSION'S, ALWAYS. The bridge's context is whatever Claude
+    Code session last drew a status line - some other window entirely - and
+    it used to overwrite the director's own count (measured: the panel read
+    893k of 1000k for a director that had used 180k).
+
+    A WINDOW is the row that knows the percentage, which only the bridge
+    does (the stream's rate_limit_event carries a status and a reset time,
+    never a percent); the session's newer status and reset ride on top, so
+    a limit the stream just saw refused says so even beside a stale bridge.
+    """
+    out = dict(session)
+    for key in ("five_hour", "weekly"):
+        mine = session.get(key) if isinstance(session.get(key), dict) else {}
+        theirs = bridge.get(key) if isinstance(bridge.get(key), dict) else {}
+        if not mine and not theirs:
+            continue
+        base = dict(theirs) if "used_percent" in theirs else dict(mine or theirs)
+        if mine and int(mine.get("at") or 0) >= int(theirs.get("at") or 0):
+            for field in ("status", "resets_at"):
+                if mine.get(field) not in (None, ""):
+                    base[field] = mine[field]
+            base["at"] = max(int(mine.get("at") or 0), int(base.get("at") or 0))
+        out[key] = base
+    return out
 
 
 def usage_bridge(root) -> dict:
@@ -1323,6 +1356,7 @@ def _ensure_codex(root, resume: str = "") -> dict:
 def _collect_codex(entry: dict, deadline: float) -> dict:
     final = ""
     tokens = {}
+    context_limit = 0
     while True:
         while entry["events"]:
             ev = entry["events"].pop(0)
@@ -1344,10 +1378,19 @@ def _collect_codex(entry: dict, deadline: float) -> dict:
                         _post(entry["record"], "tool", hint, tool=tool)
             elif method == "thread/tokenUsage/updated":
                 usage = params.get("tokenUsage") or {}
-                total = usage.get("total") if isinstance(usage, dict) else {}
-                tokens = {"input": int((total or {}).get("inputTokens") or 0),
-                          "output": int((total or {}).get("outputTokens") or 0),
-                          "cache_read": int((total or {}).get("cachedInputTokens") or 0)}
+                usage = usage if isinstance(usage, dict) else {}
+                total = usage.get("total") if isinstance(usage.get("total"), dict) else {}
+                last = usage.get("last") if isinstance(usage.get("last"), dict) else {}
+                # `total` is the THREAD'S running sum, not what is in the
+                # window; read as the context it drew 730k of a 272k limit.
+                # `last` is the most recent turn's prompt, which IS the
+                # context, and the server names the window's size beside it.
+                tokens = {"input": int(total.get("inputTokens") or 0),
+                          "output": int(total.get("outputTokens") or 0),
+                          "cache_read": int(total.get("cachedInputTokens") or 0),
+                          "context_used": int(last.get("inputTokens") or 0)
+                                          + int(last.get("cachedInputTokens") or 0)}
+                context_limit = int(usage.get("modelContextWindow") or 0)
             elif method == "turn/completed":
                 turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
                 if turn.get("status") == "failed":
@@ -1355,6 +1398,7 @@ def _collect_codex(entry: dict, deadline: float) -> dict:
                     return {"ok": False, "error": str(
                         error.get("message") if isinstance(error, dict) else error)[:400]}
                 return {"ok": bool(final), "text": final, "tokens": tokens,
+                        "context_limit": context_limit,
                         "error": "Codex completed without an answer" if not final else ""}
             elif method == "error":
                 error = params.get("error") or params

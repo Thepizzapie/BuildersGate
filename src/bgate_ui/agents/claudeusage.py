@@ -60,15 +60,25 @@ def _command() -> str:
     return f'"{sys.executable}" -m {MARKER}'
 
 
+#: A snapshot older than this is shown as stale. The status line runs only
+#: while a terminal `claude` session is drawing one; the desktop app's Code
+#: tab does not, so a week-old snapshot is the ordinary case, not a fault.
+STALE_AFTER_S = 15 * 60
+
+
 def status() -> dict:
     settings = _read_json(_settings_path())
     enabled = _our_command(settings.get("statusLine"))
     snapshot = _read_json(_snapshot_path()) if enabled else {}
+    updated = snapshot.get("updated_at")
+    age = (int(time.time()) - int(updated)) if updated else None
     return {
         "enabled": enabled,
         "has_snapshot": bool(snapshot.get("context") or snapshot.get("five_hour")
                              or snapshot.get("weekly")),
-        "updated_at": snapshot.get("updated_at"),
+        "updated_at": updated,
+        "age_s": age,
+        "stale": bool(age is not None and age > STALE_AFTER_S),
         "needs_restart": enabled and not bool(snapshot),
     }
 
@@ -195,17 +205,27 @@ def capture(raw: str) -> None:
 
 
 def usage() -> dict:
+    """The snapshot's meters, each stamped with WHEN it was true.
+
+    A window whose reset has passed is not dropped: dropping it made "linked
+    but the number is a week old" indistinguishable from "not linked" (both
+    drew a dash). It comes back without a percentage and with ``expired``
+    set, so the panel can say a reset happened and the figure is unknown.
+    """
     if not status()["enabled"]:
         return {}
     snapshot = _read_json(_snapshot_path())
     now = int(time.time())
+    at = int(snapshot.get("updated_at") or 0)
     out = {}
     for key in ("context", "five_hour", "weekly"):
         value = snapshot.get(key)
         if not isinstance(value, dict):
             continue
+        row = {**value, "at": at, "source": "bridge"}
         reset = value.get("resets_at") if key != "context" else None
         if reset and int(reset) <= now:
-            continue
-        out[key] = value
+            row.pop("used_percent", None)
+            row["expired"] = True
+        out[key] = row
     return out

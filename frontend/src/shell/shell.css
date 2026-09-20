@@ -692,6 +692,7 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
     display: grid; grid-template-columns: repeat(3, minmax(86px, 1fr));
     gap: 12px; flex: 1; max-width: 410px;
   }
+  .bg4-usage.stale span, .bg4-usage.stale em { opacity: .55 }
   .bg4-usage span {
     display: flex; justify-content: space-between; gap: 6px; margin-bottom: 4px;
     white-space: nowrap; font: 500 9px var(--mono); color: var(--text-3);

@@ -4,7 +4,8 @@ import { Ti } from "../Ti";
 import { Markdown } from "../../components/Markdown";
 import { useEvents, FALLBACK_MS } from "../../hooks";
 import { toast } from "../../bridge";
-import { directorChat, directorConfigure, directorNew, directorSay,
+import { type UsageWindow,
+         directorChat, directorConfigure, directorNew, directorSay,
          directorUsageConnect, directorUsageDisconnect, directorApprove,
          directorDispatchMode,
          type ChatMsg, type ChatState, type DirectorApproval } from "./api";
@@ -237,9 +238,9 @@ export function DirectorChat({ active, onSent }: {
               : undefined}
               text={formatTokens(usage.context?.used, usage.context?.limit)} />
             <Usage label="5h" value={usage.five_hour?.used_percent}
-                   text={formatWindow(usage.five_hour)} />
+                   text={formatWindow(usage.five_hour)} stale={isStale(usage.five_hour)} />
             <Usage label="week" value={usage.weekly?.used_percent}
-                   text={formatWindow(usage.weekly)} />
+                   text={formatWindow(usage.weekly)} stale={isStale(usage.weekly)} />
           </div>
         </div>
         {runner === "claude" && (
@@ -247,7 +248,9 @@ export function DirectorChat({ active, onSent }: {
             <Ti name={usageBridge.enabled ? "shield-check" : "shield"} size={13} />
             <span>{usageBridge.enabled
               ? usageBridge.has_snapshot
-                ? "Claude usage is linked locally"
+                ? usageBridge.stale
+                  ? `Claude usage linked · last read ${ago(usageBridge.age_s)} — the status line only runs in a terminal claude session, so open one to refresh`
+                  : `Claude usage linked · read ${ago(usageBridge.age_s)}`
                 : "Linked locally — use Claude once, then restart Claude Code if needed"
               : "Show Claude limits locally without sharing credentials"}</span>
             <Button variant="subtle" size="compact-xs" loading={bridgeBusy}
@@ -306,10 +309,13 @@ function ApprovalCard({ approval, busy, onAnswer }: {
   );
 }
 
-function Usage({ label, value, text }: { label: string; value?: number; text: string }) {
+function Usage({ label, value, text, stale }: {
+  label: string; value?: number; text: string; stale?: boolean;
+}) {
   const safe = Math.max(0, Math.min(100, Number(value || 0)));
   return (
-    <div className="bg4-usage" title={`${label}: ${text}`}>
+    <div className={`bg4-usage${stale ? " stale" : ""}`}
+         title={`${label}: ${text}${stale ? " (older than 15 minutes)" : ""}`}>
       <span><b>{label}</b>{text}</span>
       <i><em style={{ width: `${safe}%` }} /></i>
     </div>
@@ -322,13 +328,37 @@ function formatTokens(used?: number, limit?: number): string {
   return ` ${short(Number(used || 0))}${limit ? ` / ${short(limit)}` : ""}`;
 }
 
-function formatWindow(window?: { used_percent?: number; resets_at?: number }): string {
-  if (window?.used_percent == null) return " —";
+/** "3d", "40m", "just now" - how long ago a capture was. */
+function ago(ageS?: number): string {
+  const s = Math.max(0, Math.round(Number(ageS || 0)));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+const STALE_AFTER_S = 15 * 60;
+
+function isStale(window?: UsageWindow): boolean {
+  if (!window?.at) return false;
+  return Date.now() / 1000 - window.at > STALE_AFTER_S;
+}
+
+/** The number, and when it was true. A reset that has passed says so
+ *  instead of drawing the dash an unlinked bridge draws; a stale reading
+ *  carries its age, because "24%" from a week ago is not 24%. */
+function formatWindow(window?: UsageWindow): string {
+  if (!window) return " —";
+  if (window.expired) return ` reset · ${ago(Date.now() / 1000 - (window.at || 0))}`;
+  if (window.used_percent == null) {
+    return window.status && window.status !== "allowed" ? ` ${window.status}` : " —";
+  }
   const reset = window.resets_at
     ? ` · ${new Date(window.resets_at * 1000).toLocaleTimeString([], {
         hour: "numeric", minute: "2-digit",
       })}` : "";
-  return ` ${window.used_percent}%${reset}`;
+  const age = isStale(window) ? ` · ${ago(Date.now() / 1000 - (window.at || 0))}` : "";
+  return ` ${window.used_percent}%${reset}${age}`;
 }
 
 /** One message. A tool call is a single dim line — the name and what it was

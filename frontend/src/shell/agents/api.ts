@@ -167,14 +167,21 @@ export type ChatState = {
     value: string; label: string; description?: string; default?: boolean;
   }[]>;
   usage?: {
-    context?: { used?: number; limit?: number };
-    five_hour?: { used_percent?: number; resets_at?: number; status?: string };
-    weekly?: { used_percent?: number; resets_at?: number; status?: string };
+    context?: { used?: number; limit?: number; at?: number; source?: string };
+    five_hour?: UsageWindow;
+    weekly?: UsageWindow;
   };
   usage_bridge?: {
     enabled?: boolean; has_snapshot?: boolean; updated_at?: number;
-    needs_restart?: boolean;
+    age_s?: number; stale?: boolean; needs_restart?: boolean;
   };
+};
+
+/** A usage window with WHEN it was true: `at` is the capture time, `expired`
+ *  means its reset has passed and the percentage is no longer known. */
+export type UsageWindow = {
+  used_percent?: number; resets_at?: number; status?: string;
+  at?: number; source?: string; expired?: boolean;
 };
 
 export const directorChat = (after = 0) =>
