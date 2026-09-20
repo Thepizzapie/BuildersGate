@@ -856,7 +856,12 @@ def state(lean: bool = False) -> dict:
         "previews": previews,
     }
     if lean:
-        return out
+        # The phone's totals strip counted the asset and artifact rows the
+        # full document carries; lean drops the rows, so it carries the counts.
+        return {**out, "counts": {
+            "assets": conn.execute("SELECT count(*) FROM asset").fetchone()[0],
+            "artifacts": conn.execute(
+                "SELECT count(*) FROM artifact_revision").fetchone()[0]}}
     return {
         **out,
         "assets": assets.list_assets(root),

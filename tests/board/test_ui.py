@@ -34,6 +34,16 @@ class TestState:
         assert got["lore"]["canon"][0]["name"] == "The Ashen Order"
         assert got["verify"]["ok"] is True
 
+    def test_lean_state_carries_counts_instead_of_rows(self, client, root):
+        """The phone polls lean=1 every few seconds; its totals strip used to
+        count the asset rows the full document carries, which lean drops."""
+        (root / "a.png").write_bytes(b"a")
+        assets.track(root, root / "a.png")
+        artifacts.register(root, "hero", root / "a.png", producer="image_generate")
+        got = client.get("/api/state?lean=1").json()
+        assert "assets" not in got and "asset_groups" not in got
+        assert got["counts"] == {"assets": 1, "artifacts": 1}
+
     def test_drift_surfaces_in_state(self, client, root):
         blend = root / "b.blend"
         blend.write_bytes(b"v1")
