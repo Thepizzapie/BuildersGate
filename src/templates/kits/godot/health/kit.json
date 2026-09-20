@@ -1,0 +1,23 @@
+{
+  "name": "health",
+  "title": "Health component",
+  "engine": "godot",
+  "dimension": "any",
+  "summary": "A Node holding hit points: damage/heal with an invulnerability window, died/revived signals, ratio() for bars, set_max for level-ups. Never frees its parent.",
+  "files": {
+    "scripts/health.gd": "scripts/health.gd"
+  },
+  "requires": {
+    "actions": {},
+    "autoloads": ["BGateTelemetry"],
+    "kits": []
+  },
+  "provides": {
+    "attach_to": "Node",
+    "class_names": ["BGHealth"],
+    "signals": ["health_changed(current, maximum)", "damaged(amount, source)", "healed(amount, source)", "died(source)", "revived"],
+    "exports": ["max_health", "start_health", "invulnerable_seconds", "damage_when_dead"],
+    "methods": ["damage(amount, source) -> landed", "heal(amount, source) -> restored", "is_dead()", "is_invulnerable()", "ratio()", "reset()", "set_max(value, keep_ratio)"]
+  },
+  "usage": "Add a Node named Health with scripts/health.gd under anything that can be hurt. Attackers call `$Health.damage(3, self)`. Connect `died` in the parent and decide what death means there; connect `health_changed` to a bar and read `ratio()`."
+}

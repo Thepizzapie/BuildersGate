@@ -1,0 +1,27 @@
+{
+  "name": "vehicle_controller",
+  "title": "Arcade vehicle controller with chase camera",
+  "engine": "godot",
+  "dimension": "3d",
+  "summary": "An arcade car: the heading turns at a stick-commanded rate, velocity chases the heading (lower the rate for drift), the body is held at ride height over its wheel contacts so nothing oscillates. jump is the handbrake. Pairs with a chase camera sibling.",
+  "files": {
+    "scripts/vehicle_controller.gd": "template:godot/3d/scripts/vehicle_controller.gd",
+    "scripts/chase_camera.gd": "template:godot/3d/scripts/chase_camera.gd"
+  },
+  "requires": {
+    "actions": {
+      "move_left": ["A"],
+      "move_right": ["D"],
+      "move_forward": ["W"],
+      "move_back": ["S"],
+      "jump": ["Space"]
+    },
+    "autoloads": ["BGateTelemetry"],
+    "kits": []
+  },
+  "provides": {
+    "attach_to": "CharacterBody3D",
+    "methods": ["is_in_scripted_move()"]
+  },
+  "usage": "Attach scripts/vehicle_controller.gd to a CharacterBody3D with wheel RayCast3D children as the script's header describes. Add a Node3D SIBLING with scripts/chase_camera.gd and point its target_path at the car."
+}

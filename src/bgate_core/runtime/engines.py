@@ -185,6 +185,9 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
         # Deliverables whose only product is a Godot resource: a cutout rig is
         # a .tscn of Sprite2Ds, and SpriteFrames is a .tres or it is nothing.
         "cutout_assemble", "cutout_equip", "item_to_spriteframes",
+        # Kits are GDScript with project.godot input actions; a web or
+        # Unity project has nothing for them to land in.
+        "kit_list", "kit_install", "kit_remove",
     }),
     "web": frozenset({
         # The adapter surface. `engine_check` and `engine_status` are NOT here:
