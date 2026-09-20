@@ -171,9 +171,12 @@ export function PhoneAccess({ active }: { active: boolean }) {
         </div>
         <div className="gen-help">
           The companion app reaches this dashboard over Tailscale with its own token, which is not
-          the one this page uses. The switch closes that door without stopping the server; rotating
-          the token cuts every phone off until it scans again; a single device can be revoked while
-          the rest keep working.
+          the one this page uses. Whoever holds that token holds this dashboard, and the dashboard
+          can run the engine, which can run anything on this PC: treat the QR like a password. The
+          switch closes the door without stopping the server and stays closed across restarts;
+          rotating the token cuts every phone off until it scans again. Revoking a device refuses
+          its address and user agent - a client that changes either is a new device - so when in
+          doubt, rotate.
         </div>
         {!st.listening && st.restart_hint && <div className="gen-why">{st.restart_hint}</div>}
 

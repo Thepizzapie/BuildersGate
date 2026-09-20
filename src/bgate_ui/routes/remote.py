@@ -1,10 +1,12 @@
-"""Settings > Phone: the controls over the companion app's access.
+"""Settings > Companion: the controls over the companion app's access.
 
-Everything here is LOOPBACK-ONLY, checked on the Host the request asked for,
-the same way /pair is: the phone must never be able to read the credential
-it is supposed to scan, switch its own door back on, or un-revoke itself.
-A tailnet-side request gets a 404, not a 403, so the surface does not even
-confirm it exists from that side.
+Everything here is DESK-ONLY - the socket peer, the Host and the absence of
+proxy stamps all have to say "this machine" (api.is_desk) - and the status
+read needs the dashboard's own token even though it is a GET, because its
+body IS the credential. The phone must never be able to read the token it
+is supposed to scan, switch its own door back on, or un-revoke itself. A
+request from anywhere else gets a 404, so the surface does not even confirm
+it exists from that side.
 """
 from __future__ import annotations
 
@@ -26,9 +28,25 @@ def _root_or_none():
 
 
 def _loopback_only(request: Request) -> None:
-    asked = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
-    if asked.lower() not in api._LOOPBACK_HOSTS:
+    if not api.is_desk(request):
         raise HTTPException(404, "not found")
+
+
+def _desk_token(request: Request) -> None:
+    """The status body carries the phone token and the QR. A GET is not
+    token-checked by the guard on the desk side (the page has to load before
+    it can present one), so this one route checks it itself."""
+    if api._auth_disabled():
+        return
+    try:
+        expected = api.ensure_token(_root())
+    except HTTPException:
+        return
+    presented = (request.headers.get("x-bgate-token")
+                 or request.headers.get("authorization", "").removeprefix("Bearer ").strip())
+    import secrets
+    if not secrets.compare_digest(presented or "", expected):
+        raise HTTPException(401, "the dashboard token is required to read this")
 
 
 def _status(request: Request) -> dict:
@@ -39,6 +57,7 @@ def _status(request: Request) -> dict:
 def remote_status(request: Request) -> dict:
     """The switch, the socket, the pairing QR, and every device on it."""
     _loopback_only(request)
+    _desk_token(request)
     return _status(request)
 
 

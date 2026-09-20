@@ -160,7 +160,12 @@ def run(port: Optional[int] = None, debug: bool = False,
     sockets = None
     pair_url = ""
     if remote:
+        from bgate_ui import api as _api
         from bgate_ui.app import _remote_bind
+        if _api._auth_disabled():
+            print("builders gate · REFUSING to start remote mode: BGATE_NO_AUTH "
+                  "switches every gate off", file=sys.stderr)
+            return 2
         got = _remote_bind(port)
         if got is None:
             print("builders gate · REFUSING to start remote mode: no Tailscale "

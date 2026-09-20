@@ -42,8 +42,12 @@ ONLINE_WINDOW_S = 20.0
 #: "something is knocking" rather than as silence.
 REFUSAL_RING = 8
 
+#: The device table is bounded: a client cycling user agents must not be a
+#: way to grow this process without limit. Oldest non-revoked rows go first.
+MAX_DEVICES = 64
+
 _lock = threading.Lock()
-_switched_off = False
+_switched_off: Optional[bool] = None      # None: not read from disk yet
 _devices: dict[str, dict[str, Any]] = {}
 _refusals: list[dict[str, Any]] = []
 _rotated_at: float = 0.0
@@ -112,16 +116,44 @@ def listening() -> bool:
     return bool(host())
 
 
+def _switch_path() -> Path:
+    from bgate_core.store.project import user_dir
+    return user_dir() / "remote-switch.json"
+
+
+def _switched() -> bool:
+    """The switch, read once from disk. A door closed from the panel stays
+    closed across a restart: a restart that silently reopened it would be
+    the one time the operator was not looking."""
+    global _switched_off
+    if _switched_off is None:
+        try:
+            import json
+            _switched_off = bool(json.loads(
+                _switch_path().read_text(encoding="utf-8")).get("off"))
+        except (OSError, ValueError, AttributeError):
+            _switched_off = False
+    return _switched_off
+
+
 def enabled() -> bool:
     """Admit tailnet-side requests right now? Requires the --remote bind AND
     the switch not having been turned off."""
-    return listening() and not _switched_off
+    return listening() and not _switched()
 
 
 def set_enabled(on: bool) -> bool:
     global _switched_off
     with _lock:
         _switched_off = not on
+        try:
+            import json
+            p = _switch_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"off": not on, "at": int(time.time())}),
+                         encoding="utf-8")
+        except OSError:
+            pass
     return enabled()
 
 
@@ -160,6 +192,11 @@ def note_request(request) -> dict[str, Any]:
     with _lock:
         row = _devices.get(key)
         if row is None:
+            if len(_devices) >= MAX_DEVICES:
+                victims = sorted((r for r in _devices.values() if not r["revoked"]),
+                                 key=lambda r: r["last_seen"])
+                for r in victims[:len(_devices) - MAX_DEVICES + 1]:
+                    _devices.pop(r["id"], None)
             row = _devices[key] = {
                 "id": key, "ip": ip, "user_agent": ua, "first_seen": now,
                 "last_seen": now, "requests": 0, "last_path": path,
@@ -235,6 +272,10 @@ def _reset_for_tests() -> None:
     global _switched_off, _rotated_at
     with _lock:
         _switched_off = False
+        try:
+            _switch_path().unlink()
+        except OSError:
+            pass
         _devices.clear()
         _refusals.clear()
         _rotated_at = 0.0

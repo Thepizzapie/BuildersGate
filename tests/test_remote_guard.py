@@ -85,6 +85,7 @@ def _serve_env(tmp_path, monkeypatch):
     the two helpers that are irrelevant to the remote-mode bind decision:
     _serving_elsewhere (a real loopback probe) and _print_pairing (token +
     QR printing, which needs nothing asserted here)."""
+    monkeypatch.delenv("BGATE_NO_AUTH", raising=False)   # remote mode refuses to start under it
     (tmp_path / ".bgate").mkdir()
     monkeypatch.setenv("BGATE_ROOT", str(tmp_path))
     from bgate_ui import app as appmod
@@ -170,7 +171,7 @@ def test_pair_page_refused_from_the_tailnet_side(client, monkeypatch, tmp_path):
     from bgate_ui import remote
     remote._reset_for_tests()
     r = c.get("/pair", headers={"host": "100.64.0.9:7788"})
-    assert r.status_code == 401            # the tailnet door: no phone token, nothing
+    assert r.status_code == 404            # the page is not on the tailnet side's map at all
     assert token not in r.text
     # and even WITH the phone token, the page is loopback-only
     r = c.get("/pair", headers={"host": "100.64.0.9:7788",
@@ -183,6 +184,7 @@ def test_pair_page_refused_from_the_tailnet_side(client, monkeypatch, tmp_path):
 
 @pytest.fixture
 def _desktop_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("BGATE_NO_AUTH", raising=False)   # remote mode refuses to start under it
     (tmp_path / ".bgate").mkdir()
     monkeypatch.setenv("BGATE_ROOT", str(tmp_path))
     monkeypatch.delenv("BGATE_REMOTE_HOSTS", raising=False)

@@ -376,6 +376,43 @@ _OPEN_POST_RE = re.compile(r"^/api/playtest/\d+/events$")
 #: The cookie a phone's web view carries the phone token in, for /play/* only.
 PHONE_COOKIE = "bgate_phone"
 
+#: Socket peers that are this machine. `testclient` is Starlette's TestClient.
+_LOOPBACK_PEERS = {"127.0.0.1", "::1", "localhost", "testclient", ""}
+
+#: Headers a reverse proxy (tailscale serve in HTTP mode) stamps on a
+#: request it forwards. Their presence means the peer is the proxy, not the
+#: person: the request came from the network whatever the socket says.
+_PROXIED_HEADERS = ("x-forwarded-for", "x-forwarded-host", "tailscale-user-login")
+
+#: What the tailnet side may reach at all. The dashboard page is not on it:
+#: `/` carries the desk's own token in its HTML, and a remote client that
+#: could read it would hold a second credential that rotating the phone
+#: token does not revoke. The phone app speaks /api and plays /play.
+_REMOTE_PREFIXES = ("/api/", "/play/", "/favicon")
+#: And never these, whatever it presents: the controls over its own door.
+_REMOTE_NEVER = ("/api/remote", "/pair")
+
+
+def is_desk(request: Request) -> bool:
+    """Did this request come from THIS machine, by every signal at once?
+
+    A request is the desk's only when the socket peer is loopback, the Host
+    it asked for is loopback, and no proxy stamped it. Any one of those
+    saying "network" is enough: a tailnet client behind a raw TCP relay
+    arrives from 127.0.0.1 and can write any Host it likes, so the Host
+    alone was forgeable, and the peer alone misses an HTTP proxy. The one
+    relay this cannot see through is a raw TCP passthrough carrying a
+    forged loopback Host - which is why serve --remote says not to run one.
+    """
+    client = getattr(request, "client", None)
+    peer = (client.host if client else "") or ""
+    if peer not in _LOOPBACK_PEERS:
+        return False
+    host = (request.headers.get("host") or "").strip().lower()
+    if host and host.rsplit(":", 1)[0].strip("[]") not in _LOOPBACK_HOSTS:
+        return False
+    return not any(request.headers.get(h) for h in _PROXIED_HEADERS)
+
 
 def token_path(root: Path) -> Path:
     return Path(root) / ".bgate" / TOKEN_FILENAME
@@ -454,15 +491,22 @@ def install_guard(app, root_fn) -> None:
             return JSONResponse(status_code=403, content=error_body(
                 403, "request Host is not loopback", code="bad_host"))
 
-        # THE TAILNET SIDE IS A DIFFERENT DOOR. A request that arrived by the
-        # remote host is a phone (or something pretending to be one), and it
-        # is held to three things the loopback side is not: the switch in
-        # Settings > Phone has to be on, EVERY method carries the phone token
-        # (a GET of /api/state is the whole project), and the device it came
-        # from has not been revoked. It never sees the dashboard's own token.
+        # THE TAILNET SIDE IS A DIFFERENT DOOR. A request that did not come
+        # from this machine by every signal (peer, Host, proxy stamps - see
+        # is_desk) is a phone, or something pretending to be one, and it is
+        # held to four things the loopback side is not: it may reach only
+        # /api and /play (never the page, whose HTML carries the desk's own
+        # token, and never the controls over its own door), the switch in
+        # Settings > Companion has to be on, EVERY method carries the phone
+        # token (a GET of /api/state is the whole project), and the device
+        # it came from has not been revoked.
         path = request.url.path
-        if host and host_name not in _LOOPBACK_HOSTS and not _auth_disabled():
+        if not is_desk(request) and not _auth_disabled():
             from bgate_ui import remote as _remote
+            if (not path.startswith(_REMOTE_PREFIXES)
+                    or path.startswith(_REMOTE_NEVER)):
+                return JSONResponse(status_code=404, content=error_body(
+                    404, "not found", code="not_found"))
             if not _remote.enabled():
                 _remote.note_refusal(request, "phone access is off")
                 return JSONResponse(status_code=403, content=error_body(
