@@ -6,8 +6,11 @@ Three facts that were tangled before this module existed:
   1. THE PHONE HAD THE DASHBOARD'S OWN TOKEN. The QR handed out ui-token, the
      same secret every fetch from the desktop page carries. Rotating it to cut
      a phone off would have logged the desktop out of itself. The phone now
-     has its own token (`.bgate/remote-token`), so rotating it re-pairs the
-     phones and nothing else.
+     has its own token, so rotating it re-pairs the phones and nothing else.
+     It is MACHINE-WIDE (`~/.bgate/remote-token`, BGATE_HOME honoured), not
+     per project: a phone pairs with the desk, and switching the desk to
+     another project - from the browser or from the phone itself - must not
+     log the phone out. A per-project token did exactly that.
   2. THERE WAS NO SWITCH. Remote mode was decided at `serve --remote` and
      lasted until the process died. The bind still is (a socket cannot change
      its address at runtime), but admission is checked per request, so the
@@ -50,12 +53,15 @@ _rotated_at: float = 0.0
 # The credential
 # ---------------------------------------------------------------------------
 
-def token_path(root: Path) -> Path:
-    return Path(root) / ".bgate" / TOKEN_FILENAME
+def token_path(root: Optional[Path] = None) -> Path:
+    """Machine-wide. `root` is accepted and ignored so every caller that
+    holds a project can keep passing it."""
+    from bgate_core.store.project import user_dir
+    return user_dir() / TOKEN_FILENAME
 
 
-def ensure_token(root: Path) -> str:
-    """Read (or mint) the phone token. 0600 in .bgate/, beside ui-token."""
+def ensure_token(root: Optional[Path] = None) -> str:
+    """Read (or mint) the phone token. 0600 in ~/.bgate, beside the keys."""
     path = token_path(root)
     try:
         existing = path.read_text(encoding="utf-8").strip()
@@ -66,7 +72,7 @@ def ensure_token(root: Path) -> str:
     return _write_token(path)
 
 
-def rotate_token(root: Path) -> str:
+def rotate_token(root: Optional[Path] = None) -> str:
     """Mint a new phone token. Every paired phone is cut off at once and has
     to scan the new QR; the device table is cleared with it, because every
     row in it belonged to the old credential."""
@@ -243,12 +249,10 @@ def pairing(root: Optional[Path], port: int) -> dict[str, Any]:
     terminal print, the /pair page and the Settings panel."""
     from bgate_ui import tailnet as _tailnet
     url = f"http://{host()}:{port}" if host() else ""
-    token = ""
-    if root is not None:
-        try:
-            token = ensure_token(root)
-        except OSError:
-            token = ""
+    try:
+        token = ensure_token()
+    except OSError:
+        token = ""
     project = root.name if root is not None else "(no project)"
     return {"url": url, "token": token, "project": project,
             "payload": _tailnet.pairing_payload(url, token, project) if url else ""}
@@ -274,7 +278,7 @@ def status(root: Optional[Path], port: int) -> dict[str, Any]:
         "host": host(),
         **pair,
         "qr": qr_data_uri(pair["payload"]),
-        "token_file": str(token_path(root)) if root is not None else "",
+        "token_file": str(token_path()),
         "rotated_at": _rotated_at or None,
         "devices": devices(),
         "refusals": refusals(),

@@ -145,3 +145,19 @@ def test_a_proxied_phone_is_named_by_its_forwarded_address(client):
     c.get("/api/queue", headers={**phone, "x-forwarded-for": "100.64.0.42"})
     st = c.get("/api/remote", headers=desk).json()
     assert st["devices"][0]["ip"] == "100.64.0.42"
+
+
+def test_switching_the_project_does_not_log_the_phone_out(client, tmp_path, monkeypatch):
+    """The phone pairs with the MACHINE. A per-project token meant that the
+    moment the desk (or the phone itself) switched projects, every poll was
+    401 and the phone said re-pair."""
+    from bgate_core.store import project as _project
+    c, _, phone = client
+    other = tmp_path.parent / (tmp_path.name + "-other")
+    _project.init(other, "Other Game", engine="godot")
+    assert c.get("/api/state?lean=1", headers=phone).status_code == 200
+    r = c.post("/api/project/select", json={"root": str(other)}, headers=phone)
+    assert r.status_code == 200, r.text
+    r = c.get("/api/state?lean=1", headers=phone)
+    assert r.status_code == 200
+    assert r.json()["project"]["name"] == "Other Game"

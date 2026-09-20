@@ -69,10 +69,7 @@ def remote_disable(request: Request) -> dict:
 def remote_rotate(request: Request) -> dict:
     """New phone token, new QR. Every paired phone is cut off at once."""
     _loopback_only(request)
-    root = _root_or_none()
-    if root is None:
-        raise api.bad_request("no project is open, so there is no token to rotate")
-    _remote.rotate_token(root)
+    _remote.rotate_token()
     return _status(request)
 
 

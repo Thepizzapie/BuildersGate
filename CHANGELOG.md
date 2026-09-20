@@ -11,7 +11,8 @@ repository at first publication. There is no earlier release history to record.
 
 ### Changed
 - **Settings > Phone: the companion app's door, from the desk.** The phone
-  now has its own token (`.bgate/remote-token`), not the dashboard's, so it
+  now has its own token (`~/.bgate/remote-token`, machine-wide so switching
+  projects from the desk or the phone keeps it paired), not the dashboard's, so it
   can be rotated - new token, new QR, every phone cut off - without logging
   the desktop out of itself. The tailnet side is admitted per request, so it
   can be closed and reopened from the panel without a restart, and every
