@@ -74,7 +74,7 @@ def test_fit_refuses_a_big_upscale_and_an_empty_anchor(tmp_path):
 
 def test_family_check_names_the_member_that_is_a_different_size_or_colour(tmp_path):
     a = _sheet(tmp_path / "chuco_battle.png", (96, 96), [{"w": 30, "h": 90}])
-    b = _sheet(tmp_path / "chuco_ow.png", (32, 32), [{"w": 12, "h": 28}])       # not the same unit
+    _sheet(tmp_path / "chuco_ow.png", (32, 32), [{"w": 12, "h": 28}])           # a different unit; not in the family
     c = _sheet(tmp_path / "chuco_cast.png", (96, 96), [{"w": 30, "h": 64}])      # 30% short
     d = _sheet(tmp_path / "chuco_alt.png", (96, 96), [{"w": 30, "h": 90}], colour=(20, 200, 60))
     r = spritefit.family_check([
