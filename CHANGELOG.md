@@ -10,26 +10,6 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Changed
-- **`/api/play/pad`: a touch layout from the input map.** A d-pad and up
-  to six buttons derived from the project's own actions (builtins included,
-  with their real physical keycodes), each carrying the DOM `code`/`key`/
-  `keyCode` the web build's key listener reads - so a phone can play a
-  keyboard game with no per-project mapping.
-- **The phone can play the build.** `/play/*` and the game's telemetry POST
-  accept the phone token as a cookie (`bgate_phone`) from the tailnet side,
-  because the engine's own `.wasm`/`.pck` fetches cannot carry a header. The
-  cookie opens the build and nothing else.
-- **Settings > Phone: the companion app's door, from the desk.** The phone
-  now has its own token (`~/.bgate/remote-token`, machine-wide so switching
-  projects from the desk or the phone keeps it paired), not the dashboard's, so it
-  can be rotated - new token, new QR, every phone cut off - without logging
-  the desktop out of itself. The tailnet side is admitted per request, so it
-  can be closed and reopened from the panel without a restart, and every
-  method from that side needs the phone token (a GET of `/api/state` is the
-  whole project). Every device that connects is seen - address, user agent,
-  requests, last path, online or idle - and can be revoked on its own, or
-  forgotten. `/api/remote*` is loopback-only: from the phone it does not
-  exist. Existing phones re-pair once, since their token was the old one.
 - **Codex workers: no reviewer, a real sandbox, and the hook.** `codex exec`
   seats no longer run with `--approve-for-me`. They run `workspace-write`
   with `approval_policy = never`, network off, and — on Windows —
