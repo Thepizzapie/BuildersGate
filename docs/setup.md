@@ -12,6 +12,7 @@ sequence: install, point it at a game, set keys, register the MCP server, verify
 | [Godot 4.x](https://godotengine.org) | the core loop | Portable exe is fine. Discovery checks common install dirs, or set `BGATE_GODOT` |
 | Godot Web export templates | `bgate publish` | A separate ~1 GB download from inside the editor |
 | [Blender 4.2+](https://blender.org) | the 3D leg, optional | Or set `BGATE_BLENDER` |
+| [Aseprite 1.3+](https://www.aseprite.org) | pixel-art masters and palette conform, optional | Paid; no fetch button. Discovery checks PATH, the Steam and Program Files installs, or set `BGATE_ASEPRITE`. See [Aseprite](#aseprite) |
 | `ffmpeg` + `ffprobe` | video, optional | Playtest capture, frame extraction, cutscene encoding. See [gotchas.md](gotchas.md) before you trust the build you have |
 | `faster-whisper` + `sounddevice` | playtest transcription, optional | `pip install -e ".[stt,record]"` |
 | `pywebview` | `bgate app`, optional | `pip install -e ".[desktop]"` |
@@ -243,9 +244,9 @@ bgate doctor              # every dependency, one pass
 bgate doctor --json
 ```
 
-Twelve rows: `python`, `art_key`, `local_runtimes`, `agent_cli`, `ffmpeg`,
+The rows: `python`, `art_key`, `local_runtimes`, `agent_cli`, `ffmpeg`,
 `ffprobe`, `blender`, `godot`, `godot_web_templates`, `whisper`, `imageto3d`,
-`local_image`. Each reports `{available, path, version, min_required, reason}`.
+`local_image`, `aseprite`, `anim_library`. Each reports `{available, path, version, min_required, reason}`.
 
 **Read the rows, not the exit code.** It exits 1 if anything at all is
 unavailable, including things nobody needs on day one. The core loop needs
@@ -266,6 +267,9 @@ two are missing.
   without Builders Gate in it.
 - `ffmpeg` goes red on a build whose libtheora writes files nothing can decode.
   See [gotchas.md](gotchas.md).
+- `aseprite` red costs `.aseprite` masters, the hand-edit round trip and
+  palette derivation, nothing else. It is a paid product, so the fix is an
+  install or `BGATE_ASEPRITE`, never a download button. See [Aseprite](#aseprite).
 
 Below the rows it prints project-level faults no binary probe can see (seat lanes
 matching no directory here, a hook that was never installed), then the effective
@@ -283,6 +287,62 @@ bgate app                   # the same dashboard in a native window
 `bgate app` needs `pip install -e ".[desktop]"`. On Windows it renders through
 the WebView2 runtime that ships with 11. It takes a loopback port the OS picks,
 so it does not fight a `bgate serve` that is already running.
+
+## Aseprite
+
+Optional, and the one dependency that costs money. Without it every tool
+still runs; with it, generated pixel art becomes actual pixel art and a human
+gets a file they can edit.
+
+**Install.** Buy it at [aseprite.org](https://www.aseprite.org) or on Steam,
+or build it from source (free, the licence allows it). Version 1.3 or newer:
+the Lua surface the adapter scripts (`json` global, tag repeats,
+`--script-param`) is a 1.3 feature set, and `bgate doctor` reads a 1.2 install
+as too old rather than as broken scripts.
+
+**Discovery**, in order, and an override that names a missing file fails
+rather than falling through to PATH:
+
+1. `BGATE_ASEPRITE` — the executable's full path
+2. `aseprite` on PATH
+3. `C:\Program Files\Aseprite\Aseprite.exe`, `C:\Program Files (x86)\Aseprite\Aseprite.exe`
+4. the Steam library: `...\Steam\steamapps\common\Aseprite\Aseprite.exe` (either Program Files), or `~/.steam/steam/steamapps/common/Aseprite/aseprite`
+5. `/Applications/Aseprite.app/Contents/MacOS/aseprite`, `/usr/bin/aseprite`, `/usr/local/bin/aseprite`
+
+The Steam build is the common case on Windows and is found without any
+setting. For a portable or custom build, set the override once, machine-wide:
+
+```powershell
+[Environment]::SetEnvironmentVariable("BGATE_ASEPRITE", "D:\tools\aseprite\aseprite.exe", "User")
+```
+
+then restart the terminal and the coding-agent CLI, since both read the
+environment at start.
+
+**Verify.** `bgate doctor` prints an `aseprite` row with the path and version
+it found. Every run is headless (`aseprite -b`); nothing here opens the
+editor, and the adapter never writes to a file you did not name.
+
+**What it is used for.** Three things, each its own tool (see
+[tools.md](tools.md)):
+
+- `palette_pin` and the sprite generation path use it to **conform** a PNG
+  to the project's pinned palette in indexed mode with dithering off — the
+  step that turns a 9,000-colour "pixel art" generation into pixel art.
+- `aseprite_master` turns a sheet PNG plus timing into a tagged `.aseprite`
+  **master**, a playable animation with onion-skin and scrub;
+  `image_sprites` writes one automatically beside every sheet it delivers.
+- `aseprite_export` is the way back: an edited master becomes a sheet PNG
+  and an **exact** SpriteFrames `.tres` from the export JSON, so per-frame
+  holds and per-animation speeds survive as authored. Slices named after
+  rig slots become per-frame anchors, and every tag gets a GIF preview.
+- `aseprite_antialias` softens stair-step corners after generation and
+  conform, snapping every blended pixel back into the pinned palette.
+
+**The loop, for a human fixing a frame:** open `<sheet>_master.aseprite`,
+edit, save, call `aseprite_export`, import the pair into the game. The
+findings that export reports (motion, palette) are advisory: a person
+edited it on purpose.
 
 ## Switching between projects
 
