@@ -34,6 +34,13 @@
     bgate panic [DIR] [--json]  EMERGENCY STOP: kill every agent on a project,
                                 reap orphans, and turn auto-deploy off.
                                 Works even when the dashboard is gone or wedged.
+    bgate kit [list | install NAME [--force] [--no-bind] | remove NAME [--force]] [--project DIR]
+                                reusable systems (controllers, inventory, health)
+                                copied into the active game, never overwriting
+    bgate library [list | search TEXT | publish PATH... [--tags a,b] [--collection C]
+                   | import ID... [--dest DIR] | forget ID] [--project DIR]
+                                the machine-wide asset library at ~/.bgate/library:
+                                what one game made, another can take
     bgate hook-install [DIR]    wire lane/lock enforcement into a game project
     bgate hook-uninstall [DIR]  remove it again, leaving your other hooks alone
     bgate un-adopt [DIR] --yes  delete this project's .bgate store; game untouched
@@ -1214,6 +1221,211 @@ def _cmd_animlib(rest: list) -> int:
     return 2
 
 
+def _reuse_root(rest: list):
+    """The project a kit or library command works in: --project DIR, else the
+    enclosing or active project. Returns (root, game_dir)."""
+    from bgate_core.store import project as _project
+    start = None
+    if "--project" in rest:
+        i = rest.index("--project") + 1
+        if i < len(rest):
+            start = rest[i]
+    root = _project.require_root(start)
+    game = _project.game_dir(root, _project.engine_of(root)) or root
+    return root, game
+
+
+_REUSE_VALUE_FLAGS = ("--project", "--tags", "--collection", "--dest", "--note",
+                      "--kind")
+
+
+def _reuse_positional(rest: list) -> list:
+    skip: set[int] = set()
+    for i, token in enumerate(rest):
+        if token in _REUSE_VALUE_FLAGS:
+            skip.update({i, i + 1})
+    return [a for i, a in enumerate(rest)
+            if i not in skip and not a.startswith("-")]
+
+
+def _reuse_opt(rest: list, flag: str, default: str = "") -> str:
+    if flag in rest:
+        i = rest.index(flag) + 1
+        if i < len(rest):
+            return rest[i]
+    return default
+
+
+def _cmd_kit(rest: list) -> int:
+    """bgate kit [list | install NAME [--force] [--no-bind] | remove NAME [--force]] [--project DIR]
+
+    The same install kit_install performs, from the shell: a kit's scripts
+    into scripts/, its missing input actions into project.godot, nothing
+    overwritten. `list` says which are already in this game; --all lists
+    kits of every dimension, not only the project's.
+    """
+    from bgate_core.store import kits as _kits
+    from bgate_core.store import project as _project
+    sub = rest[0] if rest and not rest[0].startswith("-") else "list"
+    positional = _reuse_positional(rest)
+    try:
+        root, game = _reuse_root(rest)
+    except Exception as exc:                                      # noqa: BLE001
+        print(f"error: {exc}")
+        return 1
+    dimension = ""
+    try:
+        dimension = _project.get(root).get("dimension") or ""
+    except Exception:                                             # noqa: BLE001
+        pass
+    if "--all" in rest:
+        dimension = ""
+    if sub == "list":
+        st = _kits.status(root, game, "godot", dimension)
+        print(f"kits for {game} ({st['dimension']})")
+        for k in st["kits"]:
+            if k.get("error"):
+                print(f"  BROKEN {k['name']:<24} {k['error']}")
+                continue
+            mark = {"installed": "OK  ", "absent": "    ", "modified": "MOD ",
+                    "partial": "PART"}.get(k["state"], "??  ")
+            stale = " (stale: the kit changed since install)" if k.get("stale") else ""
+            print(f"  {mark} {k['name']:<24} {k['dimension']:<4} {k['title']}{stale}")
+        return 0
+    if sub in ("install", "add"):
+        if len(positional) < 2:
+            print("bgate kit install NAME [--force] [--no-bind] [--all] [--project DIR]")
+            return 2
+        try:
+            got = _kits.install(root, game, positional[1], force="--force" in rest,
+                                bind="--no-bind" not in rest, dimension=dimension)
+        except _kits.KitError as exc:
+            print(f"error: {exc}")
+            return 1
+        for rel in got["written"]:
+            print(f"  wrote   {rel}")
+        for row in got["kept"]:
+            print(f"  kept    {row['dest']}: {row['reason']}")
+        for row in got["replaced"]:
+            print(f"  backup  {row['dest']} -> {row['backup']}")
+        if got["actions_added"]:
+            print(f"  actions {', '.join(got['actions_added'])} added to project.godot")
+        if got["actions_missing"]:
+            print(f"  MISSING actions {', '.join(got['actions_missing'])} (--no-bind)")
+        if got["autoloads_missing"]:
+            print(f"  MISSING autoloads {', '.join(got['autoloads_missing'])}")
+        if got["note"]:
+            print(f"  {got['note']}")
+        print()
+        print(got["usage"])
+        return 0 if got["ok"] else 1
+    if sub in ("remove", "rm"):
+        if len(positional) < 2:
+            print("bgate kit remove NAME [--force] [--project DIR]")
+            return 2
+        try:
+            got = _kits.remove(root, game, positional[1], force="--force" in rest)
+        except _kits.KitError as exc:
+            print(f"error: {exc}")
+            return 1
+        for rel in got["removed"]:
+            print(f"  removed {rel}")
+        for row in got["refused"]:
+            print(f"  REFUSED {row['dest']}: {row['reason']}")
+        return 0 if got["ok"] else 1
+    print(_cmd_kit.__doc__.splitlines()[0])
+    return 2
+
+
+def _cmd_library(rest: list) -> int:
+    """bgate library [list | search TEXT | publish PATH... | import ID... | forget ID] [--project DIR]
+
+    The machine-wide asset library in ~/.bgate/library. `forget` lives HERE
+    and not as an MCP tool on purpose: a store every project shares must not
+    be emptiable by an agent.
+    """
+    from bgate_core.store import assetlib as _assetlib
+    sub = rest[0] if rest and not rest[0].startswith("-") else "list"
+    positional = _reuse_positional(rest)
+
+    def show(entries):
+        for e in entries:
+            dims = f"{e['dims'][0]}x{e['dims'][1]}" if e.get("dims") else ""
+            tags = ",".join(e.get("tags") or [])
+            coll = e.get("collection") or ""
+            print(f"  {e['id']}  {e['kind']:<9} {e['name']:<32} {dims:<9} "
+                  f"{coll:<14} {tags}")
+
+    if sub in ("list", "search"):
+        query = " ".join(positional[1:]) if sub == "search" else ""
+        got = _assetlib.search(query, kind=_reuse_opt(rest, "--kind"),
+                               collection=_reuse_opt(rest, "--collection"),
+                               tags=[t for t in _reuse_opt(rest, "--tags").split(",") if t],
+                               limit=200)
+        print(f"library at {got['home']}: {got['library_size']} entries, "
+              f"{got['matched']} match")
+        show(got["entries"])
+        return 0
+    if sub == "publish":
+        if len(positional) < 2:
+            print("bgate library publish PATH... [--tags a,b] [--collection C] "
+                  "[--note TEXT] [--project DIR]")
+            return 2
+        try:
+            root, _game = _reuse_root(rest)
+            from bgate_core.store import project as _project
+            try:
+                name = _project.get(root).get("name") or ""
+            except Exception:                                     # noqa: BLE001
+                name = ""
+            got = _assetlib.publish(
+                root, positional[1:],
+                tags=[t for t in _reuse_opt(rest, "--tags").split(",") if t],
+                collection=_reuse_opt(rest, "--collection"),
+                note=_reuse_opt(rest, "--note"), project_name=name)
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"error: {exc}")
+            return 1
+        print(f"published {len(got['published'])} new, "
+              f"{len(got['existing'])} already held")
+        show(got["published"] + got["existing"])
+        return 0
+    if sub == "import":
+        if len(positional) < 2:
+            print("bgate library import ID... [--dest DIR] [--overwrite] [--project DIR]")
+            return 2
+        try:
+            _root, game = _reuse_root(rest)
+            got = _assetlib.import_entries(
+                game, positional[1:],
+                dest=_reuse_opt(rest, "--dest", "assets/library"),
+                overwrite="--overwrite" in rest)
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"error: {exc}")
+            return 1
+        for row in got["imported"]:
+            verb = "landed " if row.get("landed") else "present"
+            print(f"  {verb} {row['path']}")
+        for row in got["refused"]:
+            print(f"  REFUSED {row['id']}: {row['reason']}")
+        return 0 if got["ok"] else 1
+    if sub == "forget":
+        if len(positional) < 2:
+            print("bgate library forget ID")
+            return 2
+        try:
+            got = _assetlib.forget(positional[1])
+        except _assetlib.LibraryError as exc:
+            print(f"error: {exc}")
+            return 1
+        print(f"forgot {got['forgot']} ({got['name']})"
+              + ("" if got["blob_removed"]
+                 else "; bytes kept, another entry shares them"))
+        return 0
+    print(_cmd_library.__doc__.splitlines()[0])
+    return 2
+
+
 def main() -> int:
     _writable_console()
     args = sys.argv[1:]
@@ -1327,6 +1539,12 @@ def main() -> int:
 
     if cmd == "animlib":
         return _cmd_animlib(args[1:])
+
+    if cmd in ("kit", "kits"):
+        return _cmd_kit(args[1:])
+
+    if cmd in ("library", "lib"):
+        return _cmd_library(args[1:])
 
     if cmd == "doctor":
         positional = [a for a in args[1:] if not a.startswith("-")]

@@ -1,0 +1,32 @@
+{
+  "name": "third_person_controller",
+  "title": "Third-person character controller with camera rig",
+  "engine": "godot",
+  "dimension": "3d",
+  "summary": "Camera-relative CharacterBody3D movement that turns to face travel, jump with coyote time, sprint, an interaction probe; plus the SpringArm3D camera rig that follows it as a sibling.",
+  "files": {
+    "scripts/third_person_controller.gd": "template:godot/3d/scripts/third_person_controller.gd",
+    "scripts/camera_rig.gd": "template:godot/3d/scripts/camera_rig.gd"
+  },
+  "requires": {
+    "actions": {
+      "move_left": ["A"],
+      "move_right": ["D"],
+      "move_forward": ["W"],
+      "move_back": ["S"],
+      "jump": ["Space"],
+      "sprint": ["Shift"],
+      "interact": ["E"],
+      "camera_toggle": ["V"]
+    },
+    "autoloads": ["BGateTelemetry"],
+    "kits": []
+  },
+  "provides": {
+    "attach_to": "CharacterBody3D",
+    "exports": ["walk_speed", "sprint_speed", "ground_accel", "ground_decel", "air_control", "turn_rate", "jump_velocity", "gravity", "fall_multiplier", "coyote_time", "jump_buffer_time", "interactable_group"],
+    "groups": ["player"],
+    "methods": ["is_in_scripted_move()"]
+  },
+  "usage": "Attach scripts/third_person_controller.gd to a CharacterBody3D (add an Area3D child named InteractRange for interaction). Add a Node3D SIBLING with scripts/camera_rig.gd, a SpringArm3D child holding the Camera3D, and set its target_path to the body. godot_character_wire installs the same controller onto an animated .glb."
+}

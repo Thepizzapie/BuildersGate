@@ -346,6 +346,11 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # filing it under `image` would hide it from the audio seat whose
         # music path is kie-only.
         "kie_status",
+        # THE SHARED ASSET LIBRARY. Publish and import are per-project
+        # copies any seat may need: art publishes what it made, gameplay
+        # imports what a level needs, audio the same for a stem. Search
+        # before generating is the point, so it must be in reach everywhere.
+        "library_publish", "library_search", "library_import",
         "pending_decisions", "plan_status", "profile_get", "profile_set",
         "project_init", "project_select", "project_set_dimension",
         "project_set_engine", "project_status", "provider_status", "queue_add",
@@ -388,6 +393,9 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "unity_check", "unity_test_run", "unity_execute",
         "godot_check_project", "godot_inspect_resource", "godot_scaffold",
         "godot_templates", "godot_test_run",
+        # Kits are scene-and-script work: the seats that never touch a
+        # .tscn never install a controller either.
+        "kit_list", "kit_install", "kit_remove",
         "iteration_record_checks", "iteration_status",
         "scene_attach_script", "scene_node_add", "scene_outline",
         "scene_rename_node", "scene_reparent_node", "scene_set_property",

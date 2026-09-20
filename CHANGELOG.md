@@ -282,6 +282,34 @@ repository at first publication. There is no earlier release history to record.
   hosts the server.
 
 ### Added
+- **Kits: reusable systems a project takes one at a time.** `kit_list`,
+  `kit_install`, `kit_remove` and `bgate kit`. Eight ship under
+  `src/templates/kits/godot/`: a four-way top-down controller, the
+  platformer controller, the third-person controller with its camera rig,
+  the arcade vehicle with its chase camera, 2D and 3D interactables with
+  pickups, a stackable slot inventory, and a health component. Each is a
+  manifest (what it needs: input actions with default keys, autoloads,
+  other kits; what it provides: signals, exports, groups) plus scripts, or
+  a pointer at a script the scaffold already ships so the two cannot
+  drift. Install never overwrites (`force` replaces with a `.bak`), appends
+  only the MISSING input actions to `project.godot`, and then loads every
+  installed script inside the running project to say whether the engine
+  compiled it, because `--import` compiles nothing that no scene
+  references. `.bgate/kits.json` is the ledger that lets `kit_list` tell
+  installed from modified from stale, and lets `kit_remove` refuse a file
+  someone edited. The gap it closes was measured: three shipped games,
+  three hand-written inventories, three health components, none the same
+  shape and none tested.
+- **The machine-wide asset library.** `library_publish`, `library_search`,
+  `library_import` and `bgate library`. `~/.bgate/library` is the store one
+  game publishes to and the next imports from, the same shape as the key
+  store and `animlib`: machine-wide, in no repository, following the person.
+  Content-addressed blobs, an index carrying name, kind, tags, collection,
+  dimensions and provenance; `.rig.json` sidecars travel with their sheet,
+  `.import` files never do. Import refuses to overwrite a file that differs
+  and tracks what landed so `asset_verify` covers it from birth. Deletion
+  is `bgate library forget`, a CLI command and not a tool, for the reason
+  the animlib fetch is.
 - **Canon: which world is current, which files are retired.** A project
   now records the scene the game IS (`world`, defaulting to project.godot's
   main scene), named current files (`reporter`, `world_layout`, …) and a
