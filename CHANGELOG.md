@@ -10,6 +10,11 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Changed
+- **`/api/play/pad`: a touch layout from the input map.** A d-pad and up
+  to six buttons derived from the project's own actions (builtins included,
+  with their real physical keycodes), each carrying the DOM `code`/`key`/
+  `keyCode` the web build's key listener reads - so a phone can play a
+  keyboard game with no per-project mapping.
 - **The phone can play the build.** `/play/*` and the game's telemetry POST
   accept the phone token as a cookie (`bgate_phone`) from the tailnet side,
   because the engine's own `.wasm`/`.pck` fetches cannot carry a header. The
