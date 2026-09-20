@@ -446,9 +446,43 @@ def install_guard(app, root_fn) -> None:
         # depends on.
         host = (request.headers.get("host") or "").strip().lower()
         allowed = _LOOPBACK_HOSTS | _remote_hosts()
-        if host and host.rsplit(":", 1)[0].strip("[]") not in allowed:
+        host_name = host.rsplit(":", 1)[0].strip("[]")
+        if host and host_name not in allowed:
             return JSONResponse(status_code=403, content=error_body(
                 403, "request Host is not loopback", code="bad_host"))
+
+        # THE TAILNET SIDE IS A DIFFERENT DOOR. A request that arrived by the
+        # remote host is a phone (or something pretending to be one), and it
+        # is held to three things the loopback side is not: the switch in
+        # Settings > Phone has to be on, EVERY method carries the phone token
+        # (a GET of /api/state is the whole project), and the device it came
+        # from has not been revoked. It never sees the dashboard's own token.
+        if host and host_name not in _LOOPBACK_HOSTS and not _auth_disabled():
+            from bgate_ui import remote as _remote
+            if not _remote.enabled():
+                _remote.note_refusal(request, "phone access is off")
+                return JSONResponse(status_code=403, content=error_body(
+                    403, "phone access is switched off on the desktop",
+                    code="remote_off"))
+            try:
+                expected = _remote.ensure_token(root_fn())
+            except Exception:                                    # noqa: BLE001
+                expected = ""
+            presented = (request.headers.get("x-bgate-token")
+                         or (request.headers.get("authorization", "")
+                             .removeprefix("Bearer ").strip()))
+            if not expected or not secrets.compare_digest(presented or "", expected):
+                _remote.note_refusal(request, "wrong or missing phone token")
+                return JSONResponse(status_code=401, content=error_body(
+                    401, "missing or stale phone token, scan the QR again",
+                    code="unauthorized"))
+            if _remote.is_revoked(request):
+                _remote.note_refusal(request, "device revoked")
+                return JSONResponse(status_code=403, content=error_body(
+                    403, "this device was revoked on the desktop",
+                    code="device_revoked"))
+            _remote.note_request(request)
+            return await call_next(request)
 
         # Read the opt-out per request, not once at install time: the app is
         # imported when a test module is first collected, which is before any

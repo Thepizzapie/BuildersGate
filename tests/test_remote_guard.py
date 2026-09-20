@@ -29,12 +29,27 @@ def test_tailnet_host_rejected_when_remote_off(client, monkeypatch):
     assert r.status_code == 403  # host gate: not loopback
 
 
-def test_tailnet_host_allowed_with_token_when_remote_on(client, monkeypatch):
+def test_tailnet_host_allowed_with_phone_token_when_remote_on(client, monkeypatch, tmp_path):
+    from bgate_ui import remote
+    remote._reset_for_tests()
+    monkeypatch.setenv("BGATE_REMOTE_HOSTS", "100.64.0.9")
+    c, _ = client
+    r = c.post("/api/gate", json={"mode": "open"},
+               headers={"host": "100.64.0.9:7788",
+                        "x-bgate-token": remote.ensure_token(tmp_path)})
+    assert r.status_code != 403  # host admitted; 200 or a handler-level code
+
+
+def test_the_dashboard_token_does_not_open_the_tailnet_door(client, monkeypatch):
+    """The phone has its own credential. ui-token is what every fetch from
+    the desktop page carries, and it must be useless from the tailnet side,
+    or rotating the phone's token would not actually cut a phone off."""
+    from bgate_ui import remote
+    remote._reset_for_tests()
     monkeypatch.setenv("BGATE_REMOTE_HOSTS", "100.64.0.9")
     c, token = client
-    r = c.post("/api/gate", json={"mode": "open"},
-               headers={"host": "100.64.0.9:7788", "x-bgate-token": token})
-    assert r.status_code != 403  # host admitted; 200 or a handler-level code
+    r = c.get("/api/state", headers={"host": "100.64.0.9:7788", "x-bgate-token": token})
+    assert r.status_code == 401
 
 
 def test_tailnet_host_without_token_401(client, monkeypatch):
@@ -134,23 +149,32 @@ def test_pair_page_is_404_when_remote_off(client, monkeypatch):
     assert c.get("/pair").status_code == 404
 
 
-def test_pair_page_serves_token_and_qr_on_loopback(client, monkeypatch):
+def test_pair_page_serves_the_phone_token_and_qr_on_loopback(client, monkeypatch, tmp_path):
+    from bgate_ui import remote
     c, token = client
     monkeypatch.setenv("BGATE_REMOTE_HOSTS", "100.64.0.9")
     r = c.get("/pair", headers={"host": "127.0.0.1:7788"})
     assert r.status_code == 200
-    assert token in r.text
+    assert remote.ensure_token(tmp_path) in r.text
+    assert token not in r.text          # the dashboard's own token never leaves the page
     assert "http://100.64.0.9:7788" in r.text
     pytest.importorskip("segno")
     assert 'src="data:image/svg+xml' in r.text
 
 
-def test_pair_page_refused_from_the_tailnet_side(client, monkeypatch):
+def test_pair_page_refused_from_the_tailnet_side(client, monkeypatch, tmp_path):
     """The phone has no business fetching the page that hands out the
     credential the phone is supposed to scan."""
     c, token = client
     monkeypatch.setenv("BGATE_REMOTE_HOSTS", "100.64.0.9")
+    from bgate_ui import remote
+    remote._reset_for_tests()
     r = c.get("/pair", headers={"host": "100.64.0.9:7788"})
+    assert r.status_code == 401            # the tailnet door: no phone token, nothing
+    assert token not in r.text
+    # and even WITH the phone token, the page is loopback-only
+    r = c.get("/pair", headers={"host": "100.64.0.9:7788",
+                                "x-bgate-token": remote.ensure_token(tmp_path)})
     assert r.status_code == 404
     assert token not in r.text
 

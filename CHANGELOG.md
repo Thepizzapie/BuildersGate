@@ -10,6 +10,16 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Changed
+- **Settings > Phone: the companion app's door, from the desk.** The phone
+  now has its own token (`.bgate/remote-token`), not the dashboard's, so it
+  can be rotated - new token, new QR, every phone cut off - without logging
+  the desktop out of itself. The tailnet side is admitted per request, so it
+  can be closed and reopened from the panel without a restart, and every
+  method from that side needs the phone token (a GET of `/api/state` is the
+  whole project). Every device that connects is seen - address, user agent,
+  requests, last path, online or idle - and can be revoked on its own, or
+  forgotten. `/api/remote*` is loopback-only: from the phone it does not
+  exist. Existing phones re-pair once, since their token was the old one.
 - **Codex workers: no reviewer, a real sandbox, and the hook.** `codex exec`
   seats no longer run with `--approve-for-me`. They run `workspace-write`
   with `approval_policy = never`, network off, and — on Windows —
