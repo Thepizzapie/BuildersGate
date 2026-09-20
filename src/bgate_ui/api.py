@@ -465,7 +465,7 @@ def install_guard(app, root_fn) -> None:
                     403, "phone access is switched off on the desktop",
                     code="remote_off"))
             try:
-                expected = _remote.ensure_token(root_fn())
+                expected = _remote.ensure_token()     # machine-wide, not per project
             except Exception:                                    # noqa: BLE001
                 expected = ""
             presented = (request.headers.get("x-bgate-token")
