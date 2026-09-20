@@ -3377,6 +3377,41 @@ names: layer node names, {"floor": ..., "walls": ..., "props": ...};
   defaults Floor/Walls/Props.
 ```
 
+## kit_list
+
+```text
+THE SHELF OF REUSABLE SYSTEMS, and which are already in this project.
+
+Every kit for this engine: name, what it does, what it needs (input
+actions, autoloads, other kits), what it provides (signals, exports,
+groups), and its `state` here: absent, installed, modified (a file
+was edited since install), partial, or stale (the kit has changed
+upstream since it was installed). Read `usage` before wiring one.
+Free, no side effects. Then kit_install(name).
+```
+
+## kit_install
+
+```text
+DROP A SYSTEM INTO THE GAME: copies one kit's scripts into scripts/,
+adds the input actions it reads, and proves the engine compiles them.
+
+Never overwrites: a file already present is `kept` with whether it
+matches, and `force` is the only way past that. `actions_added` is
+what landed in project.godot; `autoloads_missing` and `kits_missing`
+are what the kit still needs that this project lacks. `usage` says how
+to wire it. The ledger at .bgate/kits.json is what lets kit_list tell
+installed from modified later.
+```
+
+## kit_remove
+
+```text
+Take a kit's files back out. Refuses any file edited since install
+unless `force`. Input actions stay: another script may read them by
+now, and an unbound action is a silent no-op, not an error.
+```
+
 ## level_plan
 
 ```text
@@ -3452,6 +3487,43 @@ doorway looks like when the wall is a solid block.
 
 Returns the cell counts it moved and the masks the new set could not
 answer, which is the list to hand an artist.
+```
+
+## library_publish
+
+```text
+PUT AN ASSET WHERE THE NEXT GAME CAN FIND IT: copies files out of
+this project into the machine-wide library at ~/.bgate/library.
+
+Content-addressed: the same bytes published twice are stored once and
+come back under `existing` with the new tags merged. Nothing leaves the
+machine and nothing lands in any repository. Each entry records the
+project and path it came from. Then library_search finds it from any
+project and library_import brings it in.
+```
+
+## library_search
+
+```text
+WHAT THE MACHINE ALREADY HAS: search the shared asset library before
+generating anything. Free, no side effects.
+
+Each entry carries its id (what library_import takes), name, kind,
+image dimensions, tags, collection, and the project it came from.
+`kinds` and `collections` count the whole library so an empty result
+still says what is there.
+```
+
+## library_import
+
+```text
+BRING A LIBRARY ASSET INTO THIS GAME: copies the bytes (and any rig
+sidecar) under `dest`, tracks each landed file under its content hash
+so asset_verify covers it from birth, and returns its res:// path.
+
+A file already present and identical is reported, not rewritten; one
+that differs is refused unless `overwrite`. Godot reimports on next
+open; call godot_import_asset or engine_check to do it now.
 ```
 
 ## local_status

@@ -1,0 +1,25 @@
+{
+  "name": "platformer_controller",
+  "title": "Side-on platformer character controller",
+  "engine": "godot",
+  "dimension": "2d",
+  "summary": "The 2D template's CharacterBody2D: run, jump with coyote time and a jump buffer, a fall multiplier, and jump/land telemetry carrying the numbers behind \"floaty\". Installed under its own name so it never collides with a project's player.gd.",
+  "files": {
+    "scripts/platformer_controller.gd": "template:godot/2d/scripts/player.gd"
+  },
+  "requires": {
+    "actions": {
+      "move_left": ["A", "Left"],
+      "move_right": ["D", "Right"],
+      "jump": ["Space"]
+    },
+    "autoloads": ["BGateTelemetry"],
+    "kits": []
+  },
+  "provides": {
+    "attach_to": "CharacterBody2D",
+    "exports": ["speed", "jump_velocity", "gravity", "fall_multiplier", "coyote_time", "jump_buffer"],
+    "methods": ["is_in_scripted_move()"]
+  },
+  "usage": "Attach scripts/platformer_controller.gd to a CharacterBody2D with a CollisionShape2D. Every feel tunable is an @export and the F1 tuning overlay edits them live; `jump` and `land` telemetry events carry air_time and peak_height."
+}

@@ -80,6 +80,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     # Mechanics, systems and feel: edits scripts and scenes, drives the engine,
     # and proves it with the engine rather than by reading.
     "gameplay": (
+        "kit_", "library_",
         "godot_", "web_", "unity_", "scene_",
         "traversal_prove", "scale_check", "scale_record_3d",
         "level_", "encounter_design_set", "room_", "playtest_", "evidence_",
@@ -88,6 +89,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     # Engine plumbing, build and performance, the same engine surface, plus
     # the project-level knobs gameplay does not touch.
     "tech": (
+        "kit_", "library_",
         "godot_", "web_", "unity_", "scene_", "playtest_", "evidence_",
         "iteration_", "game_view_", "local_status", "kie_status",
         "aseprite_status", "project_set_engine",
@@ -95,6 +97,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     # The visual pipeline. The biggest list, and it earns it: this is the only
     # seat that generates, rigs, measures and delivers assets.
     "art": (
+        "library_",
         "blender_", "mesh_faceting", "skin_dominance", "animation_",
         "godot_character_wire", "godot_clip_",
         "image_", "art_", "palette_pin", "ref_", "bible_ref_",
@@ -108,11 +111,13 @@ SEATS: dict[str, tuple[str, ...]] = {
     ),
     # Music, SFX and mix.
     "audio": (
+        "library_",
         "sfx_", "music_", "audio_", "voice_", "godot_check_project",
         "godot_test_run", "godot_screenshot", "scene_wire", "scene_swap_resource",
     ),
     # Cutscenes and shot sequences.
     "cinematic": (
+        "library_",
         "cinematic_", "storyboard_", "kie_video_generate", "image_generate",
         "image_edit", "music_", "voice_", "animation_", "godot_screenshot",
     ),

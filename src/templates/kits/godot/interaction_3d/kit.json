@@ -1,0 +1,27 @@
+{
+  "name": "interaction_3d",
+  "title": "3D interactables: volumes, pickups, trigger volumes",
+  "engine": "godot",
+  "dimension": "3d",
+  "summary": "Area3D interactables in the \"interactable\" group with interact(actor) and an `interacted` signal, a one-shot bobbing pickup, and a trigger volume. third_person_controller's probe drives them.",
+  "files": {
+    "scripts/interactable.gd": "template:godot/3d/scripts/interactable.gd",
+    "scripts/pickup.gd": "template:godot/3d/scripts/pickup.gd",
+    "scripts/trigger_volume.gd": "template:godot/3d/scripts/trigger_volume.gd"
+  },
+  "requires": {
+    "actions": {
+      "interact": ["E"]
+    },
+    "autoloads": ["BGateTelemetry"],
+    "kits": []
+  },
+  "provides": {
+    "attach_to": "Area3D",
+    "signals": ["interacted(actor)"],
+    "exports": ["prompt", "one_shot", "cooldown", "item_id"],
+    "groups": ["interactable"],
+    "methods": ["interact(actor)", "can_interact()"]
+  },
+  "usage": "Anything usable is an Area3D with scripts/interactable.gd (or pickup.gd) and a CollisionShape3D. Connect `interacted` in the editor, or subclass and override _on_interact. The third_person_controller kit's InteractRange finds the nearest one and calls interact(actor) on the interact action."
+}

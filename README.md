@@ -110,6 +110,8 @@ list, the server is not connected.
 | `bgate publish` | Build a static arcade site from every game on the machine |
 | `bgate connect` | Wire your coding agent to the MCP server, or say why it is not |
 | `bgate key set openai --global` | Store an API key outside any repository |
+| `bgate kit install <name>` | Drop a reusable system (a controller, an inventory, health) into the game, never overwriting |
+| `bgate library search <text>` | The machine-wide asset library: what one game made, another imports |
 | `bgate hook-status` | Prove the enforcement hook is live |
 | `bgate panic` | Stop every agent on a project |
 

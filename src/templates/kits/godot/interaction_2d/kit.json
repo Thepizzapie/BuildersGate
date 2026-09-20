@@ -1,0 +1,27 @@
+{
+  "name": "interaction_2d",
+  "title": "2D interactables: volumes, a player probe, pickups",
+  "engine": "godot",
+  "dimension": "2d",
+  "summary": "Area2D interactables in the \"interactable\" group with interact(actor), an interactor probe for the player that focuses the nearest one and fires on the interact action, and a one-shot pickup that feeds a BGInventory.",
+  "files": {
+    "scripts/interactable_2d.gd": "scripts/interactable_2d.gd",
+    "scripts/interactor_2d.gd": "scripts/interactor_2d.gd",
+    "scripts/pickup_2d.gd": "scripts/pickup_2d.gd"
+  },
+  "requires": {
+    "actions": {
+      "interact": ["E"]
+    },
+    "autoloads": ["BGateTelemetry"],
+    "kits": []
+  },
+  "provides": {
+    "attach_to": "Area2D",
+    "signals": ["interacted(actor)", "focus_changed(focused)", "target_changed(target)"],
+    "exports": ["prompt", "one_shot", "cooldown", "item_id", "count", "actor_path", "interactable_group"],
+    "groups": ["interactable"],
+    "methods": ["interact(actor)", "can_interact()", "set_focused(focused)"]
+  },
+  "usage": "Under the player add an Area2D with scripts/interactor_2d.gd and a CollisionShape2D for reach. Anything usable is an Area2D with scripts/interactable_2d.gd (or pickup_2d.gd for items); connect `interacted`, or subclass and override _on_interact. Pair with the inventory kit and pickups fill it."
+}

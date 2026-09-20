@@ -1,0 +1,23 @@
+{
+  "name": "inventory",
+  "title": "Slot inventory with stacks",
+  "engine": "godot",
+  "dimension": "any",
+  "summary": "A Node holding string item ids in stackable slots with a capacity. add/remove return what did not fit; signals for every change; to_dict/from_dict for saves.",
+  "files": {
+    "scripts/inventory.gd": "scripts/inventory.gd"
+  },
+  "requires": {
+    "actions": {},
+    "autoloads": ["BGateTelemetry"],
+    "kits": []
+  },
+  "provides": {
+    "attach_to": "Node",
+    "class_names": ["BGInventory"],
+    "signals": ["changed", "item_added(item_id, count, overflow)", "item_removed(item_id, count, missing)", "full(item_id, overflow)"],
+    "exports": ["capacity", "default_stack", "stack_sizes"],
+    "methods": ["add(id, count) -> overflow", "remove(id, count) -> missing", "count_of(id)", "has(id, count)", "can_add(id, count)", "totals()", "swap(a, b)", "clear()", "to_dict()", "from_dict(data)"]
+  },
+  "usage": "Add a Node with scripts/inventory.gd under the player (or as an autoload). Set capacity and stack_sizes in the inspector. `var left := $Inventory.add(\"arrow\", 30)` returns how many did not fit; connect `changed` to your UI and redraw from `slots` or `totals()`."
+}

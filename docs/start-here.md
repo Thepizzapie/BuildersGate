@@ -381,6 +381,7 @@ any part of this.
 ## Where to go next
 
 - [Glossary](glossary.md): every term, a sentence or two each.
+- [reference.md#kits](reference.md#kits): the systems you can drop into a game instead of writing again, and [the asset library](reference.md#the-asset-library) that carries art from one project to the next.
 - [setup.md](setup.md): setup in full, including `bgate adopt` and API keys.
 - [reference.md](reference.md): every surface in detail.
 - [gotchas.md](gotchas.md): what goes wrong and what to do about it.

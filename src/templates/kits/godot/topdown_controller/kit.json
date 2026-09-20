@@ -1,0 +1,28 @@
+{
+  "name": "topdown_controller",
+  "title": "Top-down 4-directional character controller",
+  "engine": "godot",
+  "dimension": "2d",
+  "summary": "A CharacterBody2D that moves on WASD/arrows, snaps to the four cardinals, remembers its facing and drives an optional AnimatedSprite2D.",
+  "files": {
+    "scripts/topdown_controller.gd": "scripts/topdown_controller.gd"
+  },
+  "requires": {
+    "actions": {
+      "move_left": ["A", "Left"],
+      "move_right": ["D", "Right"],
+      "move_up": ["W", "Up"],
+      "move_down": ["S", "Down"]
+    },
+    "autoloads": ["BGateTelemetry"],
+    "kits": []
+  },
+  "provides": {
+    "attach_to": "CharacterBody2D",
+    "signals": ["facing_changed(direction, facing)", "moving_changed(moving)"],
+    "exports": ["speed", "acceleration", "friction", "four_way", "sprite_path", "walk_anim", "idle_anim"],
+    "groups": ["player"],
+    "methods": ["is_in_scripted_move()"]
+  },
+  "usage": "Attach scripts/topdown_controller.gd to a CharacterBody2D with a CollisionShape2D. Set four_way=false for eight-way movement. Point sprite_path at an AnimatedSprite2D whose SpriteFrames has walk_down/walk_up/walk_left/walk_right (and idle_*) and it animates itself; otherwise connect facing_changed to your own drawing."
+}

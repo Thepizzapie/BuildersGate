@@ -499,6 +499,78 @@ access, no overlay.
 CI. Without `BGATE_TELEMETRY` set, the autoload is inert and opening the game
 normally writes nothing.
 
+## Kits
+
+```bash
+kit_list()                                    # the shelf, with what is already in this game
+kit_install(name="topdown_controller")        # scripts in, actions bound, engine compiles it
+kit_remove(name="topdown_controller")         # back out; refuses a file you edited
+bgate kit list | install NAME | remove NAME   # the same, from the shell
+```
+
+A kit is a system a project takes one at a time: a manifest and scripts under
+`src/templates/kits/godot/<name>/`. Eight ship:
+
+| Kit | Dimension | What it is |
+|---|---|---|
+| `topdown_controller` | 2D | Four-way (or eight-way) CharacterBody2D that remembers its facing and drives an optional AnimatedSprite2D |
+| `platformer_controller` | 2D | The 2D template's player: coyote time, jump buffer, fall multiplier, jump/land telemetry |
+| `interaction_2d` | 2D | Area2D interactables, a player probe that focuses the nearest, a bobbing pickup that fills an inventory |
+| `third_person_controller` | 3D | Camera-relative body that turns to face travel, sprint, interaction probe, plus the SpringArm3D rig |
+| `vehicle_controller` | 3D | The arcade car, plus the chase camera |
+| `interaction_3d` | 3D | Area3D interactables, pickups and trigger volumes |
+| `inventory` | any | Stackable string-id slots with a capacity; every mutation returns what did not fit |
+| `health` | any | Hit points with an invulnerability window; `died` is a signal, never a `queue_free` |
+
+The manifest declares what the kit needs (input actions with default keys,
+autoloads, other kits) and what it provides (signals, exports, groups). Install
+copies the scripts into `scripts/`, **never overwriting**: a file already there
+is reported with whether it matches, and `force=True` is the only way past
+that (a timestamped `.bak` is kept). Missing input actions are appended to
+`project.godot` with the manifest's keys; an action that exists is never
+rebound. Then every installed script is loaded inside the running project and
+the result says whether the engine compiled it, because `--import` does not
+compile a script nothing references, and a freshly installed kit is exactly
+that.
+
+The kits that reuse a template script (`interaction_3d`, `third_person_controller`)
+point at the scaffold's own file (`template:godot/3d/scripts/interactable.gd`),
+so the scaffold and the kit cannot drift. `godot_character_wire` installs the
+third-person controller the same way.
+
+`.bgate/kits.json` records what was installed and each file's hash, which is
+how `kit_list` tells `installed` from `modified` (edited here since) from
+`stale` (the kit changed upstream), and how `kit_remove` knows to refuse a
+file you edited. Kits are GDScript, so they register for Godot projects only.
+
+## The asset library
+
+```bash
+library_search(query="paladin")                        # before generating: what the machine already has
+library_publish(paths=["assets/characters"], tags=["hero"], collection="paladin")
+library_import(ids=["c7e337593980"], dest="assets/library")
+bgate library list | search TEXT | publish PATH... | import ID... | forget ID
+```
+
+`~/.bgate/library` (`BGATE_HOME` moves it) is the store one game publishes to
+and the next imports from. It is machine-wide and in no repository, the same
+shape as the key store and `animlib`: the asset follows the person, not the
+game. `blobs/<sha256><ext>` holds the bytes once however many entries share
+them; `index.json` holds each entry's name, kind, tags, collection, size, image
+dimensions, and the project and path it came from.
+
+Publish takes files or directories inside the project (a directory publishes
+every image, audio, model, resource, scene and script under it, never an
+`.import`). A sheet's `.rig.json` sidecar rides with it and comes back on
+import. Import lands under `dest` in the engine project, refuses to overwrite
+a file that differs, tracks each landed file under its content hash so
+`asset_verify` covers it from birth, and returns its `res://` path.
+
+Deleting is `bgate library forget`, a CLI command and deliberately not a tool:
+a store every project on the machine shares must not be emptiable by an
+agent. The dashboard's Library view still shows this project's own assets;
+the shared library has no pane yet.
+
 ## Level generation
 
 `level_plan` lays out a level and shows it as ASCII. `level_generate` does the
@@ -749,7 +821,7 @@ the causal history.
 
 ## Tool index
 
-226 MCP tools are registered (the count is easy to let rot; tests/mcp/test_seat_briefs.py reads the real surface off the source). The families, so you know what to look for:
+232 MCP tools are registered (the count is easy to let rot; tests/mcp/test_seat_briefs.py reads the real surface off the source). The families, so you know what to look for:
 
 | Family | Prefix | Covers |
 |---|---|---|
@@ -768,6 +840,8 @@ the causal history.
 | Audio | `voice_*`, `sfx_*`, `music_*`, `dialogue_*` | Speech, sound effects, music generation and selection, dialogue trees |
 | Cinematic | `cinematic_*`, `storyboard_*`, `kie_video_generate` | Shot planning, generation, assembly, delivery, boards |
 | Assets | `asset_*`, `pending_decisions` | Locks, tracking, integrity audit |
+| Kits | `kit_*` | Reusable systems (controllers, inventory, health, interaction) installed one at a time, never overwriting |
+| Library | `library_*` | The machine-wide asset library: publish from one game, search and import into the next |
 | Playtest | `playtest_*`, `iteration_*`, `causal_*` | Recording, briefs, promotion, iteration snapshots |
 | Brainstorm | `brainstorm_*` | Sessions, synthesis, deploy to the board |
 | Local | `image_status`, `local_status`, `kie_status` | Which providers and local servers are reachable |

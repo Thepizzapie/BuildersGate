@@ -53,7 +53,9 @@ This is the whole working cycle. Do it in this order.
    write lanes, and the bible/canon context it needs. Read it before touching
    anything.
 5. **Work.** Before writing a file, `seat_can_write(role, path)` if you are at
-   all unsure — it answers with the lane rule AND the lock state.
+   all unsure — it answers with the lane rule AND the lock state. Before writing
+   a SYSTEM, `kit_list`: a controller, inventory, health or interactable may be
+   one `kit_install(name)` away. Before generating an asset, `library_search(query)`.
 6. **Prove it.** Whatever you changed, produce evidence:
    `godot_check_project` (does the project still import and open),
    `godot_screenshot` / `godot_evidence` (does it look right in the actual
