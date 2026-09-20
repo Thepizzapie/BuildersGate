@@ -66,9 +66,23 @@ DEFAULTS: dict[str, Any] = {
     "rows": ["e"],
     "cell": [128, 128],
     "layout": "strip",
+    # THE STANDING HEIGHT, in pixels, of a character's idle frame inside the
+    # cell - the unit every other sprite is measured against. 0 = not
+    # declared: sheets are minted at whatever size the model drew and the
+    # party ships as four sizes of person (measured: 49/52/49/64 in a 96px
+    # cell). Declared, every sheet is fitted to it on landing (spritefit).
+    "standing_px": 0,
+    # The row the feet stand on, from the cell's top; 0 = cell height - 3.
+    "feet_row": 0,
     "actions": {},           # {} = defer to animspec's archetype catalogue
     "characters": {},
 }
+#: Keys a character (and an action) may override. `cell` and `view` are the
+#: ones the benchmark asked for and lost: a 128x128 side-view battle sheet
+#: and a 32x32 top-down overworld sheet are the SAME character, and one
+#: project-wide cell cannot describe both.
+CHARACTER_OVERRIDES = ("cell", "view", "layout", "standing_px", "feet_row")
+ACTION_OVERRIDES = ("cell", "view", "standing_px", "feet_row")
 
 PRESETS: dict[str, dict] = {
     # One facing, a plain strip — the shape every existing sheet already has,
@@ -226,8 +240,57 @@ def normalise(data: dict) -> dict:
         if "actions" in raw_over:
             over["actions"] = _actions(raw_over["actions"] or {},
                                        f"characters[{name}].actions")
+        over.update(_overrides(raw_over, CHARACTER_OVERRIDES, f"characters[{name}]"))
         clean_chars[name] = over
     out["characters"] = clean_chars
+    for key in ("standing_px", "feet_row"):
+        value = int(out.get(key) or 0)
+        if value < 0 or value > 1024:
+            raise ContractError(f"{key} outside 0..1024")
+        out[key] = value
+    if out["standing_px"] and out["standing_px"] > out["cell"][1]:
+        raise ContractError(f"standing_px {out['standing_px']} is taller than the "
+                            f"{out['cell'][1]}px cell")
+    return out
+
+
+def merge_patch(current: dict, patch: dict) -> dict:
+    """A patch onto a stored contract, WITHOUT losing what it does not name.
+
+    `current.update(patch)` replaced `characters` wholesale, so a patch that
+    scoped one character's battle cell threw away every other character's
+    overrides - and the reporter read it as "silently discards". Characters
+    and their actions merge per key; everything else is replaced.
+    """
+    out = dict(current)
+    for key, value in (patch or {}).items():
+        if key == "characters" and isinstance(value, dict):
+            chars = {k: dict(v) for k, v in (out.get("characters") or {}).items()}
+            for name, over in value.items():
+                if over is None:
+                    chars.pop(str(name), None)
+                    continue
+                mine = dict(chars.get(str(name)) or {})
+                for k2, v2 in (over or {}).items():
+                    if k2 == "actions" and isinstance(v2, dict):
+                        acts = dict(mine.get("actions") or {})
+                        for a, spec in v2.items():
+                            if spec is None:
+                                acts.pop(str(a), None)
+                            else:
+                                acts[str(a)] = {**(acts.get(str(a)) or {}), **spec}
+                        mine["actions"] = acts
+                    else:
+                        mine[k2] = v2
+                chars[str(name)] = mine
+            out["characters"] = chars
+        elif key == "actions" and isinstance(value, dict):
+            acts = dict(out.get("actions") or {})
+            for a, spec in value.items():
+                acts[str(a)] = {**(acts.get(str(a)) or {}), **(spec or {})}
+            out["actions"] = acts
+        else:
+            out[key] = value
     return out
 
 
@@ -259,8 +322,39 @@ def _actions(raw: dict, field: str) -> dict:
                 if d not in DIRECTIONS:
                     raise ContractError(f"{field}.{name}.drawn: {d!r} is not a direction")
             entry["drawn"] = drawn
+        entry.update(_overrides(spec, ACTION_OVERRIDES, f"{field}.{name}"))
         out[name] = entry
     return out
+
+
+def _overrides(raw: dict, allowed: tuple, field: str) -> dict:
+    """The scoped shape fields, validated the way the top level is."""
+    out: dict[str, Any] = {}
+    if "cell" in raw and raw["cell"] is not None:
+        try:
+            w, h = int(raw["cell"][0]), int(raw["cell"][1])
+        except (TypeError, ValueError, IndexError) as exc:
+            raise ContractError(f"{field}.cell must be [width, height]") from exc
+        if not (8 <= w <= 1024 and 8 <= h <= 1024):
+            raise ContractError(f"{field}.cell {w}x{h} is outside 8..1024")
+        out["cell"] = [w, h]
+    if "view" in raw and raw["view"]:
+        view = str(raw["view"])
+        if view not in VIEWS:
+            raise ContractError(f"{field}.view must be one of {VIEWS}, got {view!r}")
+        out["view"] = view
+    if "layout" in raw and raw["layout"] and "layout" in allowed:
+        layout = str(raw["layout"])
+        if layout not in ("strip", "grid_rows"):
+            raise ContractError(f"{field}.layout must be strip or grid_rows")
+        out["layout"] = layout
+    for key in ("standing_px", "feet_row"):
+        if key in raw and raw[key] is not None:
+            value = int(raw[key])
+            if value < 0 or value > 1024:
+                raise ContractError(f"{field}.{key} outside 0..1024")
+            out[key] = value
+    return {k: v for k, v in out.items() if k in allowed}
 
 
 # ---------------------------------------------------------------------------
@@ -335,10 +429,30 @@ def contract_for(root: str | os.PathLike[str], character: str = "",
     # of the wrong facing.
     out["rows"] = list(drawn)
 
+    # THE SCOPED SHAPE. A character's own cell/view win over the project's;
+    # an action's win over the character's. `scope` says which authority
+    # shaped the answer, so a sheet minted at 32x32 for a battle can be
+    # traced to the contract line that said so.
+    scope = "project"
+    for key in CHARACTER_OVERRIDES:
+        if key in char:
+            out[key] = char[key]
+            scope = "character"
+    for key in ACTION_OVERRIDES:
+        if key in char_act:
+            out[key] = char_act[key]
+            scope = "action"
+        elif key in base_act:
+            out[key] = base_act[key]
+            scope = "action" if scope == "project" else scope
+    out["scope"] = scope
+    if not out.get("feet_row"):
+        out["feet_row"] = max(1, int(out["cell"][1]) - 3)
     spec = {}
     spec.update(base_act)
     spec.update(char_act)
-    spec.pop("drawn", None)
+    for key in ("drawn", *ACTION_OVERRIDES):
+        spec.pop(key, None)
     out["action"] = {"name": act_name, **spec} if act_name else {}
 
     # Mirrors for facings whose drawn source changed: recompute from H_MIRROR

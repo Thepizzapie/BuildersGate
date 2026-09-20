@@ -10,6 +10,37 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Changed
+- **2D space and sheets, from one night's failures.** The benchmark game
+  shipped complete with its towns graybox, its party four sizes of person
+  under three-times-taller enemies, an NPC walled in and a spawn under a
+  weighbridge, and 211 asset revisions for 181 names. Four detailed fixes:
+  - `room_build` / `room_audit`: a designed top-down room from an ASCII
+    plan (walls, floor variants, manifest props with footprints, instanced
+    markers at cell centres), refusing a marker in a wall or a prop off the
+    floor BEFORE the scene is written; and the space audit over any scene,
+    hand-baked included - markers on the map, none inside a solid, every
+    NPC/sign/chest/entrance/exit reachable from the spawn, with an ASCII
+    picture of what the player can actually stand on.
+  - `sprite_fit` / `sprite_family_check`: one standing height per character
+    (idle-anchored, same factor for every frame, feet on one row, palette
+    snapped, overflow reported never cropped), and the family read together
+    - heights within 6%, feet within 2px, on the pinned palette, no colour
+    a sibling lacks. image_sprites and animation_generate fit on landing
+    when the sprite contract declares `standing_px`.
+  - The sprite contract scopes `cell`, `view`, `layout`, `standing_px` and
+    `feet_row` per character and per action (a 128x128 side-view battle
+    sheet beside a 32x32 overworld one, for one person), `sprite_contract_set`
+    merges a patch instead of replacing it, and the scale contract takes
+    `stages` - a player height per screen - with a `boss` class of its own;
+    `image_generate(klass=, stage=)` shrinks an oversized enemy to the band
+    on landing.
+  - The regeneration gate: image_generate, image_edit and animation_generate
+    refuse a logical name that already has an APPROVED revision unless
+    `replace_reason` says what is wrong with it. Nothing spent, the live
+    path returned.
+  Briefs: art (the contract, the fit, the family, the gate), gameplay/level
+  (room_build not a baker, room_audit on every field scene), QA (room_audit
+  and the party family in the presentation gate).
 - **The director's usage meters are the director's.** The Claude usage
   bridge's context figure - whatever Claude Code session last drew a status
   line - overwrote the director's own count (measured: 893k of 1000k shown
