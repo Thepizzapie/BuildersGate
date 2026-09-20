@@ -10,6 +10,196 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Changed
+- **The director's usage meters are the director's.** The Claude usage
+  bridge's context figure - whatever Claude Code session last drew a status
+  line - overwrote the director's own count (measured: 893k of 1000k shown
+  for a session that had used 180k); the session's context now always wins
+  and the bridge only supplies the 5h/weekly percentages, with the stream's
+  newer status and reset riding on top. Every figure carries WHEN it was
+  true: a bridge reading older than 15 minutes is dimmed with its age, a
+  window whose reset passed says "reset" instead of the dash an unlinked
+  bridge draws, and the bridge line says how old its last read is and that
+  the status line only runs in a terminal `claude` session. Codex's context
+  read the thread's running total (730k of a 272k window); it is the last
+  turn's prompt now, against the window the server names.
+- **`screen_audit`: the composition faults a screenshot shows.** Over one
+  `godot_evidence` manifest - which now records the texture size behind every
+  sprite and the string width behind every label - it reports `party_scale`,
+  `scale_clash`, `label_overflow`, `font_scale` (a bitmap font drawn off its
+  native multiple) and `pixel_density` (sprites at a different density than
+  the backdrop). `godot_check_project` gains `presentation`: every
+  `font_size` checked against every `.fnt`'s native size, and the default
+  texture filter. MEASURED: a battle frame with every asset passing
+  `scale_check` drew the party at 40px against 260px enemies and clipped the
+  enemy name; nothing measured the frame.
+- **A rejected asset cannot come back.** Reviewing a revision `rejected`, or
+  approving a newer one, retires the old file in the canon with the live
+  revision as its successor: the hook refuses a seated agent's read or write of
+  it, and `scene_wire`, `scene_swap_resource`, `godot_import_asset` and
+  `godot_deliver_asset` refuse to put it in the game, naming what to use
+  instead. `asset_verify` reports `stale_wired`: every scene, resource or script
+  still naming a rejected or superseded file. MEASURED: agents kept wiring
+  rejected candidates because the reject was a row nothing on the write path
+  read.
+- **Codex workers: no reviewer, a real sandbox, and the hook.** `codex exec`
+  seats no longer run with `--approve-for-me`. They run `workspace-write`
+  with `approval_policy = never`, network off, and — on Windows —
+  `windows.sandbox = "elevated"` passed explicitly, because
+  `--ignore-user-config` had been dropping the user's sandbox backend and
+  Codex was treating every command and patch as read-only-refused; the
+  reviewer was approving ordinary commands out of a sandbox that was not
+  there. The Builders Gate PreToolUse hook is now injected into every Codex
+  seat with `-c hooks.PreToolUse` and `--dangerously-bypass-hook-trust`
+  (the flag for automation that vets its own hooks), so containment, lanes,
+  locks and the two gates below apply to Codex exactly as to Claude. The
+  hook answers Codex with stdout JSON (`permissionDecision: deny`): measured
+  on 0.154, a hook that exits 2 is logged and ignored. `apply_patch` is
+  judged per file from the patch text (it arrives as `command`). Codex's
+  MCP tools run under `default_tools_approval_mode = "approve"`, the one
+  mode that answers under `never`. `dispatch.codex_auto_approve` now covers
+  only the Codex Director console, and that console reads a command through
+  the egress gate before accepting it: `pip install` from the project root
+  goes back to the human.
+- **Egress gate.** A seated agent may not run installers (pip, npm install,
+  winget, cargo install, …), network clients (curl, wget, ssh,
+  Invoke-WebRequest, …), `git push/clone/fetch/pull`, or another agent CLI.
+  Refused by program name with a message that says what to do instead
+  (`queue_complete(next_approach=…)`); logged to `.bgate/hook.log`. Read
+  through `sudo`/`env`/`bash -c`/`eval`/`powershell -Command` and `-c`
+  snippets. `dispatch.allow_egress` (machine, human-only, guarded) lifts it.
+- **File text does not travel on a command line.** A seated agent that
+  writes a file with `cat > f <<EOF`, `echo … > f`, `tee`, `Set-Content`,
+  `Out-File` or `[IO.File]::Write*` is refused and sent to Write/Edit
+  (Codex: apply_patch). Program output may still redirect (`godot … >
+  run.log`). Observed 2026-09-16: a heredoc carrying download-and-run
+  strings on a `bash -c` line was killed by Windows Defender as ClickFix;
+  the shape is what any agent on any machine can reproduce, so the shape
+  is what a seat is refused.
+- **`godot_test_run` marker scan.** `failures=0` in a probe's summary and
+  `PASS … (the fail state)` lines no longer count as FAIL markers; markers
+  are counted per line, zero-count summaries are not failures.
+- **Delivery preview frames the model where it is.** The photo stage aims
+  at the model's measured box centre and puts the floor at its lowest
+  point. With `normalize_origin` off (the default), a feet-at-zero rig was
+  photographed floating with its head off the frame — every Meridian cast
+  delivery — and then approved.
+- **Artifacts with a failed required check are never auto-approved.**
+  `art.auto_approve` / `gate.mode = none` waive the human gate, not the
+  machine verdict; such a revision stays a candidate and the activity log
+  says which check failed. The auto-approve note now names the setting that
+  actually waived the gate.
+- Frozen build: `BuildersGate.exe hook` hosts the PreToolUse hook, as `mcp`
+  hosts the server.
+### Added
+- **Canon: which world is current, which files are retired.** A project
+  now records the scene the game IS (`world`, defaulting to project.godot's
+  main scene), named current files (`reporter`, `world_layout`, …) and a
+  RETIRED list of paths/globs, each with its successor and reason
+  (`bgate_core/board/canon.py`). It reaches agents three ways: printed at
+  the top of every dispatched brief and in the SessionStart block; the
+  `canon_status` / `canon_audit` tools (every seat) with `canon_set` /
+  `canon_retire` / `canon_unretire` (refused to a seated worker — what is
+  current is the director's and the human's call); and the PreToolUse hook,
+  which refuses a seat's READ or write of a retired path and names the
+  successor — reads too, because the way agents ended up extending a
+  retired map was by reading it as the example. `canon_audit` reads the
+  tree against the list: scenes/scripts still referencing retired paths,
+  scene basenames living under two directories, and scenes/scripts nothing
+  reaches from the world, the autoloads or a tool (through ext_resource,
+  `res://` strings, directory prefixes a script builds paths from, and
+  `class_name`). Observed on Meridian: forty items dispatched into a tree
+  carrying the first street beside the island; 58 references to
+  `main.tscn` in one agent's log, 88 to a retired module in another.
+- **`/api/play/pad`: a touch layout from the input map.** A d-pad and up
+  to six buttons derived from the project's own actions (builtins included,
+  with their real physical keycodes), each carrying the DOM `code`/`key`/
+  `keyCode` the web build's key listener reads - so a phone can play a
+  keyboard game with no per-project mapping.
+- **The phone can play the build.** `/play/*` and the game's telemetry POST
+  accept the phone token as a cookie (`bgate_phone`) from the tailnet side,
+  because the engine's own `.wasm`/`.pck` fetches cannot carry a header. The
+  cookie opens the build and nothing else.
+- **Settings > Phone: the companion app's door, from the desk.** The phone
+  now has its own token (`~/.bgate/remote-token`, machine-wide so switching
+  projects from the desk or the phone keeps it paired), not the dashboard's, so it
+  can be rotated - new token, new QR, every phone cut off - without logging
+  the desktop out of itself. The tailnet side is admitted per request, so it
+  can be closed and reopened from the panel without a restart, and every
+  method from that side needs the phone token (a GET of `/api/state` is the
+  whole project). Every device that connects is seen - address, user agent,
+  requests, last path, online or idle - and can be revoked on its own, or
+  forgotten. `/api/remote*` is loopback-only: from the phone it does not
+  exist. Existing phones re-pair once, since their token was the old one.
+- **Codex workers: no reviewer, a real sandbox, and the hook.** `codex exec`
+  seats no longer run with `--approve-for-me`. They run `workspace-write`
+  with `approval_policy = never`, network off, and — on Windows —
+  `windows.sandbox = "elevated"` passed explicitly, because
+  `--ignore-user-config` had been dropping the user's sandbox backend and
+  Codex was treating every command and patch as read-only-refused; the
+  reviewer was approving ordinary commands out of a sandbox that was not
+  there. The Builders Gate PreToolUse hook is now injected into every Codex
+  seat with `-c hooks.PreToolUse` and `--dangerously-bypass-hook-trust`
+  (the flag for automation that vets its own hooks), so containment, lanes,
+  locks and the two gates below apply to Codex exactly as to Claude. The
+  hook answers Codex with stdout JSON (`permissionDecision: deny`): measured
+  on 0.154, a hook that exits 2 is logged and ignored. `apply_patch` is
+  judged per file from the patch text (it arrives as `command`). Codex's
+  MCP tools run under `default_tools_approval_mode = "approve"`, the one
+  mode that answers under `never`. `dispatch.codex_auto_approve` now covers
+  only the Codex Director console, and that console reads a command through
+  the egress gate before accepting it: `pip install` from the project root
+  goes back to the human.
+- **Egress gate.** A seated agent may not run installers (pip, npm install,
+  winget, cargo install, …), network clients (curl, wget, ssh,
+  Invoke-WebRequest, …), `git push/clone/fetch/pull`, or another agent CLI.
+  Refused by program name with a message that says what to do instead
+  (`queue_complete(next_approach=…)`); logged to `.bgate/hook.log`. Read
+  through `sudo`/`env`/`bash -c`/`eval`/`powershell -Command` and `-c`
+  snippets. `dispatch.allow_egress` (machine, human-only, guarded) lifts it.
+- **File text does not travel on a command line.** A seated agent that
+  writes a file with `cat > f <<EOF`, `echo … > f`, `tee`, `Set-Content`,
+  `Out-File` or `[IO.File]::Write*` is refused and sent to Write/Edit
+  (Codex: apply_patch). Program output may still redirect (`godot … >
+  run.log`). Observed 2026-09-16: a heredoc carrying download-and-run
+  strings on a `bash -c` line was killed by Windows Defender as ClickFix;
+  the shape is what any agent on any machine can reproduce, so the shape
+  is what a seat is refused.
+- **`godot_test_run` marker scan.** `failures=0` in a probe's summary and
+  `PASS … (the fail state)` lines no longer count as FAIL markers; markers
+  are counted per line, zero-count summaries are not failures.
+- **Delivery preview frames the model where it is.** The photo stage aims
+  at the model's measured box centre and puts the floor at its lowest
+  point. With `normalize_origin` off (the default), a feet-at-zero rig was
+  photographed floating with its head off the frame — every Meridian cast
+  delivery — and then approved.
+- **Artifacts with a failed required check are never auto-approved.**
+  `art.auto_approve` / `gate.mode = none` waive the human gate, not the
+  machine verdict; such a revision stays a candidate and the activity log
+  says which check failed. The auto-approve note now names the setting that
+  actually waived the gate.
+- Frozen build: `BuildersGate.exe hook` hosts the PreToolUse hook, as `mcp`
+  hosts the server.
+### Added
+- **Canon: which world is current, which files are retired.** A project
+  now records the scene the game IS (`world`, defaulting to project.godot's
+  main scene), named current files (`reporter`, `world_layout`, …) and a
+  RETIRED list of paths/globs, each with its successor and reason
+  (`bgate_core/board/canon.py`). It reaches agents three ways: printed at
+  the top of every dispatched brief and in the SessionStart block; the
+  `canon_status` / `canon_audit` tools (every seat) with `canon_set` /
+  `canon_retire` / `canon_unretire` (refused to a seated worker — what is
+  current is the director's and the human's call); and the PreToolUse hook,
+  which refuses a seat's READ or write of a retired path and names the
+  successor — reads too, because the way agents ended up extending a
+  retired map was by reading it as the example. `canon_audit` reads the
+  tree against the list: scenes/scripts still referencing retired paths,
+  scene basenames living under two directories, and scenes/scripts nothing
+  reaches from the world, the autoloads or a tool (through ext_resource,
+  `res://` strings, directory prefixes a script builds paths from, and
+  `class_name`). Observed on Meridian: forty items dispatched into a tree
+  carrying the first street beside the island; 58 references to
+  `main.tscn` in one agent's log, 88 to a retired module in another.
+### Changed
 - **Codex workers: no reviewer, a real sandbox, and the hook.** `codex exec`
   seats no longer run with `--approve-for-me`. They run `workspace-write`
   with `approval_policy = never`, network off, and — on Windows —
