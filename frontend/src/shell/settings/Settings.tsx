@@ -10,6 +10,7 @@ import { AgentFleet } from "./AgentFleet";
 import { ProviderKeys } from "./ProviderKeys";
 import { LocalGenerators } from "./LocalGenerators";
 import { AgentClis } from "./AgentClis";
+import { PhoneAccess } from "./PhoneAccess";
 import { askConfirm } from "./confirm";
 import { ThemeGrid } from "../ThemePicker";
 import "./settings.css";
@@ -56,6 +57,7 @@ const GENERATORS = "Generators";
 const PROVIDERS = "Provider access";
 const LOCAL_GENERATORS = "Local generators";
 const AGENT_CLIS = "Agent CLIs";
+const PHONE = "Phone";
 
 /* THE FLEET IS A RAIL GROUP TOO, and it is not a setting at all - it is a live
    list of processes with a kill button on each. It belongs here because this is
@@ -72,6 +74,7 @@ const PANELS: Record<string, string> = {
   [PROVIDERS]: "key",
   [LOCAL_GENERATORS]: "device-desktop-cog",
   [AGENT_CLIS]: "plug-connected",
+  [PHONE]: "device-mobile",
   [FLEET]: "robot",
 };
 const GROUP_LABELS: Record<string, string> = { [GENERATORS]: "Models" };
@@ -83,7 +86,7 @@ const GROUP_LABELS: Record<string, string> = { [GENERATORS]: "Models" };
 const SECTIONS = [
   { name: "Work", groups: ["Dispatch", "Gates", "Follow-up", "Limits"] },
   { name: "Studio", groups: ["Art", GENERATORS, "Modules"] },
-  { name: "Connections", groups: [PROVIDERS, LOCAL_GENERATORS, AGENT_CLIS] },
+  { name: "Connections", groups: [PROVIDERS, LOCAL_GENERATORS, AGENT_CLIS, PHONE] },
   { name: "App", groups: [APPEARANCE, "Console", "Notifications", "Community", "Privacy"] },
   { name: "Machine", groups: [FLEET] },
 ];
@@ -98,6 +101,7 @@ const GROUP_NOTES: Record<string, string> = {
   "Provider access": "Hosted generation services and API keys.",
   "Local generators": "Generation services running on this machine.",
   "Agent CLIs": "Coding-agent command-line connections.",
+  Phone: "The companion app: its door, its token and QR, and the devices on it.",
   Modules: "Optional features enabled for this project.",
   Console: "Director, Brainstorm, refresh, and graph settings.",
   Notifications: "Events, delivery, reminders, and quiet hours.",
@@ -380,6 +384,11 @@ export function Settings() {
             <section className="bg4-settings-group">
               <CategoryHead name={AGENT_CLIS} note={GROUP_NOTES[AGENT_CLIS]} />
               <AgentClis active={active} />
+            </section>
+          ) : group === PHONE ? (
+            <section className="bg4-settings-group">
+              <CategoryHead name={PHONE} note={GROUP_NOTES[PHONE]} />
+              <PhoneAccess active={active} />
             </section>
           ) : group === GENERATORS ? (
             <section className="bg4-settings-group">

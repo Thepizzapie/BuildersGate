@@ -2214,11 +2214,13 @@ def _pairing(port, host, root) -> dict:
     One source for the terminal print (serve --remote) and the /pair page
     (the desktop app, which has no terminal to print into).
     """
-    from bgate_ui import tailnet as _tailnet
+    from bgate_ui import remote as _remote, tailnet as _tailnet
     url = f"http://{host}:{port}"
+    # THE PHONE'S OWN TOKEN, not ui-token: the dashboard page keeps its
+    # credential when the phone's is rotated from Settings > Phone.
     token = ""
     try:
-        token = _api.ensure_token(root) if root else ""
+        token = _remote.ensure_token(root) if root else ""
     except Exception:                                            # noqa: BLE001
         pass
     project = root.name if root else "(no project)"
@@ -2244,8 +2246,8 @@ def _print_pairing(port, host, root):
 
 def _remote_host() -> str:
     """The tailnet host remote mode is serving on, or "" when it is off."""
-    raw = os.environ.get("BGATE_REMOTE_HOSTS", "")
-    return next((h.strip() for h in raw.split(",") if h.strip()), "")
+    from bgate_ui import remote as _remote
+    return _remote.host()
 
 
 @app.get("/pair", response_class=HTMLResponse)
