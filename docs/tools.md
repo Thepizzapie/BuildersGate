@@ -2570,6 +2570,64 @@ is what let a two-tailed character ship for a day.
 godot_project: the directory holding project.godot.
 ```
 
+## room_audit
+
+```text
+THE SPACE QUESTIONS, FROM THE SCENE TEXT - no engine, no screenshot. Is
+every marker on the map, is any inside a wall or a blocking prop, can the
+player walk from the spawn to every NPC, sign, chest, entrance and exit,
+is a pocket of floor sealed off.
+
+Works on ANY scene, including hand-baked ones. Solids come from three
+places, because the benchmark's rooms used all three: a TileMapLayer whose
+cells the tileset manifest calls wall or a blocking prop (or any layer
+NAMED like a wall layer); a node carrying `footprint = Vector2i(w, h)`
+(the hand-baked prop convention); and a RectangleShape2D under a
+StaticBody2D. Markers are every instanced node and Marker2D with a
+position. Reachability is a flood fill from the spawn (Spawn*/Player*/
+Start*, or `spawn=`) over floor cells that are not solid; a marker is
+reached when its own cell or a 4-neighbour is in the spawn's region.
+
+Findings: marker_in_solid, unreachable, marker_off_map are FAIL;
+no_spawn, floor_unreachable, no_floor are warn. The ASCII picture draws
+`:` reached floor, `.` floor the player cannot stand on, `#` wall, `P`
+prop, and a letter per marker (S spawn, N npc, E entrance, X exit, T
+sign, C chest, ! trigger). A single-layer map painted with a "kinds"
+strip and no manifest reads as all floor: pass `tileset` naming a
+manifest, or the audit can only check markers against footprints and
+colliders - and it says so with no_floor.
+```
+
+## room_build
+
+```text
+BUILD A DESIGNED TOP-DOWN ROOM FROM A PLAN - this wall here, the vendor
+there, the entrance on the south edge. level_generate lays out a random
+BSP dungeon; a town, a yard, a keyed dungeon floor is DESIGNED, and on the
+benchmark game every one was baked by a python script the gameplay seat
+wrote for itself, which the harness could not see into. Two of the
+results: an NPC walled in by a barrier, a party spawned under a
+weighbridge - both invisible in the screenshot the seat judged by eye,
+both found by QA a day later.
+
+`plan` is rows of characters: `#` wall, `.` floor, space void; `legend`
+extends it ({"~": "floor:1", "T": "prop:tacos_stand"}). `props` are
+[{"type", "at": [x, y]}] in CELLS - footprint and blocking come from the
+tileset's own `<name>.tiles.json` (tileset_generate / tileset_describe),
+so no atlas coordinate is ever typed. `markers` are instanced scenes or
+Marker2Ds at cell centres: [{"name", "at" | "pos", "scene"?, "kind"?,
+"props"?}]; the kind is read off the name prefix (Spawn_, NPC_, Entrance_,
+Exit_, Sign_, Chest_, Trigger_). `extra` is the room's own furniture
+that is not a marker (Party, HUD, DialogueBox). `root_script` attaches the
+field controller.
+
+REFUSED BEFORE ANY FILE IS WRITTEN: a prop that leaves the floor or
+overlaps another, a marker off the map or inside a wall or a blocking
+prop, no spawn. Floor / Walls / Props land as TileMapLayers (variants
+scattered by `seed`). The written scene is then audited (room_audit) and
+the audit rides in the result with an ASCII picture. Read the picture.
+```
+
 ## screen_audit
 
 The composition audit: the faults a screenshot shows and no asset-level
@@ -3024,6 +3082,23 @@ filename is relative to the project's .bgate_out/art/ (e.g. "tommy_portrait.png"
 The result is archived to the preview gallery - LOOK at it before importing
 into the game with godot_import_asset.
 ```
+
+**`klass` and `stage` (scale on landing).** `klass` names the scale class
+of what is being made (prop, furniture, door, ui, enemy, boss, player);
+with a declared scale contract the result is measured on landing and an
+oversized keyed asset is SHRUNK to the band's top before anyone can wire
+it, then graded (`scale` in the result). `stage` grades against that
+screen's own unit (`scale_contract_set stages=`), e.g. "battle" for a
+game whose party is 27px in the field and 76px in the fight.
+
+**`replace_reason` (the regeneration gate).** A logical name (the filename
+stem) that already has an APPROVED revision is refused - nothing is
+generated, nothing spent, the live path is returned - unless
+`replace_reason` says what is wrong with it, which is recorded on the new
+revision. Reject the old one (dashboard / art_qa_verdict) and the gate
+opens by itself. MEASURED: 211 revisions for 181 names in one night, most
+of them a reopened item re-making what an earlier attempt had landed.
+image_edit and animation_generate carry the same parameter.
 
 ## image_sprites
 
@@ -3658,6 +3733,60 @@ Not cosmetic: the field steers scaffolding templates and the wording of seat
 briefs, so a stale value aims the board at the wrong kind of game. Use
 ``2d+3d`` for the real mixed case (a 3D game with a 2D HUD, a prototype
 mid-port) rather than picking whichever is closer.
+```
+
+## sprite_family_check
+
+```text
+DO A CHARACTER'S SHEETS AGREE WITH EACH OTHER? Battle, overworld,
+portrait, the RD walk and the kie idle - read together, anchor frame
+against anchor frame. Free, local.
+
+Findings: `height_mismatch` - an anchor off the contract's standing_px
+(or, without one, the family's median) by more than 6% (FAIL);
+`feet_drift` - feet rows more than 2px apart (warn); `off_palette` - more
+than 12% of a sheet's pixels are not in the pinned palette (FAIL);
+`palette_drift` - more than 12% of a sheet's pixels are colours no
+sibling uses, a different palette or a different character (warn);
+`empty_anchor` (FAIL).
+
+`sheets` is [{"path", "cell": [w, h], "label"?, "anchor_frame"?}].
+`same_character=False` for a PARTY - four people, four outfits, one
+height: the heights must agree and the palettes need not. RUN IT before
+landing any sheet of a character that already has one; it is the check
+that would have caught the fourth party member at 30% taller than the
+other three.
+```
+
+## sprite_fit
+
+```text
+FIT A SHEET TO ONE STANDING HEIGHT. The idle (anchor) frame stands exactly
+`standing_px` tall; every other frame is scaled by the SAME factor so a
+raised staff stays raised and a jump keeps its air; feet on `feet_row`;
+LANCZOS on premultiplied alpha (no dark fringe), alpha hardened to 0/255,
+every opaque pixel snapped to the pinned palette. Free, local, no model.
+
+THE FAULT THIS ENDS. On the benchmark game four party members were
+generated into one 64x96 cell and stood 49, 52, 49 and 64 pixels tall -
+one of them 30% taller than the rest - and every per-sheet check passed,
+because each sheet was internally consistent. The enemies, generated
+separately, stood 96 to 320. The frame read as a party of ants under a
+wall of bosses. The art seat then wrote exactly this by hand, in one
+game's art/ folder.
+
+standing_px=0 reads the sprite contract's. `cell` is the OUTPUT cell;
+`src_cell` the sheet's own grid when it differs (64x96 -> 96x96, because
+a 90px figure's attack frame is 91px wide). A frame that would overflow
+the cell after scaling is shrunk ALONE and named in `overflow`, never
+cropped - a cropped-off weapon arm is what an unreported overflow shipped
+as. An upscale past 2x is refused (regenerate at size); any upscale is
+reported as `upscaled`. `out` empty writes in place; the .tres beside it
+is unchanged because the cell is.
+
+image_sprites and animation_generate run this on landing whenever the
+contract declares a standing height - so it is for sheets from anywhere
+else, and for a contract declared after the sheets existed.
 ```
 
 ## web_build
@@ -4295,6 +4424,17 @@ which are multiples of that height: {"door": {"low": 1.05, "high": 1.5}}.
 The classes are prop, furniture, door, ui and enemy; every one of them has
 a band, because "no expectation" is how a mug ends up chair-sized.
 ```
+
+**`stages`.** One game, two units: a JRPG draws the party at 27px on the
+overworld and 76px in battle, and a single player height cannot grade an
+enemy for both screens - on the benchmark the overworld cell (32) was the
+unit every 96-320px battle enemy was measured against. `stages={"battle":
+76, "overworld": 27}` names a player height per screen; `scale_check(
+stage=...)` and `image_generate(stage=...)` grade against it; None on a
+stage removes it. The classes now include `boss` (1.5-3.5x, its own
+ceiling so an ordinary enemy cannot borrow it) and `enemy` tops out at
+2.0x. When the sprite contract declares `standing_px`, THAT is the
+project unit, not the cell height.
 
 ## scale_record_3d
 

@@ -17,7 +17,7 @@ def test_reject_retires_the_file_and_the_gate_refuses_it(root):
     rel = _file(root, "assets/sprites/rock_v1.png", b"one")
     rev = artifacts.register(root, "rock", rel, producer="image_generate")
     assert artifacts.usable(root, rel)["ok"]
-    artifacts.review(root, rev["id"], "rejected", "wrong style", actor="adria")
+    artifacts.review(root, rev["id"], "rejected", "wrong style", actor="reviewer")
     row = canon.retired_match(root, rel)
     assert row and row["successor"] == ""
     verdict = artifacts.usable(root, rel)
@@ -30,10 +30,10 @@ def test_approving_a_replacement_names_it_as_successor_and_frees_the_live_file(r
     old = _file(root, "assets/sprites/rock_v1.png", b"one")
     new = _file(root, "assets/sprites/rock_v2.png", b"two")
     first = artifacts.register(root, "rock", old)
-    artifacts.review(root, first["id"], "approved", actor="adria")
+    artifacts.review(root, first["id"], "approved", actor="reviewer")
     assert artifacts.usable(root, old)["ok"]
     second = artifacts.register(root, "rock", new)
-    artifacts.review(root, second["id"], "approved", actor="adria")
+    artifacts.review(root, second["id"], "approved", actor="reviewer")
     # v1 was superseded by the approval: retired with v2 as its successor
     row = canon.retired_match(root, old)
     assert row and row["successor"] == new
@@ -45,11 +45,11 @@ def test_approving_a_replacement_names_it_as_successor_and_frees_the_live_file(r
 def test_a_re_approved_path_is_usable_whatever_an_older_row_says(root):
     rel = _file(root, "assets/sprites/rock.png", b"one")
     first = artifacts.register(root, "rock", rel)
-    artifacts.review(root, first["id"], "rejected", actor="adria")
+    artifacts.review(root, first["id"], "rejected", actor="reviewer")
     assert not artifacts.usable(root, rel)["ok"]
     (root / rel).write_bytes(b"two")
     second = artifacts.register(root, "rock", rel)
-    artifacts.review(root, second["id"], "approved", actor="adria")
+    artifacts.review(root, second["id"], "approved", actor="reviewer")
     assert artifacts.usable(root, rel)["ok"]
     assert canon.retired_match(root, rel) is None
 
@@ -57,7 +57,7 @@ def test_a_re_approved_path_is_usable_whatever_an_older_row_says(root):
 def test_stale_wired_names_the_scene_still_using_a_rejected_file(root):
     rel = _file(root, "assets/sprites/rock_v1.png", b"one")
     rev = artifacts.register(root, "rock", rel)
-    artifacts.review(root, rev["id"], "rejected", actor="adria")
+    artifacts.review(root, rev["id"], "rejected", actor="reviewer")
     scene = root / "scenes" / "cave.tscn"
     scene.parent.mkdir(parents=True, exist_ok=True)
     scene.write_text('[ext_resource type="Texture2D" path="res://assets/sprites/rock_v1.png" id="1"]\n',

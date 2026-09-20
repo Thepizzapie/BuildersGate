@@ -2400,3 +2400,78 @@ def traversal_prove(godot_project: Annotated[str, Field(description='Directory h
          f"{verdict.get('why') or 'settled in the destination volume'}",
          ref=scene)
     return verdict
+
+
+@_tool
+def room_build(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+               scene: Annotated[str, Field(description='res:// path of the .tscn to write.')],
+               tileset: Annotated[str, Field(description='res:// path of the TileSet; its <name>.tiles.json sidecar (tileset_generate / tileset_describe) must exist.')],
+               plan: Annotated[list, Field(description='Rows of characters, one per map row: # wall, . floor, space void; extend with `legend`.')],
+               legend: Annotated[Optional[dict], Field(description='{char: "wall"|"floor"|"void"|"floor:<variant>"|"prop:<type>"} for characters beyond # . and space.')] = None,
+               props: Annotated[Optional[list], Field(description='[{"type": <manifest prop>, "at": [x, y]}] in cells; footprint and blocking come from the manifest.')] = None,
+               markers: Annotated[Optional[list], Field(description='[{"name", "at": [x, y] | "pos": [px, py], "scene"?: res://, "kind"?, "props"?: {key: godot literal}}]. Kind is read off the name prefix (Spawn_, NPC_, Entrance_, Exit_, Sign_, Chest_, Trigger_) when absent. A Spawn is required.')] = None,
+               seed: Annotated[int, Field(description='Variant scatter seed. Default 0.')] = 0,
+               root_name: Annotated[str, Field(description='Root node name; default from the file name.')] = "",
+               root_script: Annotated[str, Field(description='res:// script to attach to the root (the field controller).')] = "",
+               extra: Annotated[Optional[list], Field(description='[{"name", "scene": res://, "props"?}] - the room\'s furniture that is not a marker: Party, HUD, DialogueBox.')] = None,
+               overwrite: Annotated[bool, Field(description='Replace an existing scene (a .bak is kept). Default False.')] = False) -> dict:
+    """BUILD A DESIGNED TOP-DOWN ROOM FROM A PLAN - this wall here, the vendor
+    there, the entrance on the south edge. level_generate lays out a random
+    BSP dungeon; a town, a yard, a keyed dungeon floor is designed, and on the
+    benchmark every one was baked by a script the seat wrote for itself, which
+    the harness could not see into.
+
+    Floor / Walls / Props TileMapLayers come off the tileset's own manifest
+    (no atlas coordinates here), markers are instanced scenes or Marker2Ds at
+    cell centres. REFUSED BEFORE ANY FILE IS WRITTEN: a prop that leaves the
+    floor or overlaps another, a marker off the map or inside a wall or a
+    blocking prop, no spawn. The written scene is audited (room_audit) and
+    the audit rides in the result with an ASCII picture: read it.
+    Full notes: docs/tools.md#room_build
+    """
+    from bgate_core.level import roomspec as _roomspec
+    try:
+        proj = _Path(godot_project)
+        result = _roomspec.build(_root(), proj, scene, tileset, plan, legend=legend,
+                                 props=props, markers=markers, seed=int(seed),
+                                 root_name=root_name, root_script=root_script,
+                                 extra=extra, overwrite=bool(overwrite))
+        if result.get("written"):
+            _note_tool_write(str(proj / scene.replace("res://", "")))
+            _log("level", f"room_build {scene}: {result['cells']} cells, "
+                          f"{len(result['props'])} props, {len(result['markers'])} markers; "
+                          f"audit {'ok' if result['audit']['ok'] else 'FAIL'}")
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def room_audit(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+               scene: Annotated[str, Field(description='res:// path of the room scene.')],
+               tileset: Annotated[str, Field(description='res:// TileSet whose manifest classifies the cells, when the scene\'s own layers do not name one.')] = "",
+               spawn: Annotated[str, Field(description='Node name to flood-fill from; default the first Spawn*/Player*/Start* marker.')] = "") -> dict:
+    """THE SPACE QUESTIONS, FROM THE SCENE TEXT - no engine, no screenshot.
+    Is every marker on the map, is any inside a wall or a blocking prop, can
+    the player walk from the spawn to every NPC, sign, chest, entrance and
+    exit, is a pocket of floor sealed off. Works on any scene, including
+    hand-baked ones: solids are read from the tileset manifest's wall and
+    prop tables, from nodes carrying `footprint = Vector2i(w, h)`, and from
+    RectangleShape2D colliders under a StaticBody2D.
+
+    MEASURED, on the benchmark, in scenes that had passed by eye: an NPC
+    walled in by a barrier, a party spawned under a weighbridge. Returns
+    findings (marker_in_solid, unreachable, marker_off_map: fail; no_spawn,
+    floor_unreachable: warn) and an ASCII picture - `:` reached floor, `.`
+    floor the player cannot stand on, `#` wall, `P` prop, letters for markers.
+    Full notes: docs/tools.md#room_audit
+    """
+    from bgate_core.level import roomspec as _roomspec
+    try:
+        out = _roomspec.audit(_root(), _Path(godot_project), scene, tileset_res=tileset,
+                              spawn=spawn)
+        _log("level", f"room_audit {scene}: {out['counts']['fail']} fail, "
+                      f"{out['counts']['warn']} warn")
+        return out
+    except Exception as exc:
+        return _fail(exc)

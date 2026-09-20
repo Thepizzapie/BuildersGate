@@ -214,7 +214,7 @@ class TestModelRouting:
     def test_an_apostrophe_in_the_interpreter_path_survives_toml(self):
         """A literal TOML string cannot hold `'`; deleting it named a path
         that does not exist and the hook silently never launched."""
-        assert runners._toml_str(r"C:\Users\adria\python.exe") == r"'C:\Users\adria\python.exe'"
+        assert runners._toml_str(r"C:\Users\someone\python.exe") == r"'C:\Users\someone\python.exe'"
         quoted = runners._toml_str(r"C:\Users\O'Brien\python.exe")
         import tomllib
         assert tomllib.loads(f"v = {quoted}")["v"] == r"C:\Users\O'Brien\python.exe"

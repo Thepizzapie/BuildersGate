@@ -190,6 +190,9 @@ CRAFTS: dict[str, tuple[str, ...]] = {
               # never act on. sprite_sheet_check is ALSO a verdict below -
               # a tool may hold several crafts.
               "sprite_plan", "sprite_sheet_check", "sprite_sheet_slice",
+              # The fit and the family: one standing height per character,
+              # on every sheet, before anything is handed over.
+              "sprite_fit", "sprite_family_check",
               # The local generator board: 2D and 3D on this machine.
               "local_status",
               # Scale and room composition are the art seat's own checks
@@ -265,6 +268,8 @@ CRAFTS: dict[str, tuple[str, ...]] = {
     # no sidecar - so a gameplay or tech seat handed an imported .tres could
     # see the refusal and not the tool that answers it.
     "level": ("level_", "game_view_", "sidescroll_generate",
+              # A designed room from a plan, and the space audit over any room.
+              "room_build", "room_audit",
               # A circuit is a level: track_generate emits the drivable scene
               # from a spec and measures it, exactly as level_generate does
               # for rooms.
@@ -276,6 +281,9 @@ CRAFTS: dict[str, tuple[str, ...]] = {
     "verdicts": ("art_qa_verdict", "art_tournament_verdict",
                  # The free look before anything else is spent on a sheet.
                  "sprite_sheet_check",
+                 # ...and whether a character's sheets agree with each other,
+                 # and whether a room's markers can be walked to.
+                 "sprite_family_check", "room_audit",
                  # THE PRESENTATION GATE'S THREE VERDICTS. Each is a judgement
                  # the old pipeline made against the wrong evidence: an asset
                  # crop instead of a room, a contact sheet instead of game

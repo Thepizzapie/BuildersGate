@@ -66,10 +66,16 @@ DEFAULT_CLASSES: dict[str, dict] = {
            "note": "screen-space elements, measured against the player only "
                    "so one number governs the whole project; the band is wide "
                    "because a health bar and an icon are both UI."},
-    "enemy": {"low": 0.5, "high": 2.5,
+    "enemy": {"low": 0.5, "high": 2.0,
               "note": "an enemy's size is a threat statement. Outside this "
                       "band it is either invisible in a room or it is a boss, "
-                      "and the design should say which."},
+                      "and the design should say which. MEASURED: 2.5 let a "
+                      "truck ship at 2.9x and a flood at 3.6x the party under "
+                      "one word, and the frame read as a party of ants."},
+    "boss": {"low": 1.5, "high": 3.5,
+             "note": "the thing that is meant to loom. Its own class so an "
+                     "ordinary enemy cannot borrow its ceiling: past 3.5x "
+                     "the party stops reading as people."},
     # THE CLASS THAT WAS MISSING, AND THE ROW NOBODY COULD CLEAR.
     #
     # The contract's own unit is `player_height_px`, and until now the class
@@ -104,6 +110,13 @@ DEFAULTS: dict[str, Any] = {
     "tile_px": 0,
     "classes": {},               # per-class {low, high} overrides
     "overrides": {},             # per-path {class, low, high}
+    # ONE GAME, TWO UNITS. A JRPG draws the party at 27px on the overworld
+    # and 76px in battle; a single player height cannot grade an enemy for
+    # both screens, and on the benchmark the overworld cell (32) was the unit
+    # every 96-320px battle enemy was measured against. A stage names its
+    # own player height: {"battle": 76, "overworld": 27}. A check that
+    # names a stage is graded against that stage's unit.
+    "stages": {},
 }
 
 #: Alpha at or below this is background. Matches artdirection's own threshold so
@@ -235,6 +248,12 @@ def _sprite_cell_height(root: str | os.PathLike[str]) -> int:
         from ..art import spritecontract as _sprite
 
         doc = _ws.get(root, _sprite.SEAT, _sprite.DOC_KEY, {}) or {}
+        # THE STANDING HEIGHT, WHEN DECLARED, IS THE UNIT - not the cell.
+        # A 96px cell held 49px figures on the benchmark, so every ratio
+        # measured against the cell was flattering by half.
+        standing = int(doc.get("standing_px") or 0)
+        if standing:
+            return standing
         cell = doc.get("cell") or []
         return int(cell[1]) if len(cell) > 1 else 0
     except Exception:
@@ -244,7 +263,8 @@ def _sprite_cell_height(root: str | os.PathLike[str]) -> int:
 def set_contract(root: str | os.PathLike[str], *,
                  player_height_px: Optional[int] = None,
                  tile_px: Optional[int] = None,
-                 classes: Optional[dict] = None, by: str = "") -> dict:
+                 classes: Optional[dict] = None, by: str = "",
+                 stages: Optional[dict] = None) -> dict:
     doc = _doc(root)
     if player_height_px is not None:
         height = int(player_height_px)
@@ -254,6 +274,21 @@ def set_contract(root: str | os.PathLike[str], *,
         doc["player_height_px"] = height
     if tile_px is not None:
         doc["tile_px"] = int(tile_px)
+    if stages is not None:
+        held = doc.get("stages")
+        doc["stages"] = held if isinstance(held, dict) else {}
+        for name, height in (stages or {}).items():
+            key = str(name).strip().lower()
+            if not key:
+                raise ValueError("a stage needs a name")
+            if height is None:
+                doc["stages"].pop(key, None)
+                continue
+            value = int(height)
+            if value < 4:
+                raise ValueError(f"stage {key!r}: the player height is in pixels; "
+                                 "4 is the smallest thing that could be one")
+            doc["stages"][key] = value
     if classes:
         held = doc.get("classes")
         doc["classes"] = held if isinstance(held, dict) else {}
@@ -298,8 +333,23 @@ def extents(path: str | os.PathLike[str]) -> dict:
             "box": [left, top, right, bottom], "empty": False}
 
 
+def unit_for(got: dict, stage: str = "") -> int:
+    """The player height a check is graded against: the stage's own when a
+    stage is named, else the project's."""
+    if stage:
+        stages = got.get("stages") or {}
+        key = str(stage).strip().lower()
+        if key not in stages:
+            raise ValueError(
+                f"no stage {key!r} in the scale contract (it has "
+                f"{sorted(stages) or 'none'}) - scale_contract_set(stages="
+                f"{{{key!r}: <player px on that screen>}}) first")
+        return int(stages[key])
+    return int(got.get("player_height_px") or 0)
+
+
 def check(root: str | os.PathLike[str], path: str | os.PathLike[str],
-          klass: str, *, frames: int = 1) -> dict:
+          klass: str, *, frames: int = 1, stage: str = "") -> dict:
     """Measure one asset against its class band, at game scale.
 
     ``frames`` divides the measured width for a horizontal sheet, so a 6-frame
@@ -312,7 +362,7 @@ def check(root: str | os.PathLike[str], path: str | os.PathLike[str],
     if not guard["ok"]:
         raise WrongDimension(guard["why"])
     got = contract(root)
-    player = int(got.get("player_height_px") or 0)
+    player = unit_for(got, stage)
     if player < 4:
         raise NotDeclared(
             "this project has not declared player_height_px, so nothing can "
@@ -354,7 +404,7 @@ def check(root: str | os.PathLike[str], path: str | os.PathLike[str],
             "against a square canvas rather than the room")
     return {
         "ok": not flags, "klass": klass, "path": str(path), "flags": flags,
-        "player_height_px": player, "frames": int(frames),
+        "player_height_px": player, "stage": stage or "", "frames": int(frames),
         "measured": {**measured,
                      "height_players": round(height, 3),
                      "width_players": round(width, 3)},
@@ -364,11 +414,11 @@ def check(root: str | os.PathLike[str], path: str | os.PathLike[str],
 
 
 def record(root: str | os.PathLike[str], path: str | os.PathLike[str],
-           klass: str, *, frames: int = 1) -> dict:
+           klass: str, *, frames: int = 1, stage: str = "") -> dict:
     """Measure, and attach the result to the asset's newest revision."""
     from ..store import artifacts as _artifacts
 
-    got = check(root, path, klass, frames=frames)
+    got = check(root, path, klass, frames=frames, stage=stage)
     got.setdefault("tool", "scale_check")
     got.setdefault("dimension", project_dimension(root))
     try:

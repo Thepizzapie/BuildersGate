@@ -1230,6 +1230,66 @@ def _provider_gate(root: str, capability: str, what: str) -> Optional[dict]:
                       "decides which account gets money.")}
 
 
+def _regen_gate(logical_name: str, replace_reason: str = "") -> Optional[dict]:
+    """REFUSE TO SPEND ON A NAME THAT ALREADY HAS AN APPROVED FILE.
+
+    The asset store held 211 revisions for 181 names after one night, and the
+    repeats were not decisions - they were a reopened item regenerating what
+    a previous attempt had already landed and a human had already approved.
+    A regeneration of an approved logical name now needs `replace_reason`,
+    which is recorded on the new revision; without it the call returns the
+    live file and spends nothing. Reject the old one in the dashboard (or
+    art_qa_verdict) and the gate opens by itself.
+    """
+    if replace_reason or not logical_name:
+        return None
+    try:
+        live = _artifacts.live_path(_root(), logical_name)
+    except Exception:                                            # noqa: BLE001
+        return None
+    if not live:
+        return None
+    disk = _Path(_root()) / live
+    if not disk.is_file():
+        return None
+    return {"ok": False, "refused": True, "code": "already_approved",
+            "logical_name": logical_name, "path": live,
+            "error": (f"{logical_name!r} already has an APPROVED revision at "
+                      f"{live}. Nothing was generated and nothing was spent. Use "
+                      "that file; or reject it (dashboard / art_qa_verdict) and "
+                      "call again; or pass replace_reason='...' saying what is "
+                      "wrong with it, which is recorded on the new revision.")}
+
+
+def _contract_or_empty(character: str) -> dict:
+    try:
+        from bgate_core.art import spritecontract as _sc
+        return _sc.contract_for(_scratch_root(), character=character)
+    except Exception:                                            # noqa: BLE001
+        return {}
+
+
+def _fit_to_contract(sheet: str, cell: tuple[int, int], contract: dict) -> Optional[dict]:
+    """Land a sheet at the contract's standing height, in place. None when
+    the contract declares none. A fit that refuses (a >2x upscale) is
+    reported, not raised: the sheet still landed, at the wrong size, and
+    the report says so."""
+    standing = int(contract.get("standing_px") or 0)
+    if not standing:
+        return None
+    from bgate_core.art import spritefit as _spritefit
+    try:
+        palette = _spritefit.as_palette(_artdirection.palette_pinned(str(_root())))
+    except Exception:                                            # noqa: BLE001
+        palette = None
+    try:
+        return _spritefit.fit_sheet(sheet, sheet, cell=cell, standing_px=standing,
+                                    feet_row=int(contract.get("feet_row") or 0) or None,
+                                    palette=palette)
+    except _spritefit.FitError as exc:
+        return {"ok": False, "standing_px": standing, "error": str(exc)}
+
+
 def _register_artifact(logical_name: str, path: str, *, producer: str,
                        model: str = "", prompt: str = "",
                        refs: Optional[list[str]] = None,
@@ -2634,7 +2694,10 @@ def image_generate(prompt: Annotated[str, Field(description='What to paint. Fram
                    use_pinned: Annotated[str, Field(description='Pull the project\'s own anchors by kind (character | style | ui | concept) or "all"; capped at the first 4 pins.')] = "", anchors: Annotated[Optional[list[str]], Field(description='Extra images used ONLY to choose the chroma key colour; never sent to the model.')] = None,
                    task_kind: Annotated[str, Field(description='What is being made: texture, decal, anchor/animation/item/sprite (keyed), background/tile/ui/concept (never keyed). Omit to follow `transparent`.')] = "", tileable: Annotated[bool, Field(description='With task_kind=texture, run the mirrored seam post-pass for a repeating field.')] = False,
                    ref_strength: Annotated[float, Field(description='How hard a reference pulls, 0-1 (Krea-side). Default 0.5.')] = 0.5, provider: Annotated[str, Field(description='"" picks the configured provider (openai, else krea); a name forces it and surfaces that provider\'s own key error.')] = "",
-                   model: Annotated[str, Field(description='Provider-specific model id; "" takes the provider\'s default.')] = "") -> dict:
+                   model: Annotated[str, Field(description='Provider-specific model id; "" takes the provider\'s default.')] = "",
+                   klass: Annotated[str, Field(description='Scale class of what is being made - prop, furniture, door, ui, enemy, boss, player. With a declared scale contract the result is measured on landing and an oversized keyed asset is shrunk to the band before anyone can wire it.')] = "",
+                   stage: Annotated[str, Field(description='Which screen\'s unit grades it (scale_contract_set stages=...), e.g. "battle"; empty uses the project player height.')] = "",
+                   replace_reason: Annotated[str, Field(description='Required to regenerate a logical name (the filename stem) that already has an APPROVED revision; recorded on the new one.')] = "") -> dict:
     """Generate PAINTED art - portraits, select-screen cards, title splashes,
     textures, decals, stage paint-overs. Costs real money per image
     (~$0.02-0.19).
@@ -2649,8 +2712,8 @@ def image_generate(prompt: Annotated[str, Field(description='What to paint. Fram
     Full notes: docs/tools.md#image_generate
     """
     root = _Path(_scratch_root())
-    refused = _provider_gate(str(root), "image",
-                           f"generating {filename!r}")
+    refused = _regen_gate(_Path(filename).stem, replace_reason) \
+        or _provider_gate(str(root), "image", f"generating {filename!r}")
     if refused:
         return refused
     out = _art_out(root, filename)
@@ -2702,6 +2765,8 @@ def image_generate(prompt: Annotated[str, Field(description='What to paint. Fram
             "tileable was requested and DID NOT happen: "
             + (tiled.get("note") if isinstance(tiled, dict) else "no tile pass ran")
             + " - this map will seam where it repeats")
+    if result.get("ok") and klass:
+        result["scale"] = _land_in_band(result["path"], klass, stage)
     if result.get("ok"):
         archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
         if archived:
@@ -2734,7 +2799,7 @@ def image_generate(prompt: Annotated[str, Field(description='What to paint. Fram
 @_tool
 def image_edit(prompt: str, ref_images: list[str], filename: str,
                size: str = "1024x1536", quality: str = "medium",
-               transparent: bool = False) -> dict:
+               transparent: bool = False, replace_reason: str = "") -> dict:
     """Generate an image CONDITIONED ON reference image(s) - the consistency
     primitive, exposed raw.
 
@@ -2747,7 +2812,8 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     Full notes: docs/tools.md#image_edit
     """
     root = _Path(_scratch_root())
-    refused = _provider_gate(str(root), "image", f"editing into {filename!r}")
+    refused = _regen_gate(_Path(filename).stem, replace_reason) \
+        or _provider_gate(str(root), "image", f"editing into {filename!r}")
     if refused:
         return refused
     out = _art_out(root, filename)
@@ -3105,6 +3171,131 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
     return report
 
 
+def _land_in_band(path: str, klass: str, stage: str = "") -> dict:
+    """Measure a freshly generated keyed asset against its scale class and
+    shrink it to the band's top when it is over. The delivery-time half of
+    the contract: an enemy drawn at 320px against a 96px party used to be
+    measured a day later by QA, after it was wired."""
+    from bgate_core.three_d import scalecontract as _scale
+    from bgate_core.art import spritefit as _spritefit
+    root = _root()
+    try:
+        got = _scale.contract(root)
+        player = _scale.unit_for(got, stage)
+        band = (got.get("classes") or {}).get(klass)
+    except Exception as exc:                                     # noqa: BLE001
+        return {"ok": False, "klass": klass, "note": f"no scale contract read: {exc}"}
+    if not band or player < 4:
+        return {"ok": False, "klass": klass,
+                "note": ("no scale contract declared (scale_contract_set / a sprite "
+                         "contract standing_px) - nothing to fit to")}
+    top = int(round(band["high"] * player))
+    try:
+        palette = _spritefit.as_palette(_artdirection.palette_pinned(str(root)))
+    except Exception:                                            # noqa: BLE001
+        palette = None
+    fit = _spritefit.fit_to_band(path, max_height=top, palette=palette)
+    try:
+        check = _scale.check(root, path, klass, stage=stage)
+    except Exception as exc:                                     # noqa: BLE001
+        check = {"ok": False, "note": str(exc)}
+    return {"ok": bool(check.get("ok")), "klass": klass, "stage": stage, "player_height_px": player,
+            "band_px": [int(round(band["low"] * player)), top], "fit": fit,
+            "flags": check.get("flags", []), "measured": check.get("measured")}
+
+
+@_tool
+def sprite_fit(sheet: str, cell: list, standing_px: int = 0, feet_row: int = 0,
+               src_cell: Optional[list] = None, anchor_frame: int = 0,
+               out: str = "", palette: str = "pinned") -> dict:
+    """FIT A SHEET TO ONE STANDING HEIGHT - the idle frame stands exactly
+    `standing_px` tall, every other frame scaled by the same factor so a
+    raised staff stays raised, feet on `feet_row`, alpha hardened, colours
+    snapped to the pinned palette. Free, local, no model.
+
+    standing_px=0 reads the sprite contract's (sprite_contract_set
+    standing_px=...). `cell` is the OUTPUT cell; `src_cell` the sheet's own
+    grid when it differs (64x96 -> 96x96 when a fitted attack frame is 91px
+    wide). A frame that would overflow the cell is shrunk ALONE and named in
+    `overflow`, never cropped. An upscale past 2x is refused: regenerate at
+    size. `out` empty writes in place. MEASURED: the benchmark party stood
+    49/52/49/64px in one cell until the art seat wrote this by hand.
+    """
+    from bgate_core.art import spritefit as _spritefit, spritecontract as _sc
+    root = _root()
+    src = _Path(root) / sheet if not _Path(sheet).is_absolute() else _Path(sheet)
+    if not src.is_file():
+        return {"ok": False, "error": f"no sheet at {sheet}"}
+    contract = _sc.load(str(root))
+    standing = int(standing_px or contract.get("standing_px") or 0)
+    if not standing:
+        return {"ok": False, "error": ("standing_px is 0 and the sprite contract "
+                                       "declares none - sprite_contract_set(patch="
+                                       "{'standing_px': N}) first, or pass it")}
+    colors = None
+    if palette == "pinned":
+        try:
+            colors = _spritefit.as_palette(_artdirection.palette_pinned(str(root)))
+        except Exception:                                        # noqa: BLE001
+            colors = None
+    dest = (_Path(root) / out) if out and not _Path(out).is_absolute() else (_Path(out) if out else src)
+    try:
+        report = _spritefit.fit_sheet(
+            src, dest, cell=(int(cell[0]), int(cell[1])), standing_px=standing,
+            feet_row=int(feet_row) or int(contract.get("feet_row") or 0) or None,
+            anchor_frame=int(anchor_frame),
+            src_cell=(int(src_cell[0]), int(src_cell[1])) if src_cell else None,
+            palette=colors)
+    except _spritefit.FitError as exc:
+        return {"ok": False, "error": str(exc)}
+    report["path"] = _assets.normalize_path(root, dest)
+    _log("art", f"sprite_fit {report['path']}: anchor {report['anchor_height_before']}px "
+                f"-> {standing}px (x{report['scale']}), {len(report['overflow'])} overflow")
+    return report
+
+
+@_tool
+def sprite_family_check(sheets: list, standing_px: int = 0,
+                        same_character: bool = True) -> dict:
+    """DO A CHARACTER'S SHEETS AGREE WITH EACH OTHER? Battle, overworld,
+    portrait, the RD walk and the kie idle - read together. Findings:
+    `height_mismatch` (an anchor off the contract or the family median by
+    >6%), `feet_drift` (feet rows >2px apart), `palette_drift` (>12% of a
+    sheet's pixels are colours no sibling uses - a different palette, or a
+    different character). Free, local.
+
+    `sheets` is [{"path", "cell": [w, h], "label"?, "anchor_frame"?}].
+    standing_px=0 reads the contract; 0 there too holds the family to its
+    own median. Every sheet is also held to the pinned palette
+    (`off_palette`). `same_character=False` for a PARTY - four people, four
+    outfits, one height: the heights must agree and the palettes need not.
+    RUN IT before landing any sheet of a character that already has one - it
+    is the check that would have caught the fourth party member at 30%
+    taller than the other three.
+    """
+    from bgate_core.art import spritefit as _spritefit, spritecontract as _sc
+    root = _root()
+    rows = []
+    for s in sheets or []:
+        p = _Path(root) / str(s.get("path", "")) if not _Path(str(s.get("path", ""))).is_absolute() else _Path(s["path"])
+        if not p.is_file():
+            return {"ok": False, "error": f"no sheet at {s.get('path')}"}
+        rows.append({**s, "path": str(p)})
+    if len(rows) < 1:
+        return {"ok": False, "error": "sheets is empty"}
+    standing = int(standing_px or _sc.load(str(root)).get("standing_px") or 0)
+    try:
+        colors = _spritefit.as_palette(_artdirection.palette_pinned(str(root)))
+    except Exception:                                            # noqa: BLE001
+        colors = None
+    try:
+        return _spritefit.family_check(rows, standing_px=standing,
+                                       same_character=bool(same_character),
+                                       palette=colors)
+    except (_spritefit.FitError, OSError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @_tool
 def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
                          frame_size: Optional[list[int]] = None) -> dict:
@@ -3175,9 +3366,9 @@ def sprite_contract_set(preset: str = "", patch: Optional[dict] = None) -> dict:
     if preset:
         saved = _sc.apply_preset(root, preset, patch)
     else:
-        current = _sc.load(root)
-        current.update(patch or {})
-        saved = _sc.save(root, current)
+        # Per-key for characters and actions: a patch that scopes one
+        # character's battle cell must not throw away another character's.
+        saved = _sc.save(root, _sc.merge_patch(_sc.load(root), patch or {}))
     _log("art", f"sprite contract set: {saved['preset']} "
                 f"({len(saved['directions'])} directions, "
                 f"{saved['cell'][0]}x{saved['cell'][1]})")
@@ -3203,7 +3394,7 @@ _RD_PROMPTS = {"walk": "confident, steady steps",
 def animation_generate(character: str, action: str,
                        source_sheet: str = "", prompt: str = "",
                        frames: int = 0, max_retries: int = 1,
-                       direction: str = "") -> dict:
+                       direction: str = "", replace_reason: str = "") -> dict:
     """CONTRACT-DRIVEN character animation via Retro Diffusion.
 
     Reads the sprite contract for character+action (directions, cell size,
@@ -3224,8 +3415,11 @@ def animation_generate(character: str, action: str,
     refused = _provider_gate(str(root), "animate", "an animation cycle")
     if refused:
         return refused
-    contract = _sc.contract_for(str(root), character, action)
     act = str(action).strip().lower()
+    refused = _regen_gate(f"{character}_{act}", replace_reason)
+    if refused:
+        return refused
+    contract = _sc.contract_for(str(root), character, action)
     drawn = contract["drawn"]
     # ONE DIRECTION PER CALL, WHEN THE CALLER ASKS FOR IT. Retro Diffusion's
     # turnaround is about ten minutes per drawn direction, so buying all
@@ -3385,6 +3579,10 @@ def animation_generate(character: str, action: str,
             sheet_path.name, anims, (cw, ch), fps, "assets/characters",
             timing=timing, plan=plan),
         encoding="utf-8")
+    # THE CONTRACT'S HEIGHT, ON LANDING. Every sheet of a character stands
+    # the declared height, so the walk RD drew at 70px and the idle kie drew
+    # at 90px leave here as one person.
+    fit = _fit_to_contract(str(sheet_path), (cw, ch), contract)
     previews = _gif_previews(frame_files, str(sheet_path),
                              f"{character}_{act}", timing, fps)
     motion_report = _spritekit.sheet_report(
@@ -3408,6 +3606,7 @@ def animation_generate(character: str, action: str,
               "mirror": contract["mirror"],
               "unplayable": contract.get("unplayable", []),
               "cell": [cw, ch], "frames_per_direction": rd_frames,
+              **({"fit": fit} if fit is not None else {}),
               "directions": per_dir, "motion": motion_report,
               "set": drift,
               **({"aseprite": ase} if ase is not None else {}),
@@ -4778,6 +4977,9 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             asm["palette"]["why"] = lock_why
             cons = {"ok": False}
             if asm.get("ok"):
+                # The contract's standing height, on the assembled sheet.
+                asm["fit"] = _fit_to_contract(asm["sheet"], (frame_width, frame_height),
+                                              _contract_or_empty(name))
                 fm = asm.get("frames", {})
                 cons = _vision_consistency(ref_path, [(p, fp) for p, fp in fm.items()])
                 # THE GEOMETRY RUNS EVEN WHEN THE JUDGE CANNOT. The vision
@@ -8320,19 +8522,25 @@ def encounter_design_set(roster: Optional[list] = None,
 @_tool
 def scale_contract_set(player_height_px: Optional[int] = None,
                        tile_px: Optional[int] = None,
-                       classes: Optional[dict] = None) -> dict:
+                       classes: Optional[dict] = None,
+                       stages: Optional[dict] = None) -> dict:
     """Declare the REFERENCE SCALE every asset is measured against.
 
     `player_height_px` is the unit. `classes` overrides the default bands,
     multiples of that height: {"door": {"low": 1.05, "high": 1.5}}. The
     classes are prop, furniture, door, ui and enemy; every one has a band,
     because "no expectation" is how a mug ends up chair-sized.
+    `stages` names a unit PER SCREEN - {"battle": 76, "overworld": 27} - for
+    a game whose party is one size in the field and another in the fight;
+    scale_check(stage=...) and image_generate(stage=...) grade against it.
+    None on a stage removes it. Classes now include boss and player.
     Full notes: docs/tools.md#scale_contract_set
     """
     from bgate_core.three_d import scalecontract as _scale
 
     return _scale.set_contract(_root(), player_height_px=player_height_px,
-                               tile_px=tile_px, classes=classes, by=_actor())
+                               tile_px=tile_px, classes=classes, by=_actor(),
+                               stages=stages)
 
 
 @_tool
@@ -8357,7 +8565,7 @@ def scale_record_3d(path: str, klass: str, longest_axis_m: float,
 
 
 @_tool
-def scale_check(path: str, klass: str, frames: int = 1) -> dict:
+def scale_check(path: str, klass: str, frames: int = 1, stage: str = "") -> dict:
     """Measure one asset AT GAME SCALE and record the result on its revision.
 
     Measures the opaque bounding box, the box, not the canvas, because a
@@ -8372,7 +8580,7 @@ def scale_check(path: str, klass: str, frames: int = 1) -> dict:
     """
     from bgate_core.three_d import scalecontract as _scale
 
-    return _scale.record(_root(), path, klass, frames=int(frames or 1))
+    return _scale.record(_root(), path, klass, frames=int(frames or 1), stage=stage)
 
 
 @_tool
