@@ -161,3 +161,23 @@ def test_switching_the_project_does_not_log_the_phone_out(client, tmp_path, monk
     r = c.get("/api/state?lean=1", headers=phone)
     assert r.status_code == 200
     assert r.json()["project"]["name"] == "Other Game"
+
+
+def test_the_web_build_and_its_telemetry_accept_the_token_as_a_cookie(client, tmp_path):
+    """The phone plays /play/ in a web view; the engine's own .wasm/.pck
+    fetches carry no header. The cookie works there and nowhere else."""
+    c, _, phone = client
+    web = tmp_path / "export" / "web"
+    web.mkdir(parents=True)
+    (web / "index.html").write_text("<html>game</html>", encoding="utf-8")
+    (web / "index.pck").write_bytes(b"pck")
+    cookie = {"host": PHONE["host"], "user-agent": "Mozilla/5.0 (iPhone) AppleWebKit"}
+    c.cookies.set(apimod.PHONE_COOKIE, phone["x-bgate-token"])
+    assert c.get("/play/", headers=cookie).status_code == 200
+    assert c.get("/play/index.pck", headers=cookie).status_code == 200
+    # the cookie opens the build, not the project
+    assert c.get("/api/state?lean=1", headers=cookie).status_code == 401
+    assert c.get("/api/queue", headers=cookie).status_code == 401
+    # and a wrong cookie opens nothing
+    c.cookies.set(apimod.PHONE_COOKIE, "stale")
+    assert c.get("/play/", headers=cookie).status_code == 401

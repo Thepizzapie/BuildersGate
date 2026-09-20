@@ -10,6 +10,10 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Changed
+- **The phone can play the build.** `/play/*` and the game's telemetry POST
+  accept the phone token as a cookie (`bgate_phone`) from the tailnet side,
+  because the engine's own `.wasm`/`.pck` fetches cannot carry a header. The
+  cookie opens the build and nothing else.
 - **Settings > Phone: the companion app's door, from the desk.** The phone
   now has its own token (`~/.bgate/remote-token`, machine-wide so switching
   projects from the desk or the phone keeps it paired), not the dashboard's, so it

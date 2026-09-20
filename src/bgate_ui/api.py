@@ -373,6 +373,9 @@ _OPEN_PATHS = ("/static/", "/play/", "/api/preview", "/favicon")
 # keep the token.
 _OPEN_POST_RE = re.compile(r"^/api/playtest/\d+/events$")
 
+#: The cookie a phone's web view carries the phone token in, for /play/* only.
+PHONE_COOKIE = "bgate_phone"
+
 
 def token_path(root: Path) -> Path:
     return Path(root) / ".bgate" / TOKEN_FILENAME
@@ -457,6 +460,7 @@ def install_guard(app, root_fn) -> None:
         # Settings > Phone has to be on, EVERY method carries the phone token
         # (a GET of /api/state is the whole project), and the device it came
         # from has not been revoked. It never sees the dashboard's own token.
+        path = request.url.path
         if host and host_name not in _LOOPBACK_HOSTS and not _auth_disabled():
             from bgate_ui import remote as _remote
             if not _remote.enabled():
@@ -471,6 +475,17 @@ def install_guard(app, root_fn) -> None:
             presented = (request.headers.get("x-bgate-token")
                          or (request.headers.get("authorization", "")
                              .removeprefix("Bearer ").strip()))
+            # THE GAME ITSELF CANNOT SET A HEADER. The phone plays the web
+            # build in a web view, and the engine fetches its own .wasm and
+            # .pck - subresource requests nothing in the app can decorate. For
+            # the build's files, and for the telemetry POST the running game
+            # makes, the token may ride in a cookie the app set before loading
+            # /play/. Only there: a cookie is attached by the browser to any
+            # request, and accepting it across the API would make every phone
+            # page a forgery vector for the tailnet side.
+            if not presented and (path.startswith("/play/")
+                                  or (request.method == "POST" and _OPEN_POST_RE.match(path))):
+                presented = request.cookies.get(PHONE_COOKIE, "")
             if not expected or not secrets.compare_digest(presented or "", expected):
                 _remote.note_refusal(request, "wrong or missing phone token")
                 return JSONResponse(status_code=401, content=error_body(
