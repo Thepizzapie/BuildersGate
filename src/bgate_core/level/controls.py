@@ -86,7 +86,7 @@ def parse_input_map(text: str, *, include_builtin: bool = False) -> list[dict]:
             if not include_builtin and name.startswith(_BUILTIN_PREFIXES):
                 current = None
                 continue
-            current = {"action": name, "keys": [], "buttons": []}
+            current = {"action": name, "keys": [], "buttons": [], "keycodes": []}
             actions.append(current)
         if current is None:
             continue
@@ -98,6 +98,8 @@ def parse_input_map(text: str, *, include_builtin: bool = False) -> list[dict]:
                 name = key_name(code)
                 if name not in current["keys"]:
                     current["keys"].append(name)
+                if code not in current["keycodes"]:
+                    current["keycodes"].append(code)
         for raw in _BUTTON_RE.findall(line):
             button = f"pad {raw}"
             if button not in current["buttons"]:
@@ -129,3 +131,135 @@ def for_project(root: str | os.PathLike[str]) -> list[dict]:
         return parse_input_map(path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return []
+
+
+# ---------------------------------------------------------------------------
+# A touch layout for the phone, from the same map
+# ---------------------------------------------------------------------------
+#
+# The companion app plays the Web export in a web view, where a finger is a
+# mouse and a keyboard does not exist. It draws a d-pad and a few buttons and
+# dispatches the KeyboardEvents the engine's own listener reads, so the game
+# needs no change and no project needs a hand-written mapping: the roles come
+# from the action NAMES (ui_left, move_left, walk_left, left ... are all the
+# left arrow of a pad) and the keys from the map, translated to the DOM's
+# `code` / `key` / `keyCode` triplet Godot's web input reads.
+
+_DOM_SPECIAL: dict[int, tuple[str, str, int]] = {
+    4194305: ("Escape", "Escape", 27), 4194306: ("Tab", "Tab", 9),
+    4194308: ("Backspace", "Backspace", 8), 4194309: ("Enter", "Enter", 13),
+    4194310: ("NumpadEnter", "Enter", 13), 4194311: ("Insert", "Insert", 45),
+    4194312: ("Delete", "Delete", 46), 4194317: ("Home", "Home", 36),
+    4194318: ("End", "End", 35), 4194319: ("ArrowLeft", "ArrowLeft", 37),
+    4194320: ("ArrowUp", "ArrowUp", 38), 4194321: ("ArrowRight", "ArrowRight", 39),
+    4194322: ("ArrowDown", "ArrowDown", 40), 4194323: ("PageUp", "PageUp", 33),
+    4194324: ("PageDown", "PageDown", 34), 4194325: ("ShiftLeft", "Shift", 16),
+    4194326: ("ControlLeft", "Control", 17), 4194327: ("MetaLeft", "Meta", 91),
+    4194328: ("AltLeft", "Alt", 18), 4194329: ("CapsLock", "CapsLock", 20),
+}
+_DOM_SPECIAL.update({4194332 + i: (f"F{i + 1}", f"F{i + 1}", 112 + i) for i in range(12)})
+_DOM_PUNCT = {44: "Comma", 46: "Period", 47: "Slash", 59: "Semicolon", 39: "Quote",
+              91: "BracketLeft", 93: "BracketRight", 92: "Backslash", 45: "Minus",
+              61: "Equal", 96: "Backquote"}
+
+
+def dom_key(code: int) -> Optional[dict]:
+    """A Godot keycode as the DOM event fields the web build reads."""
+    if code in _DOM_SPECIAL:
+        dom, key, kc = _DOM_SPECIAL[code]
+        return {"label": key_name(code), "code": dom, "key": key, "keyCode": kc}
+    if code == 32:
+        return {"label": "Space", "code": "Space", "key": " ", "keyCode": 32}
+    if 65 <= code <= 90:
+        ch = chr(code)
+        return {"label": ch, "code": f"Key{ch}", "key": ch.lower(), "keyCode": code}
+    if 48 <= code <= 57:
+        ch = chr(code)
+        return {"label": ch, "code": f"Digit{ch}", "key": ch, "keyCode": code}
+    if code in _DOM_PUNCT:
+        return {"label": chr(code), "code": _DOM_PUNCT[code], "key": chr(code), "keyCode": code}
+    return None
+
+
+# Action-name → pad role. First match wins; the ui_ builtins are the engine's
+# own and every 2D scaffold binds them, so a project with nothing custom still
+# gets a working pad.
+_ROLE_RES: list[tuple[str, re.Pattern]] = [
+    ("left", re.compile(r"(^|_)(left|west)$")),
+    ("right", re.compile(r"(^|_)(right|east)$")),
+    ("up", re.compile(r"(^|_)(up|north|forward)$")),
+    ("down", re.compile(r"(^|_)(down|south|back|backward)$")),
+    ("accept", re.compile(r"(^|_)(accept|confirm|ok|select|interact|use|talk)$")),
+    ("cancel", re.compile(r"(^|_)(cancel|back|escape)$")),
+    ("menu", re.compile(r"(^|_)(menu|pause|start|inventory)$")),
+]
+_DPAD = ("left", "right", "up", "down")
+_BUTTON_LABELS = {"accept": "OK", "cancel": "Back", "menu": "Menu"}
+_MAX_BUTTONS = 6
+
+
+def _role(action: str) -> str:
+    name = action.lower()
+    for role, rx in _ROLE_RES:
+        if rx.search(name):
+            return role
+    return ""
+
+
+def _button_label(action: str, role: str) -> str:
+    if role in _BUTTON_LABELS:
+        return _BUTTON_LABELS[role]
+    bare = re.sub(r"^(ui_|action_|btn_|input_)", "", action)
+    words = bare.replace("_", " ").split()
+    full = " ".join(words).title()
+    # A cap fits on a button; the first word is a better fit than a cut.
+    return (full if len(full) <= 8 else words[0].title()[:8]) or action[:8]
+
+
+def pad_layout(actions: list[dict]) -> dict:
+    """A d-pad and up to six buttons for the phone, from parse_input_map(
+    include_builtin=True). Every entry carries the DOM key to dispatch.
+
+    ``dpad`` is a role → key dict (missing directions are simply absent, a
+    menu-only game gets no pad). ``buttons`` are in a fixed order - accept,
+    cancel, menu, then the project's own actions in declaration order - so
+    the thumb learns one layout across projects.
+    """
+    dpad: dict[str, dict] = {}
+    buttons: list[dict] = []
+    seen_codes: set[str] = set()
+    seen_roles: set[str] = set()
+    for a in actions:
+        keys = [k for k in (dom_key(c) for c in a.get("keycodes", [])) if k]
+        if not keys:
+            continue
+        role = _role(a["action"])
+        if role in _DPAD:
+            if role not in dpad:
+                dpad[role] = {**keys[0], "action": a["action"]}
+            continue
+        # One button per distinct key: ui_accept and "interact" both on Enter
+        # would be two buttons that do the same thing.
+        key = keys[0]
+        if key["code"] in seen_codes or role in seen_roles:
+            continue
+        seen_codes.add(key["code"])
+        if role in _BUTTON_LABELS:
+            seen_roles.add(role)      # one OK, one Back, one Menu
+        buttons.append({**key, "action": a["action"], "role": role or "action",
+                        "label": _button_label(a["action"], role)})
+    order = {"accept": 0, "cancel": 1, "menu": 2}
+    buttons.sort(key=lambda b: order.get(b["role"], 3))
+    return {"dpad": dpad, "buttons": buttons[:_MAX_BUTTONS],
+            "dropped": [b["action"] for b in buttons[_MAX_BUTTONS:]]}
+
+
+def pad_for_project(root: str | os.PathLike[str]) -> dict:
+    path = project_godot(root)
+    if path is None:
+        return {"dpad": {}, "buttons": [], "dropped": []}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"dpad": {}, "buttons": [], "dropped": []}
+    return pad_layout(parse_input_map(text, include_builtin=True))

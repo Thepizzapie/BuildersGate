@@ -2139,6 +2139,13 @@ def play_status() -> dict:
     return status
 
 
+@app.get("/api/play/pad")
+def play_pad() -> dict:
+    """The phone's touch layout for this project: a d-pad and buttons derived
+    from the input map, each with the DOM key event the web build reads."""
+    return _controls.pad_for_project(_root())
+
+
 @app.post("/api/play/rebuild")
 def play_rebuild() -> dict:
     from bgate_ui import webbuild
