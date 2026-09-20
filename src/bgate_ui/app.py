@@ -2270,8 +2270,7 @@ def pair_page(request: Request) -> str:
     host = _remote_host()
     if not host:
         raise HTTPException(404, "remote mode is off")
-    asked = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
-    if asked.lower() not in _api._LOOPBACK_HOSTS:
+    if not _api.is_desk(request):
         raise HTTPException(404, "not found")
     pair = _pairing(request.url.port or 7788, host, _root_or_none())
     try:
@@ -2385,6 +2384,11 @@ def serve(port: int = 7788, remote: bool = False) -> None:
     # Tailscale — never 0.0.0.0, and it refuses rather than falling back.
     bind_host = "127.0.0.1"
     if remote:
+        if _api._auth_disabled():
+            print("builders gate · REFUSING to start remote mode")
+            print("  BGATE_NO_AUTH is set. That switches every gate off, and "
+                  "remote mode is nothing but gates.")
+            raise SystemExit(2)
         got = _remote_bind(port)
         if got is None:
             print("builders gate · REFUSING to start remote mode")
@@ -2392,6 +2396,15 @@ def serve(port: int = 7788, remote: bool = False) -> None:
                   "(try: tailscale status)")
             raise SystemExit(2)
         tailnet_ip, allowed = got
+        # A RAW TCP RELAY DEFEATS THE DOOR. `tailscale serve --tcp` hands
+        # the connection over from 127.0.0.1 with nothing added, so a tailnet
+        # client that writes `Host: 127.0.0.1` is indistinguishable from the
+        # desk - and the desk side serves the page, whose HTML carries the
+        # desk's own token. Serve the tailnet IP directly (this bind) or an
+        # HTTP proxy (`tailscale serve --https=443 http://127.0.0.1:PORT`),
+        # which stamps X-Forwarded-For and is seen through.
+        print("  NEVER relay this port with `tailscale serve --tcp`: a raw TCP "
+              "relay makes a network client look like this machine.")
         # Listen on every interface: the bind
         # to the single tailnet IP dropped the phone's packets (-1001). The
         # Host allow-list and the per-project token still gate every request.

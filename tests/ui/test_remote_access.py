@@ -181,3 +181,76 @@ def test_the_web_build_and_its_telemetry_accept_the_token_as_a_cookie(client, tm
     # and a wrong cookie opens nothing
     c.cookies.set(apimod.PHONE_COOKIE, "stale")
     assert c.get("/play/", headers=cookie).status_code == 401
+
+
+# ── the door is decided by every signal, not the Host header alone ─────────
+
+def _peer(appmod, host_ip):
+    """A TestClient whose socket peer is a tailnet address."""
+    return TestClient(appmod.app, client=(host_ip, 40000))
+
+
+def test_a_network_peer_writing_a_loopback_host_is_still_the_tailnet_side(client, tmp_path):
+    """The Host gate alone was forgeable: a client on the tailnet (or a raw
+    TCP relay) writes `Host: 127.0.0.1` and used to be served the desk's
+    page - whose HTML carries the desk's own token."""
+    from bgate_ui import app as appmod
+    c = _peer(appmod, "100.64.0.9")
+    r = c.get("/", headers={"host": "127.0.0.1:7788"})
+    assert r.status_code == 404
+    assert apimod.ensure_token(tmp_path) not in r.text
+    r = c.get("/api/state?lean=1", headers={"host": "127.0.0.1:7788"})
+    assert r.status_code == 401
+    r = c.get("/api/state?lean=1", headers={"host": "127.0.0.1:7788",
+                                             "x-bgate-token": remote.ensure_token()})
+    assert r.status_code == 200
+
+
+def test_a_proxied_request_is_the_tailnet_side_whatever_the_socket_says(client):
+    """tailscale serve in HTTP mode arrives from 127.0.0.1 with X-Forwarded-For."""
+    c, _, phone = client
+    r = c.get("/api/queue", headers={"host": "127.0.0.1:7788",
+                                     "x-forwarded-for": "100.64.0.42"})
+    assert r.status_code == 401
+    r = c.get("/api/queue", headers={"host": "127.0.0.1:7788",
+                                     "x-forwarded-for": "100.64.0.42",
+                                     "x-bgate-token": phone["x-bgate-token"]})
+    assert r.status_code == 200
+
+
+def test_the_tailnet_side_never_gets_the_page_or_the_door_controls(client, tmp_path):
+    """Even with a valid phone token: `/` carries the desk token in its HTML,
+    and /api/remote hands out the phone token and its QR."""
+    c, _, phone = client
+    assert c.get("/", headers=phone).status_code == 404
+    assert apimod.ensure_token(tmp_path) not in c.get("/", headers=phone).text
+    assert c.get("/api/remote", headers=phone).status_code == 404
+    assert c.get("/pair", headers=phone).status_code == 404
+    assert c.get("/static/app.css", headers=phone).status_code == 404
+
+
+def test_reading_the_door_status_needs_the_desk_token_even_as_a_get(client):
+    """Its body is the credential. A loopback GET without the dashboard's
+    token (any local process, or a page that got past the Host gate) must
+    not be handed the phone token and the QR."""
+    c, desk, _ = client
+    assert c.get("/api/remote", headers=DESK).status_code == 401
+    assert c.get("/api/remote", headers=desk).status_code == 200
+
+
+def test_the_switch_survives_a_restart(client):
+    c, desk, phone = client
+    c.post("/api/remote/disable", headers=desk)
+    remote._switched_off = None            # what a fresh process starts with
+    assert remote.enabled() is False
+    assert c.get("/api/queue", headers=phone).status_code == 403
+    c.post("/api/remote/enable", headers=desk)
+    remote._switched_off = None
+    assert remote.enabled() is True
+
+
+def test_the_device_table_is_bounded(client):
+    c, desk, phone = client
+    for i in range(remote.MAX_DEVICES + 10):
+        c.get("/api/queue", headers={**phone, "user-agent": f"agent-{i}"})
+    assert len(c.get("/api/remote", headers=desk).json()["devices"]) == remote.MAX_DEVICES

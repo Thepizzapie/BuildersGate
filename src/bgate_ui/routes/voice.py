@@ -186,7 +186,7 @@ async def _accept(socket: WebSocket) -> Optional[dict]:
     gives the mic button nothing to say.
     """
     host = (socket.headers.get("host") or "").strip().lower()
-    if host and host.rsplit(":", 1)[0].strip("[]") not in api._LOOPBACK_HOSTS:
+    if not api.is_desk(socket):
         await socket.close(code=1008)
         return None
     origin = socket.headers.get("origin")
