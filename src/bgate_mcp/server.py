@@ -795,6 +795,7 @@ def _tool(fn: Optional[Callable] = None, *,
             # the work being gone with no record it existed.
             flight_root = _root_hint()
             flight = ""
+            flight_ctx = None
             if flight_root:
                 try:
                     from bgate_core.board import inflight as _inflight
@@ -802,6 +803,10 @@ def _tool(fn: Optional[Callable] = None, *,
                     flight = _inflight.begin(
                         flight_root, fn.__name__, seat=_seat(),
                         item_id=_work_item_id())
+                    # ITEM #19: bind so a Godot/Blender wait loop several
+                    # modules down can call inflight.touch(...) without
+                    # having root/token threaded all the way through.
+                    flight_ctx = _inflight.bind(flight_root, flight)
                 except Exception:                                 # noqa: BLE001
                     flight = ""
             try:
@@ -840,6 +845,8 @@ def _tool(fn: Optional[Callable] = None, *,
                     try:
                         from bgate_core.board import inflight as _inflight
 
+                        if flight_ctx is not None:
+                            _inflight.unbind(flight_ctx)
                         _inflight.end(flight_root, flight)
                     except Exception:                             # noqa: BLE001
                         pass
@@ -5544,7 +5551,8 @@ def _script_source(script: str, godot_project: Optional[str]):
 
 @_tool
 def godot_run(script: str, godot_project: Optional[str] = None,
-              timeout: int = 120) -> dict:
+              timeout: int = 120, time_scale: float = 8.0,
+              force: bool = False) -> dict:
     """Run a GDScript headless and capture its output.
 
     `script` is EITHER the source itself OR a path to a .gd file. It MUST
@@ -5553,6 +5561,16 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     parse/script errors: Godot prints SCRIPT ERROR and still exits 0, so check
     `errors`, not the exit code. godot_project is the directory holding
     project.godot, not the Builders Gate root.
+
+    `time_scale` (default 8x - this tool is for scripted drives, which run
+    in real time by default and look idle) only takes effect on an `extends
+    Node` script; result.time_scale_applied says whether it did.
+
+    IDENTICAL-RUN CAP: the same script text against the same project inside
+    one work item is refused on the THIRD attempt (result.refused ==
+    "identical_run") - a re-run cannot see anything the first two did not
+    already show. Read the earlier result rather than running it again, or
+    pass force=True if you genuinely need to.
     Full notes: docs/tools.md#godot_run
     """
     _contained_path(godot_project, "godot_project")
@@ -5562,7 +5580,8 @@ def godot_run(script: str, godot_project: Optional[str] = None,
                                       "readable: pass the source itself, or a "
                                       "path that exists"}
     got = _godot.run_script(source if source is not None else script,
-                            project_dir=godot_project, timeout=timeout)
+                            project_dir=godot_project, timeout=timeout,
+                            time_scale=time_scale, force=force)
     return {**got, "ran_from": from_path} if from_path else got
 
 
@@ -5686,7 +5705,23 @@ def godot_export_verify(godot_project: Annotated[str, Field(description='Directo
     """
     from bgate_adapters import godot_audit as _audit
     _contained_path(godot_project, "godot_project")
-    return _audit.export_verify(godot_project, pck, scene or None, timeout=timeout)
+    result = _audit.export_verify(godot_project, pck, scene or None, timeout=timeout)
+    # RECORD IT. This is the fact greenlight's release stage and the playtest
+    # gate now read (bgate_core.qa.exportgate) - a verify that ran once and
+    # was never checked again proves nothing about the build three commits
+    # later, which is exactly the gap that shipped EXIT 67 empty.
+    try:
+        from bgate_core.qa import exportgate as _exportgate
+
+        diffs = result.get("diffs")
+        _exportgate.record(
+            _root(), godot_project=godot_project, scene=scene or "",
+            pck=pck, ok=bool(result.get("ok")),
+            diffs=len(diffs) if isinstance(diffs, list) else 0,
+            by=_actor())
+    except Exception:                                             # noqa: BLE001
+        pass
+    return result
 
 
 # A LEVEL-DESIGN TOOL FOR DRIVING GAMES. MEASURED (Corniche, 2026-09-04): with no
@@ -6081,7 +6116,8 @@ def sfx_prompt(prompt: Annotated[str, Field(description='What it should sound li
 @_tool
 def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
                    godot_project: Optional[str] = None,
-                   mode: str = "failures_only") -> dict:
+                   mode: str = "failures_only", time_scale: float = 1.0,
+                   force: bool = False) -> dict:
     """Run this project's own Godot test scripts headless and score them.
 
     Discovers `<godot project>/tests/*.gd`; `paths` runs a subset. Dotfiles
@@ -6091,6 +6127,11 @@ def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
     engine ran cleanly); read `engine_error_scripts` - an engine complaint is
     not noise. A project with NO test scripts answers ok=false, no_tests=true.
     Every run is recorded to .bgate/engine-tests.jsonl.
+
+    `time_scale` defaults to 1x - a test asserting timing wants real time,
+    and only takes effect on an `extends Node` test script regardless. The
+    same script text against the same project inside one work item is
+    refused on the THIRD identical run unless force=True.
     Full notes: docs/tools.md#godot_test_run
     """
     _contained_path(godot_project, "godot_project")
@@ -6099,7 +6140,8 @@ def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
     try:
         return _tests.run(_root(), paths=paths, timeout=timeout,
                           godot_project=godot_project or "",
-                          actor=_actor(), mode=mode)
+                          actor=_actor(), mode=mode,
+                          time_scale=time_scale, force=force)
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "modes": list(_tests.MODES)}
 
@@ -6135,7 +6177,14 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
 def godot_check_project(godot_project: str, timeout: int = 180) -> dict:
     """Import/validate a project headless - the 'does it still build' check.
 
-    godot_project: the directory holding project.godot.
+    godot_project: the directory holding project.godot. Also runs a static
+    lint over every `*.gd` for export-breaking patterns invisible in the
+    editor (result.export_lint): a directory listing filtered with
+    `ends_with(".tres"|...)` that will be empty in an exported pck, a
+    zero-width/BOM code point inside a string literal, and an advisory on
+    `FileAccess.open("res://...")` of a non-resource file that export_filter
+    may not cover. A blocking export_lint finding fails `ok`.
+    Full notes: docs/tools.md#godot_check_project
     """
     _contained_path(godot_project, "godot_project")
     result = _godot.check_project(godot_project, timeout=timeout)

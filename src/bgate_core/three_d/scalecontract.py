@@ -101,6 +101,11 @@ DEFAULT_CLASSES: dict[str, dict] = {
 
 CLASSES = tuple(DEFAULT_CLASSES)
 
+#: Class bands are multiples of player_height_px, never pixels. Past this a
+#: band is almost certainly a pixel count typed into the wrong field — see
+#: set_contract's validation and its comment for the measured failure.
+RATIO_CEILING = 8.0
+
 #: Classes whose meaning is SCREEN-SPACE and therefore survives a 3D project.
 #: A HUD icon is pixels whether or not the world behind it has three axes.
 SCREEN_SPACE_CLASSES = ("ui",)
@@ -231,6 +236,7 @@ def contract(root: str | os.PathLike[str]) -> dict:
     out["classes"] = classes
     out["overrides"] = doc.get("overrides") if isinstance(
         doc.get("overrides"), dict) else {}
+    out["classes_unit"] = "player_height_ratio"
     return out
 
 
@@ -304,6 +310,23 @@ def set_contract(root: str | os.PathLike[str], *,
                 raise ValueError(
                     f"{name}: the band must be 0 < low < high, got "
                     f"low={low} high={high}")
+            # MEASURED: a class band was entered in PIXELS ("door: 140-220")
+            # when the unit is player-height RATIOS, and it was accepted —
+            # nothing in this loop ever compared the number to what the unit
+            # actually is. A door at "220 player-heights" is not a band
+            # anyone meant; it is a pixel count typed into a ratio field and
+            # corrected by hand after the gate stopped making sense. Refuse
+            # it here instead. 8 player-heights is already past the "boss"
+            # ceiling (3.5), so nothing legitimate needs more headroom.
+            if high > RATIO_CEILING:
+                raise ValueError(
+                    f"{name}: high={high:g} looks like PIXELS, not a "
+                    f"player-height ratio. classes.{name} is a multiple of "
+                    "player_height_px (e.g. a door band is {{low: 1.05, "
+                    f"high: 1.5}}), not a pixel size — the unit is ratio, "
+                    f"and {RATIO_CEILING:g} is already past the widest "
+                    "declared band (boss, 3.5). If you meant pixels, divide "
+                    "by player_height_px first.")
             doc["classes"][name] = {"low": low, "high": high}
     _save(root, doc)
     activity.log(root, "scale", "scale contract updated", seat=SEAT)
