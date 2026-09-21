@@ -25,6 +25,28 @@ repository at first publication. There is no earlier release history to record.
   (`forbidden_by_ruling`, per item, not a floor). The director protocol says
   to record the ruling before filing the work. (`bgate_core.design.bible`,
   migration 0047)
+- **The human's own gripes after EXIT 67: what is current, who to ask,
+  how long an item gets, how big an item may be.** `project_current` and a
+  block under every dispatched item name the files changed OUTSIDE the board
+  in the last hours and who changed them, so an agent never edits a file the
+  human just touched by hand without knowing. The dispatch prompt says to ask
+  the moment a question arises and that `ask_director` is the default; an
+  open director question shows in `pending_decisions` and `board_digest` and
+  escalates to the human after ten minutes of director silence; a landed
+  item's commit steers every running agent whose lane it touched. Items
+  carry `size` and `acceptance`; size derives the runtime ceiling and turn
+  cap, the harness steers "land what you have" at 60 and 85 percent of the
+  budget, running rows and the card show elapsed against ceiling, and a
+  small item whose result names a passing check skips the QA agent.
+  `queue_add` refuses a broad or acceptance-less brief from an agent (split
+  it with `queue_add_chain`) and warns the director. Per-attempt cost sits
+  on the item card; events carry the attempt number. Leftovers landed too:
+  `artifacts.sweep_stale` moves a superseded name's loose files to
+  `.bgate_out/.stale/`, `godot_export_verify` boots the exported pck
+  headless and fails on a SCRIPT ERROR, a builder's-gate rejection counts
+  toward the tool's human-rejection stop, `item_to_spriteframes` conforms a
+  generated icon to the pinned palette, and the sprite contract carries
+  `subject_class` for the prop gate.
 - **The EXIT 67 refinement pass: thirty defects from one night, fixed
   across the harness.** A Metal Slug style 2D run-and-gun was built over
   twelve hours by ~33 agents and failed on sight. Every item below names
