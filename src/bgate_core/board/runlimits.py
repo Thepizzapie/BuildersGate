@@ -43,6 +43,16 @@ def set_limits(root: str | os.PathLike[str], **fields) -> dict:
     return limits(root)
 
 
+# MEASURED 2026-09-21 (EXIT 67, item 29): the shipped defaults of 3600 s / no
+# turn cap killed chained runs mid-work — a queue_claim_next chain that had
+# claimed three or four items in a row was still on its first item's clock and
+# got killed with the later items' work half-done. The human raised these by
+# hand to 9800 s / 800 turns and it held; that is now the shipped default
+# rather than a value only known from a support chat.
+DEFAULT_RUNTIME_CEILING_S = 9800
+DEFAULT_MAX_TURNS = 800
+
+
 def concurrency_cap(root: str | os.PathLike[str]) -> int:
     """How many agents may run at once. 0 means uncapped."""
     try:
@@ -61,4 +71,17 @@ def runtime_ceiling(root: str | os.PathLike[str], item: dict) -> int:
     override = (item or {}).get("max_runtime_s")
     if override:
         return int(override)
-    return int(limits(root).get("max_runtime_s") or 0)
+    return int(limits(root).get("max_runtime_s") or DEFAULT_RUNTIME_CEILING_S)
+
+
+def max_turns(root: str | os.PathLike[str], item: dict) -> int:
+    """Turn-count ceiling for one run. 0 means uncapped.
+
+    Mirrors ``runtime_ceiling``: an item's own ``max_turns`` wins, otherwise
+    the project default. See ``DEFAULT_MAX_TURNS`` for why 800.
+    """
+    override = (item or {}).get("max_turns")
+    if override:
+        return int(override)
+    stored = limits(root).get("max_turns")
+    return int(stored) if stored else DEFAULT_MAX_TURNS

@@ -129,6 +129,89 @@ def _burning(root: str, mem: dict) -> bool:
     return int(mem.get("quick_fails") or 0) >= BURN_LIMIT
 
 
+# ITEM 28 (EXIT 67): how long to hold the board when no resume time could be
+# parsed out of the agent's own words. Claude's account limits are hourly or
+# 5-hourly; this errs toward "too long" over "re-burns the queue into the same
+# wall in four seconds", which is what FLOOR_COOLDOWN_S would do here.
+USAGE_LIMIT_DEFAULT_S = 1800.0
+
+
+def _parse_resume_time(text: str, now_wall: Optional[float] = None) -> Optional[float]:
+    """Best-effort: "3pm" / "14:30" / "resets at 3:00 PM" -> a unix timestamp
+    today (or tomorrow, if that clock time has already passed today).
+
+    None means "could not tell" - the caller falls back to a fixed cooldown
+    rather than guessing wrong in a way that holds the board LONGER than the
+    provider actually will.
+    """
+    import time as _time
+    from datetime import datetime, timedelta
+
+    text = (text or "").strip()
+    if not text:
+        return None
+    for fmt in ("%I:%M%p", "%I%p", "%H:%M", "%I:%M %p", "%I %p"):
+        try:
+            parsed = datetime.strptime(text.upper().replace(" ", ""), fmt.replace(" ", ""))
+        except ValueError:
+            continue
+        base = datetime.fromtimestamp(now_wall if now_wall is not None else _time.time())
+        candidate = base.replace(hour=parsed.hour, minute=parsed.minute,
+                                 second=0, microsecond=0)
+        if candidate <= base:
+            candidate += timedelta(days=1)
+        return candidate.timestamp()
+    return None
+
+
+def note_usage_limit(root, runner: str, resumes_at_text: str, raw: str) -> None:
+    """A run's own words said it hit the account's usage limit.
+
+    Floors dispatch (the same mechanism dirty_tree/concurrency use) rather
+    than failing a floor-code refusal against one item: the item that hit
+    this was already put back to 'queued' by the caller (dispatch._reap), not
+    failed, because it never got to actually run out of turns or time — the
+    provider refused it outright.
+
+    Emitted as ONE dispatch.blocked event, deduped by ``usage_limit_noted``
+    the same way the dirty-tree floor dedupes its own banner — a usage-limited
+    board would otherwise repeat the same event every 4-second tick until it
+    cleared.
+    """
+    mem = _mem(str(root))
+    now = time.monotonic()
+    resume_wall = _parse_resume_time(resumes_at_text)
+    if resume_wall is not None:
+        hold_s = max(60.0, resume_wall - time.time())
+    else:
+        hold_s = USAGE_LIMIT_DEFAULT_S
+    entry = {"item_id": None, "code": "usage_limit",
+             "message": f"{runner} hit its usage limit: {raw}"
+                       + (f" — resumes ~{resumes_at_text}" if resumes_at_text else ""),
+             "at": time.strftime("%H:%M:%S"), "runner": runner,
+             "resumes_at": resumes_at_text or ""}
+    already_noted = bool(mem.get("usage_limit_noted"))
+    with _lock:
+        mem["last"] = entry
+        mem["floor_until"] = max(mem.get("floor_until") or 0.0, now + hold_s)
+        mem["usage_limit_noted"] = True
+        mem["usage_limit_runner"] = runner
+    if not already_noted:
+        try:
+            from bgate_core.store import events as _events
+
+            _events.emit(root, "dispatch.blocked", ref=runner,
+                         payload={"code": "usage_limit", "runner": runner,
+                                  "resumes_at": resumes_at_text or "",
+                                  "whole_board": True, "reason": entry["message"]})
+        except Exception:
+            pass
+        try:
+            activity.log(root, "autodeploy", entry["message"], seat="director")
+        except Exception:
+            pass
+
+
 def enabled(root: str | os.PathLike[str]) -> bool:
     """Is autopilot on, after the env kill switch has had its say.
 
@@ -249,6 +332,13 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
     if mem["floor_until"] > now:
         return {"on": True, "dispatched": [], "refused": [],
                 "held": "floor cooldown"}
+    if mem.get("usage_limit_noted"):
+        # AUTO-RESUME. The floor just expired (the check above would have
+        # returned otherwise) - clear the dedup flag so a NEW usage-limit hit
+        # gets its own dispatch.blocked event rather than being silently
+        # swallowed by the last one's flag.
+        with _lock:
+            mem["usage_limit_noted"] = False
     # No CLI is a floor condition, not forty identical per-item refusals: every
     # candidate would fail the same way and each failure re-probes the PATH.
     if not _dispatch.find_claude():
@@ -307,15 +397,19 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
         # is deliberately the loose direction: a brief that names the file it
         # is about is the normal case here, and the cost of a false skip is a
         # 90-second cooldown while the cost of a false spawn is a whole run.
-        held_by = _leased_path_in_brief(root, item)
-        if held_by:
-            entry = {"item_id": item_id, "code": "file_leased",
-                     "message": held_by, "at": time.strftime("%H:%M:%S")}
-            refused.append(entry)
-            with _lock:
-                mem["last"] = entry
-                mem["cool"][item_id] = now + ITEM_COOLDOWN_S
-            continue
+        # ITEM 23 (EXIT 67): this used to REFUSE dispatch on a lease whose
+        # path was merely NAMED in the brief text — night one, every item said
+        # "design/brief.md" and none of them dispatched while the director's
+        # write lease on that file was live, because the match was on the
+        # WORDS, not on an actual write. A lease has to gate WRITES; that
+        # enforcement already exists at the PreToolUse hook (see
+        # bgate_hook/hooks.py's path-lease check, which refuses an agent's own
+        # write to a leased path — the correct place, since only the write
+        # itself knows which path is really being touched). Gating dispatch on
+        # a text match starved the whole board for something the hook was
+        # already going to catch for free. Kept ONLY as an advisory note on
+        # the refusal payload of a DIFFERENT refusal, never as its own code.
+        advisory = _leased_path_in_brief(root, item)
 
         result = _dispatch.dispatch(root, item_id, actor="autodeploy")
         if result.get("ok"):
@@ -332,6 +426,8 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
         entry = {"item_id": item_id, "code": code or "refused",
                  "message": str(result.get("error") or "dispatch refused"),
                  "at": time.strftime("%H:%M:%S")}
+        if advisory:
+            entry["note"] = advisory
         refused.append(entry)
         with _lock:
             mem["last"] = entry
@@ -414,10 +510,45 @@ def _leased_path_in_brief(root, item) -> str:
         return ""
     haystack = f"{item.get('title') or ''} {item.get('brief') or ''}".lower()
     mine = f"item-{item.get('id')}"
+    swept: set[str] = set()
     for lease in leases:
         owner = str(lease.get("owner") or "")
         if mine and mine in owner:
             continue
+        # ITEM 22, second half: a lease outlives the item that took it only
+        # because nothing ever released it (see queue._release_leases, which
+        # now fires on completion — this is the belt for whatever slips past
+        # it, e.g. a project's history from before that fix landed). A lease
+        # whose holder item is no longer running/dispatched is STALE, not a
+        # reason to defer: sweep it here and log it rather than reporting it
+        # as a live collision.
+        holder_id = owner
+        if holder_id.startswith("item-"):
+            holder_id = holder_id[len("item-"):]
+        if holder_id.isdigit() and owner not in swept:
+            try:
+                from bgate_core.board import queue as _queue
+
+                holder_item = _queue.get(root, int(holder_id))
+                holder_running = holder_item["status"] == "dispatched"
+            except LookupError:
+                holder_running = False
+            except Exception:
+                holder_running = True  # unreadable: do not sweep on a guess
+            if not holder_running:
+                swept.add(owner)
+                try:
+                    n = _assets.release_path_leases(root, owner)
+                    if n:
+                        from bgate_core.board import activity as _activity
+
+                        _activity.log(
+                            root, "autodeploy",
+                            f"swept {n} stale path lease(s) held by {owner} "
+                            "— its item is no longer running", ref=owner)
+                except Exception:
+                    pass
+                continue
         path = str(lease.get("path") or "").strip()
         if not path:
             continue

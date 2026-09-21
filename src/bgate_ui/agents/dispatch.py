@@ -804,6 +804,32 @@ def _live_count() -> int:
     return sum(1 for e in _live.values() if e["proc"].poll() is None)
 
 
+def _live_count_for_seat(seat: str) -> int:
+    return sum(1 for e in _live.values()
+               if e.get("seat") == seat and e["proc"].poll() is None)
+
+
+def _seat_cap(root: str, seat: str) -> int:
+    """The per-seat concurrency cap for ``seat``, or 0 for uncapped.
+
+    MEASURED (EXIT 67, item 24): three art agents ran in parallel and mixed
+    characters into each other's reference sheets (kie upload name collision,
+    fixed separately by content-hashing upload names) — the deeper problem is
+    that art generation shares provider-side state a single global concurrency
+    cap does not protect. ``dispatch.max_per_seat`` is a per-seat map read from
+    settings; the registry default is ``{"art": 1}``.
+    """
+    try:
+        from bgate_core.store import settings as _settings
+
+        caps = _settings.get(root, "dispatch.max_per_seat") or {}
+        if not isinstance(caps, dict):
+            return 0
+        return int(caps.get(seat) or 0)
+    except Exception:
+        return 0
+
+
 def _art_model_pref(root: str) -> str:
     """The stored image-model preference (art.model), or ""."""
     try:
@@ -947,6 +973,18 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
             return _refuse("concurrency_limit",
                            f"{running} agents already running - the cap is {cap}",
                            running=running, max_concurrent=cap)
+        # PER-SEAT CAP. concurrency_limit above is a FLOOR refusal (autodeploy
+        # stops the whole tick on it); this one is per-ITEM, because a seat at
+        # its cap should not stop a different seat's work from dispatching —
+        # see refusal code `seat_cap`, deliberately not in autodeploy.FLOOR_CODES.
+        seat = str(item.get("seat") or "")
+        seat_cap = _seat_cap(root, seat)
+        seat_running = _live_count_for_seat(seat)
+        if seat_cap and seat_running >= seat_cap:
+            return _refuse("seat_cap",
+                           f"{seat_running} {seat} agent(s) already running - "
+                           f"the per-seat cap is {seat_cap}",
+                           running=seat_running, max_per_seat=seat_cap, seat=seat)
 
     # The wall-clock ceiling: the item's own override wins, then this call's,
     # then the project default. There is no money ceiling, a dollar cap on a
@@ -1353,6 +1391,57 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
 _ERROR_SUBTYPES = ("error", "error_during_execution", "error_max_turns",
                    "error_max_tokens")
 
+# ITEM 28 (EXIT 67): a Claude agent froze on the account usage limit and the
+# item just went "failed", with the only trace of WHY being the card's last
+# message. Codex reports the same failure mode as a usage percentage climbing
+# toward 100 rather than a sentence. These are read off the run's own final
+# words - see detect_usage_limit - not off an exit code, because the process
+# often exits 0 or hangs rather than erroring cleanly.
+_USAGE_LIMIT_PATTERNS = (
+    re.compile(r"usage limit", re.I),
+    re.compile(r"rate limit", re.I),
+    re.compile(r"you'?ve hit your limit", re.I),
+    re.compile(r"you have (?:hit|reached) your (?:usage )?limit", re.I),
+    re.compile(r"5-hour limit", re.I),
+    re.compile(r"weekly limit", re.I),
+)
+# "resets at 3pm", "resets 03:00 UTC", "try again at 14:30"
+_USAGE_RESUME_RE = re.compile(
+    r"(?:resets?|try again)\s+(?:at\s+)?([0-9:apmAPM\s]{3,20}"
+    r"(?:UTC|GMT|[AP]M)?)", re.I)
+# Codex's own shape: a percentage climbing toward the ceiling rather than a
+# sentence - "usage: 93%" / "93% of your usage limit".
+_CODEX_USAGE_PCT_RE = re.compile(
+    r"usage[:\s]+(\d{1,3})\s*%|(\d{1,3})\s*%\s+of\s+(?:your\s+)?usage", re.I)
+CODEX_USAGE_PCT_FLOOR = 90
+
+
+def detect_usage_limit(text: str, *, runner: str = "") -> Optional[dict]:
+    """Is this the agent's own report that it hit a session/account limit?
+
+    Returns {"raw": <the matched sentence>, "resumes_at": <parsed text, or
+    "">, "runner": runner} or None. Best-effort text matching, deliberately —
+    there is no structured field for this in either CLI's event stream, only
+    the sentence a human would also have read to figure it out.
+    """
+    said = str(text or "")
+    if not said.strip():
+        return None
+    for pattern in _USAGE_LIMIT_PATTERNS:
+        hit = pattern.search(said)
+        if hit:
+            resume = _USAGE_RESUME_RE.search(said)
+            return {"raw": said[:300], "runner": runner,
+                    "resumes_at": resume.group(1).strip() if resume else ""}
+    if runner == "codex":
+        hit = _CODEX_USAGE_PCT_RE.search(said)
+        if hit:
+            pct = int(hit.group(1) or hit.group(2) or 0)
+            if pct >= CODEX_USAGE_PCT_FLOOR:
+                return {"raw": said[:300], "runner": runner, "resumes_at": "",
+                        "pct": pct}
+    return None
+
 
 def _terminal_error(root: str, item_id: int) -> str:
     """The sentence to fail this run with, or "" if it has not errored out.
@@ -1400,6 +1489,39 @@ def _send(entry: dict, text: str) -> bool:
         return False
 
 
+def _holder_item(root: str, item_id: int) -> Optional[int]:
+    """Which item a chained run's death actually belongs to.
+
+    MEASURED (EXIT 67, item 27): a run dispatched on #4 chains through
+    queue_claim_next to #35, #13, #42, #46 and dies at the runtime ceiling
+    mid-#46. The old code banked the kill against `item_id` (#4) unconditionally
+    — even though #4 had called queue_complete and closed hours earlier. #4,
+    #35, #13 and #42 each needed a manual re-close after being falsely failed.
+
+    The run's actor stamp (``agent:item-<item_id>``) is shared by every item it
+    claims, so the still-open ones (status='dispatched') are exactly the work
+    this process has not yet settled. The LAST of those — highest id among
+    open claims, since claim_next only ever claims forward — is what the
+    process is holding when it dies. If nothing is open under that actor, fall
+    back to `item_id` itself only if IT is still 'dispatched' (a run that
+    never claimed anything, the ordinary case). If neither holds, the run has
+    already banked everything it touched and there is nothing to fail —
+    returning None so the caller does not stamp a closed item.
+    """
+    try:
+        open_claims = _open_claims(root, item_id)
+    except Exception:
+        open_claims = []
+    if open_claims:
+        return int(max(open_claims, key=lambda r: int(r["id"]))["id"])
+    try:
+        if _queue.get(root, item_id)["status"] == "dispatched":
+            return item_id
+    except LookupError:
+        pass
+    return None
+
+
 def _trip(root: str, item_id: int, entry: dict, reason: str,
           recoverable: bool = True) -> None:
     """A ceiling the agent blew through: stop the tree and BANK what it wrote.
@@ -1433,22 +1555,29 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
                 "below EXISTS ON DISK and was written by this run. Read it "
                 "before reopening: the next agent should continue from these "
                 "files, not regenerate them.")
-    try:
-        _queue.set_status(root, item_id, "failed", result=note)
-    except LookupError:
-        pass
-    else:
-        # ANNOUNCE THE KILL. set_status never emits (by design - see
-        # queue.complete), and _reap skips complete() because the item is no
-        # longer 'dispatched' - so every ceiling kill was a failure with no
-        # item.failed event: no bell, no webhook, no auto-reopen, an item that
-        # just sat there. item.failed is in the default notify kinds; the most
-        # expensive failures this system has should be the loudest, not the
-        # only silent ones.
+    # ATTRIBUTE THE KILL TO WHAT THE RUN WAS ACTUALLY HOLDING, not to
+    # `item_id` (the item this run was originally dispatched on). A chained
+    # run may have long since closed `item_id` and be several claims deep —
+    # see _holder_item. `holder is None` means every item this run ever
+    # touched is already settled; the kill has nothing left to fail.
+    holder = _holder_item(root, item_id)
+    if holder is not None:
         try:
-            _queue.emit_terminal(root, item_id)
-        except Exception:
-            pass
+            _queue.set_status(root, holder, "failed", result=note)
+        except LookupError:
+            holder = None
+        else:
+            # ANNOUNCE THE KILL. set_status never emits (by design - see
+            # queue.complete), and _reap skips complete() because the item is no
+            # longer 'dispatched' - so every ceiling kill was a failure with no
+            # item.failed event: no bell, no webhook, no auto-reopen, an item that
+            # just sat there. item.failed is in the default notify kinds; the most
+            # expensive failures this system has should be the loudest, not the
+            # only silent ones.
+            try:
+                _queue.emit_terminal(root, holder)
+            except Exception:
+                pass
     _reap(root, item_id, entry, entry["proc"].poll())
 
 
@@ -1810,9 +1939,21 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
                      ref=str(item_id))
         if not split["mine"]:
             return
+        # ITEM 32: name every item this RUN carried, not just the one it was
+        # dispatched on. A chained run (queue_claim_next) may have completed
+        # several items under this process's clock, and all of their files
+        # land in the same commit — attributing it to only the first id is
+        # how #13's and #44's work got committed as "item #4".
+        try:
+            ids = sorted({item_id, *(int(r["id"])
+                                     for r in _queue.claimed_by(
+                                         root, f"agent:item-{item_id}"))})
+        except Exception:
+            ids = [item_id]
+        tag = " ".join(f"#{i}" for i in ids)
         made = _git.commit_paths(
             root, split["mine"],
-            f"bgate: item #{item_id}" + (f" [{seat}]" if seat else "")
+            f"bgate: item {tag}" + (f" [{seat}]" if seat else "")
             + " - committed by the harness so the board keeps moving")
         if made.get("ok"):
             _act.log(root, "dispatch",
@@ -1878,24 +2019,46 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
         except Exception:
             pass
     outcome, result = _exit_verdict(root, item_id, code, entry)
+    # ITEM 28 (EXIT 67): a session frozen on the account's usage limit used to
+    # bank as a plain 'failed' with no signal beyond the card's last message -
+    # a human had to open the run and read it to learn the CLI, not the work,
+    # was the problem. Caught here off the run's own final words: the item
+    # goes back to 'queued' (it did not fail, it never got to run) and the
+    # runner is floored so autopilot stops re-feeding it into the same wall.
+    usage = None
+    if outcome != "done":
+        usage = detect_usage_limit(result, runner=str(entry.get("runner") or "claude"))
     try:
         # Only if the agent never spoke for itself: queue_complete's own result
         # is the better answer and must never be overwritten. Through complete()
         # rather than set_status so a session that exits cleanly without
         # self-reporting still lands in the approval gate instead of skipping it.
         if _queue.get(root, item_id)["status"] == "dispatched":
-            try:
-                chaos = (entry.get("worktree") and
-                         entry.get("dispatch_mode") == "chaos")
-            except Exception:
-                chaos = False
-            if chaos and outcome == "done":
-                _queue.set_status(root, item_id, "integrating", result=result)
+            if usage:
+                _queue.set_status(
+                    root, item_id, "queued",
+                    result=("USAGE LIMIT — not failed, requeued: " + usage["raw"]))
             else:
-                _queue.complete(root, item_id, result=result,
-                                failed=(outcome != "done"))
+                try:
+                    chaos = (entry.get("worktree") and
+                             entry.get("dispatch_mode") == "chaos")
+                except Exception:
+                    chaos = False
+                if chaos and outcome == "done":
+                    _queue.set_status(root, item_id, "integrating", result=result)
+                else:
+                    _queue.complete(root, item_id, result=result,
+                                    failed=(outcome != "done"))
     except LookupError:
         pass
+    if usage:
+        try:
+            from bgate_ui.agents import autodeploy as _auto
+
+            _auto.note_usage_limit(root, usage["runner"], usage.get("resumes_at") or "",
+                                   usage["raw"])
+        except Exception:
+            pass
     # CLAIMS DIE WITH THE RUN, BUT THE WORK DOES NOT. An item the agent claimed
     # (queue_claim_next) and never completed goes back on the board as 'queued'
     # rather than dying as a stranded 'dispatched' row - autodeploy re-dispatches

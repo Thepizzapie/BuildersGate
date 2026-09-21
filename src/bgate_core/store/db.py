@@ -332,7 +332,7 @@ def _drop_money_ledger(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS run_limits (
             id             INTEGER PRIMARY KEY CHECK (id = 1),
-            max_runtime_s  INTEGER NOT NULL DEFAULT 1800,
+            max_runtime_s  INTEGER NOT NULL DEFAULT 9800,
             max_concurrent INTEGER NOT NULL DEFAULT 4,
             updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -368,6 +368,59 @@ def _work_item_add_integrating_status(conn: sqlite3.Connection) -> None:
         return
     old = "('queued','dispatched','review','done',"
     new = "('queued','dispatched','integrating','review','done',"
+    rebuilt_sql = create_sql.replace(old, new, 1)
+    if rebuilt_sql == create_sql:
+        raise RuntimeError("work_item status CHECK has an unknown shape")
+
+    columns = [str(r[1]) for r in conn.execute("PRAGMA table_info(work_item)")]
+    quoted = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+    indexes = [str(r[0]) for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+        "AND tbl_name = 'work_item' AND sql IS NOT NULL")]
+
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("ALTER TABLE work_item RENAME TO work_item_old")
+        conn.execute(rebuilt_sql)
+        conn.execute(f"INSERT INTO work_item ({quoted}) SELECT {quoted} FROM work_item_old")
+        moved = conn.execute("SELECT COUNT(*) FROM work_item").fetchone()[0]
+        had = conn.execute("SELECT COUNT(*) FROM work_item_old").fetchone()[0]
+        if moved != had:
+            raise RuntimeError(f"work_item rebuild moved {moved} of {had} rows")
+        conn.execute("DROP TABLE work_item_old")
+        for sql in indexes:
+            conn.execute(sql)
+        conn.commit()
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise RuntimeError(f"work_item rebuild broke {len(broken)} references")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _work_item_add_parked_status(conn: sqlite3.Connection) -> None:
+    """0047 — ITEM 26: a status between 'queued' and 'cancelled' that a human
+    can put work into and take it back OUT of, without raw SQL.
+
+    Same rebuild shape as _work_item_add_integrating_status — see its
+    docstring. CHECK constraints cannot be ALTERed, so widening one is still a
+    full table rebuild even for a single new word.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_item'"
+    ).fetchone()
+    create_sql = str(row[0] if row else "")
+    if "'parked'" in create_sql:
+        return
+    old = "'cancelled'))"
+    new = "'cancelled','parked'))"
     rebuilt_sql = create_sql.replace(old, new, 1)
     if rebuilt_sql == create_sql:
         raise RuntimeError("work_item status CHECK has an unknown shape")
@@ -2308,6 +2361,18 @@ _MIGRATIONS: list = [
     );
     CREATE INDEX idx_human_rejection_tool ON human_rejection(tool, created_at);
     ALTER TABLE project ADD COLUMN focus TEXT NOT NULL DEFAULT '';
+    """,
+
+    # 0049 - ITEM 26: 'parked', a status between 'queued' and 'cancelled'.
+    _work_item_add_parked_status,
+
+    # 0050 - ITEM 29: the 1800s (30 min) default runtime ceiling killed
+    # chained queue_claim_next runs mid-work; raised by hand to 9800s and it
+    # held. Only touches a row still AT the old default - a project that
+    # deliberately set something else (including 1800) keeps its own choice.
+    """
+    UPDATE run_limits SET max_runtime_s = 9800, updated_at = datetime('now')
+    WHERE id = 1 AND max_runtime_s = 1800;
     """,
 ]
 
