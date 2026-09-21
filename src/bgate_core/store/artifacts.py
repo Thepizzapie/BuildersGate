@@ -422,6 +422,17 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
     # so its pending list only ever grows and it goes on telling the human they
     # owe a decision they already made.
     _announce_review(root, artifact, status, who, promotion)
+    if status == "rejected" and activity.is_human(who):
+        # ITEM 9b — a human's "no" is the signal the loop kept missing. Count
+        # it against the TOOL that produced the candidate, never against the
+        # revision alone: bgate_core.board.rejections.
+        try:
+            from ..board import rejections as _rejections
+            _rejections.record(root, artifact.get("producer") or "unknown",
+                               reason=note, by=who)
+        except Exception:                                        # noqa: BLE001
+            pass          # the counter is advisory; a broken counter must not
+                           # block a human's rejection from landing
     return get(root, artifact_id)
 
 

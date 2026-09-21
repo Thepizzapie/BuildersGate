@@ -143,6 +143,8 @@ NOT_TOOLS = {
     # the sprite contract's standing height, the regeneration gate's reason
     # and sprite_family_check's party switch, quoted by name in the art brief
     "standing_px", "replace_reason", "same_character",
+    # sprite_sheet_check's review-floor parameter, quoted by name (ITEM 35)
+    "review_px",
     # spritekit.row_report finding kinds, quoted by name in the art brief
     "size_ramp", "sheet_size_ramp",
     # asset_verify result keys and queue_complete's premise_refuted payload,
