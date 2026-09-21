@@ -223,6 +223,41 @@ class TestApproveAndReject:
         with pytest.raises(ValueError):
             queue.reject(root, item["id"], "   ")
 
+    def test_rejection_fires_the_producer_accountability_hook(self, root):
+        # EXIT 67 postmortem item 9b: a human rejection must land on the tool
+        # that produced the item's artifacts. bgate_core.board.rejections
+        # doesn't exist in this tree yet, so queue.reject() calls a seam
+        # instead — this proves the seam actually fires rather than being
+        # dead code nobody wires up.
+        seen = []
+
+        def hook(hooked_root, item, reason, by):
+            seen.append((item["id"], reason, by))
+
+        queue.add_rejection_hook(hook)
+        try:
+            gates.set_mode(root, gates.BUILDERS)
+            item = queue.add(root, "art", "a sprite")
+            queue.complete(root, item["id"], result="drew it")
+            queue.reject(root, item["id"], "off-model", by="marta")
+            assert seen == [(item["id"], "off-model", "marta")]
+        finally:
+            queue._REJECTION_HOOKS.remove(hook)
+
+    def test_a_broken_rejection_hook_does_not_block_the_rejection(self, root):
+        def bad_hook(*_a, **_k):
+            raise RuntimeError("boom")
+
+        queue.add_rejection_hook(bad_hook)
+        try:
+            gates.set_mode(root, gates.BUILDERS)
+            item = queue.add(root, "art", "a sprite")
+            queue.complete(root, item["id"], result="drew it")
+            got = queue.reject(root, item["id"], "off-model", by="marta")
+            assert got["status"] == "queued"
+        finally:
+            queue._REJECTION_HOOKS.remove(bad_hook)
+
     def test_the_drain_list_is_what_the_human_owes_an_answer_on(self, root):
         gates.set_mode(root, gates.BUILDERS)
         held = queue.add(root, "art", "a sprite")

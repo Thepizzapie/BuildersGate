@@ -83,11 +83,20 @@ def is_current(root: str | os.PathLike[str], revision: dict) -> bool:
         return False
 
 
+#: Producers whose output the gallery reads straight off disk rather than
+#: through the revision row alone (see :func:`sweep_stale`'s docstring for
+#: why that matters). ``register(..., sweep=None)`` defaults to sweeping for
+#: exactly these — image_sprites' assembled sheet and image_generate's single
+#: file both leave same-named siblings behind when a run is discarded mid-way.
+SWEEP_DEFAULT_PRODUCERS = ("image_sprites", "image_generate")
+
+
 def register(root: str | os.PathLike[str], logical_name: str,
              path: str | os.PathLike[str], *, producer: str = "",
              model: str = "", prompt: str = "", refs: Optional[list[str]] = None,
              metadata: Optional[dict] = None,
-             work_item_id: Optional[int] = None) -> dict:
+             work_item_id: Optional[int] = None,
+             sweep: Optional[bool] = None) -> dict:
     """Record a new immutable candidate revision for an existing output file."""
     name = logical_name.strip()
     if not name:
@@ -149,6 +158,23 @@ def register(root: str | os.PathLike[str], logical_name: str,
         iterations.add_event(
             root, iteration_id, "asset_revision", "artifact", str(artifact_id),
             f"Created {name} r{revision}", {"path": rel, "producer": producer})
+
+    # STALE SIBLINGS DO NOT WAIT FOR REVIEW.
+    #
+    # A discarded run's loose file sat next to this run's live one under the
+    # SAME logical name, same folder, and the gallery reads the newest file
+    # by mtime — not by revision row — so a gator thumbnail from a flyer's
+    # abandoned pass was one glob away from outranking the character it was
+    # never approved to represent. Never raises: a sweep failure must not cost
+    # the registration that triggered it.
+    do_sweep = sweep if sweep is not None else producer.strip() in SWEEP_DEFAULT_PRODUCERS
+    if do_sweep:
+        try:
+            sweep_stale(root, name)
+        except Exception as exc:
+            activity.log(root, "artifact",
+                         f"stale sweep failed for {name}: {type(exc).__name__}: {exc}",
+                         ref=str(artifact_id))
 
     # THE DECISION IS NOW PENDING, AND THE HEARTBEAT HAS TO SAY SO.
     #
@@ -877,6 +903,104 @@ def record_check(root: str | os.PathLike[str], path: str | os.PathLike[str],
             "UPDATE artifact_revision SET metadata_json = ? WHERE id = ?",
             (json.dumps(metadata), artifact["id"]))
     return get(root, int(artifact["id"]))
+
+
+def sweep_stale(root: str | os.PathLike[str], logical_name: str) -> list[dict]:
+    """Move loose, orphaned files for ``logical_name`` out of the gallery's way.
+
+    MEASURED: EXIT 67's gallery drew a gator thumbnail sourced from
+    ``.bgate_out/sprites/flyer_*.png`` — a file a discarded run left on disk.
+    The revision table was correct the whole time; nothing reading it was
+    fooled. What was fooled was any surface that lists ``.bgate_out/**`` by
+    glob/mtime instead of by revision row, which is exactly how a gallery
+    thumbnails a folder cheaply. The fix is not "read the DB instead" (every
+    such surface would need the same fix); it is to stop leaving the orphan
+    where a glob can find it.
+
+    A file is swept when its stem is ``logical_name`` itself (anywhere under
+    ``.bgate_out``), or — restricted to the folder holding this name's LIVE
+    revision, so an unrelated character's own ``pose_*`` temp file next door
+    is left alone — its stem is ``<name>_<anything>`` (view suffixes,
+    ``<name>_sheet``) or starts with ``pose_`` (per-pose temp frames from an
+    assembly that never finished). The live revision's own file is obviously
+    exempt; anything else whose content hash equals the live hash is ALSO
+    left alone — a byte-identical copy is not stale, it is redundant, and
+    only a stale (different-content) file is what caused the bug.
+
+    Never deletes. Moved (not copied) to
+    ``.bgate_out/.stale/<name>/<timestamp>/<basename>``, logged, and the moved
+    paths are returned so a caller (or a test) can assert on them.
+    """
+    root = Path(root)
+    out_root = root / ".bgate_out"
+    if not out_root.is_dir():
+        return []
+
+    row = db.connect(root).execute(
+        "SELECT * FROM artifact_revision WHERE logical_name = ? "
+        "ORDER BY revision DESC LIMIT 1", (logical_name,)).fetchone()
+    if row is None:
+        return []
+    live = _decode(dict(row))
+    live_abs = (root / live["path"]).resolve()
+    live_hash = live["hash"] or ""
+    live_folder = live_abs.parent
+
+    stale_root = out_root / ".stale"
+
+    candidates: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(out_root):
+        current = Path(dirpath)
+        # Never sweep the stale bin itself, or anything already inside it.
+        if stale_root in current.parents or current == stale_root:
+            dirnames[:] = []
+            continue
+        for fname in filenames:
+            fpath = current / fname
+            if fpath.resolve() == live_abs:
+                continue
+            stem = fpath.stem
+            if stem == logical_name:
+                candidates.append(fpath)
+            elif current == live_folder and (
+                stem == f"{logical_name}_sheet"
+                or stem.startswith(f"{logical_name}_")
+                or stem.startswith("pose_")
+            ):
+                candidates.append(fpath)
+
+    if not candidates:
+        return []
+
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    dest_dir = stale_root / logical_name / stamp
+    swept: list[dict] = []
+    for src in candidates:
+        try:
+            digest = assets.file_hash(src)
+        except OSError:
+            continue
+        if digest and digest == live_hash:
+            continue  # byte-identical to the live file — redundant, not stale
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        suffix = 1
+        while dest.exists():
+            dest = dest_dir / f"{src.stem}.{suffix}{src.suffix}"
+            suffix += 1
+        try:
+            shutil.move(str(src), str(dest))
+        except OSError:
+            continue
+        entry = {"from": str(src.relative_to(root)), "to": str(dest.relative_to(root)),
+                  "hash": digest}
+        swept.append(entry)
+        activity.log(root, "artifact",
+                     f"swept stale file for {logical_name}: {entry['from']} -> "
+                     f"{entry['to']}")
+    return swept
 
 
 def _decode(row: dict) -> dict:
