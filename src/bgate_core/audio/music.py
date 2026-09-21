@@ -168,6 +168,20 @@ def generate(root: str | os.PathLike[str], prompt: str, *, name: str = "",
     from bgate_adapters import kie
 
     root = str(root)
+
+    # ITEM 11/31 — THE SAME PAID-CALL BUDGET chroma.generate enforces for
+    # images, at music's own paid seam. Checked before the submit, so a
+    # refusal here spends nothing.
+    if work_item_id is not None:
+        try:
+            from ..board import queue as _queue
+
+            budget = _queue.spend_paid_call(root, work_item_id)
+        except Exception:
+            budget = {"ok": True}
+        if not budget.get("ok", True):
+            return budget
+
     text = str(prompt or "").strip()
     if not text:
         raise MusicError("a music generation needs a prompt")

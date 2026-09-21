@@ -35,6 +35,54 @@ STATUSES = ("candidate", "approved", "rejected", "integrated", "superseded")
 HUMAN_ONLY_STATUSES = ("approved", "integrated")
 
 
+def _content_copy(root: str | os.PathLike[str], absolute: Path,
+                   digest: str) -> Optional[str]:
+    """Immutable, content-addressed copy of one revision's bytes.
+
+    Returns the project-relative path, or None on any failure - a thumbnail
+    that cannot be pinned must not stop the registration that matters more.
+    A hash that already has a file (the same bytes registered twice) is left
+    alone rather than re-copied.
+    """
+    try:
+        store_dir = Path(root) / ".bgate" / "artifacts"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        dest = store_dir / f"{digest}{absolute.suffix.lower()}"
+        if not dest.exists():
+            # A hard link would share the SOURCE's inode - the next overwrite
+            # of the shared live path would silently rewrite this "immutable"
+            # copy too. A real copy is the only thing that decouples them.
+            shutil.copy2(absolute, dest)
+        return str(dest.relative_to(Path(root)).as_posix())
+    except Exception:
+        return None
+
+
+def is_current(root: str | os.PathLike[str], revision: dict) -> bool:
+    """Does the SHARED live path still hold THIS revision's bytes?
+
+    Every revision of one logical name shares one on-disk path (see the
+    module docstring), so an old row's own ``hash`` column is the only
+    reliable answer to "is this the file the game would actually load" -
+    comparing it against the digest currently at ``path`` is cheap (the
+    asset registry already tracks that hash) and needs no new table.
+    False is not a verdict on the revision (a rejected file can still be
+    "current" if nothing has overwritten it since) - it only means the
+    bytes on disk today are not this row's bytes, i.e. a LATER write has
+    happened. The gallery uses this to mark a revision `superseded_on_disk`
+    without touching the review `status` column, which a tournament or a
+    pending approval still depends on meaning what it always meant.
+    """
+    try:
+        path = str(revision.get("path") or "")
+        if not path:
+            return False
+        live = assets.get(root, path)
+        return bool(live.get("hash")) and live["hash"] == revision.get("hash")
+    except Exception:
+        return False
+
+
 def register(root: str | os.PathLike[str], logical_name: str,
              path: str | os.PathLike[str], *, producer: str = "",
              model: str = "", prompt: str = "", refs: Optional[list[str]] = None,
@@ -52,11 +100,28 @@ def register(root: str | os.PathLike[str], logical_name: str,
     tracked = assets.track(root, rel)
     digest = tracked["hash"]
     size = tracked["bytes"]
+
+    # ITEM 4 — KEY THE THUMBNAIL BY CONTENT, NOT BY THE SHARED LIVE PATH.
+    #
+    # MEASURED: a gallery card showed a gator thumbnail from a
+    # `.bgate_out/sprites/flyer_*.png` written by a run whose outputs were
+    # later discarded - because every revision of one logical name shares
+    # ONE path (see the module docstring: generation overwrites the same
+    # stable sheet), so the row for revision 1 and the row for revision 3
+    # both read `path` and both get whatever bytes are on disk RIGHT NOW.
+    # This copies (hardlinks where the filesystem allows it, falling back to
+    # a copy) THIS revision's bytes into `.bgate/artifacts/<hash><ext>` -
+    # immutable and addressed by content, so a later overwrite of the live
+    # path can never change what an OLD revision's thumbnail shows.
+    content_path = _content_copy(root, absolute, digest)
+
     iteration_id = iterations.active_id(root)
     # Freeze WHICH revision of each pinned reference this was drawn against.
     # Pins are versioned now; without the hash, a re-pin silently rewrites the
     # history of every artifact that claims to have been generated against it.
     metadata = dict(metadata or {})
+    if content_path:
+        metadata["content_path"] = content_path
     pins = _pin_snapshot(root, refs or [])
     if pins:
         metadata.setdefault("ref_pins", pins)
