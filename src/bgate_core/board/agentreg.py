@@ -373,6 +373,28 @@ def finished_runs(root: str, *, limit: int = 20,
     return [_row(r) for r in reversed(rows)]
 
 
+def runs_for_item(root: str, item_id: int) -> list[dict]:
+    """Item 31c. Every recorded run of this item, oldest first, numbered.
+
+    ``agent_runs`` already carries ``cost_usd`` per run; nothing surfaced it
+    per-attempt, so a re-done item's card showed only the running total and a
+    human could not tell whether the fix round was the cheap one or the one
+    that blew the budget. Shaped as ``{n, started_at, ended_at, status,
+    cost_usd}`` — ``n`` is 1-based and is this list's own position, not a
+    column, so it stays stable however ``agent_runs`` itself is pruned.
+    """
+    try:
+        rows = db.connect(root).execute(
+            "SELECT started_at, ended_at, status, cost_usd FROM agent_runs "
+            "WHERE item_id = ? ORDER BY started_at",
+            (int(item_id),)).fetchall()
+    except Exception:
+        return []
+    return [{"n": i + 1, "started_at": r["started_at"], "ended_at": r["ended_at"],
+             "status": r["status"], "cost_usd": float(r["cost_usd"] or 0)}
+            for i, r in enumerate(rows)]
+
+
 def last_run(root: str, item_id: int) -> dict:
     """The newest row for an item, open or not. ``{}`` if none."""
     try:

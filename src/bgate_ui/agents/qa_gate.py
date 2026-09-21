@@ -336,6 +336,15 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
     for row in rows:
         item = dict(row)
         ref = str(item["id"])
+        # GRIPE 40c/D — THE SMALL FAST LANE. A small item that already named
+        # its own passing check does not owe a reviewer; see
+        # gates.wants_qa_agent_for for the two shapes that count as "named".
+        if not _gates.wants_qa_agent_for(root, item):
+            activity.log(root, "qa-gate",
+                         f"small item, verify line present, QA skipped "
+                         f"(#{item['id']}: {item['title'][:60]})",
+                         seat="qa", ref=ref)
+            continue
         if _open_gate_exists(root, ref):
             continue
         # attempts counts the reopens; the first pass is attempt 1.

@@ -31,10 +31,19 @@ export type Seat = {
   promoted_feedback?: number;
 };
 
+export type ItemAttempt = {
+  n: number; started_at?: number; ended_at?: number | null;
+  status?: string; cost_usd?: number; paid_calls?: number;
+};
+
 export type QueueItem = {
   id: number; seat: string; title: string; status: string;
   priority?: number; result?: string; total_cost_usd?: number;
   created_at?: string; updated_at?: string;
+  /** GRIPE 40c — only set on a running ('dispatched') row. */
+  elapsed_s?: number | null; ceiling_s?: number | null;
+  /** Item 31c — per-run cost history, oldest first. */
+  attempts_detail?: ItemAttempt[];
 };
 
 /** GET + poll one endpoint. `path` may be null while a selection is missing —
