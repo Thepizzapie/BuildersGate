@@ -367,7 +367,8 @@ def update(root: str | os.PathLike[str], item_id: int, *,
            title: Optional[str] = None, brief: Optional[str] = None,
            seat: Optional[str] = None, priority: Optional[int] = None,
            max_runtime_s: Optional[int] = None,
-           max_paid_calls: Optional[int] = None) -> dict:
+           max_paid_calls: Optional[int] = None,
+           size: Optional[str] = None) -> dict:
     """Edit an existing item in place, without changing its status/lineage.
 
     This is how a reviewer enriches a ticket: e.g. the video-watching director
@@ -402,6 +403,8 @@ def update(root: str | os.PathLike[str], item_id: int, *,
         if int(max_paid_calls) <= 0:
             raise ValueError("max_paid_calls must be positive")
         sets.append("max_paid_calls = ?"); params.append(int(max_paid_calls))
+    if size is not None:
+        sets.append("size = ?"); params.append(str(size).strip().lower())
     if not sets:
         return get(root, item_id)
     params.append(item_id)
@@ -530,6 +533,9 @@ def _item_event_payload(item: dict) -> dict:
         "chain_id": item.get("chain_id") or "",
         "chain_pos": int(item.get("chain_pos") or 0),
         "attempts": int(item.get("attempts") or 0),
+        # Item 34 — the round THIS transition is (attempts is the count of
+        # PRIOR reopens, so the current pass is one more than that).
+        "attempt": int(item.get("attempts") or 0) + 1,
         "result": str(item.get("result") or "")[:400],
     }
 
@@ -667,7 +673,16 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
             (status, clip_result(result), item_id),
         )
     item = get(root, item_id)
-    activity.log(root, "queue", f"item {item_id} -> {status}: {item['title'][:60]}",
+    # Item 34 — THE ATTEMPT NUMBER, ON THE LANDING LINE. "item 13 -> done" and
+    # "item 13 -> done" (the fix round) read identically in the activity feed
+    # and in a completion event, so a human scanning either could not tell a
+    # first pass from the third without opening the item. attempts counts
+    # reopens, so the running attempt is attempts + 1 — only shown for the
+    # terminal statuses a completion actually reports.
+    attempt_note = (f" (attempt {int(item.get('attempts') or 0) + 1})"
+                    if status in ("done", "failed") else "")
+    activity.log(root, "queue",
+                 f"item {item_id} -> {status}{attempt_note}: {item['title'][:60]}",
                  seat=item["seat"], ref=str(item_id))
     if status in _LEASE_RELEASING_STATUSES:
         _release_leases(root, item_id)

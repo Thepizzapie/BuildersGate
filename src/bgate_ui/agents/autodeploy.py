@@ -323,6 +323,16 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
     from bgate_ui.agents import dispatch as _dispatch
 
     root = str(root)
+    # GRIPE 39b(2). A director question nobody answers must escalate on its
+    # own — run EVERY tick, whether or not autopilot itself is on, because a
+    # studio that turns auto-deploy off to work by hand still wants the human
+    # pulled in when the director goes quiet. Best-effort: a broken escalation
+    # must never turn into a broken tick.
+    try:
+        from bgate_core.board import steerbox as _steerbox
+        _steerbox.remind_stale_directors(root)
+    except Exception:
+        pass
     if not force and not enabled(root):
         return {"on": False, "dispatched": [], "refused": []}
     mem = _mem(root)

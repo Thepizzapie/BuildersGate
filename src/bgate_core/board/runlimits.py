@@ -15,6 +15,8 @@ reason the ``run_limits`` row still exists (migration 0045).
 from __future__ import annotations
 
 import os
+import time
+from typing import Optional
 
 from ..store import db
 
@@ -185,3 +187,23 @@ def land_what_you_have_text(elapsed_s: float, ceiling_s: int, pct: float) -> str
         "with an honest next_approach beats polish you do not have budget "
         "left to finish. If the named check already passes, complete now."
     )
+
+
+
+def elapsed_s(root: str | os.PathLike[str], item_id: int) -> Optional[int]:
+    """GRIPE 40c. Wall-clock seconds since this item's OPEN run started.
+
+    None when there is no open run (nothing to show a budget line against) or
+    the run record cannot be read. Reads ``agent_runs`` — the durable record a
+    dashboard restart cannot erase — rather than any in-process dict, so the
+    card is right even right after a restart, before anything has rescanned.
+    """
+    try:
+        from . import agentreg as _agentreg
+
+        run = _agentreg.last_run(root, int(item_id))
+        if run and not run.get("ended_at") and run.get("started_at"):
+            return max(0, int(time.time() - float(run["started_at"])))
+    except Exception:
+        pass
+    return None
