@@ -1506,19 +1506,20 @@ DIRECTOR_PROTOCOL = (
     "(unless this project's approval gate says otherwise, see below). "
     "That gate is the reason to use the board.\n"
     "\n"
-    "DEPENDENT WORK GOES ON THE BOARD AS A CHAIN, NOT AS PRIORITIES. The moment "
-    "your split has an order, one seat needs the file, scene, primitive or "
-    "schema another seat is about to produce, file it with "
-    "queue_add_chain([{seat, title, brief}, ...]) instead of separate "
-    "queue_add calls. Priority is a preference among things that are ALL ready; "
-    "it does not stop autodeploy from starting both agents in the same tick, and "
-    "the one that needed the other's output then writes against a file that does "
-    "not exist, reports done, and the damage surfaces two items later wearing "
-    "someone else's name. The tell you missed a chain is a brief that says "
-    "'AFTER #41 lands' or 'once the scene exists': that sentence is the board's "
-    "job now, so write each link as if its predecessor already landed and name "
-    "what it produced. A link does not start until the one before it reaches "
-    "'done', approved, where a human gate is on.\n"
+    "DEPENDENT WORK GOES ON THE BOARD AS A CHAIN, NOT AS PRIORITIES. ONE "
+    "DELIVERABLE, ONE LANE, ONE ACCEPTANCE CHECK PER ITEM - a broad ask becomes "
+    "a chain, not one wide brief. The moment your split has an order, one seat "
+    "needs the file, scene, primitive or schema another seat is about to "
+    "produce, file it with queue_add_chain([{seat, title, brief}, ...]) instead "
+    "of separate queue_add calls. Priority is a preference among things that "
+    "are ALL ready; it does not stop autodeploy from starting both agents in "
+    "the same tick, and the one that needed the other's output then writes "
+    "against a file that does not exist, reports done, and the damage surfaces "
+    "two items later wearing someone else's name. The tell you missed a chain "
+    "is a brief that says 'AFTER #41 lands': write each link as if its "
+    "predecessor already landed and name what it produced. A link does not "
+    "start until the one before it reaches 'done', approved where a human gate "
+    "is on.\n"
     "\n"
     "THE APPROVAL GATE IS THE HUMAN'S SETTING, NOT YOURS. Three modes (dashboard, "
     "or /api/gate): no gate, an agent's word closes its item; agent gate, the "
@@ -2141,7 +2142,25 @@ def _fit(payload: dict) -> dict:
             {k: v for k, v in ref.items() if k in keep}
             for ref in (payload.get("pinned_refs") or [])[:limit]]
 
+    def trim_current() -> None:
+        # `current` (GRIPE 38) is supplementary "since you last looked"
+        # colour, never the reason a seat can do its job - it goes first,
+        # down to just the outside-the-board summary, before anything the
+        # seat actually needs (bible, refs, canon) is touched.
+        cur = payload.get("current")
+        if not isinstance(cur, dict):
+            return
+        if cur.get("available"):
+            payload["current"] = {
+                "available": True,
+                "outside_the_board": (cur.get("outside_the_board") or [])[:6],
+                "note": "project_current for the full read (by_lane, items, "
+                        "handoff_notes)"}
+        else:
+            payload["current"] = {"available": False}
+
     steps = [
+        trim_current,
         lambda: trim_bible(300),
         lambda: trim_refs(20),
         lambda: payload.__setitem__("approved_artifacts",
@@ -2365,6 +2384,16 @@ def _stage_block(root: str | os.PathLike[str], role: str) -> dict:
     }
 
 
+def _current_block(root: str | os.PathLike[str], hours: int = 6) -> dict:
+    """The bounded `current` field for brief() - see current.py. Never
+    raises: a project with no git gets {"available": False}."""
+    try:
+        from . import current as _current
+        return _current.current_activity(root, hours=hours)
+    except Exception:
+        return {"available": False, "reason": "current_activity failed"}
+
+
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
     """Everything a seat needs to start, BOUNDED.
 
@@ -2490,6 +2519,11 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                             MAX_LOCKS, "asset_status (others)"),
         "notes": notes,
         "board": cap(board, MAX_BOARD, "queue_list"),
+        # GRIPE 38 (EXIT 67 postmortem, 2026-09-21): what changed OUTSIDE the
+        # board recently - a human bypassing a slow agent through a CLI
+        # session, or anything uncommitted. Bounded (current.MAX_CHARS,
+        # ~1.5 KB) and never raises; project_current(hours=) is the full read.
+        "current": _current_block(root),
         # WHAT THE PROJECT IS ALLOWED TO BE DOING YET, and the sentence the
         # whole game is built on. In the brief rather than left for a refusal
         # to teach: a seat that discovers the stage by being held reads it as

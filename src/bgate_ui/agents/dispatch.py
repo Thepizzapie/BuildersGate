@@ -254,14 +254,22 @@ def _model_for(root: str, seat: str,
         return None
 
 
-def _max_turns(root: str) -> int:
+def _max_turns(root: str, item: Optional[dict] = None) -> int:
     """The per-run turn ceiling, or 0 for none.
 
     Separate from the wall clock because they bound different runaways: a
     session can burn an hour on one long tool call, and it can also spin
     through two hundred cheap turns getting nowhere. Turns are counted by the
     CLI itself.
+
+    GRIPE 40: a small/medium item's size-derived cap (runlimits.SIZE_LIMITS)
+    wins over the project default when the size gives one — the whole point
+    of `size` is a TIGHTER ceiling than "whatever this project usually
+    allows", not a looser one. `large` (or no item) falls through unchanged.
     """
+    size_cap = _runlimits.turn_cap_for_item(root, item or {}) if item else 0
+    if size_cap:
+        return size_cap
     try:
         return max(0, int(_settings.get(root, "dispatch.max_turns") or 0))
     except Exception:
@@ -576,6 +584,19 @@ def _prompt_template(seat: str) -> str:
     return "".join(base.values())
 
 
+def _current_block(root: str) -> str:
+    """GRIPE 38: "SINCE <time>: N files changed outside the board: <paths>",
+    printed right under the item so an agent never edits a file the human
+    (or an outside CLI session) just touched without knowing. '' when
+    nothing has moved outside the board, or the project has no git."""
+    try:
+        from bgate_core.board import current as _current
+        text = _current.summary_text(root)
+    except Exception:
+        return ""
+    return ("\n" + text + "\n") if text else ""
+
+
 def _canon_block(root: str) -> str:
     """Which world this seat is in, or '' when the project has not said.
     Printed right under the item, before the protocol: the agents that
@@ -614,6 +635,7 @@ def _prompt_for(root: str, item: dict, native_images: bool = False,
                "worktree." if worktree else
                "Use that exact project_dir on every Builders Gate tool call.")),
         "canon_block": _canon_block(root),
+        "current_block": _current_block(root),
         "seat_rule_block": (seat_rule + "\n\n") if seat_rule else "",
         "policy_block": (policy + "\n\n") if policy else "",
         "verify_rule": _verify_rule(root),
@@ -905,7 +927,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # then the project default. There is no money ceiling, a dollar cap on a
     # run was always a guess multiplied by a guess, and what actually stopped
     # runaway work in every benchmark was the clock.
-    ceiling_s = int(max_runtime_s or _runlimits.runtime_ceiling(root, item) or 0)
+    ceiling_s = int(max_runtime_s or _runlimits.runtime_ceiling_for_item(root, item) or 0)
 
     # THE RESERVATION - the queued->dispatched transition, taken atomically and
     # FIRST. There are two dispatchers now (this function, and a worker's
@@ -1074,7 +1096,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         runner, model or _model_for(root, item.get("seat") or "", runner))
     args = runner.build_args(exe, permission_mode=permission_mode,
                              model=model, cwd=cwd, native_images=native_images,
-                             max_turns=_max_turns(root),
+                             max_turns=_max_turns(root, item),
                              mcp_env_vars=env.keys(),
                              auto_approve=(runner.name == "codex" and bool(
                                  _settings.get(root, "dispatch.codex_auto_approve"))))
@@ -1467,10 +1489,32 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         # alone overnight is the single most expensive failure this system can
         # have. 0 now means the hard cap, not infinity.
         limit_s = int(entry.get("max_runtime_s") or 0) or HARD_RUNTIME_S
-        if time.monotonic() - entry["started_at"] >= limit_s:
+        elapsed_s = time.monotonic() - entry["started_at"]
+        if elapsed_s >= limit_s:
             _trip(root, item_id, entry,
                   f"killed: exceeded the {limit_s // 60}-minute runtime limit")
             return
+
+        # GRIPE 40(b) — LAND WHAT YOU HAVE. Fired once per checkpoint per run
+        # (entry["budget_steered"] tracks which ones already went out), so a
+        # 2-second poll does not repost the same steer a dozen times before
+        # the agent's current step ends and it can read the inbox.
+        steered = entry.setdefault("budget_steered", set())
+        for pct in _runlimits.LAND_WHAT_YOU_HAVE_CHECKPOINTS:
+            if pct in steered:
+                continue
+            if elapsed_s < limit_s * pct:
+                continue
+            steered.add(pct)
+            try:
+                from bgate_core.board import steerbox as _steerbox
+
+                _steerbox.post_long(
+                    root, item_id,
+                    _runlimits.land_what_you_have_text(elapsed_s, limit_s, pct),
+                    by="harness:budget")
+            except Exception:
+                pass
 
         # HUNG, as distinct from slow. A wedged agent - one whose MCP child
         # died holding the pipe - is alive, costs nothing more, and will sit
