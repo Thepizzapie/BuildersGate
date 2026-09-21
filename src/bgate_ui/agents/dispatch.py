@@ -591,6 +591,19 @@ def _canon_block(root: str) -> str:
     return ("\n" + block + "\n") if block else ""
 
 
+def _ruling_block(root: str, seat: str) -> str:
+    """What the human ruled and this seat must build within, printed right
+    under the item beside the canon block - before the protocol, for the same
+    reason the canon block is: the decisions an agent makes in its first ten
+    turns are the ones a rule read later cannot undo."""
+    try:
+        from bgate_core.design import bible as _bible
+        block = _bible.describe_rulings(root, seat)
+    except Exception:
+        return ""
+    return ("\n" + block + "\n") if block else ""
+
+
 def _prompt_for(root: str, item: dict, native_images: bool = False,
                 worktree: str = "") -> str:
     from bgate_core.board.seats import SEAT_IDENTITY
@@ -614,6 +627,7 @@ def _prompt_for(root: str, item: dict, native_images: bool = False,
                "worktree." if worktree else
                "Use that exact project_dir on every Builders Gate tool call.")),
         "canon_block": _canon_block(root),
+        "ruling_block": _ruling_block(root, seat),
         "seat_rule_block": (seat_rule + "\n\n") if seat_rule else "",
         "policy_block": (policy + "\n\n") if policy else "",
         "verify_rule": _verify_rule(root),
@@ -883,10 +897,43 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                        item_id=item_id, waiting_on=held["id"],
                        waiting_on_status=held["status"])
 
+    # THE HUMAN'S RULINGS. A brief that names a tool the human forbade for
+    # this seat is an item that fails at its first tool call, after the
+    # briefing has been paid for - or worse, an agent that routes around the
+    # refusal. Measured on EXIT 67: the human ruled out frame sheets on night
+    # one and 33 agents were dispatched on them. Per-item, not a floor.
+    try:
+        from bgate_core.design import bible as _bible
+        violations = _bible.brief_violations(
+            root, str(item.get("seat") or ""),
+            f"{item.get('title') or ''}\n{item.get('brief') or ''}")
+    except Exception:
+        violations = []
+    if violations:
+        named = ", ".join(sorted({v["tool"] for v in violations}))
+        rulings = "; ".join(sorted({f"#{v['section_id']} {v['title']}"
+                                    for v in violations}))
+        _emit(root, "dispatch.blocked", ref=str(item_id),
+              payload={"code": "forbidden_by_ruling", "item": item_id,
+                       "seat": item.get("seat") or "",
+                       "title": str(item.get("title") or "")[:200],
+                       "tools": named, "rulings": rulings,
+                       "whole_board": False,
+                       "reason": f"the brief names {named}, forbidden for this "
+                                 f"seat by a human ruling ({rulings})"})
+        return _refuse(
+            "forbidden_by_ruling",
+            f"item {item_id}'s brief names {named}, which a HUMAN RULING forbids "
+            f"for the {item.get('seat')} seat ({rulings}). Rewrite the brief "
+            "around what the ruling asks for, or have the human change the "
+            "ruling (bible_update) - do not dispatch an agent to be refused.",
+            item_id=item_id, tools=sorted({v["tool"] for v in violations}),
+            rulings=[v["section_id"] for v in violations])
+
     # A cut-line re-check used to sit here, refusing to spend an agent on an
     # item whose scope tier had fallen below the line since it was queued. The
     # tier system is gone (nothing was ever filed under a tier, so this check
-    # never refused a dispatch either); the chain gate above is now the last
+    # never refused a dispatch either); the ruling gate above is now the last
     # thing between a queued item and a process.
     with _lock:
         if item_id in _live and _live[item_id]["proc"].poll() is None:

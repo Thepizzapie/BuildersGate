@@ -79,7 +79,12 @@ def bible_add(request: Request, payload: dict) -> dict:
     try:
         return api.ok(_bible.add(root(), (payload.get("kind") or "").strip(), title,
                                  body=payload.get("body", ""),
-                                 rank=int(payload.get("rank") or 0)))
+                                 rank=int(payload.get("rank") or 0),
+                                 # The ruling fields. The dashboard is the
+                                 # human's own hand, so 'human' is legal here.
+                                 stated_by=payload.get("stated_by", ""),
+                                 binds=payload.get("binds"),
+                                 forbids=payload.get("forbids")))
     except ValueError as exc:
         raise api.bad_request(str(exc))
 
@@ -88,10 +93,12 @@ def bible_add(request: Request, payload: dict) -> dict:
 def bible_update(request: Request, section_id: int, payload: dict) -> dict:
     api.require_human(api.current_actor(request), "edit the design bible")
     _section(section_id)
-    fields = {k: payload[k] for k in ("title", "body", "rank")
+    fields = {k: payload[k] for k in ("title", "body", "rank", "stated_by",
+                                      "binds", "forbids")
               if k in payload and payload[k] is not None}
     if not fields:
-        raise api.bad_request("nothing to change — send title, body or rank")
+        raise api.bad_request("nothing to change — send title, body, rank, "
+                              "stated_by, binds or forbids")
     if "rank" in fields:
         fields["rank"] = int(fields["rank"])
     try:

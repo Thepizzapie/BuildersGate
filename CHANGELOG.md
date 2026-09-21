@@ -9,6 +9,37 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+- **A constraint the human stated is a ruling, and the harness enforces it.**
+  On the EXIT 67 build the human said on night one that a run-and-gun needs
+  a 2D rig and that generated frame sheets would not carry it; the director
+  answered "trust the process", dispatched the cast on `image_sprites`, and
+  every art failure of the next twelve hours followed. The bible had a
+  `constraint` kind with no idea who stated it. Bible sections now carry
+  `stated_by`, `binds` (seats) and `forbids` (MCP tools); `bible_add` and the
+  dashboard's constraint rows take them, and only a human session may write
+  `stated_by='human'`. A human ruling reaches a bound seat three ways: it is
+  printed under the work item in the dispatch prompt and untrimmed in
+  `seat_brief` (`rulings`); a forbidden tool refuses the seat's call at the
+  tool wrapper; and dispatch refuses a brief that names a forbidden tool
+  (`forbidden_by_ruling`, per item, not a floor). The director protocol says
+  to record the ruling before filing the work. (`bgate_core.design.bible`,
+  migration 0047)
+- **`cutout_kit_generate` and `cutout_part_rerun`: the cutout rig generates
+  its own parts.** The rig, emitter and animation library shipped in July;
+  the parts were still made by hand and no project used it. One call now
+  draws every part of a template from ONE pinned reference through the
+  keyed-background contract, trims each to its alpha box, checks its height
+  against the reference figure (flagged, never rescaled), records the
+  reference hash on every part, assembles and emits. It refuses over
+  `max_paid_calls` before buying anything and stops after two consecutive
+  provider failures. `cutout_part_rerun` redraws one part. `cutout_status`
+  gains `stale_reference` (a part from another run or character) and
+  `reference_moved`. The biped template gains wrist bones and hand slots;
+  the weapon hangs from the near hand so the grip is inside the hand in
+  every frame, and an `aim` clip braces both hands on it - the pose the
+  frame pipeline could not hold. (`bgate_core.three_d.cutoutkit`)
+
 ### Changed
 - **2D space and sheets, from one night's failures.** The benchmark game
   shipped complete with its towns graybox, its party four sizes of person
