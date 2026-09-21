@@ -1766,6 +1766,15 @@ def credit_balance(root: Any = None, *, timeout: float = 15.0) -> Optional[float
 # Uploading — how a local anchor becomes something a model can be given
 # ---------------------------------------------------------------------------
 
+def _hashed_upload_name(source: Path, name: str = "") -> str:
+    """``<sha256[:16]>_<name>`` so concurrent uploads of same-named files never
+    share a remote path. See the note at the call site in upload_file."""
+    import hashlib
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+    base = (name.strip() or source.name)
+    return f"{digest}_{base}"
+
+
 def upload_file(path: str | os.PathLike[str], *, root: Any = None,
                 name: str = "", timeout: float = 120.0) -> dict:
     """Put one local image in kie's file store and return the URL it minted.
@@ -1819,7 +1828,15 @@ def upload_file(path: str | os.PathLike[str], *, root: Any = None,
         # still uploads with a 200.
         "base64Data": base64.b64encode(source.read_bytes()).decode("ascii"),
         "uploadPath": UPLOAD_DIR,
-        "fileName": (name.strip() or source.name),
+        # CONTENT-HASHED NAME. Every character's anchor is called reference.png
+        # (and reference_profile.png, pose_*_on_chroma.png ...), and kie serves an
+        # upload by path+name. Two art agents uploading "reference.png" seconds
+        # apart got ONE url, so the second character's frames were conditioned on
+        # the first character's anchor. MEASURED on EXIT 67, 2026-09-21: a diesel
+        # dog sheet with a sniper in frame 4, a gnome sheet whose frames 1-6 were
+        # a bearded biker. The hash ties the remote name to the bytes, so equal
+        # bytes still dedupe and different bytes can never collide.
+        "fileName": _hashed_upload_name(source, name),
     }
     got = _request(UPLOAD_BASE64, key, payload=payload, method="POST",
                    timeout=timeout)
