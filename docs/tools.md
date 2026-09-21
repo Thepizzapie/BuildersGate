@@ -2131,6 +2131,13 @@ changes deliberately.
 ```text
 Put a different part in one slot and re-emit - a hat, a sword, an arm.
 
+THE WEAPON HANGS FROM THE HAND BONE. `weapon` is a slot on `hand_near`, so
+the grip is inside the near hand in every frame by construction, and the
+`aim` clip brings both forearms forward so the far hand lands on the
+fore-end. This is the 2D rigging a run-and-gun needs and a frame sheet can
+never hold: a stamped gun floating in front of one painted arm was the
+failure that could not be gated.
+
 This is what the whole pipeline is for: swapping equipment is one texture
 on one slot, not a re-drawn character. The scene carries a pivot table so
 the runtime `equip()` can do the same swap at RUNTIME; this tool is for
@@ -2140,6 +2147,60 @@ changing what the character ships wearing.
 measured UP from the bottom. Pass it and it is recorded as AUTHORED, which
 means cutout_status will tell you if the part is later regenerated under it
 rather than letting the pivot quietly point somewhere else.
+```
+
+## cutout_kit_generate
+
+```text
+Generate every part of a cutout character from ONE pinned reference, then
+assemble and emit it. About nine paid images; the animation is the template's
+and costs nothing more.
+
+THIS IS HOW A CHARACTER WITH MORE THAN AN IDLE GETS MADE IN 2D. A frame
+sheet re-rolls identity, proportions and the weapon in the hand on every
+frame; a kit draws each part once and the rig moves it. The measured
+alternative was one night's Codex allowance for a cast the human failed on
+sight - gnome frames with a biker in them, a sniper dying with two heads.
+
+  reference       a ref_pin NAME (preferred - profile_set's traits, style and
+                  negative ride into every part prompt) or a path.
+  parts           a subset ["head", "forearm_near"] regenerates into the
+                  EXISTING kit; omit it for a fresh kit.
+  max_paid_calls  the ceiling, refused BEFORE anything is bought (default 20).
+  note            appended to every part prompt ("armour is brass, not gold").
+
+What comes back beside the emitter's report:
+
+  generation.generated   the slots drawn this call
+  generation.flags       parts whose height is outside the template band
+                         against the reference figure - LOOK at these before
+                         wiring anything; nothing is rescaled silently
+  generation.failed      provider or alpha-audit failures, per slot
+  generation.stopped     set when two consecutive failures ended the batch
+                         (re-rolling a failing prompt at $0.05 a frame is how
+                         one item cost $10 last time)
+
+Every part records the hash of the reference it was drawn against, and the
+document records the reference; cutout_status flags `stale_reference` on any
+part from another run and `reference_moved` when the pin has changed under
+the kit. Far-side limbs are the near side's drawing, tinted.
+
+One bad part is one cutout_part_rerun, not another kit.
+```
+
+## cutout_part_rerun
+
+```text
+Regenerate ONE part of an existing kit against the kit's own reference and
+re-emit. One paid image.
+
+The fix for a flagged or wrong part. `note` is appended to that part's prompt
+("bare forearm, not sleeved"). A far-side slot is refused - redraw the near
+side and the far side follows. An AUTHORED pivot on the slot is kept and
+cutout_status flags it stale_pivot, because it was placed against the old
+drawing. A character assembled from loose parts (cutout_assemble) names no
+reference and is refused; cutout_kit_generate makes a kit that can be
+regenerated part by part.
 ```
 
 ## cutout_status
@@ -2158,6 +2219,10 @@ while a character is being made. `missing` is slots with no part yet;
                    off the middle of the forearm and nothing says why.
   origin           the rig's feet are not on the ground line, so it hovers
                    or sinks in every scene it is placed in.
+  stale_reference  a part generated against a different reference than the
+                   document names - another run, or another character.
+  reference_moved  the pinned reference has changed since the kit was drawn;
+                   the kit still matches the OLD one.
 ```
 
 ## cutout_templates
@@ -2177,8 +2242,10 @@ Node2D bones - no mesh deformation, no squash, no per-frame redraw. For a
 hero seen in close-up the frame pipeline is still the better answer.
 
 `parts_to_generate` is the actual generation list: the far-side limbs reuse
-the near-side drawings with a tint, which is what makes a side-view kit ten
-images instead of sixteen.
+the near-side drawings with a tint, which is what makes a side-view kit nine
+images instead of eighteen. `equipment` (hat, weapon) is not generated with
+the body; it is equipped. Clips: idle, walk, run, aim, attack_melee, hurt,
+death. cutout_kit_generate draws the list from one pinned reference.
 ```
 
 ## decision_add
@@ -2793,6 +2860,37 @@ The result lists `created`, `unchanged`, `skipped` and `replaced`, so say
 what happened rather than letting the user find it in a diff.
 ```
 
+## godot_check_project
+
+```text
+Import/validate a project headless - the 'does it still build' check.
+
+godot_project: the directory holding project.godot. Runs Godot's own
+`--import` pass and reports engine errors, plus a static font/filter
+presentation check.
+
+Also runs a static lint over every `*.gd` in the project for
+EXPORT-BREAKING patterns invisible in the editor (result.export_lint):
+
+  * a directory listing (`get_files()`/`list_dir_begin`) filtered with
+    `ends_with(".tres"|".tscn"|".res"|".gd")` and no `.remap` strip anywhere
+    in the file - in an EXPORTED pck that filter matches nothing, because
+    Godot lists exported files by their remapped on-disk name
+    (`foo.tres.remap`). Fix: `ResDir.files(path, ext)` from
+    `src/templates/godot/2d/scripts/res_dir.gd`, which strips
+    `.remap`/`.import` before comparing.
+  * a zero-width or BOM code point (U+FEFF, U+200B-U+200D, U+2060, U+FFFE)
+    inside a GDScript string literal - invisible in the editor, and Godot's
+    exported binary token stream can re-encode or drop it, silently turning
+    `begins_with("﻿")` into `begins_with("")`.
+  * ADVISORY: `FileAccess.open("res://...")` of a non-resource extension
+    (`.json`/`.txt`/`.csv`/...) - works in the editor, can fail in an export
+    if `export_presets.cfg`'s `include_filter` does not cover the file.
+
+Each finding carries `file:line`, `kind` and a `fix`. A BLOCKING finding
+(the first two kinds) fails `ok`; the advisory kind never does on its own.
+```
+
 ## godot_screenshot
 
 ```text
@@ -3187,6 +3285,32 @@ strip. Raise it to 1-2 if the game draws sprites at a non-integer scale with
 linear filtering, where sampling at a region edge otherwise pulls in the
 neighbouring frame. Sheets long enough to exceed the safe texture width wrap
 into a padded grid automatically whatever this says.
+
+gate (default True): the per-frame identity gate (bgate_core.art.framegate) -
+cheap arithmetic, no model call - checked against THIS character's own
+anchor before the sheet ships as ok. MEASURED (EXIT 67, two art seats
+running): a sheet came back with frames belonging to a DIFFERENT character
+(the upload-collision bug, fixed separately in kie's content-hash naming),
+and every downstream check - alpha audit, stitch, sprite_sheet_check,
+consistency_check - passed the wrong character, because none compared a
+frame to its own anchor. This gate does: silhouette height/width ratio vs
+the anchor, palette distance vs the anchor's palette, translucency outside
+the main silhouette, a second connected component above the shoulder line
+("second head" - a known doubling artefact on fall/death poses), a
+component-count/detached-object sanity check, and near-duplicate adjacent
+frames in a cycle. A failing frame FAILS THE SHEET (`ok: False`, stage
+"frame_gate") with `frame_gate.frames[<pose>].checks` naming which check
+fired and its measured value - not a score, a named failure. Result also
+carries `frame_gate` when gate=False; nothing is hidden, only left
+non-fatal. `provenance` in the result records the anchor's content hash and
+any frame whose sidecar disagrees with (or is missing against) it - such a
+frame is dropped from the stitch rather than trusted, so a stale frame left
+over from a replaced anchor cannot ride into a new sheet.
+
+subject_class ("character" default, or "prop"): a prop additionally runs
+the limb-growth check (bbox aspect / component-count drift vs the anchor -
+MEASURED: a gas-pump turret grew arms and legs mid-set) and skips the
+identity/palette checks a moving prop legitimately varies on.
 
 THIS IS THE MOST EXPENSIVE TOOL HERE. The plan is priced before anything is
 bought and the estimate is reported, so a human sees what a set costs before
@@ -4432,6 +4556,55 @@ unbounded money pump wearing the gate's own uniform. queue.reopen counts
 the round AND carries the harness's record of what the last attempt
 already wrote into the new brief, so a fix round continues instead of
 regenerating.
+
+frame_verdicts: an art frame-gate result (image_sprites' `frame_gate`,
+bgate_core.art.framegate.gate_sheet's shape) - when given, its per-frame
+breakdown (pose name, which check fired, the measured value against its
+threshold) is appended alongside `reason`. MEASURED: "regenerate only what
+is actually wrong" with no per-frame detail left the next agent nothing to
+act on but the whole sheet - it could not tell WHICH frame was wrong or WHY
+without re-running the gate itself. A clean gate (nothing failed) adds
+nothing.
+```
+
+## queue_park
+
+```text
+Take a live item OFF the board without cancelling it.
+
+Parking existed only as a human writing raw SQL UPDATEs on work_item, 18
+rows at a time, because there was no status between "still queued" and
+"cancelled forever" - and 'cancelled' reads as work that is DONE being
+considered, which parked work is not.
+
+A parked item is invisible to both dispatchers (ready(), a worker's
+queue_claim_next) exactly the way any non-'queued' status is, so nothing
+auto-dispatches it and nothing flags it as stalled - it simply is not on
+the board until queue_unpark puts it back. Refuses on an already-terminal
+status (done/cancelled/parked): those are not "on the board" in the sense
+parking is for.
+```
+
+## queue_unpark
+
+```text
+Put a parked item back on the board, as 'queued'.
+
+Always returns to 'queued' rather than whatever status it was parked
+from (dispatched, integrating): the agent that was running it is long
+gone by the time anyone gets around to unparking, so there is no run to
+resume - only work to dispatch again.
+```
+
+## queue_cancel
+
+```text
+A human calling work off for good.
+
+Distinct from queue_park (parked work may come back with no re-filing)
+and from stopping a live agent (that ends a running process; this is for
+work that should simply never run, live or not). Refuses if the item is
+already done or cancelled.
 ```
 
 ## queue_update
@@ -5328,6 +5501,13 @@ cars where every editor screenshot showed six liveries). ok is false on any
 difference; each diff names the node, the field and both values. Make the
 pck with `godot --headless --path <project> --export-pack <preset> out.pck`
 and run this after every export whose evidence came from an editor run.
+
+Then it actually PLAYS the export: boots the pck headless for play_seconds
+(or runs drive_script against it, extends SceneTree, calls quit()), counts
+SCRIPT ERROR lines, and records {at, commit, ok, errors, pck} to
+.bgate/export_verify.json so a release gate can read it later. A clean diff
+proves the SHAPE shipped, not that the boot scene runs - this closes that
+gap. play_seconds=0 skips the play step.
 ```
 
 ## godot_export_probe

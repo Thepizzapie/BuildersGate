@@ -95,8 +95,16 @@ BIPED_V1 = {
         {"name": "head",       "parent": "chest",      "pos": [2, 30],   "rot": 0.0},
         {"name": "arm_far",    "parent": "chest",      "pos": [-2, 22],  "rot": -8.0},
         {"name": "forearm_far", "parent": "arm_far",   "pos": [0, -26],  "rot": 6.0},
+        # THE WRIST IS A BONE, NOT A SLOT. A slot hangs its part at its bone's
+        # ORIGIN, so a hand on the forearm bone would sit at the elbow. The
+        # hand bone sits at the forearm's far end; the weapon slot hangs from
+        # the NEAR hand, which is what puts the grip inside the hand in every
+        # frame by construction - the failure EXIT 67 could not gate (#8:
+        # stamped guns floating in front of one painted arm).
+        {"name": "hand_far",   "parent": "forearm_far", "pos": [0, -24], "rot": 0.0},
         {"name": "arm_near",   "parent": "chest",      "pos": [4, 22],   "rot": 8.0},
         {"name": "forearm_near", "parent": "arm_near", "pos": [0, -26],  "rot": -6.0},
+        {"name": "hand_near",  "parent": "forearm_near", "pos": [0, -24], "rot": 0.0},
         {"name": "thigh_far",  "parent": "hips",       "pos": [-4, -2],  "rot": 0.0},
         {"name": "shin_far",   "parent": "thigh_far",  "pos": [0, -44],  "rot": 0.0},
         {"name": "foot_far",   "parent": "shin_far",   "pos": [0, -42],  "rot": 0.0},
@@ -110,8 +118,10 @@ BIPED_V1 = {
         {"name": "hip",          "bone": "hips",         "z": 3},
         {"name": "arm_far",      "bone": "arm_far",      "z": 1},
         {"name": "forearm_far",  "bone": "forearm_far",  "z": 1},
+        {"name": "hand_far",     "bone": "hand_far",     "z": 1},
         {"name": "arm_near",     "bone": "arm_near",     "z": 8},
         {"name": "forearm_near", "bone": "forearm_near", "z": 8},
+        {"name": "hand_near",    "bone": "hand_near",    "z": 10},
         {"name": "thigh_far",    "bone": "thigh_far",    "z": 2},
         {"name": "shin_far",     "bone": "shin_far",     "z": 2},
         {"name": "foot_far",     "bone": "foot_far",     "z": 2},
@@ -119,8 +129,34 @@ BIPED_V1 = {
         {"name": "shin_near",    "bone": "shin_near",    "z": 7},
         {"name": "foot_near",    "bone": "foot_near",    "z": 7},
         {"name": "hat",          "bone": "head",         "z": 9},
-        {"name": "weapon",       "bone": "forearm_near", "z": 9},
+        {"name": "weapon",       "bone": "hand_near",    "z": 9},
     ],
+    # What each part IS, for the kit generator, and how tall it should be as a
+    # fraction of the figure - read off the bone lengths above, so a part that
+    # comes back at twice its height is flagged before it is assembled.
+    # Equipment slots are not generated with the body; they are equipped.
+    "parts": {
+        "head":         {"what": "head and neck, facing the viewer's right in "
+                                 "strict side profile", "height": 0.22},
+        "torso":        {"what": "torso from the base of the neck to the hips, "
+                                 "arms NOT included, shoulders cut clean at the "
+                                 "seam", "height": 0.30},
+        "hip":          {"what": "hips and belt, from waist to the top of the "
+                                 "thighs", "height": 0.13},
+        "arm_near":     {"what": "upper arm from shoulder to elbow, no hand",
+                         "height": 0.15},
+        "forearm_near": {"what": "forearm from elbow to wrist, no hand",
+                         "height": 0.14},
+        "hand_near":    {"what": "one hand, fingers curled as if gripping",
+                         "height": 0.07},
+        "thigh_near":   {"what": "thigh from hip to knee", "height": 0.23},
+        "shin_near":    {"what": "shin from knee to ankle, no foot",
+                         "height": 0.22},
+        "foot_near":    {"what": "one boot or foot, sole flat on the ground",
+                         "height": 0.08},
+        "hat":          {"what": "headwear", "height": 0.10, "equipment": True},
+        "weapon":       {"what": "held weapon", "height": 0.30, "equipment": True},
+    },
     # Where a part hangs from, as a fraction of its own alpha bounding box.
     # These are DEFAULTS a human overrides by dragging; `pivot_source` records
     # which of the two a given pivot is, so regenerating a part can tell you it
@@ -128,8 +164,8 @@ BIPED_V1 = {
     # else on the new drawing.
     "pivots": {
         "head": [0.5, 0.86], "torso": [0.5, 0.94], "hip": [0.5, 0.7],
-        "arm_far": [0.5, 0.9], "forearm_far": [0.5, 0.9],
-        "arm_near": [0.5, 0.9], "forearm_near": [0.5, 0.9],
+        "arm_far": [0.5, 0.9], "forearm_far": [0.5, 0.9], "hand_far": [0.5, 0.85],
+        "arm_near": [0.5, 0.9], "forearm_near": [0.5, 0.9], "hand_near": [0.5, 0.85],
         "thigh_far": [0.5, 0.92], "shin_far": [0.5, 0.92],
         "foot_far": [0.35, 0.8],
         "thigh_near": [0.5, 0.92], "shin_near": [0.5, 0.92],
@@ -139,6 +175,7 @@ BIPED_V1 = {
     # The far side is the near side's drawing, tinted back. Stated in the
     # template so a kit knows it is generating ten parts and not sixteen.
     "reuse": {"arm_far": "arm_near", "forearm_far": "forearm_near",
+              "hand_far": "hand_near",
               "thigh_far": "thigh_near", "shin_far": "shin_near",
               "foot_far": "foot_near"},
     "far_tint": [0.72, 0.72, 0.78, 1.0],
@@ -216,6 +253,20 @@ CLIPS: dict[str, dict] = {
             "head": {"rot": [[0.0, 0.0], [0.24, 6.0], [0.5, 0.0]]},
         },
     },
+    "aim": {
+        # A two-handed brace, held. Both forearms come forward so both hands
+        # land on the weapon hanging from the near hand; the far arm reaches
+        # further because its hand is on the fore-end.
+        "length": 1.0, "loop": True, "fps": 12,
+        "tracks": {
+            "arm_near": {"rot": [[0.0, -62.0], [0.5, -60.0]]},
+            "forearm_near": {"rot": [[0.0, -30.0], [0.5, -31.0]]},
+            "arm_far": {"rot": [[0.0, -78.0], [0.5, -76.0]]},
+            "forearm_far": {"rot": [[0.0, -12.0], [0.5, -13.0]]},
+            "chest": {"rot": [[0.0, -6.0], [0.5, -5.0]]},
+            "head": {"rot": [[0.0, 4.0], [0.5, 4.0]]},
+        },
+    },
     "hurt": {
         "length": 0.4, "loop": False, "fps": 24,
         "tracks": {
@@ -262,13 +313,18 @@ def templates() -> list[dict]:
     """Every template, with enough detail to choose and to generate a kit."""
     out = []
     for name, spec in TEMPLATES.items():
+        equipment = [k for k, v in (spec.get("parts") or {}).items()
+                     if v.get("equipment")]
         parts = [s["name"] for s in spec["slots"]
-                 if s["name"] not in spec.get("reuse", {})]
+                 if s["name"] not in spec.get("reuse", {})
+                 and s["name"] not in equipment]
         out.append({
             "name": name, "view": spec["view"], "height_px": spec["height_px"],
             "bones": [b["name"] for b in spec["bones"]],
             "slots": [s["name"] for s in spec["slots"]],
             "parts_to_generate": parts,
+            "equipment": equipment,
+            "parts": spec.get("parts") or {},
             "reused": spec.get("reuse", {}),
             "clips": sorted(CLIPS),
             "no_loop": list(NO_LOOP),
@@ -317,6 +373,11 @@ def empty(name: str = "character", template_name: str = "biped_v1") -> dict:
         "skin": {},
         "adjustments": {},
         "notes": "",
+        # The identity reference the kit was generated against (a pin name or
+        # a path) and its content hash at the time. Every part records the
+        # anchor hash it was drawn from; status() compares.
+        "reference": "",
+        "reference_hash": "",
     }
 
 
@@ -463,6 +524,12 @@ def normalise(doc: dict) -> dict:
                           lo=0.01, hi=100.0),
             "reuse_of": str(raw.get("reuse_of") or ""),
             "far_tint": (list(raw["far_tint"]) if raw.get("far_tint") else None),
+            # PROVENANCE. Which reference this part was generated against, and
+            # the prompt that made it. EXIT 67 stitched frames from a
+            # contaminated reference next to clean ones because nothing on the
+            # frame said which reference it came from.
+            "anchor_hash": str(raw.get("anchor_hash") or ""),
+            "prompt": str(raw.get("prompt") or ""),
         }
         if entry["reuse_of"] and entry["reuse_of"] not in slot_names:
             raise CutoutError(
@@ -490,6 +557,8 @@ def normalise(doc: dict) -> dict:
             clean_adj[bone] = entry
     out["adjustments"] = clean_adj
     out["notes"] = str(doc.get("notes") or "")
+    out["reference"] = str(doc.get("reference") or "")
+    out["reference_hash"] = str(doc.get("reference_hash") or "")
     return out
 
 
@@ -586,6 +655,35 @@ def status(doc: dict, *, root: str | os.PathLike[str] = "") -> dict:
                     "note": "the pivot on this slot was placed by hand against "
                             "a different version of this part — check it or "
                             "re-drag it"})
+
+    # A KIT IS ONE CHARACTER. Every generated part carries the hash of the
+    # reference it was conditioned on; a part whose hash differs from the
+    # document's is a part from another run - or another character. This is
+    # the check that did not exist when a flyer sheet shipped with a gator in
+    # frames 2 and 5. Reused far-side parts inherit their near side's hash.
+    ref_hash = doc.get("reference_hash") or ""
+    for slot, entry in doc["skin"].items():
+        if entry.get("reuse_of"):
+            continue
+        anchor = entry.get("anchor_hash") or ""
+        if ref_hash and anchor and anchor != ref_hash:
+            problems.append({
+                "slot": slot, "kind": "stale_reference",
+                "note": "this part was generated against a different reference "
+                        "than the document names - a different run or a "
+                        "different character; cutout_part_rerun it"})
+    if root and doc.get("reference") and ref_hash:
+        try:
+            from ..art import refs as _refs
+            now = part_hash(_refs.resolve(root, doc["reference"]))
+        except Exception:
+            now = ""
+        if now and now != ref_hash:
+            problems.append({
+                "slot": "", "kind": "reference_moved",
+                "note": f"the reference {doc['reference']!r} has changed since "
+                        "this kit was generated (re-pinned or edited); the kit "
+                        "still matches the OLD reference"})
 
     # THE ANKLE IS NOT THE SOLE. The origin contract is that the character's
     # FEET CONTACT (0, 0), and the lowest BONE is the ankle joint, which sits a

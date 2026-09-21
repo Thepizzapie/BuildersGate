@@ -184,7 +184,8 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
         "traversal_prove", "evidence_check_ui",
         # Deliverables whose only product is a Godot resource: a cutout rig is
         # a .tscn of Sprite2Ds, and SpriteFrames is a .tres or it is nothing.
-        "cutout_assemble", "cutout_equip", "item_to_spriteframes",
+        "cutout_assemble", "cutout_equip", "cutout_kit_generate",
+        "cutout_part_rerun", "item_to_spriteframes",
         # Kits are GDScript with project.godot input actions; a web or
         # Unity project has nothing for them to land in.
         "kit_list", "kit_install", "kit_remove",

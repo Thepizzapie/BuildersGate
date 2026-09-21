@@ -40,10 +40,49 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _TEXT = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
 
-def _spawn(cmd: list[str], timeout: int, cwd: Optional[str] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, timeout=timeout,
-                          cwd=cwd, stdin=subprocess.DEVNULL,
-                          creationflags=_NO_WINDOW, **_TEXT)
+def _spawn(cmd: list[str], timeout: int, cwd: Optional[str] = None,
+           env: Optional[dict] = None,
+           tool: str = "") -> subprocess.CompletedProcess:
+    """Run one Godot/Blender subprocess to completion, timeout enforced.
+
+    ITEM #19: a scripted drive that runs for minutes used to sit behind a
+    single blocking ``subprocess.run`` — nothing observable moved between
+    "call started" and "call ended", so a genuinely working 5-minute bot
+    drive and a wedged one looked identical from outside. This polls in
+    short slices instead and reports "waiting on Godot pid N for Ms, <tool>"
+    into the caller's in-flight row on every slice
+    (:func:`bgate_core.board.inflight.touch`) so the agent card has
+    something better than a phase name to show for the whole wait.
+    """
+    import time as _time
+
+    from bgate_core.board import inflight as _inflight
+
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=_NO_WINDOW, **_TEXT)
+    started = _time.monotonic()
+    poll_s = 2.0
+    while True:
+        try:
+            stdout, stderr = proc.communicate(timeout=poll_s)
+            return subprocess.CompletedProcess(cmd, proc.returncode,
+                                               stdout, stderr)
+        except subprocess.TimeoutExpired:
+            elapsed = _time.monotonic() - started
+            if elapsed >= timeout:
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except Exception:                                 # noqa: BLE001
+                    pass
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            try:
+                _inflight.touch(
+                    f"waiting on Godot pid {proc.pid} for {int(elapsed)}s"
+                    + (f", {tool}" if tool else ""))
+            except Exception:                                     # noqa: BLE001
+                pass
 
 
 _SEARCH_GLOBS = (
@@ -241,6 +280,21 @@ def project_autoloads(project_dir: Optional[str]) -> list[str]:
     return [m.group(1) for m in _AUTOLOAD_RE.finditer(section.group(1))]
 
 
+def _physics_hz(project_dir: Optional[str]) -> int:
+    """This project's configured physics rate, or Godot's own default (60)."""
+    if not project_dir:
+        return 60
+    try:
+        text = (Path(project_dir) / "project.godot").read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return 60
+    match = re.search(
+        r"^physics/common/physics_ticks_per_second\s*=\s*(\d+)", text,
+        re.MULTILINE)
+    return int(match.group(1)) if match else 60
+
+
 def _strip_literals(script: str) -> str:
     """Source with comment and string BODIES blanked, offsets/lines preserved.
 
@@ -413,12 +467,17 @@ _SCENE_WRAPPER = ('[gd_scene load_steps=2 format=3]\n\n'
                   '[node name="BGateRun" type="Node"]\nscript = ExtResource("1")\n')
 
 
-def _run_node_script(script: str, project_dir: str, timeout: int) -> dict:
+def _run_node_script(script: str, project_dir: str, timeout: int,
+                     time_scale: float = 1.0) -> dict:
     """Run a Node script as the project's main scene. THE AUTOLOAD-SAFE PATH.
 
     Everything it writes lives under ``.godot/bgate_run`` and is removed in a
     finally, so a project that was clean before the call is clean after it -
     including on the timeout path, which is when an agent runs the most.
+
+    ``time_scale`` != 1.0 injects the BGateTimeScale autoload (item #19) for
+    the duration of this one run only - same override.cfg mechanism as the
+    screenshot/evidence captures, cleaned up in the same finally.
     """
     import time
 
@@ -431,14 +490,26 @@ def _run_node_script(script: str, project_dir: str, timeout: int) -> dict:
     tscn = scratch / f"{stem}.tscn"
     res_gd = f"res://{SCRATCH_DIR}/{gd.name}"
     res_tscn = f"res://{SCRATCH_DIR}/{tscn.name}"
+    scaled = float(time_scale) > 0 and float(time_scale) != 1.0
+    injected: dict = {}
+    if scaled:
+        injected = _begin_injection(project, _TIMESCALE_SCRIPT, _TIMESCALE_GD,
+                                    "BGateTimeScale")
+        if injected.get("error"):
+            return {"ok": False, **injected}
     try:
         gd.write_text(script, encoding="utf-8")
         tscn.write_text(_SCENE_WRAPPER.format(res=res_gd), encoding="utf-8")
         started = time.monotonic()
+        env = dict(os.environ)
+        if scaled:
+            env["BGATE_TIME_SCALE"] = str(float(time_scale))
+            env["BGATE_BASE_PHYSICS_HZ"] = str(_physics_hz(project_dir))
         try:
             with _lock.hold(project, what="godot_run") as waited:
                 proc = _spawn([find_godot(), "--headless", "--path",
-                               str(project), res_tscn], timeout=timeout)
+                               str(project), res_tscn], timeout=timeout,
+                              env=env if scaled else None, tool="godot_run")
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"Godot timed out after {timeout}s",
                     "hint": "a node script must call get_tree().quit() or it "
@@ -446,7 +517,8 @@ def _run_node_script(script: str, project_dir: str, timeout: int) -> dict:
                     "seconds": timeout, "ran_as": "scene"}
         except _lock.EngineBusy as exc:
             return {"ok": False, "error": str(exc), "seconds": 0.0,
-                    "ran_as": "scene", "engine_contended": True}
+                    "ran_as": "scene", "engine_contended": True,
+                    "self_collision": getattr(exc, "self_collision", False)}
         stdout, stderr = proc.stdout or "", proc.stderr or ""
         return {
             "ok": proc.returncode == 0 and "SCRIPT ERROR" not in stdout + stderr,
@@ -458,6 +530,8 @@ def _run_node_script(script: str, project_dir: str, timeout: int) -> dict:
             "autoloads": project_autoloads(project_dir),
             "engine_waited_s": waited.get("waited_s", 0.0),
             "engine_contended": bool(waited.get("contended")),
+            "time_scale": float(time_scale) if scaled else 1.0,
+            "time_scale_applied": scaled,
         }
     finally:
         for path in (gd, tscn, gd.with_suffix(".gd.uid"),
@@ -466,10 +540,13 @@ def _run_node_script(script: str, project_dir: str, timeout: int) -> dict:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
+        if scaled:
+            _end_injection(project, _TIMESCALE_SCRIPT)
 
 
 def run_script(script: str, project_dir: Optional[str] = None,
-               timeout: int = 120) -> dict:
+               timeout: int = 120, time_scale: float = 1.0,
+               force: bool = False) -> dict:
     """Run a GDScript file headless and capture output.
 
     TWO SHAPES, and which one you need depends on ONE question: does the script
@@ -482,16 +559,44 @@ def run_script(script: str, project_dir: Optional[str] = None,
                              ``get_tree().quit()``. Runs as the project's main
                              scene, so autoloads resolve exactly as in the game.
 
+    ``time_scale`` (item #19) speeds up a scripted drive so it does not run
+    in real time and look idle for minutes. It ONLY takes effect on the
+    ``extends Node`` shape — a bare ``extends SceneTree`` run has no main
+    scene and no autoloads for the injection to ride on, and is fast enough
+    (a script utility, not a timed drive) that it was never the problem this
+    exists for. Returned as ``time_scale_applied`` so a caller asking for 8x
+    on a SceneTree script finds out rather than assuming it worked.
+
+    ``force`` overrides item #19's IDENTICAL-RUN CAP: this exact script,
+    against this exact project, has already run twice inside the current
+    work item (``BGATE_WORK_ITEM``). MEASURED: a 5-minute headless bot drive
+    re-run four times after four edits burned an hour of wall clock that a
+    "you already saw this" refusal would have stopped at run three.
+
     Returns {ok, stdout, stderr, exit_code, seconds, ran_as}.
     """
     import tempfile
     import time
 
     from bgate_core.runtime import enginelock as _lock
+    from bgate_core.runtime import rundedup as _dedup
 
     refused = _script_gate(script, project_dir)
     if refused is not None:
         return refused
+
+    item_id = os.environ.get("BGATE_WORK_ITEM", "")
+    fp = _dedup.fingerprint(script=script, args={"timeout": timeout,
+                                                 "time_scale": time_scale},
+                           project_dir=project_dir or "")
+    root_hint = os.environ.get("BGATE_ROOT", "") or (project_dir or "")
+    dedup_check = _dedup.check(root_hint, item_id=item_id, fp=fp, force=force)
+    if dedup_check["refuse"]:
+        return {"ok": False, "seconds": 0.0, "refused": "identical_run",
+                "count": dedup_check["count"],
+                "error": _dedup.refusal_message(dedup_check,
+                                                script_kind="script")}
+    _dedup.record(root_hint, item_id=item_id, fp=fp)
 
     base, _quoted = _script_base(script)
     if base in _NODE_BASES:
@@ -501,7 +606,7 @@ def run_script(script: str, project_dir: Optional[str] = None,
                              "so it needs a Godot project - pass "
                              "godot_project, or write it as `extends "
                              "SceneTree` to run without one"}
-        return _run_node_script(script, project_dir, timeout)
+        return _run_node_script(script, project_dir, timeout, time_scale)
 
     exe = find_godot()
     # The scratch dir is torn down in a finally, INCLUDING on the timeout path.
@@ -525,16 +630,17 @@ def run_script(script: str, project_dir: Optional[str] = None,
         try:
             if project_dir:
                 with _lock.hold(project_dir, what="godot_run") as waited:
-                    proc = _spawn(cmd, timeout=timeout)
+                    proc = _spawn(cmd, timeout=timeout, tool="godot_run")
             else:
-                proc = _spawn(cmd, timeout=timeout)
+                proc = _spawn(cmd, timeout=timeout, tool="godot_run")
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"Godot timed out after {timeout}s",
                     "hint": "a SceneTree script must call quit() or it runs forever",
                     "seconds": timeout}
         except _lock.EngineBusy as exc:
             return {"ok": False, "error": str(exc), "seconds": 0.0,
-                    "engine_contended": True}
+                    "engine_contended": True,
+                    "self_collision": getattr(exc, "self_collision", False)}
         finally:
             elapsed = round(time.monotonic() - started, 2)
 
@@ -550,7 +656,13 @@ def run_script(script: str, project_dir: Optional[str] = None,
             "ran_as": "scenetree",
             "engine_waited_s": waited.get("waited_s", 0.0),
             "engine_contended": bool(waited.get("contended")),
+            "time_scale_applied": False,
         }
+        if float(time_scale) != 1.0:
+            out["time_scale_note"] = (
+                "time_scale has no effect on an `extends SceneTree` run - no "
+                "main scene and no autoloads for the injection to ride on. "
+                "Write the script as `extends Node` to get it.")
         # THE ERROR THAT NAMED THE WRONG FILE. `Identifier not found: X` where
         # X is one of this project's autoloads is not a mistake in the script -
         # it is `--script` having no autoloads at all. The gate above catches
@@ -757,13 +869,27 @@ def check_project(project_dir: str, timeout: int = 180) -> dict:
 
     output = (proc.stdout or "") + (proc.stderr or "")
     errors = _errors(output)
-    return {
+    result = {
         "ok": proc.returncode == 0 and not errors,
         "exit_code": proc.returncode,
         "errors": errors,
         "seconds": round(time.monotonic() - started, 2),
         "output": output[-3000:],
     }
+    # EXPORT-BREAKING PATTERNS. The import above proves the project BUILDS in
+    # the editor; it proves nothing about an EXPORTED pck, which is exactly
+    # the gap that shipped EXIT 67 empty. This is a static text pass, cheap
+    # enough to run on every check_project rather than gated behind export.
+    try:
+        from bgate_core.qa import exportlint as _exportlint
+
+        lint = _exportlint.lint_project(str(project))
+        result["export_lint"] = lint
+        if lint["blocking"]:
+            result["ok"] = False
+    except Exception as exc:                                      # noqa: BLE001
+        result["export_lint"] = {"ok": True, "error": f"{type(exc).__name__}: {exc}"}
+    return result
 
 
 # Walks an imported scene and reports what the ENGINE actually got — not what
@@ -2175,6 +2301,28 @@ func _process(_delta: float) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 """
 
+# ITEM #19: A SCRIPTED DRIVE RUNS IN REAL TIME AND LOOKS IDLE. A 5-minute
+# headless bot drive re-run four times after four edits burned an hour of
+# wall clock, and the agent card showed nothing but a phase name the whole
+# time. Engine.time_scale speeds the SIMULATION, not the wall-clock timeout —
+# an autoload, same mechanism as the screenshot/evidence injections above, so
+# nothing project-side needs editing and it cleans up exactly like they do.
+# Physics ticks are scaled WITH it: Engine.time_scale alone speeds up
+# `_process` deltas but leaves `_physics_process` running at its configured
+# rate, which starves physics-heavy movement at anything above ~2x.
+_TIMESCALE_GD = _INJECT_BANNER + """
+extends Node
+
+func _ready() -> void:
+	var ts := float(OS.get_environment("BGATE_TIME_SCALE"))
+	if ts > 0.0 and ts != 1.0:
+		Engine.time_scale = ts
+		var base_hz := int(OS.get_environment("BGATE_BASE_PHYSICS_HZ"))
+		Engine.physics_ticks_per_second = int(round(maxf(base_hz, 1) * ts))
+"""
+_TIMESCALE_SCRIPT = "bgate_timescale.gd"
+
+
 # Injected autoload that screenshots the RUNNING game. Uses env for its
 # parameters so nothing project-side needs editing.
 _SHOT_GD = _INJECT_BANNER + """
@@ -2498,7 +2646,12 @@ func _extra_of(node: Node) -> Variant:
 			tex = a.sprite_frames.get_frame_texture(a.animation, a.frame)
 	if tex != null:
 		var ts := tex.get_size()
-		return {"texture": tex.resource_path, "texture_px": [ts.x, ts.y]}
+		var out := {"texture": tex.resource_path, "texture_px": [ts.x, ts.y]}
+		if node is AnimatedSprite2D:
+			var drift := _foot_drift_raw(node as AnimatedSprite2D)
+			if drift != null:
+				out["foot_drift_raw"] = drift
+		return out
 	if node is Label or node is Button or node is RichTextLabel:
 		var c := node as Control
 		var text: String = ""
@@ -2522,6 +2675,36 @@ func _extra_of(node: Node) -> Variant:
 				out["font_fixed_size"] = (font as FontFile).fixed_size
 		return out
 	return null
+
+## Per-frame screen-space bottom edge for every frame in this sprite's CURRENT
+## animation — the raw numbers the IN-ENGINE half of the foot-drift check
+## needs. Kept as raw bottoms/heights rather than a verdict: the verdict math
+## (the normalized spread and its threshold) lives in Python, shared with
+## bgate_core.art.spritekit's sheet-level check, so the two can never drift
+## apart from each other the way the metric they both measure must not drift.
+func _foot_drift_raw(node: AnimatedSprite2D) -> Variant:
+	var frames := node.sprite_frames
+	if frames == null or not frames.has_animation(node.animation):
+		return null
+	var anim := node.animation
+	var count := frames.get_frame_count(anim)
+	if count < 2:
+		return null
+	var xform := node.get_global_transform_with_canvas()
+	var bottoms: Array = []
+	var heights: Array = []
+	for i in range(count):
+		var tex := frames.get_frame_texture(anim, i)
+		if tex == null:
+			continue
+		var size := Vector2(tex.get_size())
+		var origin := node.offset - (size * 0.5 if node.centered else Vector2.ZERO)
+		var rect: Rect2 = xform * Rect2(origin, size)
+		bottoms.append(snappedf(rect.position.y + rect.size.y, 0.01))
+		heights.append(snappedf(rect.size.y, 0.01))
+	if bottoms.size() < 2:
+		return null
+	return {"animation": anim, "bottoms": bottoms, "heights": heights}
 
 func _value_of(node: Node) -> Variant:
 	if node is Range:
@@ -2653,6 +2836,56 @@ class _Drawer extends Control:
 """
 
 
+def _animation_gate_findings(entities: dict) -> list[dict]:
+    """The IN-ENGINE foot-drift verdict, in the SHEET GATE's own vocabulary.
+
+    ITEM #20: an animation shipped with visible foot slide that the SHEET
+    gate (bgate_core.art.spritekit's per-row check) had already passed,
+    because the sheet and the running engine were being asked two different
+    questions under two different names. This is the fix: the same "kind":
+    "foot_drift" / "value": <normalized spread> shape, and the SAME
+    threshold constant, so one verdict function can read either gate's
+    output without knowing which one produced it.
+
+    Reads ``foot_drift_raw`` off each AnimatedSprite2D entity the evidence
+    manifest captured (bottoms/heights per frame, in screen pixels) and
+    applies the identical median-height normalization spritekit's
+    ``_band_report`` uses for its ``foot_drift`` finding.
+    """
+    from bgate_core.art import spritekit as _spritekit
+
+    out: list[dict] = []
+    for name, entry in (entities or {}).items():
+        raw = entry.get("foot_drift_raw")
+        if not isinstance(raw, dict):
+            continue
+        bottoms = raw.get("bottoms") or []
+        heights = raw.get("heights") or []
+        if len(bottoms) < 2 or not heights:
+            continue
+        scale = sorted(heights)[len(heights) // 2] or 1
+        spread = (max(bottoms) - min(bottoms)) / scale
+        ok = spread <= _spritekit.FOOT_DRIFT_MAX
+        finding = {
+            "kind": "foot_drift", "ok": ok, "entity": name,
+            "animation": raw.get("animation", ""),
+            "value": round(spread, 3),
+            "threshold": _spritekit.FOOT_DRIFT_MAX,
+            "frames": list(range(len(bottoms))),
+        }
+        if not ok:
+            finding["note"] = (
+                f"{name}'s feet span "
+                f"{round(max(bottoms) - min(bottoms), 1)}px across its "
+                f"'{raw.get('animation', '')}' animation, "
+                f"{round(spread * 100)}% of its own height, against "
+                f"{round(_spritekit.FOOT_DRIFT_MAX * 100)}% allowed — the "
+                "same measurement bgate_core.art.spritekit runs on the "
+                "sheet, now run against the ENGINE's own frame data.")
+        out.append(finding)
+    return out
+
+
 def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
              scene: Optional[str] = None, overlay: bool = True,
              include_hidden: bool = False, timeout: int = 120) -> dict:
@@ -2722,6 +2955,8 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
         except json.JSONDecodeError as exc:
             return {"ok": False, "error": f"unreadable manifest: {exc}"}
 
+        animation_gate = _animation_gate_findings(manifest.get("entities", {}))
+
         return {
             "ok": True,
             "beauty": str(beauty_path) if beauty_path.exists() else None,
@@ -2740,6 +2975,12 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
             "ui": manifest.get("ui", {}),
             "counts": {"entities": len(manifest.get("entities", {})),
                        "ui": len(manifest.get("ui", {}))},
+            # THE IN-ENGINE HALF of the animation gate: item #20's fix. Runs
+            # for every AnimatedSprite2D captured above and reports under the
+            # SAME kind/value schema as bgate_core.art.spritekit's sheet-level
+            # foot_drift finding, so a caller can compare "does the sheet
+            # agree with the running engine" without a unit-conversion step.
+            "animation_gate": animation_gate,
             "seconds": round(time.monotonic() - started, 2),
             # Non-empty means a previous capture was killed and left its
             # autoload wired into this project until now.

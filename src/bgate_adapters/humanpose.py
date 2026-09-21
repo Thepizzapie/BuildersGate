@@ -149,32 +149,6 @@ def m_to_quat(m):
             (m[1][2] + m[2][1]) / s, 0.25 * s)
 
 
-def q_to_m(q):
-    w, x, y, z = q
-    return ((1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)),
-            (2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)),
-            (2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)))
-
-
-def q_norm(q):
-    n = math.sqrt(sum(c * c for c in q)) or 1.0
-    return tuple(c / n for c in q)
-
-
-def q_slerp(a, b, t):
-    """Shortest-arc slerp on the hemisphere — the double cover is a jump of 2."""
-    d = sum(x * y for x, y in zip(a, b))
-    if d < 0.0:
-        b = tuple(-c for c in b)
-        d = -d
-    if d > 0.9995:
-        return q_norm(tuple(x + (y - x) * t for x, y in zip(a, b)))
-    theta = math.acos(max(-1.0, min(1.0, d)))
-    sa, sb = math.sin((1.0 - t) * theta), math.sin(t * theta)
-    st = math.sin(theta)
-    return tuple((x * sa + y * sb) / st for x, y in zip(a, b))
-
-
 Q_IDENTITY = (1.0, 0.0, 0.0, 0.0)
 
 

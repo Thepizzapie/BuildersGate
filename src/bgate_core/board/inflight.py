@@ -37,6 +37,7 @@ Blender job as hung.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import time
@@ -124,6 +125,67 @@ def begin(root: str | os.PathLike[str], tool: str, *, seat: str = "",
     return token
 
 
+#: The (root, token) of the in-flight row for the tool call CURRENTLY
+#: executing on this thread of control, so code several layers down (a
+#: Godot subprocess wait loop, which has no idea what MCP tool it is inside)
+#: can still say something onto the right row. Set by server.py's `_tool`
+#: wrapper right after `begin()`; never crosses a thread or process boundary
+#: on its own the way a global would, because ContextVar is per-context.
+_CURRENT: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
+    "bgate_inflight_current", default=None)
+
+
+def bind(root: str | os.PathLike[str], token: str):
+    """Mark this call's (root, token) current for :func:`touch`. Returns the
+    ContextVar token :func:`unbind` needs — same pattern as `_CALL_TOOL` in
+    bgate_mcp.server."""
+    return _CURRENT.set((str(root), token))
+
+
+def unbind(ctx_token) -> None:
+    try:
+        _CURRENT.reset(ctx_token)
+    except Exception:                                             # noqa: BLE001
+        pass
+
+
+def touch(text: str) -> None:
+    """Update the CURRENT call's live detail, if one is bound. Never raises.
+
+    The convenience half of :func:`detail` — a wait loop three modules away
+    from the MCP wrapper does not have `root`/`token` in scope, only the fact
+    that it is running inside some tool call.
+    """
+    current = _CURRENT.get()
+    if not current:
+        return
+    root, token = current
+    detail(root, token, text)
+
+
+def detail(root: str | os.PathLike[str], token: str, text: str) -> None:
+    """ITEM #19: what a call is doing RIGHT NOW, for the agent card to show.
+
+    A phase name ("running") told a human nothing for the two hours a
+    scripted drive sat waiting on its own engine subprocess — the card had
+    no lower resolution than "in progress" because nothing updated it
+    mid-call. A long Godot/Blender wait loop calls this every poll (see
+    ``bgate_adapters.godot``'s subprocess wait) with a line like "waiting on
+    Godot pid 4821 for 42s, godot_run" so a restart risk or an idle-looking
+    agent is something a person can actually read, not infer. Never raises.
+    """
+    try:
+        doc = _read(_file(root))
+        calls = doc.get("calls")
+        if isinstance(calls, dict) and token in calls:
+            calls[token]["detail"] = str(text)[:300]
+            calls[token]["detail_at"] = time.time()
+            doc["calls"] = calls
+            _write(root, doc)
+    except Exception:                                             # noqa: BLE001
+        pass
+
+
 def end(root: str | os.PathLike[str], token: str) -> None:
     """Clear a call. Never raises."""
     try:
@@ -177,6 +239,10 @@ def _scan(root: str | os.PathLike[str]) -> list[dict]:
                 "item_id": call.get("item_id"),
                 "started": started,
                 "seconds": round(max(0.0, now - started), 1),
+                # ITEM #19: the live wait state, set by detail() while a
+                # subprocess (Godot/Blender) runs. "" means nobody has said
+                # anything more specific than the tool name yet.
+                "detail": str(call.get("detail") or ""),
             })
     out.sort(key=lambda c: c["started"], reverse=True)
     return out

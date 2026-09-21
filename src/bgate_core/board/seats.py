@@ -642,11 +642,26 @@ def dispatch_rules(root: str | os.PathLike[str], seat: str) -> str:
     # the rule itself defers to - that is one place to look, and it is the place
     # that worked in the benchmark.
     mesh_route = art_mesh_route_rule(root) if seat == "art" else ""
+    stop_and_ask = ""
+    try:
+        from . import rejections as _rejections
+        blocked = _rejections.blocked_tools(root, seat)
+        if blocked:
+            # ITEM 9b — named tools, named count, right in the dispatch prompt:
+            # the whole failure was that nothing upstream of the human noticed
+            # three rejections in a row, and a brief that does not say so is
+            # exactly that silence again.
+            stop_and_ask = "STOP AND ASK — a human rejected " + "; ".join(
+                f"{b['tool']} ({b['count']}x)" for b in blocked) + \
+                " in the last 24h. Do not call it again; report the block and " \
+                "wait, rejections_clear() is a human's decision, not yours."
+    except Exception:                                             # noqa: BLE001
+        pass
     # The seat's OWN rules stay last, so an override file's text is the final
     # word on the prompt; the project's geometry route is a setting above it.
     return "\n\n".join(part for part in
-                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, mesh_route, own)
-                        if part)
+                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, mesh_route,
+                         stop_and_ask, own) if part)
 
 
 # ---------------------------------------------------------------------------
@@ -776,17 +791,19 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "and deliver is import PLUS the lit stand-up photo that "
                    "proves it landed. "
                    "CONSISTENCY IS ENFORCED, NEVER REQUESTED: pin the reference, "
-                   "condition every frame on it, measure the result. A model asked "
-                   "to stay on-model will not. LOOK at the frame before you call "
-                   "it done. UI IS ART TOO: every project gets its OWN title, menu, "
+                   "condition every frame on it, measure the result. Before "
+                   "reporting a sheet done, compare it frame to frame against "
+                   "the pinned anchor (consistency_check / sprite_family_check) "
+                   "and paste the per-frame verdict into the result; without "
+                   "it the QA gate reopens the item. UI IS ART TOO: "
+                   "every project gets its OWN title, menu, "
                    "HUD and results look - generated concept frames, a logo, a "
                    "palette and a Theme derived from them - before any Control node "
                    "is laid out. The scaffold theme is a placeholder that must not "
                    "ship; a HUD that looks like the last project's is a defect. "
-                   "AND THE ENGINE'S VIEW IS THE EXPORTED PCK, not the editor run: "
-                   "verify delivered meshes and scene overrides in an export "
-                   "(godot_export_probe), because the export silently drops what the "
-                   "editor tolerates.",
+                   "AND THE ENGINE'S VIEW IS THE EXPORTED PCK: verify delivered "
+                   "meshes and scene overrides in an export (godot_export_probe), "
+                   "the export silently drops what the editor tolerates.",
         # Mesh-bearing scenes are ART's to write. Without these the seat that
         # owns every visible mesh could not touch the .tscn a primitive lives
         # in, and the director read that as "not art's job" (Hot Cargo,
@@ -1180,10 +1197,12 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "scene argument before any release claim. ONE RUN IS PROOF: a "
                    "gate runs each check once (one re-run for a known flake), never a "
                    "sweep, and it does not file re-pin or re-check items for other "
-                   "seats - a red assertion after someone's change is reported to the "
-                   "director in the verdict. A release gate probes the EXPORTED pck "
-                   "(godot_export_probe), because the export drops what the editor run "
-                   "tolerates.",
+                   "seats - a red assertion is reported to the director in the "
+                   "verdict. A release gate probes the EXPORTED pck "
+                   "(godot_export_probe). Art is reviewed frame by frame at "
+                   ">= 300px, never a contact-sheet thumbnail - a verdict on one "
+                   "is not a review; landing an art item calls concept_compare "
+                   "against the pinned concept sheet.",
         "write_globs": ["tests/**", "game/tests/**"],
         "workflow": (
             "QA PERSONA, be the picky owner, not a cheerleader. No participation "
@@ -1483,13 +1502,12 @@ DIRECTOR_PROTOCOL = (
     "sentence and offer the closest thing you CAN do, then do it.\n"
     "\n"
     "DO THE WORK OR DELEGATE IT, BOTH ARE LEGITIMATE. Delegation buys "
-    "parallelism and the QA gate; doing it yourself buys "
-    "immediacy and your own judgment. Reach for the board when the work is "
-    "parallel, long-running, or should be QA-gated: queue_add(seat, title, "
-    "brief) files it for a spawned agent holding that seat's toolset "
-    "(seat_list for the table). Do it yourself when the human asked you to, "
-    "when it is faster than writing the brief, or when a dispatched agent "
-    "already failed at it and you can see why.\n"
+    "parallelism and the QA gate; doing it yourself buys immediacy and your "
+    "own judgment. Reach for the board when the work is parallel, "
+    "long-running, or should be QA-gated: queue_add(seat, title, brief) files "
+    "it for a spawned agent holding that seat's toolset (seat_list). Do it "
+    "yourself when the human asked, when it is faster than writing the brief, "
+    "or when a dispatched agent already failed and you can see why.\n"
     "\n"
     "WHAT YOU DISPATCH, YOU WATCH. A dispatched item is your responsibility "
     "until it lands: check board_digest / queue_list, read a running agent "
@@ -1506,19 +1524,34 @@ DIRECTOR_PROTOCOL = (
     "(unless this project's approval gate says otherwise, see below). "
     "That gate is the reason to use the board.\n"
     "\n"
-    "DEPENDENT WORK GOES ON THE BOARD AS A CHAIN, NOT AS PRIORITIES. The moment "
-    "your split has an order, one seat needs the file, scene, primitive or "
-    "schema another seat is about to produce, file it with "
-    "queue_add_chain([{seat, title, brief}, ...]) instead of separate "
-    "queue_add calls. Priority is a preference among things that are ALL ready; "
-    "it does not stop autodeploy from starting both agents in the same tick, and "
-    "the one that needed the other's output then writes against a file that does "
-    "not exist, reports done, and the damage surfaces two items later wearing "
-    "someone else's name. The tell you missed a chain is a brief that says "
-    "'AFTER #41 lands' or 'once the scene exists': that sentence is the board's "
-    "job now, so write each link as if its predecessor already landed and name "
-    "what it produced. A link does not start until the one before it reaches "
-    "'done', approved, where a human gate is on.\n"
+    "THE HUMAN'S ARCHITECTURE CALL IS A BIBLE CONSTRAINT BEFORE IT IS A WORK "
+    "ITEM. When the human names what the game needs or rules something out - "
+    "'this needs a 2D rig, frame sheets will not carry it', 'every mesh through "
+    "Blender', 'no generated dialogue' - that is a RULING, not an opinion to "
+    "test against the pipeline's default. Record it FIRST: bible_add(kind="
+    "'constraint', title, body, stated_by='human', binds=[the seats it "
+    "reaches], forbids=[the tools it rules out]) - then file the work. Bound "
+    "seats read it at the top of their brief, a forbidden tool refuses the "
+    "call, and dispatch refuses a brief that names one. Measured: 'trust the "
+    "process' against such a call cost a night's Codex allowance and a build "
+    "the human failed on sight; every art failure of that run followed from "
+    "the architecture the human had already ruled out. Only the human lifts "
+    "a ruling; if you believe one is wrong, ask_human with the evidence.\n"
+    "\n"
+    "DEPENDENT WORK GOES ON THE BOARD AS A CHAIN, NOT AS PRIORITIES. ONE "
+    "DELIVERABLE, ONE LANE, ONE ACCEPTANCE CHECK PER ITEM - a broad ask becomes "
+    "a chain, not one wide brief. The moment your split has an order, one seat "
+    "needs the file, scene, primitive or schema another seat is about to "
+    "produce, file it with queue_add_chain([{seat, title, brief}, ...]) instead "
+    "of separate queue_add calls. Priority is a preference among things that "
+    "are ALL ready; it does not stop autodeploy from starting both agents in "
+    "the same tick, and the one that needed the other's output then writes "
+    "against a file that does not exist, reports done, and the damage surfaces "
+    "two items later wearing someone else's name. The tell you missed a chain "
+    "is a brief that says 'AFTER #41 lands': write each link as if its "
+    "predecessor already landed and name what it produced. A link does not "
+    "start until the one before it reaches 'done', approved where a human gate "
+    "is on.\n"
     "\n"
     "THE APPROVAL GATE IS THE HUMAN'S SETTING, NOT YOURS. Three modes (dashboard, "
     "or /api/gate): no gate, an agent's word closes its item; agent gate, the "
@@ -1538,9 +1571,12 @@ DIRECTOR_PROTOCOL = (
     "\n"
     "EVIDENCE, NOT ASSERTION. A claim about a game is cashed with the harness: "
     "godot_check_project for a build, godot_run for headless truth, "
-    "godot_screenshot / godot_evidence for anything a player would SEE. If a "
-    "change is not visible in the running game, say that plainly rather than "
-    "letting a green test stand in for it.\n"
+    "godot_screenshot / godot_evidence for anything a player would SEE - a "
+    "change not visible in the running game is said plainly, never let a "
+    "green test stand in for it. Art is reviewed frame by frame at >= 300px "
+    "(sprite_sheet_check's review_px), never a thumbnail - a verdict on a "
+    "contact sheet is not a review; a translucent second head and an upright "
+    "rifle both passed at 150px/frame.\n"
     "\n"
     "LEAVE A THREAD AS YOU GO. handoff_note(kind, text, refs) records IN-FLIGHT "
     "state, 'state', 'decision' (with the reason), 'deferred' (and why), "
@@ -1551,6 +1587,11 @@ DIRECTOR_PROTOCOL = (
     "note rather than restating them. The one that pays for itself is "
     "'deferred', an unlabelled deferral is what the next agent finds and "
     "'fixes' as a bug.\n"
+    "\n"
+    "AFTER A GRAYBOX VERDICT, ONE SLICE AT A TIME. Three art seats stayed on "
+    "parallel biomes past a human order to focus - board_focus_set(name) "
+    "names the one being worked to shippable; queue_add warns (not refuses) "
+    "on a brief that names a different one while it is set.\n"
     "\n"
     "IF BGATE_SEAT IS SET in this environment you are NOT the director, you are "
     "a spawned seat worker, and seat_brief(<your role>) carries the identity "
@@ -2091,9 +2132,13 @@ MAX_SECTIONS = 14        # bible sections quoted in a brief
 BODY_CHARS = 600         # per bible section
 NOTE_CHARS = 300         # per blackboard note
 FEEDBACK_CHARS = 300     # per promoted complaint
-# The ceiling the whole brief has to fit under, in characters. ~6k tokens: big
-# enough to brief a seat, small enough that no CLI spills it to disk.
-BRIEF_CHARS = 24000
+# The ceiling the whole brief has to fit under, in characters. ~6.5k tokens: big
+# enough to brief a seat, small enough that no CLI spills it to disk. Raised
+# from 24000 on 2026-09-21: the EXIT 67 rules (human rulings, the per-frame
+# verdict, review at full size, one slice in focus, the provider table) put
+# ~1.2k of fixed prose on the art brief, and the fitter had nothing left to
+# cut but the workflow the seat is briefed with.
+BRIEF_CHARS = 26000
 
 
 def _fit(payload: dict) -> dict:
@@ -2141,7 +2186,26 @@ def _fit(payload: dict) -> dict:
             {k: v for k, v in ref.items() if k in keep}
             for ref in (payload.get("pinned_refs") or [])[:limit]]
 
+    def trim_current() -> None:
+        # `current` (GRIPE 38) is supplementary "since you last looked"
+        # colour, never the reason a seat can do its job - it goes first,
+        # down to just the outside-the-board summary, before anything the
+        # seat actually needs (bible, refs, canon) is touched.
+        cur = payload.get("current")
+        if not isinstance(cur, dict):
+            return
+        if cur.get("available"):
+            payload["current"] = {
+                "available": True,
+                "outside_the_board": (cur.get("outside_the_board") or [])[:6],
+                "note": "project_current for the full read (by_lane, items, "
+                        "handoff_notes)"}
+        else:
+            payload["current"] = {"available": False}
+
     steps = [
+        lambda: payload.__setitem__("providers", (payload.get("providers") or [])[:4]),
+        trim_current,
         lambda: trim_bible(300),
         lambda: trim_refs(20),
         lambda: payload.__setitem__("approved_artifacts",
@@ -2151,6 +2215,10 @@ def _fit(payload: dict) -> dict:
         lambda: payload.__setitem__("board", (payload.get("board") or [])[:6]),
         lambda: trim_bible(120),
         lambda: trim_refs(8),
+        # Rulings are the one field that must survive the trim; what gives is
+        # their prose past a page, never the title or the forbidden tools.
+        lambda: [r.__setitem__("body", (r.get("body") or "")[:1200])
+                 for r in (payload.get("rulings") or [])],
         lambda: payload.__setitem__(
             "promoted_feedback",
             [{k: v for k, v in item.items() if k != "text"}
@@ -2166,8 +2234,16 @@ def _fit(payload: dict) -> dict:
             return payload
     # THE LADDER RAN OUT AND THE PAYLOAD IS STILL OVER. That used to return
     # anyway, which is how a ceiling that every caller trusted became a
-    # suggestion. The bible is the only field left big enough to matter, so it
-    # goes down to a table of contents; a seat that needs prose has bible_read.
+    # suggestion. Providers is the cheapest thing left to drop entirely -
+    # provider_status pages the same facts - so it goes before the bible
+    # gets cut down to a table of contents; a seat that needs prose has
+    # bible_read.
+    if payload.get("providers"):
+        payload["providers"] = []
+        if size() <= BRIEF_CHARS:
+            return payload
+    # The bible is the only field left big enough to matter, so it goes down
+    # to a table of contents; a seat that needs prose has bible_read.
     #
     # The row is rebuilt rather than having its body blanked, because blanking
     # the body left 10,038 characters of id/rank/version/created_at/updated_at
@@ -2358,11 +2434,65 @@ def _stage_block(root: str | os.PathLike[str], role: str) -> dict:
                          if thesis else {}),
         "dominant_strategy_to_watch_for": thesis.get("dominant_strategy") or "",
         "held_seats": state.get("held_seats") or [],
-        "blocking_the_next_stage": state.get("blockers") or [],
+        **_bounded_blockers(state.get("blockers") or []),
         "note": ("greenlight_status is the long answer, including the enemy "
                  "roster, the objective shapes, the scale contract and the "
                  "room reviews"),
     }
+
+
+# How many blockers a seat brief carries verbatim. MEASURED on EXIT 67
+# (2026-09-21): the greenlight doc held 427 presentation-QA blockers, the brief
+# serialised to 175 KB, and every agent's FIRST tool call answered "result
+# exceeds maximum allowed tokens" - the seat started blind, having paid for
+# the brief anyway. The brief's own docstring promises it is BOUNDED; the
+# stage block was the one section that was not.
+STAGE_BLOCKERS_SHOWN = 8
+
+
+def _bounded_blockers(blockers: list) -> dict:
+    """The first few blockers verbatim, the rest as a count per family.
+
+    A blocker is a sentence whose prefix up to the first colon names the gate
+    that raised it ("presentation QA: ..."); the family tally keeps the shape
+    of the problem visible when the list itself is cut.
+    """
+    shown = [str(b) for b in blockers[:STAGE_BLOCKERS_SHOWN]]
+    rest = blockers[STAGE_BLOCKERS_SHOWN:]
+    if not rest:
+        return {"blocking_the_next_stage": shown}
+    families: dict[str, int] = {}
+    for b in rest:
+        key = str(b).split(":", 1)[0].strip()[:40] or "other"
+        families[key] = families.get(key, 0) + 1
+    return {
+        "blocking_the_next_stage": shown,
+        "blocking_the_next_stage_more": {
+            "not_shown": len(rest),
+            "by_family": families,
+            "read_them_with": "greenlight_status (the full list); a seat "
+                              "fixes the ones in its own lane, it does not "
+                              "answer the list",
+        },
+    }
+
+
+def _providers_for_brief(root: str | os.PathLike[str], role: str) -> list[dict]:
+    """Best-effort, never blocks a brief on a probe. See runtime.preflight."""
+    try:
+        from ..runtime import preflight as _preflight
+
+        return _preflight.providers_brief(root, role)
+    except Exception:
+        return []
+def _current_block(root: str | os.PathLike[str], hours: int = 6) -> dict:
+    """The bounded `current` field for brief() - see current.py. Never
+    raises: a project with no git gets {"available": False}."""
+    try:
+        from . import current as _current
+        return _current.current_activity(root, hours=hours)
+    except Exception:
+        return {"available": False, "reason": "current_activity failed"}
 
 
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
@@ -2479,6 +2609,10 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                         if role in PINNED_REF_SEATS else []),
         "approved_artifacts": cap(artifact_rows, MAX_ARTIFACTS, "artifact list"),
         "bible": bible_view,
+        # THE HUMAN'S RULINGS, UNTRIMMED. The bible above is a page of the
+        # document; a constraint the human stated must not be the fourteenth
+        # section that fell off it. Bound to this seat.
+        "rulings": bible.rulings(root, role),
         "canon": cap([{"kind": e["kind"], "name": e["name"], "summary": e["summary"]}
                       for e in lore.list_entities(root, status="canon")],
                      MAX_CANON, "lore_list"),
@@ -2490,6 +2624,17 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                             MAX_LOCKS, "asset_status (others)"),
         "notes": notes,
         "board": cap(board, MAX_BOARD, "queue_list"),
+        # ITEM 13 — WHICH PROVIDER THIS SEAT'S SPEND ACTUALLY ROUTES TO,
+        # right in the brief. MEASURED: Retro Diffusion ran dry ($0.11) and
+        # two agents discovered it themselves, mid-run, instead of reading it
+        # here first. Empty for a seat with no paid capability (already
+        # bounded to <=12 rows by preflight.providers_brief).
+        "providers": _providers_for_brief(root, role),
+        # GRIPE 38 (EXIT 67 postmortem, 2026-09-21): what changed OUTSIDE the
+        # board recently - a human bypassing a slow agent through a CLI
+        # session, or anything uncommitted. Bounded (current.MAX_CHARS,
+        # ~1.5 KB) and never raises; project_current(hours=) is the full read.
+        "current": _current_block(root),
         # WHAT THE PROJECT IS ALLOWED TO BE DOING YET, and the sentence the
         # whole game is built on. In the brief rather than left for a refusal
         # to teach: a seat that discovers the stage by being held reads it as
@@ -2503,6 +2648,8 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "traps": traps_for(role, dimension),
         "rules": [
             TOOLING_RULE,
+            "HUMAN `rulings` above outrank this list: a forbidden tool refuses "
+            "your call; build within them or fail naming them.",
             "Stay inside the project you were dispatched for - that boundary "
             "is enforced. Your lanes inside it are the map of what is yours; "
             "prefer them, route big cross-seat work with queue_add, and when "

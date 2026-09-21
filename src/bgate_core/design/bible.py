@@ -17,12 +17,60 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 
 from ..board import activity
 from ..store import db, search
 from ..store.util import rows
 
 KINDS = ("pillar", "loop", "constraint", "reference")
+
+# WHO STATED A SECTION. '' is the historical value (every row before 0047 and
+# every row nobody labelled); 'human' is the one the gates read. A constraint
+# the human stated is a RULING: the seats it binds see it at the top of their
+# brief, the tools it forbids refuse to run for them, and dispatch refuses a
+# brief that names a forbidden tool. EXIT 67 measured the alternative, where a
+# night-one statement ("this game needs a 2D rig, frame sheets will not carry
+# it") lived in a chat transcript and thirty-three agents built on frame sheets.
+STATED_BY = ("", "human", "director", "agent")
+HUMAN = "human"
+
+_LIST_SPLIT = re.compile(r"[,\s]+")
+
+
+class NotAConstraint(ValueError):
+    """binds/forbids only mean something on a constraint."""
+
+
+def _csv(value, field: str) -> str:
+    """Normalise a list-ish field (list, tuple or comma string) to a sorted,
+    de-duplicated, lower-cased comma string. '' stays ''."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        items = _LIST_SPLIT.split(value.strip())
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        items = [str(v) for v in value]
+    else:
+        raise ValueError(f"{field} must be a list or a comma-separated string, "
+                         f"got {type(value).__name__}")
+    clean = sorted({i.strip().lower() for i in items if i and i.strip()})
+    for item in clean:
+        if not re.fullmatch(r"[a-z0-9_\-\.\*]+", item):
+            raise ValueError(f"{field} entry {item!r} is not a seat or tool name")
+    return ",".join(clean)
+
+
+def _provenance(kind: str, stated_by, binds, forbids) -> dict:
+    who = str(stated_by or "").strip().lower()
+    if who not in STATED_BY:
+        raise ValueError(f"stated_by must be one of {STATED_BY}, got {stated_by!r}")
+    b = _csv(binds, "binds")
+    f = _csv(forbids, "forbids")
+    if (b or f) and kind != "constraint":
+        raise NotAConstraint(
+            f"binds/forbids only apply to a constraint, not a {kind}")
+    return {"stated_by": who, "binds": b, "forbids": f}
 
 
 class StaleWrite(ValueError):
@@ -53,22 +101,34 @@ def version_of(section: dict) -> str:
 
 
 def add(root: str | os.PathLike[str], kind: str, title: str, body: str = "",
-        rank: int = 0) -> dict:
+        rank: int = 0, *, stated_by: str = "", binds=None, forbids=None) -> dict:
+    """Add a section. ``stated_by``/``binds``/``forbids`` are the ruling fields,
+    see STATED_BY; they are validated here and nowhere else."""
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
+    prov = _provenance(kind, stated_by, binds, forbids)
     with db.tx(root) as conn:
         cur = conn.execute(
-            "INSERT INTO bible_section (kind, title, body, rank) VALUES (?, ?, ?, ?)",
-            (kind, title, body, rank),
+            "INSERT INTO bible_section (kind, title, body, rank, stated_by, "
+            "binds, forbids) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (kind, title, body, rank, prov["stated_by"], prov["binds"],
+             prov["forbids"]),
         )
         sid = int(cur.lastrowid)
         search.reindex(conn, _ref(sid), f"bible.{kind}", title, f"{title}\n{body}")
+    if prov["stated_by"] == HUMAN:
+        activity.log(root, "bible",
+                     f"HUMAN RULING recorded: {title[:70]!r}"
+                     + (f" binds {prov['binds']}" if prov["binds"] else "")
+                     + (f" forbids {prov['forbids']}" if prov["forbids"] else ""),
+                     ref=str(sid))
     return get(root, sid)
 
 
 def update(root: str | os.PathLike[str], section_id: int, *, title: str | None = None,
            body: str | None = None, rank: int | None = None,
-           expected_version: str | None = None) -> dict:
+           expected_version: str | None = None, stated_by: str | None = None,
+           binds=None, forbids=None) -> dict:
     """Edit a section. A partial edit is a read-modify-write, so it is done
     under the write lock and, when the caller says what it was editing
     (``expected_version``, from :func:`version_of`), refused if the section has
@@ -90,10 +150,17 @@ def update(root: str | os.PathLike[str], section_id: int, *, title: str | None =
         title = current["title"] if title is None else title
         body = current["body"] if body is None else body
         rank = current["rank"] if rank is None else rank
+        prov = _provenance(
+            current["kind"],
+            current.get("stated_by", "") if stated_by is None else stated_by,
+            current.get("binds", "") if binds is None else binds,
+            current.get("forbids", "") if forbids is None else forbids)
         conn.execute(
             "UPDATE bible_section SET title = ?, body = ?, rank = ?, "
+            "stated_by = ?, binds = ?, forbids = ?, "
             "updated_at = datetime('now') WHERE id = ?",
-            (title, body, rank, section_id),
+            (title, body, rank, prov["stated_by"], prov["binds"],
+             prov["forbids"], section_id),
         )
         search.reindex(conn, _ref(section_id), f"bible.{current['kind']}",
                        title, f"{title}\n{body}")
@@ -192,3 +259,95 @@ def overview(root: str | os.PathLike[str]) -> dict:
         "constraints": grouped["constraint"],
         "references": grouped["reference"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Rulings: the constraints the human stated, and what they forbid
+# ---------------------------------------------------------------------------
+
+def _binds(section: dict, seat: str) -> bool:
+    bound = [b for b in str(section.get("binds") or "").split(",") if b]
+    return not bound or (seat or "").strip().lower() in bound
+
+
+def rulings(root: str | os.PathLike[str], seat: str = "") -> list[dict]:
+    """Constraints the HUMAN stated that reach ``seat`` ('' = all of them).
+
+    Untruncated on purpose: a seat brief trims the bible to a page, and the one
+    thing that must never fall off that page is the sentence the human said
+    the game depends on.
+    """
+    out = []
+    for section in list_sections(root, "constraint"):
+        if str(section.get("stated_by") or "") != HUMAN:
+            continue
+        if seat and not _binds(section, seat):
+            continue
+        out.append({
+            "id": section["id"], "title": section["title"],
+            "body": section["body"],
+            "binds": [b for b in str(section.get("binds") or "").split(",") if b],
+            "forbids": [f for f in str(section.get("forbids") or "").split(",") if f],
+        })
+    return out
+
+
+def forbidden_tools(root: str | os.PathLike[str], seat: str) -> dict[str, dict]:
+    """tool name -> the ruling that forbids it, for one seat."""
+    out: dict[str, dict] = {}
+    for ruling in rulings(root, seat):
+        for tool in ruling["forbids"]:
+            out.setdefault(tool, ruling)
+    return out
+
+
+def tool_forbidden(root: str | os.PathLike[str], seat: str, tool: str) -> dict | None:
+    """The ruling that forbids ``tool`` for ``seat``, or None. A pattern ending
+    in ``*`` forbids every tool with that prefix (``image_sprites*``)."""
+    name = (tool or "").strip().lower()
+    if not name or not seat:
+        return None
+    for pattern, ruling in forbidden_tools(root, seat).items():
+        if pattern == name or (pattern.endswith("*") and name.startswith(pattern[:-1])):
+            return ruling
+    return None
+
+
+def brief_violations(root: str | os.PathLike[str], seat: str, text: str) -> list[dict]:
+    """Forbidden tools a brief NAMES. A brief that says "use image_sprites"
+    to a seat the human forbade it for is an item that will fail at its first
+    tool call, after it has been briefed and billed - refuse it at dispatch.
+    """
+    hay = (text or "").lower()
+    if not hay:
+        return []
+    out = []
+    for pattern, ruling in forbidden_tools(root, seat).items():
+        stem = pattern[:-1] if pattern.endswith("*") else pattern
+        if stem and re.search(r"(?<![a-z0-9_])" + re.escape(stem), hay):
+            out.append({"tool": pattern, "section_id": ruling["id"],
+                        "title": ruling["title"]})
+    return out
+
+
+def describe_rulings(root: str | os.PathLike[str], seat: str,
+                     body_chars: int = 700) -> str:
+    """The block a dispatched agent reads under its item. '' when none."""
+    got = rulings(root, seat)
+    if not got:
+        return ""
+    lines = ["HUMAN RULINGS BINDING THIS SEAT. These are not preferences to "
+             "test; the human stated them and the harness enforces them. Work "
+             "that depends on the other choice does not start:"]
+    for r in got:
+        body = (r["body"] or "").strip()
+        if len(body) > body_chars:
+            body = body[:body_chars] + " ...[bible_read for the rest]"
+        line = f"- [bible #{r['id']}] {r['title']}"
+        if body:
+            line += f": {body}"
+        if r["forbids"]:
+            line += (f" FORBIDDEN TOOLS for you: {', '.join(r['forbids'])} "
+                     "(the call is refused; do not route around it).")
+        lines.append(line)
+    return "\n".join(lines)

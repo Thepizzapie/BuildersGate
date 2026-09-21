@@ -30,8 +30,8 @@ needs_godot = pytest.mark.skipif(
 
 SIZES = {
     "head": (44, 46), "torso": (46, 62), "hip": (40, 24),
-    "arm_near": (18, 34), "forearm_near": (16, 32),
-    "arm_far": (18, 34), "forearm_far": (16, 32),
+    "arm_near": (18, 34), "forearm_near": (16, 32), "hand_near": (14, 14),
+    "arm_far": (18, 34), "forearm_far": (16, 32), "hand_far": (14, 14),
     "thigh_near": (20, 46), "shin_near": (18, 44), "foot_near": (28, 14),
     "thigh_far": (20, 46), "shin_far": (18, 44), "foot_far": (28, 14),
 }
@@ -80,7 +80,7 @@ def doc(project):
 def test_a_fresh_document_is_valid_and_complete_in_shape():
     d = cutout.empty("hero")
     assert cutout.normalise(d) == d
-    assert len(d["bones"]) == 13
+    assert len(d["bones"]) == 15          # 13 plus the two wrists
     assert d["skin"] == {}
 
 
@@ -178,7 +178,7 @@ def test_every_sprite_pins_absolute_z(project, doc):
                                  library_res="res://x.tres",
                                  script_res="res://y.gd", sizes=SIZES)
     sprites = text.count('type="Sprite2D"')
-    assert sprites == 13
+    assert sprites == 15
     assert text.count("z_as_relative = false") == sprites
 
 
@@ -326,7 +326,7 @@ def test_emitted_rig_actually_animates_in_godot(project, doc):
             break
     assert report, run.get("stdout", "")[-2000:]
     assert report.get("ok") is True, report
-    assert report["sprites"] == 13
+    assert report["sprites"] == 15
     assert report["z_leaks"] == []
     assert sorted(report["clips"]) == sorted(cutout.clip_names())
     # THE ONE THAT MATTERS: the clip drives the skeleton.

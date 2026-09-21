@@ -77,6 +77,18 @@ class TestScale:
             scalecontract.set_contract(root, classes={"vehicle": {"low": 1.0,
                                                                   "high": 2.0}})
 
+    def test_a_pixel_value_in_a_ratio_class_is_refused(self, root):
+        # MEASURED: a door band entered as "140-220" (pixels) was accepted as
+        # a player-height ratio and shipped a door read as 220x the player.
+        with pytest.raises(ValueError, match="PIXELS"):
+            scalecontract.set_contract(
+                root, classes={"door": {"low": 140.0, "high": 220.0}})
+
+    def test_the_contract_echoes_its_unit(self, root):
+        scalecontract.set_contract(root, player_height_px=64)
+        got = scalecontract.contract(root)
+        assert got["classes_unit"] == "player_height_ratio"
+
 
 SCENE_HEADER = "[gd_scene load_steps=1 format=3]\n\n"
 

@@ -24,22 +24,12 @@ from bgate_core.store import artifacts as _artifacts
 from bgate_core.art import chroma as _chroma
 from bgate_core.runtime import providers as _providers
 from bgate_core.art import refs as _refs
-from bgate_ui import api
 from bgate_ui.deps import root
 from bgate_ui.routes import jobs as _jobs
 
 router = APIRouter()
 
 JOB_KIND = "art_generate"
-
-# WHAT IS BEING MADE, which changes real decisions rather than wording — see
-# chroma.needs_key. Offered as a list so a panel or a form can show it without
-# hardcoding a vocabulary that lives in the core module.
-TASK_KINDS = ("sprite", "anchor", "animation", "item", "prop", "portrait",
-              "texture", "tile", "decal", "background", "ui", "concept")
-
-SIZES = ("1024x1024", "1024x1536", "1536x1024")
-QUALITIES = ("low", "medium", "high")
 
 # .bgate_out/art/ is where image_generate puts its output and where the gallery
 # looks. Kept as one constant because the filename check below has to know it.
@@ -81,18 +71,6 @@ def _out_path(root_dir, filename: str) -> Path:
         raise HTTPException(400, f"filename escapes {ART_DIR.as_posix()}")
     base.mkdir(parents=True, exist_ok=True)
     return out
-
-
-@router.get("/api/art/generate/options")
-def art_generate_options() -> dict:
-    """What this project can actually be asked for: the configured providers,
-    the task kinds, the sizes and the pinned references a caller can condition
-    on. A form that hardcodes any of these goes stale the day a key is added."""
-    r = root()
-    pins = [str(p.get("name") or "") for p in _refs.list_refs(r)]
-    return {"ok": True, "providers": _providers.configured(r),
-            "task_kinds": list(TASK_KINDS), "sizes": list(SIZES),
-            "qualities": list(QUALITIES), "refs": [p for p in pins if p]}
 
 
 @router.post("/api/art/generate")
@@ -200,27 +178,3 @@ def art_generate(payload: dict, request: Request = None) -> dict:
             "path": str(out.relative_to(Path(r)))}
 
 
-@router.get("/api/art/generate/jobs")
-def art_generate_jobs(limit: int = 12) -> dict:
-    """The recent art jobs, newest first — what a panel polls to show progress
-    without having to hold a job id from a previous session.
-
-    Each row is read back through jobs.get() rather than used raw: list_jobs
-    hands back undecoded request_json/result_json, which is how the music panel
-    shipped with an empty prompt on every card.
-    """
-    from bgate_core.board import jobs as _core_jobs
-    project = root()
-    rows = _core_jobs.list_jobs(project, kind=JOB_KIND,
-                                limit=max(1, min(int(limit), 50)))
-    out = []
-    for row in rows:
-        job = _core_jobs.get(project, int(row["id"])) or row
-        view = _jobs.view(project, job)
-        request = view.get("request") or {}
-        view["prompt"] = str(request.get("prompt") or "")
-        view["filename"] = str(request.get("filename") or "")
-        result = view.get("result") or {}
-        view["path"] = str(result.get("path") or "")
-        out.append(view)
-    return api.ok({"jobs": out, "kind": JOB_KIND})

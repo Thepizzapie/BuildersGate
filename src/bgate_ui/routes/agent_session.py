@@ -186,19 +186,6 @@ def _launch(project_root: Path, inner_args: list[str]) -> dict:
     return {"cwd": str(project_root), "opened": Path(argv[0]).name}
 
 
-@router.post("/api/session/open")
-def open_project_session() -> dict:
-    """Open a terminal on the PROJECT, as a new Claude session.
-
-    SEPARATE FROM THE PER-ITEM ROUTE BECAUSE STARTING NEEDS NO ITEM. Continuing
-    is about one run and has to name it; starting is about the project, and
-    requiring a run to exist first meant a console with nothing in it yet - the
-    exact moment somebody wants a terminal - had no way to open one.
-    """
-    r = root()
-    return api.ok({"mode": "start", "session_id": "", **_launch(Path(r), [])})
-
-
 @router.post("/api/agents/{item_id}/session/open")
 def open_session(item_id: int, body: dict = Body(default={})) -> dict:
     """Open a terminal on this run: `continue` resumes it, `start` opens a new

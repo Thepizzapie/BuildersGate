@@ -65,7 +65,35 @@ def rel_for_preview(project_root: str | os.PathLike[str], path: str) -> str:
 
 def _media(row: dict, project_root) -> dict:
     path = row.get("path") or ""
+    # ITEM 4 — SERVE THE THUMBNAIL FROM THE CONTENT-HASH COPY, NEVER THE
+    # SHARED LIVE PATH. Every revision of one logical name overwrites the
+    # same file on disk (see artifacts.py's module docstring), so the path
+    # column alone cannot tell an old revision's thumbnail from whatever a
+    # later run wrote there. register() now pins each revision's own bytes
+    # at .bgate/artifacts/<hash><ext> in metadata.content_path; that is what
+    # a card should show, falling back to the shared path only for
+    # revisions registered before this existed.
+    metadata = row.get("metadata_json") or {}
+    if isinstance(metadata, str):
+        try:
+            import json as _json
+            metadata = _json.loads(metadata) or {}
+        except Exception:
+            metadata = {}
+    content_path = str(metadata.get("content_path") or "")
     suffix = Path(str(path)).suffix.lower()
+    try:
+        from bgate_core.store import artifacts as _artifacts
+        current = _artifacts.is_current(project_root, row)
+    except Exception:
+        current = True  # unknown must not read as "stale" on the card
+    # ITEM 4 — `rel` keeps pointing at the live path (unchanged for every
+    # caller that already reads it as "what the game loads now"). A STALE
+    # revision (current_on_disk=False) additionally gets `thumbnail_rel`,
+    # its OWN bytes pinned at register() time - a card that wants "what this
+    # revision actually looked like" reads that instead of `rel`, which for
+    # a stale row would show whatever a later run overwrote the path with.
+    thumb_suffix = Path(str(content_path)).suffix.lower() if content_path else suffix
     return {
         "artifact_id": int(row["id"]),
         "logical_name": row["logical_name"],
@@ -75,12 +103,18 @@ def _media(row: dict, project_root) -> dict:
         "created_at": row["created_at"],
         # "" means: there is a revision but nothing showable — empty state.
         "rel": rel_for_preview(project_root, path) if suffix in PREVIEWABLE else "",
+        "thumbnail_rel": (rel_for_preview(project_root, content_path)
+                           if content_path and thumb_suffix in PREVIEWABLE else ""),
+        # True: the shared live path still holds THIS revision's bytes.
+        # False: a later write has happened - "live vs stale" for the card,
+        # independent of the review `status` column.
+        "current_on_disk": current,
     }
 
 
 def _revisions(project_root, names: list[str]) -> dict[str, list[dict]]:
-    sql = ("SELECT id, logical_name, revision, path, kind, status, created_at "
-           "FROM artifact_revision")
+    sql = ("SELECT id, logical_name, revision, path, kind, status, created_at, "
+           "hash, metadata_json FROM artifact_revision")
     params: list = []
     if names:
         sql += " WHERE logical_name IN (%s)" % ",".join("?" * len(names))

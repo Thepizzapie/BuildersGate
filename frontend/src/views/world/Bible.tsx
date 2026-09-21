@@ -122,6 +122,16 @@ export function Bible({ active }: { active: boolean }) {
     if (!res.ok) return reload();
     void reload();
   };
+  /* The ruling fields, saved on blur like the body. A full reload: binds and
+     forbids come back normalised (sorted, lower-cased) and the row should
+     show what the gates will actually read. */
+  const reruling = async (section: Section, fields: {
+    stated_by?: string; binds?: string; forbids?: string;
+  }) => {
+    const res = await bibleUpdate(section.id, { ...fields, version: section.version });
+    void reload();
+    return res.ok;
+  };
   const rebody = async (section: Section, body: string) => {
     if (body === (section.body || "")) return;
     const res = await bibleUpdate(section.id, { body, version: section.version });
@@ -199,7 +209,8 @@ export function Bible({ active }: { active: boolean }) {
                                               onToggle={() => toggle(s.id)}
                                               onRemove={() => void removeSection(s.id)}
                                               onTitle={(t) => void retitle(s, t)}
-                                              onBody={(b) => void rebody(s, b)} />
+                                              onBody={(b) => void rebody(s, b)}
+                                              onRuling={(f) => void reruling(s, f)} />
                                 )} />
                 </section>
               );
@@ -261,10 +272,11 @@ function SortableList({ kind, list, onReorder, row }: {
   );
 }
 
-function SectionRow({ section, kind, drag, open, lit, onToggle, onRemove, onTitle, onBody }: {
+function SectionRow({ section, kind, drag, open, lit, onToggle, onRemove, onTitle, onBody, onRuling }: {
   section: Section; kind: Kind; drag: Drag; open: boolean; lit: boolean;
   onToggle: () => void; onRemove: () => void;
   onTitle: (t: string) => void; onBody: (b: string) => void;
+  onRuling?: (fields: { stated_by?: string; binds?: string; forbids?: string }) => void;
 }) {
   /* Local drafts, seeded from the server and reseeded when its version moves
      — unless the field is the one being typed in. */
@@ -301,6 +313,46 @@ function SectionRow({ section, kind, drag, open, lit, onToggle, onRemove, onTitl
                   onChange={(e) => setBody(e.currentTarget.value)}
                   onBlur={() => onBody(body)} />
       </div>
+      {kind === "constraint" && onRuling && <RulingRow section={section} onRuling={onRuling} />}
     </article>
+  );
+}
+
+/* A constraint the HUMAN stated is a ruling: bound seats read it at the top
+   of their brief, the tools it forbids refuse their calls, and a brief that
+   names one does not dispatch. This row is where the human says so. It is
+   the dashboard's own hand, so 'human' is legal here where an agent's
+   bible_add would be refused. */
+function RulingRow({ section, onRuling }: {
+  section: Section;
+  onRuling: (fields: { stated_by?: string; binds?: string; forbids?: string }) => void;
+}) {
+  const human = section.stated_by === "human";
+  const [binds, setBinds] = useState(section.binds || "");
+  const [forbids, setForbids] = useState(section.forbids || "");
+  useEffect(() => { setBinds(section.binds || ""); setForbids(section.forbids || ""); },
+            [section.version, section.binds, section.forbids]);
+  return (
+    <div className={`wl-ruling${human ? " human" : ""}`}>
+      <label className="wl-ruling-flag" title="A constraint you stated. Bound seats read it first; the tools it forbids refuse.">
+        <input type="checkbox" checked={human}
+               onChange={(e) => onRuling({ stated_by: e.currentTarget.checked ? "human" : "director" })} />
+        <span>human ruling</span>
+      </label>
+      {human && (
+        <>
+          <input className="wl-ruling-field" value={binds} spellCheck={false}
+                 aria-label="Seats this ruling binds"
+                 placeholder="binds: art, tech (blank = every seat)"
+                 onChange={(e) => setBinds(e.currentTarget.value)}
+                 onBlur={() => { if (binds !== (section.binds || "")) onRuling({ binds }); }} />
+          <input className="wl-ruling-field" value={forbids} spellCheck={false}
+                 aria-label="Tools this ruling forbids"
+                 placeholder="forbids: image_sprites, sprite_fit*"
+                 onChange={(e) => setForbids(e.currentTarget.value)}
+                 onBlur={() => { if (forbids !== (section.forbids || "")) onRuling({ forbids }); }} />
+        </>
+      )}
+    </div>
   );
 }

@@ -370,6 +370,12 @@ BLIND_SPOTS: dict[str, str] = {
         "described the frame. It does not measure anything past the capture "
         "instant — nothing about whether the game is playable, whether the "
         "loop works, or what happens on frame two.",
+    "export":
+        "reads the RECORD of the last godot_export_verify against the newest "
+        "source change. It does not build or play anything itself: a verify "
+        "that boots the pck for a few seconds proves the export loads and "
+        "prints no SCRIPT ERROR, not that any later scene, section or upgrade "
+        "table is intact - drive_script is what walks further.",
     "assets":
         "a STATIC scan of references and import freshness. It cannot follow a "
         "resource path built at run time (see `dynamic_load_sites`), it does "

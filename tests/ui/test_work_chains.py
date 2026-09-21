@@ -223,6 +223,41 @@ class TestApproveAndReject:
         with pytest.raises(ValueError):
             queue.reject(root, item["id"], "   ")
 
+    def test_rejection_fires_the_producer_accountability_hook(self, root):
+        # EXIT 67 postmortem item 9b: a human rejection must land on the tool
+        # that produced the item's artifacts. bgate_core.board.rejections
+        # doesn't exist in this tree yet, so queue.reject() calls a seam
+        # instead — this proves the seam actually fires rather than being
+        # dead code nobody wires up.
+        seen = []
+
+        def hook(hooked_root, item, reason, by):
+            seen.append((item["id"], reason, by))
+
+        queue.add_rejection_hook(hook)
+        try:
+            gates.set_mode(root, gates.BUILDERS)
+            item = queue.add(root, "art", "a sprite")
+            queue.complete(root, item["id"], result="drew it")
+            queue.reject(root, item["id"], "off-model", by="marta")
+            assert seen == [(item["id"], "off-model", "marta")]
+        finally:
+            queue._REJECTION_HOOKS.remove(hook)
+
+    def test_a_broken_rejection_hook_does_not_block_the_rejection(self, root):
+        def bad_hook(*_a, **_k):
+            raise RuntimeError("boom")
+
+        queue.add_rejection_hook(bad_hook)
+        try:
+            gates.set_mode(root, gates.BUILDERS)
+            item = queue.add(root, "art", "a sprite")
+            queue.complete(root, item["id"], result="drew it")
+            got = queue.reject(root, item["id"], "off-model", by="marta")
+            assert got["status"] == "queued"
+        finally:
+            queue._REJECTION_HOOKS.remove(bad_hook)
+
     def test_the_drain_list_is_what_the_human_owes_an_answer_on(self, root):
         gates.set_mode(root, gates.BUILDERS)
         held = queue.add(root, "art", "a sprite")
@@ -241,8 +276,11 @@ class TestQaGateHonoursTheMode:
         calls: list[int] = []
         monkeypatch.setattr(_dispatch, "dispatch",
                             lambda r, i, **k: calls.append(i) or {"ok": True})
-        item = queue.add(root, "art", "a sprite")
-        queue.set_status(root, item["id"], "done", result="drew it")
+        # A tech item: an ART result with no per-frame verdict is reopened by
+        # the gate rather than reviewed (EXIT 67 item 9b), which is a
+        # different path from the one this test measures.
+        item = queue.add(root, "tech", "a script")
+        queue.set_status(root, item["id"], "done", result="wired it")
 
         gates.set_mode(root, gates.NONE)
         qa_gate._scan_once(str(root), "1970-01-01 00:00:00")

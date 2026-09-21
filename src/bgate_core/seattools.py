@@ -142,6 +142,12 @@ SEATS: dict[str, tuple[str, ...]] = {
         "brainstorm_", "godot_screenshot", "godot_evidence", "plan_status",
         "agent_steer", "agent_steer_all", "scale_contract_set", "profile_",
         "seat_configure", "dialogue_list", "quest_list",
+        # The canon record (canon_set / canon_retire / canon_unretire /
+        # canon_status / canon_audit) and the chaos-mode merge
+        # (worktree_integrations / worktree_merge) were registered for no seat
+        # at all - reachable only from a hand-started session. Both are the
+        # director's calls: what the current world is, and what lands.
+        "canon_", "worktree_",
     ),
 }
 

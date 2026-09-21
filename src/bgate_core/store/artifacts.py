@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -35,11 +36,68 @@ STATUSES = ("candidate", "approved", "rejected", "integrated", "superseded")
 HUMAN_ONLY_STATUSES = ("approved", "integrated")
 
 
+def _content_copy(root: str | os.PathLike[str], absolute: Path,
+                   digest: str) -> Optional[str]:
+    """Immutable, content-addressed copy of one revision's bytes.
+
+    Returns the project-relative path, or None on any failure - a thumbnail
+    that cannot be pinned must not stop the registration that matters more.
+    A hash that already has a file (the same bytes registered twice) is left
+    alone rather than re-copied.
+    """
+    try:
+        store_dir = Path(root) / ".bgate" / "artifacts"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        dest = store_dir / f"{digest}{absolute.suffix.lower()}"
+        if not dest.exists():
+            # A hard link would share the SOURCE's inode - the next overwrite
+            # of the shared live path would silently rewrite this "immutable"
+            # copy too. A real copy is the only thing that decouples them.
+            shutil.copy2(absolute, dest)
+        return str(dest.relative_to(Path(root)).as_posix())
+    except Exception:
+        return None
+
+
+def is_current(root: str | os.PathLike[str], revision: dict) -> bool:
+    """Does the SHARED live path still hold THIS revision's bytes?
+
+    Every revision of one logical name shares one on-disk path (see the
+    module docstring), so an old row's own ``hash`` column is the only
+    reliable answer to "is this the file the game would actually load" -
+    comparing it against the digest currently at ``path`` is cheap (the
+    asset registry already tracks that hash) and needs no new table.
+    False is not a verdict on the revision (a rejected file can still be
+    "current" if nothing has overwritten it since) - it only means the
+    bytes on disk today are not this row's bytes, i.e. a LATER write has
+    happened. The gallery uses this to mark a revision `superseded_on_disk`
+    without touching the review `status` column, which a tournament or a
+    pending approval still depends on meaning what it always meant.
+    """
+    try:
+        path = str(revision.get("path") or "")
+        if not path:
+            return False
+        live = assets.get(root, path)
+        return bool(live.get("hash")) and live["hash"] == revision.get("hash")
+    except Exception:
+        return False
+
+
+#: Producers whose output the gallery reads straight off disk rather than
+#: through the revision row alone (see :func:`sweep_stale`'s docstring for
+#: why that matters). ``register(..., sweep=None)`` defaults to sweeping for
+#: exactly these — image_sprites' assembled sheet and image_generate's single
+#: file both leave same-named siblings behind when a run is discarded mid-way.
+SWEEP_DEFAULT_PRODUCERS = ("image_sprites", "image_generate")
+
+
 def register(root: str | os.PathLike[str], logical_name: str,
              path: str | os.PathLike[str], *, producer: str = "",
              model: str = "", prompt: str = "", refs: Optional[list[str]] = None,
              metadata: Optional[dict] = None,
-             work_item_id: Optional[int] = None) -> dict:
+             work_item_id: Optional[int] = None,
+             sweep: Optional[bool] = None) -> dict:
     """Record a new immutable candidate revision for an existing output file."""
     name = logical_name.strip()
     if not name:
@@ -52,11 +110,28 @@ def register(root: str | os.PathLike[str], logical_name: str,
     tracked = assets.track(root, rel)
     digest = tracked["hash"]
     size = tracked["bytes"]
+
+    # ITEM 4 — KEY THE THUMBNAIL BY CONTENT, NOT BY THE SHARED LIVE PATH.
+    #
+    # MEASURED: a gallery card showed a gator thumbnail from a
+    # `.bgate_out/sprites/flyer_*.png` written by a run whose outputs were
+    # later discarded - because every revision of one logical name shares
+    # ONE path (see the module docstring: generation overwrites the same
+    # stable sheet), so the row for revision 1 and the row for revision 3
+    # both read `path` and both get whatever bytes are on disk RIGHT NOW.
+    # This copies (hardlinks where the filesystem allows it, falling back to
+    # a copy) THIS revision's bytes into `.bgate/artifacts/<hash><ext>` -
+    # immutable and addressed by content, so a later overwrite of the live
+    # path can never change what an OLD revision's thumbnail shows.
+    content_path = _content_copy(root, absolute, digest)
+
     iteration_id = iterations.active_id(root)
     # Freeze WHICH revision of each pinned reference this was drawn against.
     # Pins are versioned now; without the hash, a re-pin silently rewrites the
     # history of every artifact that claims to have been generated against it.
     metadata = dict(metadata or {})
+    if content_path:
+        metadata["content_path"] = content_path
     pins = _pin_snapshot(root, refs or [])
     if pins:
         metadata.setdefault("ref_pins", pins)
@@ -84,6 +159,23 @@ def register(root: str | os.PathLike[str], logical_name: str,
         iterations.add_event(
             root, iteration_id, "asset_revision", "artifact", str(artifact_id),
             f"Created {name} r{revision}", {"path": rel, "producer": producer})
+
+    # STALE SIBLINGS DO NOT WAIT FOR REVIEW.
+    #
+    # A discarded run's loose file sat next to this run's live one under the
+    # SAME logical name, same folder, and the gallery reads the newest file
+    # by mtime — not by revision row — so a gator thumbnail from a flyer's
+    # abandoned pass was one glob away from outranking the character it was
+    # never approved to represent. Never raises: a sweep failure must not cost
+    # the registration that triggered it.
+    do_sweep = sweep if sweep is not None else producer.strip() in SWEEP_DEFAULT_PRODUCERS
+    if do_sweep:
+        try:
+            sweep_stale(root, name)
+        except Exception as exc:
+            activity.log(root, "artifact",
+                         f"stale sweep failed for {name}: {type(exc).__name__}: {exc}",
+                         ref=str(artifact_id))
 
     # THE DECISION IS NOW PENDING, AND THE HEARTBEAT HAS TO SAY SO.
     #
@@ -422,6 +514,17 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
     # so its pending list only ever grows and it goes on telling the human they
     # owe a decision they already made.
     _announce_review(root, artifact, status, who, promotion)
+    if status == "rejected" and activity.is_human(who):
+        # ITEM 9b — a human's "no" is the signal the loop kept missing. Count
+        # it against the TOOL that produced the candidate, never against the
+        # revision alone: bgate_core.board.rejections.
+        try:
+            from ..board import rejections as _rejections
+            _rejections.record(root, artifact.get("producer") or "unknown",
+                               reason=note, by=who)
+        except Exception:                                        # noqa: BLE001
+            pass          # the counter is advisory; a broken counter must not
+                           # block a human's rejection from landing
     return get(root, artifact_id)
 
 
@@ -801,6 +904,114 @@ def record_check(root: str | os.PathLike[str], path: str | os.PathLike[str],
             "UPDATE artifact_revision SET metadata_json = ? WHERE id = ?",
             (json.dumps(metadata), artifact["id"]))
     return get(root, int(artifact["id"]))
+
+
+def sweep_stale(root: str | os.PathLike[str], logical_name: str) -> list[dict]:
+    """Move loose, orphaned files for ``logical_name`` out of the gallery's way.
+
+    MEASURED: EXIT 67's gallery drew a gator thumbnail sourced from
+    ``.bgate_out/sprites/flyer_*.png`` — a file a discarded run left on disk.
+    The revision table was correct the whole time; nothing reading it was
+    fooled. What was fooled was any surface that lists ``.bgate_out/**`` by
+    glob/mtime instead of by revision row, which is exactly how a gallery
+    thumbnails a folder cheaply. The fix is not "read the DB instead" (every
+    such surface would need the same fix); it is to stop leaving the orphan
+    where a glob can find it.
+
+    A file is swept when its stem is ``logical_name`` itself (anywhere under
+    ``.bgate_out``), or — restricted to the folder holding this name's LIVE
+    revision, so an unrelated character's own ``pose_*`` temp file next door
+    is left alone — its stem is ``<name>_<anything>`` (view suffixes,
+    ``<name>_sheet``) or starts with ``pose_`` (per-pose temp frames from an
+    assembly that never finished). The live revision's own file is obviously
+    exempt; anything else whose content hash equals the live hash is ALSO
+    left alone — a byte-identical copy is not stale, it is redundant, and
+    only a stale (different-content) file is what caused the bug.
+
+    Never deletes. Moved (not copied) to
+    ``.bgate_out/.stale/<name>/<timestamp>/<basename>``, logged, and the moved
+    paths are returned so a caller (or a test) can assert on them.
+    """
+    root = Path(root)
+    out_root = root / ".bgate_out"
+    if not out_root.is_dir():
+        return []
+
+    row = db.connect(root).execute(
+        "SELECT * FROM artifact_revision WHERE logical_name = ? "
+        "ORDER BY revision DESC LIMIT 1", (logical_name,)).fetchone()
+    if row is None:
+        return []
+    live = _decode(dict(row))
+    live_abs = (root / live["path"]).resolve()
+    live_hash = live["hash"] or ""
+    live_folder = live_abs.parent
+
+    stale_root = out_root / ".stale"
+
+    candidates: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(out_root):
+        current = Path(dirpath)
+        # Never sweep the stale bin itself, or anything already inside it.
+        if stale_root in current.parents or current == stale_root:
+            dirnames[:] = []
+            continue
+        for fname in filenames:
+            fpath = current / fname
+            if fpath.resolve() == live_abs:
+                continue
+            # Sidecars describe the file beside them and go with IT, never
+            # on their own; and only an EXACT stem match is swept. MEASURED:
+            # the first cut also swept `pose_*` siblings in the live folder,
+            # and image_sprites registers each pose the moment it lands - so
+            # registering pose 1 swept pose 0 and every provenance sidecar
+            # of the run in progress, and the sheet assembled with "no poses".
+            if fname.endswith(".provenance.json") or fname.endswith(".json"):
+                continue
+            stem = fpath.stem
+            if stem == logical_name or (
+                    current == live_folder and stem == f"{logical_name}_sheet"):
+                candidates.append(fpath)
+
+    if not candidates:
+        return []
+
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    # CONTAINED. logical_name is a tool argument, i.e. model output; a name
+    # like "../../x" must not turn the stale bin into a write anywhere under
+    # the project. Only the safe characters of the name reach the path, and
+    # the result is checked against the bin it must stay inside.
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(logical_name)).strip("._") or "unnamed"
+    dest_dir = (stale_root / safe / stamp).resolve()
+    if stale_root.resolve() not in dest_dir.parents:
+        return []
+    swept: list[dict] = []
+    for src in candidates:
+        try:
+            digest = assets.file_hash(src)
+        except OSError:
+            continue
+        if digest and digest == live_hash:
+            continue  # byte-identical to the live file — redundant, not stale
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / src.name
+        suffix = 1
+        while dest.exists():
+            dest = dest_dir / f"{src.stem}.{suffix}{src.suffix}"
+            suffix += 1
+        try:
+            shutil.move(str(src), str(dest))
+        except OSError:
+            continue
+        entry = {"from": str(src.relative_to(root)), "to": str(dest.relative_to(root)),
+                  "hash": digest}
+        swept.append(entry)
+        activity.log(root, "artifact",
+                     f"swept stale file for {logical_name}: {entry['from']} -> "
+                     f"{entry['to']}")
+    return swept
 
 
 def _decode(row: dict) -> dict:

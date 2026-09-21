@@ -14,6 +14,9 @@ import { mutate, readJSON, type MutateResult } from "../../bridge";
 
 export type Section = {
   id: number; kind: string; title: string; body: string; rank: number;
+  /** The ruling fields (constraints only). stated_by 'human' is what the
+   *  gates enforce: bound seats read it first, forbidden tools refuse. */
+  stated_by?: string; binds?: string; forbids?: string;
   /** Content version — sent back on PATCH so a stale editor cannot erase
    *  somebody else's edit (bible.StaleWrite → 409). */
   version?: string;
@@ -35,6 +38,7 @@ export const bibleAdd = (kind: string, title: string, rank: number) =>
 
 export const bibleUpdate = (id: number, fields: {
   title?: string; body?: string; version?: string;
+  stated_by?: string; binds?: string; forbids?: string;
 }) => mutate<Section>(`/api/bible/${id}`, { method: "PATCH", body: fields });
 
 export const bibleRemove = (id: number) =>

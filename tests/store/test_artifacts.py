@@ -64,3 +64,35 @@ def test_rejection_keeps_case_law(root):
     reviewed = artifacts.review(root, item["id"], "rejected", "too much texture")
     assert reviewed["status"] == "rejected"
     assert reviewed["review_note"] == "too much texture"
+
+
+def test_sweep_stale_moves_orphaned_sibling_not_the_live_file(root):
+    # MEASURED (EXIT 67): a discarded run's loose file sat next to the live
+    # sheet under the same logical name and the gallery thumbnailed it.
+    out = root / ".bgate_out" / "sprites"
+    out.mkdir(parents=True)
+    sheet = out / "flyer_sheet.png"
+    sheet.write_bytes(b"run-one-sheet")
+    artifacts.register(root, "flyer", sheet, producer="image_sprites")
+
+    # A discarded run's leftover copy of the SAME name sits in another
+    # folder, never registered. Only an exact stem match is swept: a sibling
+    # pose_*.png is another run's work in progress (image_sprites registers
+    # each pose as it lands), and sweeping those emptied a live run once.
+    orphan = out / "old" / "flyer.png"
+    orphan.parent.mkdir()
+    orphan.write_bytes(b"discarded-pose-frame")
+
+    # A second, real revision of the same sheet — the run that actually shipped.
+    sheet.write_bytes(b"run-two-sheet")
+    second = artifacts.register(root, "flyer", sheet, producer="image_sprites")
+
+    assert sheet.is_file()
+    assert sheet.read_bytes() == b"run-two-sheet"
+    assert not orphan.exists()
+
+    stale_dir = root / ".bgate_out" / ".stale" / "flyer"
+    moved = list(stale_dir.rglob("flyer.png"))
+    assert len(moved) == 1
+    assert moved[0].read_bytes() == b"discarded-pose-frame"
+    assert artifacts.get(root, second["id"])["hash"] != ""

@@ -57,8 +57,9 @@ from . import db, workspace as _ws
 # ---------------------------------------------------------------------------
 # Vocabulary
 # ---------------------------------------------------------------------------
-BOOL, ENUM, INT, FLOAT, STRING, LIST = "bool", "enum", "int", "float", "string", "list"
-KINDS = (BOOL, ENUM, INT, FLOAT, STRING, LIST)
+BOOL, ENUM, INT, FLOAT, STRING, LIST, MAP = ("bool", "enum", "int", "float",
+                                             "string", "list", "map")
+KINDS = (BOOL, ENUM, INT, FLOAT, STRING, LIST, MAP)
 
 # Where a value came from. The UI greys out a field whose source is "env".
 SOURCE_DEFAULT, SOURCE_STORED, SOURCE_ENV = "default", "stored", "env"
@@ -129,6 +130,8 @@ LABELS: dict[str, str] = {
     "dispatch.auto_commit": "Commit completed agent work",
     "dispatch.isolation": "Use a separate worktree per agent",
     "dispatch.max_concurrent": "Concurrent agent limit",
+    "dispatch.max_per_seat": "Per-seat concurrent agent limit",
+    "dispatch.default_max_paid_calls": "Paid-call budget per work item",
     "dispatch.model": "Default worker model",
     "dispatch.model_art": "Art worker model",
     "dispatch.max_turns": "Turn limit per agent",
@@ -200,6 +203,10 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.auto_commit": "Commit only the files changed by each completed agent run.",
     "dispatch.isolation": "Run each agent in a separate git worktree. Chaos mode always does this.",
     "dispatch.max_concurrent": "Maximum number of agent processes that may run at once.",
+    "dispatch.max_per_seat": "Per-seat cap, e.g. {\"art\": 1}. Overrides nothing "
+        "globally; a seat named here may not exceed its number even when the "
+        "global concurrent limit has room.",
+    "dispatch.default_max_paid_calls": "Paid generation calls one work item may make before further spend is refused. A per-item override beats this.",
     "dispatch.model": "Model used by worker seats unless a seat-specific model is set.",
     "dispatch.model_art": "Model used by the art seat. Blank uses the default worker model.",
     "dispatch.max_turns": "Maximum assistant turns in one run. Set to 0 for no limit.",
@@ -426,6 +433,27 @@ SETTINGS: tuple[Setting, ...] = (
              "Machine-writable would make it self-service: observed going from "
              "the 4 a human set to 9 and then 11 inside one run."),
     Setting(
+        key="dispatch.max_per_seat", group="Dispatch", kind=MAP,
+        default={"art": 1}, advanced=True,
+        store=("registry", "dispatch.max_per_seat"), scope=MACHINE,
+        help="Concurrency cap per SEAT, on top of dispatch.max_concurrent. "
+             "MEASURED (EXIT 67, item 24): three art agents ran at once and "
+             "mixed characters into each other's reference sheets — art "
+             "generation shares provider-side state that a global cap does "
+             "not protect. A seat with no entry here is uncapped except by "
+             "the global concurrency limit."),
+    Setting(
+        key="dispatch.default_max_paid_calls", group="Dispatch", kind=INT,
+        default=30, minimum=1, maximum=500,
+        store=("limits", "default_max_paid_calls"), human_only=True,
+        help="How many paid generation calls one work item may make before "
+             "chroma.generate and the audio generators refuse further spend "
+             "with budget_exceeded_item. MEASURED: EXIT 67 death frames were "
+             "re-rolled at $0.05-0.10 each with no ceiling; two items reached "
+             "$7.67 and $10.10 before a human killed the agent by hand. "
+             "queue_add / queue_update can set a per-item override "
+             "(max_paid_calls) that beats this default."),
+    Setting(
         key="dispatch.model", group="Dispatch", kind=STRING, default="sonnet",
         store=("registry", "dispatch.model"), scope=MACHINE,
         env="BGATE_MODEL", human_only=True,
@@ -443,14 +471,17 @@ SETTINGS: tuple[Setting, ...] = (
              "is judged on taste rather than on whether it parses. Blank "
              "falls back to dispatch.model."),
     Setting(
-        key="dispatch.max_turns", group="Dispatch", kind=INT, default=200, advanced=True,
+        key="dispatch.max_turns", group="Dispatch", kind=INT, default=800, advanced=True,
         minimum=0, maximum=1000, store=("registry", "dispatch.max_turns"),
         scope=MACHINE, env="BGATE_MAX_TURNS", human_only=True,
         help="Hard ceiling on assistant turns per run; 0 disables it. There "
              "was no ceiling: one item took 395 turns and another 393, and "
              "because every turn re-sends the whole context the last hundred "
              "cost more than the first hundred. The cost ceiling only trips at "
-             "a result boundary, which a grinding agent may not reach."),
+             "a result boundary, which a grinding agent may not reach. "
+             "MEASURED (EXIT 67, item 29): a 200-turn default killed chained "
+             "queue_claim_next runs mid-work; 800 was raised by hand and held, "
+             "and is now the shipped default."),
 
     # -- Gates --------------------------------------------------------------
     Setting(
@@ -814,11 +845,14 @@ SETTINGS: tuple[Setting, ...] = (
     # What is left is the wall clock, which is not money and stops the failure
     # a dollar cap never did: a run that never ends.
     Setting(
-        key="limits.max_runtime_s", group="Limits", kind=INT, default=1800, advanced=True,
+        key="limits.max_runtime_s", group="Limits", kind=INT, default=9800, advanced=True,
         minimum=30, maximum=86400, store=("limits", "max_runtime_s"),
         human_only=True,
         help="Wall clock an agent gets before it is killed. The backstop for a "
-             "run that is grinding without progressing."),
+             "run that is grinding without progressing. MEASURED (EXIT 67, "
+             "item 29): the old 1800s (30 min) default killed chained "
+             "queue_claim_next runs mid-work; a human raised it to 9800s by "
+             "hand and it held, so that is now the shipped default."),
 
     # -- Console (client-side; delivered in the page bootstrap) -------------
     Setting(
@@ -1019,6 +1053,36 @@ def _as_list(raw: Any, s: Setting) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+def _as_map(raw: Any, s: Setting) -> dict:
+    """A str -> non-negative int map (``dispatch.max_per_seat``'s shape).
+
+    Accepts a dict directly (the Python-side default and the normal write
+    path) or a JSON object string (an env var or a raw text field would only
+    ever produce a string). 0 or missing means "uncapped" wherever this is
+    read, so a value of 0 is legal here — it is the caller's job to treat it
+    as no limit, not this function's to reject it.
+    """
+    import json as _json
+
+    if isinstance(raw, str):
+        try:
+            raw = _json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            raise SettingError(f"{s.key} must be a JSON object, got {raw!r}") from None
+    if not isinstance(raw, dict):
+        raise SettingError(f"{s.key} must be a map of seat -> integer, got {raw!r}")
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            raise SettingError(f"{s.key}[{k!r}] must be an integer, got {v!r}") from None
+        if n < 0:
+            raise SettingError(f"{s.key}[{k!r}] must not be negative, got {n}")
+        out[str(k)] = n
+    return out
+
+
 def _as_string(raw: Any, s: Setting) -> str:
     text = "" if raw is None else str(raw).strip()
     if s.key == "notify.webhook" and text:
@@ -1073,6 +1137,8 @@ def coerce(key: str, value: Any) -> Any:
         return _as_number(value, s)
     if s.kind == LIST:
         return _as_list(value, s)
+    if s.kind == MAP:
+        return _as_map(value, s)
     return _as_string(value, s)
 
 

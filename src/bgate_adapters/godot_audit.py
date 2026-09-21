@@ -788,3 +788,126 @@ def export_verify(project_dir: str, pck: str, scene: Optional[str] = None, *,
     return {"ok": not diffs, "scene": scene_res, "pck": str(pck_path),
             "nodes_editor": len(a), "nodes_shipped": len(b), "diffs": diffs,
             "editor_errors": editor.get("errors", []), "shipped_errors": shipped.get("errors", [])}
+
+
+# EXIT 67 postmortem item 17: export_verify above proves the SHAPE of the pck
+# matches the project, but nothing had ever actually PLAYED it — a diff can be
+# clean while the boot scene still crashes the instant `_ready()` runs. This
+# runs the pck for real, headless, for `seconds` (or until a `drive_script`
+# calls quit() itself), and counts SCRIPT ERROR lines the same way
+# godot_export_probe does. A timeout here is the GOOD outcome — the game kept
+# running rather than crashing — so it is only a failure when errors were
+# printed before the kill.
+def play_verify(project_dir: str, pck: str, *, seconds: float = 5.0,
+                drive_script: Optional[str] = None,
+                timeout: Optional[float] = None) -> dict:
+    """Boot `pck` headless and watch it for `seconds` (or run `drive_script`).
+
+    `drive_script` is GDScript SOURCE (not a path — the caller resolves any
+    file first, same split as godot_export_probe) that `extends SceneTree`,
+    drives the game and calls `quit()`. With no script, the pck's own
+    `run/main_scene` boots normally and is left running for `seconds`, then
+    killed — Godot never quits on its own, so the kill IS the intended end of
+    the probe, not a fault.
+    """
+    project = Path(project_dir)
+    pck_path = Path(pck)
+    if not pck_path.is_absolute():
+        pck_path = project / pck_path
+    if not pck_path.is_file():
+        return {"ok": False, "error": f"no pck at {pck_path} - export first",
+                "pck": str(pck_path)}
+    exe = _godot.find_godot()
+    cmd = [exe, "--headless", "--main-pack", str(pck_path)]
+    tmp_dir: Optional[Path] = None
+    if drive_script:
+        if "quit(" not in drive_script:
+            return {"ok": False, "error": "drive_script never calls quit() - "
+                                          "it would run until the timeout",
+                    "pck": str(pck_path)}
+        tmp_dir = Path(tempfile.mkdtemp(prefix="bgate_pckplay_"))
+        script_path = tmp_dir / "drive.gd"
+        script_path.write_text(drive_script, encoding="utf-8")
+        cmd += ["--script", str(script_path)]
+    wait_for = float(timeout if timeout is not None else seconds)
+    timed_out = False
+    try:
+        try:
+            # subprocess.run on purpose, not the watched _spawn: a timeout
+            # here is the GOOD outcome (the game kept running), and run()
+            # kills the child and hands back its output on TimeoutExpired,
+            # which is the contract the except below reads.
+            proc = _godot.subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=wait_for, cwd=str(pck_path.parent))
+            out, err, exit_code = proc.stdout or "", proc.stderr or "", proc.returncode
+        except subprocess.TimeoutExpired as exc:
+            # THE GOOD OUTCOME: the game was still running when the clock ran
+            # out. subprocess.run() kills the child and re-collects its output
+            # before re-raising, so exc.stdout/exc.stderr are real, not empty.
+            timed_out = True
+            out = exc.stdout or ""
+            err = exc.stderr or ""
+            exit_code = None
+    finally:
+        if tmp_dir is not None:
+            import shutil as _sh
+            _sh.rmtree(tmp_dir, ignore_errors=True)
+    errors = _godot._errors((out or "") + "\n" + (err or ""))
+    # A drive_script's own quit() ends the run cleanly (not timed_out) and
+    # that is only 'ok' if it exited clean and printed no SCRIPT ERROR line.
+    # A plain, script-less watch is 'ok' when it either timed out (still
+    # running - the point of the exercise) or exited clean, again provided
+    # no error line was printed before whichever end came first.
+    ok = not errors and (timed_out or exit_code == 0)
+    return {"ok": ok, "pck": str(pck_path), "seconds": wait_for,
+            "timed_out": timed_out, "exit_code": exit_code,
+            "drive_script": bool(drive_script),
+            "stdout": out[-20000:], "stderr": err[-4000:], "errors": errors[:20]}
+
+
+def record_export_verify(root: str | os.PathLike[str], result: dict) -> dict:
+    """File the outcome where a release gate (or a human) can find it later.
+
+    Prefers ``bgate_core.qa.exportgate`` when this tree has it; that module
+    owns the release-gate schema and this must not fork it. Falls back to a
+    flat ``.bgate/export_verify.json`` — same {at, commit, ok, errors, pck}
+    shape so a future exportgate can adopt the file wholesale.
+    """
+    try:
+        from bgate_core.qa import exportgate as _exportgate  # type: ignore
+    except ImportError:
+        _exportgate = None
+    if _exportgate is not None and hasattr(_exportgate, "record"):
+        diffs = result.get("diffs")
+        try:
+            _exportgate.record(
+                root, godot_project=str(result.get("godot_project") or root),
+                scene=str(result.get("scene") or ""),
+                pck=str(result.get("pck") or ""), ok=bool(result.get("ok")),
+                diffs=len(diffs) if isinstance(diffs, list) else 0,
+                by=str(result.get("by") or ""))
+        except Exception:
+            pass   # the flat file below is still written
+
+    from datetime import datetime, timezone
+
+    try:
+        from bgate_core.board import gitwork as _gitwork
+        commit = _gitwork.head(root)
+    except Exception:
+        commit = ""
+    record = {
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "commit": commit,
+        "ok": bool(result.get("ok")),
+        "errors": result.get("errors", []),
+        "pck": result.get("pck", ""),
+    }
+    path = Path(root) / ".bgate" / "export_verify.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return record
