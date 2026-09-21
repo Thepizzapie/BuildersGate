@@ -1,0 +1,10 @@
+{
+  "triangles": 1974,
+  "mesh_nodes": 12,
+  "materials": 8,
+  "wingspan_m": 9.44,
+  "length_m": 6.31,
+  "height_m": 2.58,
+  "forward": "Godot +Z",
+  "file_bytes": 131932
+}

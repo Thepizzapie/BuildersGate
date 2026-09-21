@@ -25,6 +25,20 @@ repository at first publication. There is no earlier release history to record.
   (`forbidden_by_ruling`, per item, not a floor). The director protocol says
   to record the ruling before filing the work. (`bgate_core.design.bible`,
   migration 0047)
+- **`cutout_kit_generate` and `cutout_part_rerun`: the cutout rig generates
+  its own parts.** The rig, emitter and animation library shipped in July;
+  the parts were still made by hand and no project used it. One call now
+  draws every part of a template from ONE pinned reference through the
+  keyed-background contract, trims each to its alpha box, checks its height
+  against the reference figure (flagged, never rescaled), records the
+  reference hash on every part, assembles and emits. It refuses over
+  `max_paid_calls` before buying anything and stops after two consecutive
+  provider failures. `cutout_part_rerun` redraws one part. `cutout_status`
+  gains `stale_reference` (a part from another run or character) and
+  `reference_moved`. The biped template gains wrist bones and hand slots;
+  the weapon hangs from the near hand so the grip is inside the hand in
+  every frame, and an `aim` clip braces both hands on it - the pose the
+  frame pipeline could not hold. (`bgate_core.three_d.cutoutkit`)
 - **The human's own gripes after EXIT 67: what is current, who to ask,
   how long an item gets, how big an item may be.** `project_current` and a
   block under every dispatched item name the files changed OUTSIDE the board
@@ -93,35 +107,27 @@ repository at first publication. There is no earlier release history to record.
     per-frame verdict; `board_focus_set` names the one slice in progress
     and `queue_add` warns on a brief that names another; `concept_compare`
     composes a candidate beside the pinned concept with measured deltas.
-- **`cutout_kit_generate` and `cutout_part_rerun`: the cutout rig generates
-  its own parts.** The rig, emitter and animation library shipped in July;
-  the parts were still made by hand and no project used it. One call now
-  draws every part of a template from ONE pinned reference through the
-  keyed-background contract, trims each to its alpha box, checks its height
-  against the reference figure (flagged, never rescaled), records the
-  reference hash on every part, assembles and emits. It refuses over
-  `max_paid_calls` before buying anything and stops after two consecutive
-  provider failures. `cutout_part_rerun` redraws one part. `cutout_status`
-  gains `stale_reference` (a part from another run or character) and
-  `reference_moved`. The biped template gains wrist bones and hand slots;
-  the weapon hangs from the near hand so the grip is inside the hand in
-  every frame, and an `aim` clip braces both hands on it - the pose the
-  frame pipeline could not hold. (`bgate_core.three_d.cutoutkit`)
+- **Project kickoff from the brief and the screenshots.** Every project so
+  far started the same way: a long brief pasted into the director chat with
+  a row of reference images and "pin these in the bible", one screen after a
+  create card that took a 200-character pitch. The create card now takes the
+  whole paste - a brief box (screenshots pasted into it become references)
+  and an image drop - and the server does what the human did by hand: the
+  brief goes to `design/brief.md` with a `reference` bible section pointing
+  at it, each image is pinned as a concept ref and anchored to a second
+  section, a `next` note lands on the thread, and the director is started on
+  the same first turn the human used to type (read the brief, settle the
+  thesis, write the bible, record the not-building list, lay the board out
+  as chains, ask only what the brief leaves open). `bgate init` and
+  `bgate adopt` take `--brief FILE` and repeatable `--ref IMAGE` and seed the
+  same way, leaving the kickoff on the thread for whoever opens the chat.
+  Adopt over HTTP takes the same fields. (`bgate_core.design.kickoff`)
 
-### Removed
-- **The spend ledger and every budget ceiling**
-
-### Added
-- **The director console runs on Codex as well as Claude Code**
-- **An opt-in, credential-free Claude usage bridge**
-- **Audio Lab separates a clip into stems locally**
-- **`art.mesh_route` settles how the art seat makes NEW geometry**
-- **`track_generate` builds a measured, drivable circuit from a JSON spec**
-- **`ui_concept` paints the game's screens and derives a palette and a Godot Theme**
-- **`sfx_prompt` generates real SFX through kie sounds**
-- **`godot_export_probe` runs a script against the EXPORTED pck**
-- **`bgate connect`, wiring your coding agent is a command, not a paragraph to retype**
-- …and 1 more, in the decisions file.
+### Fixed
+- `room_build` wrote its scene and then returned a failure: the writelog
+  helper was called with one argument against a two-argument signature, so
+  every successful build raised inside its own `try`, and the scene write
+  never reached the writelog the evidence gate and auto-commit read.
 
 ### Changed
 - **2D space and sheets, from one night's failures.** The benchmark game
