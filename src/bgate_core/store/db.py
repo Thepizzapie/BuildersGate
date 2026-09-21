@@ -2374,6 +2374,23 @@ _MIGRATIONS: list = [
     UPDATE run_limits SET max_runtime_s = 9800, updated_at = datetime('now')
     WHERE id = 1 AND max_runtime_s = 1800;
     """,
+
+    # 0051 - A PAID-CALL BUDGET, so a re-rolling agent has a stop that is not
+    # a human watching the card total.
+    #
+    # MEASURED: EXIT 67 death frames were re-rolled at $0.05-0.10 each in a
+    # loop with no ceiling; #44 reached $7.67 and #21 $10.10 across attempts
+    # before a human killed the agent by hand. max_cost_usd (0034/0042) bounds
+    # DOLLARS and needs a priced provider to mean anything - kie's credits
+    # read back as $0.00 (see 0042's baseline comment) and the dollar gate
+    # never moved. `paid_calls` counts ATTEMPTS, which every provider has
+    # regardless of whether it prices itself back; `max_paid_calls` is the
+    # ceiling, NULL meaning "use the project default"
+    # (dispatch.default_max_paid_calls, 30).
+    """
+    ALTER TABLE work_item ADD COLUMN max_paid_calls INTEGER;
+    ALTER TABLE work_item ADD COLUMN paid_calls INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

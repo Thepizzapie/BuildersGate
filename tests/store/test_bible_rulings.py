@@ -131,7 +131,7 @@ class TestBriefAndPrompt:
         assert len(brief["rulings"]) == 1
         assert len(brief["rulings"][0]["body"]) == 1500
         assert brief["rulings"][0]["forbids"] == ["image_sprites", "sprite_fit*"]
-        assert any("HUMAN RULING" in rule for rule in brief["rules"])
+        assert any("`rulings` above outrank" in rule for rule in brief["rules"])
         assert seats.brief(root, "tech")["rulings"] == []
 
     def test_an_over_budget_brief_keeps_the_ruling_and_its_tools(self, root):

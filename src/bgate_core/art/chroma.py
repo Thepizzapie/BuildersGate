@@ -675,7 +675,7 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
              anchors: Sequence[str] = (), transparent: bool = False,
              timeout: float = 300.0, root: Any = None,
              logical_name: str = "", work_item_id: Optional[int] = None,
-             tileable: bool = False) -> dict:
+             tileable: bool = False, replace_reason: str = "") -> dict:
     """Generate one image through the keyable-background contract.
 
     This is the ONLY thing sprite-shaped work should call. It picks the key
@@ -707,6 +707,48 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
     """
     from bgate_adapters import imagegen, kie, krea, localgen
     from . import artdirection
+
+    # ITEM 11/31 — THE PAID-CALL BUDGET, AT THE ONE SEAM EVERY PAID IMAGE
+    # GENERATION PASSES THROUGH. MEASURED: EXIT 67 death frames were re-rolled
+    # at $0.05-0.10 each with no stop; two items reached $7.67 and $10.10
+    # across attempts before a human killed the agent by hand. Checked BEFORE
+    # any adapter is called, so a refusal here spends nothing.
+    if work_item_id is not None and root is not None:
+        try:
+            from ..board import queue as _queue
+
+            budget = _queue.spend_paid_call(root, work_item_id)
+        except Exception:
+            budget = {"ok": True}  # the gate must never be the outage
+        if not budget.get("ok", True):
+            return budget
+
+        # THE RE-ROLL CAP: the same logical_name generated more than twice
+        # within one item is a loop, not iteration - refuse it unless the
+        # caller states what changed. Skipped when there is no logical_name
+        # (nothing to count against) or replace_reason is already given.
+        if logical_name and not replace_reason:
+            try:
+                from ..store import artifacts as _artifacts
+
+                prior = [r for r in _artifacts.list_revisions(
+                    root, logical_name=logical_name, limit=50)
+                    if r.get("work_item_id") == work_item_id]
+            except Exception:
+                prior = []
+            if len(prior) >= 2:
+                return {
+                    "ok": False, "code": "reroll_cap",
+                    "logical_name": logical_name, "attempts": len(prior),
+                    "work_item_id": work_item_id,
+                    "error": (
+                        f"{logical_name!r} has already been generated "
+                        f"{len(prior)} times inside work item #{work_item_id}. "
+                        "Nothing was generated and nothing was spent by THIS "
+                        "call. Change the approach, not the seed - or pass "
+                        "replace_reason='...' saying what is different about "
+                        "this attempt."),
+                }
 
     # THE MODEL PREFERENCE, applied at the one seam every image passes
     # through. A generation that names its model keeps it; one that does not
