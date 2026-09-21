@@ -376,11 +376,6 @@ def frame_verdict(frame: Image.Image, anchor: dict, *,
            "failed": [c["name"] for c in checks if c["fired"]]}
 
 
-def frame_verdict_path(frame_path: str | os.PathLike[str], anchor: dict, **kw) -> dict:
-    with Image.open(frame_path) as im:
-        return frame_verdict(im.convert("RGBA"), anchor, **kw)
-
-
 def is_fall_risk(name: str, description: str = "") -> bool:
     """Does this pose's name/description match a known doubling trigger?"""
     text = f"{name} {description}".lower()

@@ -149,11 +149,6 @@ def m_to_quat(m):
             (m[1][2] + m[2][1]) / s, 0.25 * s)
 
 
-def q_norm(q):
-    n = math.sqrt(sum(c * c for c in q)) or 1.0
-    return tuple(c / n for c in q)
-
-
 Q_IDENTITY = (1.0, 0.0, 0.0, 0.0)
 
 

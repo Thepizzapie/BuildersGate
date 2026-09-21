@@ -128,8 +128,6 @@ export function onEvents(kinds: string[], fn: Listener): () => void {
   return () => { listeners.delete(wrapped); };
 }
 
-export function busUp(): boolean { return up; }
-
 export type EventsOptions = {
   /** Kinds that mean "your data may have changed". `*` for any. Default `*`. */
   kinds?: string[];

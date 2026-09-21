@@ -51,17 +51,6 @@ export function Tag({ tone = "off", children, title }: {
   return <span className={`bgs-tag t-${tone}`} title={title}>{children}</span>;
 }
 
-/** A metered bar. Drawn ONLY where a real fraction exists — see useFloor's
- *  note on the same subject. Callers pass 0..1 or nothing. */
-export function Bar({ v, tone = "good" }: { v: number; tone?: Tone }) {
-  const pct = Math.max(0, Math.min(1, v)) * 100;
-  return (
-    <span className="bgs-bar">
-      <span className={`t-${tone}`} style={{ width: `${pct}%` }} />
-    </span>
-  );
-}
-
 /** The banner a seat opens with when its craft has a standing warning: art's
  *  pin, cinematic's price, tech's findings. */
 export function Banner({ icon, tone = "warn", children, right }: {
