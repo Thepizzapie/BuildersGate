@@ -46,6 +46,13 @@ H_MIRROR = {"e": "w", "w": "e", "ne": "nw", "nw": "ne", "se": "sw", "sw": "se"}
 
 VIEWS = ("side", "top_down_3q", "isometric", "top_down")
 
+# EXIT 67 postmortem item 6 leftover: framegate's prop check (a prop's
+# facing/mirror/palette rules are not a character's) has no way to ask the
+# contract what kind of thing it is looking at. "character" is the only
+# subject this module has ever described, so it is the default and every
+# existing project's contract keeps meaning exactly what it always meant.
+SUBJECT_CLASSES = ("character", "prop", "vehicle")
+
 #: The projection directive per view — prompt text a generator appends. The
 #: isometric wording matches artdirection's own vocabulary entry so the bible
 #: path and the contract path cannot disagree about what isometric means.
@@ -76,12 +83,18 @@ DEFAULTS: dict[str, Any] = {
     "feet_row": 0,
     "actions": {},           # {} = defer to animspec's archetype catalogue
     "characters": {},
+    # character|prop|vehicle. Project-level default is "character" so a
+    # contract nobody ever touched keeps describing what it always described.
+    "subject_class": "character",
 }
 #: Keys a character (and an action) may override. `cell` and `view` are the
 #: ones the benchmark asked for and lost: a 128x128 side-view battle sheet
 #: and a 32x32 top-down overworld sheet are the SAME character, and one
-#: project-wide cell cannot describe both.
-CHARACTER_OVERRIDES = ("cell", "view", "layout", "standing_px", "feet_row")
+#: project-wide cell cannot describe both. `subject_class` is per-character
+#: only (never per-action - a crate does not become a character mid-swing),
+#: so it is absent from ACTION_OVERRIDES.
+CHARACTER_OVERRIDES = ("cell", "view", "layout", "standing_px", "feet_row",
+                       "subject_class")
 ACTION_OVERRIDES = ("cell", "view", "standing_px", "feet_row")
 
 PRESETS: dict[str, dict] = {
@@ -149,6 +162,12 @@ def normalise(data: dict) -> dict:
     if view not in VIEWS:
         raise ContractError(f"view must be one of {VIEWS}, got {view!r}")
     out["view"] = view
+
+    subject_class = str(out.get("subject_class") or "character")
+    if subject_class not in SUBJECT_CLASSES:
+        raise ContractError(f"subject_class must be one of {SUBJECT_CLASSES}, "
+                            f"got {subject_class!r}")
+    out["subject_class"] = subject_class
 
     def _dirs(field: str) -> list[str]:
         raw = out.get(field) or []
@@ -354,6 +373,12 @@ def _overrides(raw: dict, allowed: tuple, field: str) -> dict:
             if value < 0 or value > 1024:
                 raise ContractError(f"{field}.{key} outside 0..1024")
             out[key] = value
+    if "subject_class" in raw and raw["subject_class"] and "subject_class" in allowed:
+        subject_class = str(raw["subject_class"])
+        if subject_class not in SUBJECT_CLASSES:
+            raise ContractError(f"{field}.subject_class must be one of "
+                                f"{SUBJECT_CLASSES}, got {subject_class!r}")
+        out["subject_class"] = subject_class
     return {k: v for k, v in out.items() if k in allowed}
 
 

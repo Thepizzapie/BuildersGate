@@ -401,3 +401,55 @@ class TestEndToEnd:
         with Image.open(out) as re_read:
             assert re_read.size == body.size
             assert re_read.convert("RGBA").getpixel((0, 0))[3] == 0
+
+
+class TestConformToPalette:
+    """EXIT 67 postmortem item 9: a GENERATED weapon icon must conform to the
+    pinned bible palette before item_to_spriteframes rides it into combat.
+    stamp_generated was never built; conform_to_palette is the stand-in."""
+
+    PALETTE = [(20, 20, 20), (200, 40, 40), (240, 240, 240)]
+
+    def _off_palette_icon(self, tmp_path: Path) -> Path:
+        # A flat, limited-palette icon (so quantisation is lossless-visible)
+        # drawn entirely in colours that are NOT in PALETTE.
+        img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+        for y in range(8, 24):
+            for x in range(8, 24):
+                img.putpixel((x, y), (90, 160, 30, 255))  # off-palette green
+        p = tmp_path / "icon.png"
+        img.save(p)
+        return p
+
+    def test_quantises_every_opaque_pixel_onto_the_pinned_palette(self, tmp_path):
+        icon = self._off_palette_icon(tmp_path)
+        result = gear.conform_to_palette(icon, self.PALETTE)
+        assert result["ok"] is True
+        assert result["changed"] > 0.0
+        with Image.open(icon).convert("RGBA") as img:
+            seen = {px[:3] for px in img.getdata() if px[3] > 8}
+        assert seen and seen.issubset(set(self.PALETTE))
+
+    def test_stroke_width_adds_a_visible_outline(self, tmp_path):
+        icon = self._off_palette_icon(tmp_path)
+        before_bbox = Image.open(icon).getbbox()
+        result = gear.conform_to_palette(icon, self.PALETTE, stroke_width=2)
+        assert result["ok"] is True
+        assert result["stroked"] is True
+        with Image.open(icon) as after:
+            after_bbox = after.getbbox()
+        # The outline grows the opaque bounding box outward on every side.
+        assert after_bbox[0] < before_bbox[0] and after_bbox[1] < before_bbox[1]
+        assert after_bbox[2] > before_bbox[2] and after_bbox[3] > before_bbox[3]
+
+    def test_missing_icon_fails_without_raising(self, tmp_path):
+        result = gear.conform_to_palette(tmp_path / "nope.png", self.PALETTE)
+        assert result["ok"] is False
+        assert "no icon" in result["error"]
+
+    def test_empty_palette_leaves_the_file_untouched(self, tmp_path):
+        icon = self._off_palette_icon(tmp_path)
+        before = icon.read_bytes()
+        result = gear.conform_to_palette(icon, [])
+        assert result["ok"] is False
+        assert icon.read_bytes() == before
