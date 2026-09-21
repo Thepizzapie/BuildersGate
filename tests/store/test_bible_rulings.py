@@ -177,12 +177,20 @@ class TestDispatchGate:
 
     def test_a_ruling_for_another_seat_does_not_hold_this_one(
             self, root, monkeypatch):
-        monkeypatch.setattr(_dispatch, "find_claude", lambda: "claude")
+        # The gate sits inside _spawn before the reservation; stub everything
+        # past it so the test can never start a real process.
+        seen = {}
+
+        def _fake_reserve(root_, item_id):
+            seen["reached_reservation"] = item_id
+            return False
+        monkeypatch.setattr(_dispatch._queue, "reserve", _fake_reserve)
         _rule(root)
         item = queue.add(root, "tech", "wire the sheet",
                          brief="load the image_sprites output into the scene")
-        got = _dispatch.dispatch(str(root), item["id"])
-        assert got.get("code") != "forbidden_by_ruling", got
+        got = _dispatch._spawn(str(root), item["id"])
+        assert got.get("code") == "not_queued", got     # past the ruling gate
+        assert seen["reached_reservation"] == item["id"]
 
 
 # ---------------------------------------------------------------------------
