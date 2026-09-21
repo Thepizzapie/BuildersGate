@@ -1943,8 +1943,18 @@ def row_report(path: Any, columns: int, rows: int = 1, *,
             "notes": sorted({n for b in bands for n in b["notes"]})}
 
 
+#: ITEM 35 — the director passed a translucent second head and a rifle
+#: standing upright alone at 150px-per-frame contact-sheet size, both visible
+#: on a full render. A review image below this floor is not a review.
+REVIEW_MIN_PX = 300
+#: A page taller/wider than this (after upscaling to REVIEW_MIN_PX) stops
+#: being "one picture" and starts being the thumbnail problem again, just at
+#: a different zoom — split it into one page per row band instead.
+_MAX_PAGE_DIM = 6000
+
+
 def draw_guides(path: Any, columns: int, out_path: Any, rows: int = 1, *,
-                report: Optional[dict] = None) -> dict:
+                report: Optional[dict] = None, review_px: int = REVIEW_MIN_PX) -> dict:
     """Write a copy of the sheet with the alignment guides drawn on it.
 
     THE NUMBERS ARE NOT THE DELIVERABLE — the picture is. Every fault section 6
@@ -2033,15 +2043,121 @@ def draw_guides(path: Any, columns: int, out_path: Any, rows: int = 1, *,
             draw.text((x0 + 6, top_y + 4), text,
                       fill=RED if abs(off) > 2 else GREY)
 
-    canvas.save(out_path)
+    # UPSCALE TO THE REVIEW FLOOR, NEAREST so pixel art stays sharp instead of
+    # blurring into the exact ambiguity (a faint second head, a thin upright
+    # rifle) that a low-res contact sheet already hid once. `dx` is still the
+    # NATIVE per-frame width here; scale it up, never down.
+    review_px = max(1, int(review_px))
+    scale = max(1, -(-review_px // max(1, int(dx))))  # ceil(review_px / dx)
+    if scale > 1:
+        canvas = canvas.resize((canvas.width * scale, canvas.height * scale),
+                               Image.NEAREST)
+    frame_px = int(round(dx * scale))
+
+    out_path = Path(out_path)
+    pages: list[str] = []
+    band_h = int(round(dy * scale))
+    if canvas.height > _MAX_PAGE_DIM and len(bands) > 1 and band_h > 0:
+        # ONE PAGE PER ROW BAND. Each row is already its own animation (the
+        # ground-line comment above explains why); splitting on that boundary
+        # never cuts a figure in half the way an even pixel split could.
+        stem, suffix = out_path.with_suffix(""), out_path.suffix or ".png"
+        for i in range(len(bands)):
+            top = min(canvas.height, int(round(i * band_h)))
+            bottom = min(canvas.height, top + band_h)
+            if bottom <= top:
+                continue
+            page_path = stem.with_name(f"{stem.name}_p{i + 1}{suffix}")
+            canvas.crop((0, top, canvas.width, bottom)).save(page_path)
+            pages.append(str(page_path))
+    canvas.save(out_path)               # the combined image always exists too
+    if not pages:
+        pages = [str(out_path)]
+
     if not drawn:
-        return {"ok": True, "path": str(out_path), "guides": 0,
+        return {"ok": True, "path": str(out_path), "pages": pages,
+                "review_px": review_px, "frame_px": frame_px, "guides": 0,
                 "note": "no figure found in any cell — nothing to draw a line "
                         "against. Is the grid the right way round?"}
-    return {"ok": True, "path": str(out_path), "guides": drawn,
+    return {"ok": True, "path": str(out_path), "pages": pages,
+            "review_px": review_px, "frame_px": frame_px, "guides": drawn,
             "note": "red is each ROW's own ground and head line, taken from that "
                     "row's median figure; cyan is where THIS figure's feet, head "
                     "and mass anchor actually are. A row that is right has its "
                     "cyan feet hidden under the red line. Grey splits the cells "
                     "the slicer will take — a figure straddling a grey line is a "
-                    "grid problem, not a drawing problem."}
+                    "grid problem, not a drawing problem. Rendered at "
+                    f"{frame_px}px/frame" + (f" across {len(pages)} pages"
+                    if len(pages) > 1 else "") + " — review each frame at this "
+                    "size, never a shrunk contact sheet."}
+
+
+# ---------------------------------------------------------------------------
+# ITEM 37 — "does this read as the same game beside the pinned concept sheet."
+# ---------------------------------------------------------------------------
+def concept_compare(candidate_path: Any, concept_path: Any, out_path: Any, *,
+                    review_px: int = REVIEW_MIN_PX) -> dict:
+    """Compose a candidate beside its pinned concept, at equal height, and
+    measure the cheap deltas a human's eye catches instantly and a passing
+    gate does not: is the PALETTE the same family, is the INK DENSITY in the
+    same range (a flat fill beside a rendered concept, or the reverse), does
+    the FIGURE occupy the same fraction of the frame. None of these prove the
+    candidate is right; each is a fast, free reason to look harder when it is
+    wrong. The actual "same game?" call is still the human's, made against the
+    image this writes, never against the numbers alone.
+    """
+    from PIL import Image
+    from . import chroma
+
+    cand = _open(candidate_path).convert("RGBA")
+    concept = _open(concept_path).convert("RGBA")
+
+    def _ink_density(img) -> float:
+        area = img.width * img.height
+        return round(mass(img) / area, 4) if area else 0.0
+
+    def _figure_height_frac(img) -> float:
+        box = _on_mask(img).getbbox()
+        return round((box[3] - box[1]) / img.height, 4) if box and img.height else 0.0
+
+    cand_ink, concept_ink = _ink_density(cand), _ink_density(concept)
+    cand_fig, concept_fig = _figure_height_frac(cand), _figure_height_frac(concept)
+    cand_pal = chroma.palette_of(candidate_path)
+    concept_pal = chroma.palette_of(concept_path)
+    palette_distance = 0.0
+    if cand_pal and concept_pal:
+        palette_distance = round(max(
+            max(chroma.distance_to(c, concept_pal) for c in cand_pal),
+            max(chroma.distance_to(c, cand_pal) for c in concept_pal)), 1)
+
+    # EQUAL HEIGHT, side by side — the composition IS the review, the numbers
+    # are only what earns a second look. review_px is a floor, not a fit: a
+    # sheet already taller than it stays at its own height rather than being
+    # shrunk to match a small concept sketch.
+    target_h = max(review_px, cand.height, concept.height)
+    def _scaled(img):
+        if img.height == target_h:
+            return img
+        w = max(1, round(img.width * target_h / img.height))
+        return img.resize((w, target_h), Image.NEAREST)
+    left, right = _scaled(cand), _scaled(concept)
+    gap = 12
+    canvas = Image.new("RGBA", (left.width + gap + right.width, target_h),
+                       (24, 24, 28, 255))
+    canvas.alpha_composite(left, (0, 0))
+    canvas.alpha_composite(right, (left.width + gap, 0))
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.convert("RGB").save(out_path)
+
+    return {"ok": True, "path": str(out_path), "review_px": review_px,
+            "measured": {
+                "palette_distance": palette_distance,
+                "ink_density": {"candidate": cand_ink, "concept": concept_ink,
+                                "delta": round(abs(cand_ink - concept_ink), 4)},
+                "figure_height_ratio": round(
+                    cand_fig / concept_fig, 3) if concept_fig else None,
+            },
+            "note": "numbers are a reason to look, not the verdict — the "
+                    "verdict is whether the candidate at `path` reads as the "
+                    "same game beside the concept it is pinned against."}
