@@ -1,0 +1,9 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="meridian_scout.glb" id="1"]
+[ext_resource type="Script" path="plane_visual.gd" id="2"]
+
+[node name="MeridianScout" type="Node3D"]
+script = ExtResource("2")
+
+[node name="Model" parent="." instance=ExtResource("1")]

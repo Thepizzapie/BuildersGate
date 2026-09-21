@@ -29,6 +29,51 @@ from bgate_ui.deps import root as _root
 router = APIRouter()
 
 
+def _kickoff(root: Path, payload: dict, project_name: str) -> dict:
+    """Seed the brief and reference images the card sent, and start the
+    director on them when asked.
+
+    The brief-and-screenshots paste into the director chat WAS the project
+    start; the card only ever took a one-line pitch. So the card now carries
+    the whole paste and this does, in code, what the human did by hand: file
+    the brief, pin the images into the bible, and hand the director its first
+    turn. Nothing is decided here - the thesis, the pillars and the board are
+    still the director's to settle from the brief.
+
+    Refusal-tolerant on purpose: the project already exists by the time this
+    runs, and a bad image or a missing CLI must not read as "create failed".
+    """
+    from bgate_core.design import kickoff as _kickoff_mod
+
+    brief = str(payload.get("brief") or "")
+    refs = payload.get("refs") or []
+    if not isinstance(refs, list):
+        refs = []
+    if not brief.strip() and not refs:
+        return {"seeded": False}
+    try:
+        seeded = _kickoff_mod.seed(root, brief, refs, actor="human")
+    except ValueError as exc:
+        raise api.bad_request(str(exc))
+    out = {"seeded": True, **seeded, "director": {"started": False}}
+    if not payload.get("kickoff", True):
+        out["director"]["why"] = "not asked; the kickoff note is on the thread"
+        return out
+    try:
+        from bgate_ui.agents import directorsession as _director
+        text = _kickoff_mod.prompt(root, seeded, project_name=project_name)
+        sent = _director.send(str(root), text)
+        out["director"] = {"started": bool(sent.get("ok")), "n": sent.get("n")}
+    except Exception as exc:                                     # noqa: BLE001
+        _activity.log(root, "project",
+                      f"kickoff seeded but the director did not start: {exc}",
+                      seat="director")
+        out["director"] = {"started": False,
+                           "why": "the director session did not start; open "
+                                  "the chat and say 'kickoff' to begin"}
+    return out
+
+
 def _unsuitable(d: Path) -> bool:
     """True if `d` is somewhere a game project must never be created.
 
@@ -243,6 +288,8 @@ def project_create(request: Request, payload: dict) -> dict:
         _activity.log(root, "project", f"active pointer not updated ({exc})",
                       seat="director")
 
+    kickoff = _kickoff(root, payload, name)
+
     return api.ok({
         "root": str(root),
         "project": project,
@@ -250,6 +297,7 @@ def project_create(request: Request, payload: dict) -> dict:
         "files": len(made["files"]),
         "repository": repository,
         "lanes": lanes,
+        "kickoff": kickoff,
         # The dashboard token is minted per project, and this page was served
         # before the project existed, the client has to reload to get one.
         "reload": True,
@@ -289,12 +337,15 @@ def project_adopt(request: Request, payload: dict) -> dict:
         raise api.bad_request(str(exc), path=str(target))
     os.environ["BGATE_ROOT"] = str(target)
     found = report.get("detected") or {}
+    project_name = str((report.get("project") or {}).get("name") or "")
+    kickoff = _kickoff(target, payload, project_name)
     return api.ok({
         "root": str(target),
         "project": report.get("project"),
         "engine": found.get("engine"),
         "engine_label": found.get("engine_label"),
         "engine_supported": found.get("engine_supported"),
+        "kickoff": kickoff,
         "reload": True,
     })
 

@@ -108,6 +108,7 @@ SEATS: dict[str, tuple[str, ...]] = {
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
         "canon_check", "vfx_animate", "sidescroll_generate", "level_reskin",
+        "game_view_get",
     ),
     # Music, SFX and mix.
     "audio": (
