@@ -611,38 +611,9 @@ def stamp_generated(sheet: Image.Image, grid: Grid, anchor: Anchor,
            "anchor_stroke": conformed["anchor_stroke"]}
 
 
-def outward_direction(body: Image.Image, grid: Grid, anchor: Anchor, *,
-                      side: int, alpha_threshold: int = ALPHA_THRESHOLD
-                      ) -> tuple[float, float]:
-    """Which way the weapon points: away from the body's mass, through the grip.
-
-    A weapon held in a hand extends outward, so the body-centroid -> anchor ray
-    is the cheapest orientation that is right most of the time. Degenerate case
-    (anchor sits on the centroid) falls back to straight out on the hand's side.
-    """
-    mask = cell_mask(body, grid, anchor.row, anchor.col, alpha_threshold=alpha_threshold)
-    c = mask.centroid()
-    if c is None:
-        return (float(side), 0.0)
-    dx, dy = anchor.x - c[0], anchor.y - c[1]
-    if math.hypot(dx, dy) < 1.0:
-        return (float(side), 0.0)
-    return (dx, dy)
-
-
-
-
 # ---------------------------------------------------------------------------
 # The rig profile — everything the covered actions teach, in one object
 # ---------------------------------------------------------------------------
-def body_action_for(layer_action: str) -> str:
-    """Which body animation drives a gear layer (dual_wield_main <- the swing)."""
-    for body, layers in BODY_TO_LAYER_ACTIONS.items():
-        if layer_action in layers:
-            return body
-    return layer_action
-
-
 @dataclass
 class RigProfile:
     """What the four covered actions teach about this character's hands.
@@ -676,44 +647,6 @@ def anchors_for(profile: RigProfile, body: Image.Image, layer_action: str, *,
 # ---------------------------------------------------------------------------
 # Naming + disk
 # ---------------------------------------------------------------------------
-def layer_sheet_name(weapon: str, layer_action: str) -> str:
-    """The filename the game's format string builds:
-    "res://assets/items/main_hand/animations/%s_%s.png" % [weapon, layer_action].
-    Generated sheets must match it byte for byte or nothing loads them."""
-    return f"{weapon}_{layer_action}.png"
-
-
-def throwable_sheet_name(body_action: str) -> str:
-    """The throwable slot's shared sheet: "placeholder_%s.png" % action."""
-    return f"placeholder_{body_action}.png"
-
-
-def layer_actions_for(body_action: str) -> tuple[str, ...]:
-    """The gear layer(s) a body animation drives."""
-    return BODY_TO_LAYER_ACTIONS.get(body_action, (body_action,))
-
-
-def is_placeholder(path: Path) -> bool:
-    """True only for sheets THIS module stamped. Filenames lie — the real project
-    ships hand-drawn art called placeholder_throw_one_hand.png."""
-    try:
-        with Image.open(path) as im:
-            return im.text.get(MARKER_KEY) == MARKER_VALUE  # type: ignore[attr-defined]
-    except Exception:
-        return False
-
-
-def body_actions(char_dir: Path, prefix: str) -> list[str]:
-    """The actions a character actually has sheets for, from <prefix>_<action>.png."""
-    pat = re.compile(rf"^{re.escape(prefix)}_(.+)\.png$")
-    out = []
-    for p in sorted(Path(char_dir).glob(f"{prefix}_*.png")):
-        m = pat.match(p.name)
-        if m:
-            out.append(m.group(1))
-    return out
-
-
 def conform_to_palette(icon_path: str | Path, palette: Sequence[Sequence[int]],
                        *, stroke_width: int = 0,
                        stroke_color: Optional[Sequence[int]] = None,

@@ -109,11 +109,6 @@ GEAR_SHAPES: dict[str, tuple[float, float]] = {
 }
 
 
-def gear_shape(item_class: str) -> tuple[float, float]:
-    """(length, width) of a class's placeholder glyph, in cell-height fractions."""
-    _class(item_class)
-    return GEAR_SHAPES.get(item_class, (0.35, 0.10))
-
 # The INVARIANT clause every item in every class shares. This is the consistency
 # rail: hold framing, light, scale, and background constant so a class of
 # variants reads as one crafted set instead of a bag of unrelated pictures.

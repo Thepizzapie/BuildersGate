@@ -243,37 +243,6 @@ class TestStampGenerated:
         assert gear.cell_mask(sheet, grid, 0, 0).count > 0
 
 
-class TestNaming:
-    def test_matches_the_format_string_the_game_loads(self):
-        # "res://assets/items/main_hand/animations/%s_%s.png" % [weapon, action]
-        assert gear.layer_sheet_name("keyboard_blade", "main_hand_swing") == \
-            "keyboard_blade_main_hand_swing.png"
-        assert gear.throwable_sheet_name("throw_one_hand") == \
-            "placeholder_throw_one_hand.png"
-
-    def test_dual_wield_drives_two_layers(self):
-        assert gear.layer_actions_for("dual_wield_swing") == \
-            ("dual_wield_main", "dual_wield_off")
-        assert gear.layer_actions_for("punch") == ("punch",)
-        assert gear.body_action_for("dual_wield_off") == "dual_wield_swing"
-
-    def test_body_actions_read_off_disk(self, tmp_path: Path):
-        for name in ("pm_paladin_idle.png", "pm_paladin_main_hand_swing.png",
-                     "other_walk.png"):
-            _blank(1, 1).save(tmp_path / name)
-        assert gear.body_actions(tmp_path, "pm_paladin") == \
-            ["idle", "main_hand_swing"]
-
-
-class TestMarker:
-    def test_plain_png_is_not_a_placeholder(self, tmp_path: Path):
-        # Real art NAMED placeholder_* still counts as real: the marker is in
-        # the file, not the filename.
-        p = tmp_path / "placeholder_throw_one_hand.png"
-        _blank(1, 1).save(p)
-        assert not gear.is_placeholder(p)
-
-
 class TestConformToPalette:
     """EXIT 67 postmortem item 9: a GENERATED weapon icon must conform to the
     pinned bible palette before item_to_spriteframes rides it into combat.
