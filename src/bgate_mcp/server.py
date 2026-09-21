@@ -1518,6 +1518,24 @@ def bgate_doctor(refresh: bool = False) -> dict:
 
 
 @_tool
+def project_current(hours: int = 6) -> dict:
+    """What changed OUTSIDE the board in the last ``hours`` - GRIPE 38 (EXIT
+    67 postmortem, 2026-09-21). The human repeatedly bypassed a slow or
+    underperforming board agent and edited a file directly through a CLI
+    session; no dispatched agent then knew that file had just moved.
+
+    Returns files changed by git commit or left uncommitted, grouped by lane,
+    with WHO changed them (a harness auto-commit reads "item #N ...";
+    anything else is a human or an outside agent), the items completed/failed
+    in that window, and the last handoff notes. Bounded to ~1.5 KB - this is
+    a "since you last looked" summary, not a full audit; `git log` is that.
+    Full notes: docs/tools.md#project_current
+    """
+    from bgate_core.board import current as _current
+    return _current.current_activity(_root(), hours=int(hours))
+
+
+@_tool
 def project_status() -> dict:
     """The project's identity plus a count of what's in the bible and lore."""
     root = _root()
@@ -8454,7 +8472,8 @@ def _focus_warning(root, title: str, brief: str) -> str:
 
 @_tool
 def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
-              depends_on: Optional[int] = None) -> dict:
+              depends_on: Optional[int] = None, size: str = "medium",
+              acceptance: str = "") -> dict:
     """Queue work for a seat. Use when your work uncovers work that isn't yours.
 
     ``depends_on`` is an EXISTING item id this work must not start before;
@@ -8464,9 +8483,35 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     same tick - only a dependency does. Use queue_add_chain when filing a
     whole ordered group; use this to hang a follow-up off work already on the
     board. A dependency on a missing item is refused.
+
+    ``size`` (small|medium|large, default medium) sets the runtime/turn
+    ceiling (runlimits.SIZE_LIMITS) - use small for a single focused edit.
+    ``acceptance`` is ONE sentence naming the check that proves this item is
+    done ("godot_test_run shows 0 failures"); a non-director caller must
+    supply one - GRIPE 41 (EXIT 67 postmortem): a brief with no named check
+    is a brief nobody can verify against. A broad brief (more than one
+    deliverable, several bullets, over 900 chars, or paths spanning more than
+    two lanes - see queue.brief_breadth) is refused outright for a
+    non-director caller and returned as a warning for the director: split it
+    with queue_add_chain instead.
     Full notes: docs/tools.md#queue_add
     """
     from bgate_core.board import queue as _q
+    # The director is the top-level session: no BGATE_SEAT, no work item.
+    # Keying on BGATE_SEAT == "director" refused the human's own queue_add.
+    is_director = not _caller_is_agent()
+    breadth = _q.brief_breadth(brief)
+    if breadth["score"] >= 2 and not is_director:
+        return {"ok": False, "refused": "too_broad",
+                "error": "this brief reads as more than one deliverable - "
+                         "split it: queue_add_chain(links=[...]) instead of "
+                         "one wide item. " + "; ".join(breadth["reasons"]),
+                "breadth": breadth}
+    if not is_director and not str(acceptance or "").strip():
+        return {"ok": False, "refused": "no_acceptance",
+                "error": "acceptance is required: name the one check that "
+                         "proves this item is done (e.g. 'godot_test_run "
+                         "shows 0 failures')"}
     # A SPAWNED AGENT FILES AT MOST TWO ITEMS, AND NEVER A DUPLICATE. MEASURED
     # (Corniche, 2026-09-04): 11 of 16 QA items and 6 duplicates of work the
     # director had already queued were filed agent-to-agent - re-pins, re-checks,
@@ -8494,10 +8539,13 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     item = _q.add(_root(), seat, title, brief=brief, priority=priority,
                   source=f"seat:{_seat() or 'unknown'}",
                   source_ref=own_item,
-                  depends_on=depends_on)
+                  depends_on=depends_on, size=size, acceptance=acceptance)
     focus_warning = _focus_warning(_root(), title, brief)
     if focus_warning:
         item = {**item, "focus_warning": focus_warning}
+    warnings = list(breadth["reasons"]) if breadth["score"] >= 1 else []
+    if warnings:
+        item = {**item, "warnings": warnings}
     if depends_on is None:
         return item
     # SAY WHAT THE BOARD WILL DO WITH IT. A caller that files a dependency

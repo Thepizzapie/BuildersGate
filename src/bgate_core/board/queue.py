@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Optional
 
 from . import activity, iterations, seats as _seats
@@ -135,11 +136,84 @@ def clip_reason(text: str) -> str:
         "the whole of it is appended to the item's brief]")
 
 
+# GRIPE 41 (EXIT 67 postmortem, 2026-09-21): tickets filed too broad spread
+# one agent across a whole feature instead of one deliverable — the human's
+# own words were "agents spread thin". These are the shapes every measured
+# broad brief had: a chained "and then" doing a second deliverable, a bullet
+# list of several distinct asks, sheer length (an agent padding a brief with
+# everything it might need is an agent that has not picked ONE thing), and a
+# brief that names paths across more than two lanes (seats.py's write_globs).
+_BREADTH_CHAIN_RE = re.compile(
+    r"\band then\b|\bafterwards?\b|\bonce (that|this|it)('s| is) (done|"
+    r"finished)\b", re.I)
+_BREADTH_BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S", re.M)
+_BREADTH_MAX_CHARS = 900
+_BREADTH_MAX_LANES = 2
+
+
+def brief_breadth(brief: str) -> dict:
+    """Score how BROAD a brief reads, and say why. Pure — no DB, no seat
+    lookup — so a caller (queue_add's warning, a test) can grade a brief
+    before or after it is ever filed.
+
+    Returns ``{"score": int, "reasons": [str, ...]}``. Score is a simple sum
+    of how many of the four measured shapes fired; there is no claim it is a
+    calibrated probability, only that MORE of these firing means MORE likely
+    the ask is several deliverables wearing one item.
+    """
+    text = str(brief or "")
+    reasons: list[str] = []
+    score = 0
+
+    chain_hits = _BREADTH_CHAIN_RE.findall(text)
+    if chain_hits:
+        score += 1
+        reasons.append(
+            "reads like a chain ('and then' / 'once done') rather than one "
+            "deliverable — split it with queue_add_chain")
+
+    bullets = _BREADTH_BULLET_RE.findall(text)
+    if len(bullets) > 1:
+        score += 1
+        reasons.append(
+            f"lists {len(bullets)} separate bullet deliverables — file the "
+            "extras as their own items")
+
+    if len(text) > _BREADTH_MAX_CHARS:
+        score += 1
+        reasons.append(
+            f"brief is {len(text)} characters, over the {_BREADTH_MAX_CHARS} "
+            "guideline for a single deliverable")
+
+    lanes_touched = set()
+    try:
+        from . import seats as _seats_mod
+        lane_table = {role: cfg.get("write_globs", [])
+                      for role, cfg in _seats_mod.DEFAULT_SEATS.items()}
+    except Exception:
+        lane_table = {}
+    for seat_name, globs in (lane_table or {}).items():
+        for g in globs or ():
+            prefix = str(g).split("*", 1)[0].split("/", 1)[0]
+            if prefix and prefix in text:
+                lanes_touched.add(seat_name)
+                break
+    if len(lanes_touched) > _BREADTH_MAX_LANES:
+        score += 1
+        reasons.append(
+            f"names paths in {len(lanes_touched)} lanes "
+            f"({', '.join(sorted(lanes_touched))}) — one item should stay "
+            "inside one or two")
+
+    return {"score": score, "reasons": reasons}
+
+
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
         chain_id: str = "", chain_pos: int = 0,
         depends_on: Optional[int] = None, chain_self: bool = False,
-        max_runtime_s: Optional[int] = None) -> dict:
+        max_runtime_s: Optional[int] = None,
+        size: str = "medium", acceptance: str = "") -> dict:
     # A `scope_tier_id` used to be filed here and run through scope.enforce
     # first — the cut line's one gate. It never refused an item in the product's
     # life: untiered work was deliberately allowed through, and nothing was ever
@@ -153,15 +227,20 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         get(root, int(depends_on))          # LookupError if the link is a fiction
     if max_runtime_s is not None and int(max_runtime_s) <= 0:
         raise ValueError("max_runtime_s must be positive")
+    size = str(size or "medium").strip().lower()
+    if size not in ("small", "medium", "large"):
+        raise ValueError(f"unknown size {size!r}; sizes are small, medium, large")
     with db.tx(root) as conn:
         cur = conn.execute(
             "INSERT INTO work_item (seat, title, brief, priority, source, "
             "source_ref, chain_id, chain_pos, depends_on, "
-            "max_runtime_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "max_runtime_s, size, acceptance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (seat, title.strip(), brief, priority, source, source_ref,
              chain_id.strip(), int(chain_pos),
              int(depends_on) if depends_on is not None else None,
-             int(max_runtime_s) if max_runtime_s is not None else None),
+             int(max_runtime_s) if max_runtime_s is not None else None,
+             size, str(acceptance or "").strip()),
         )
         item_id = int(cur.lastrowid)
         if chain_self:
