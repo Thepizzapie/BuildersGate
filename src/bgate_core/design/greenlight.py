@@ -544,7 +544,7 @@ def unwaive(root: str | os.PathLike[str], seat: str) -> dict:
 #: demo while every named-scene test passed, and it shipped delivered assets
 #: nothing loaded while `asset_verify` — which already answers exactly that,
 #: with `delivered_but_unwired` — was never run by anybody.
-_SECTIONS = ("default_scene", "assets", "rooms", "scale", "audio")
+_SECTIONS = ("default_scene", "export", "assets", "rooms", "scale", "audio")
 
 
 def presentation_check(root: str | os.PathLike[str]) -> dict:
@@ -562,6 +562,10 @@ def presentation_check(root: str | os.PathLike[str]) -> dict:
     * default scene — the project boots into the GAME, that frame has been
       captured with no scene override, and somebody has said what is in it
       (:mod:`bgate_core.level.sceneproof`)
+    * export — the EXPORTED pck was verified, not just the editor project,
+      and no source file changed since (:mod:`bgate_core.qa.exportgate`) —
+      item #17, the fix for the build every other section here can pass
+      while it ships empty
     * assets — delivered is not integrated: dangling references, stale
       imports, delivered-but-unwired orphans (:mod:`bgate_core.store.assets`)
     * room composition — every playable room has a full-room verdict
@@ -583,6 +587,7 @@ def presentation_check(root: str | os.PathLike[str]) -> dict:
     rows: list[dict] = []
     met: list[str] = []
     for name, fn in (("default_scene", _default_scene_unmet),
+                     ("export", _export_unmet),
                      ("assets", _assets_unmet),
                      ("rooms", _rooms_unmet), ("scale", _scale_unmet),
                      ("audio", _audio_unmet)):
@@ -768,6 +773,28 @@ def _assets_unmet(root) -> list[dict]:
             clears_by="restore the file, or asset_release it from tracking"))
 
     return out
+
+
+def _export_unmet(root) -> list[dict]:
+    """ITEM #17: gate the EXPORT, not the editor.
+
+    Every other section here answers a question about the project directory.
+    None of them prove the EXPORTED pck matches what they measured — that is
+    exactly the gap EXIT 67 fell through. Delegates to
+    :mod:`bgate_core.qa.exportgate`, which reads the standing fact
+    ``godot_export_verify`` records on every run and compares its timestamp
+    against the newest source (.gd/.tscn) mtime.
+
+    A project with no Godot project at all (game_dir is None) is not this
+    section's question, same as sceneproof above it.
+    """
+    from ..qa import exportgate as _exportgate
+    from ..store import project as _project
+
+    game_dir = _project.game_dir(root)
+    if game_dir is None:
+        return []
+    return _exportgate.unmet(root, str(game_dir))
 
 
 def _rooms_unmet(root) -> list[dict]:

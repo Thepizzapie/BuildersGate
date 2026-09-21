@@ -2860,6 +2860,37 @@ The result lists `created`, `unchanged`, `skipped` and `replaced`, so say
 what happened rather than letting the user find it in a diff.
 ```
 
+## godot_check_project
+
+```text
+Import/validate a project headless - the 'does it still build' check.
+
+godot_project: the directory holding project.godot. Runs Godot's own
+`--import` pass and reports engine errors, plus a static font/filter
+presentation check.
+
+Also runs a static lint over every `*.gd` in the project for
+EXPORT-BREAKING patterns invisible in the editor (result.export_lint):
+
+  * a directory listing (`get_files()`/`list_dir_begin`) filtered with
+    `ends_with(".tres"|".tscn"|".res"|".gd")` and no `.remap` strip anywhere
+    in the file - in an EXPORTED pck that filter matches nothing, because
+    Godot lists exported files by their remapped on-disk name
+    (`foo.tres.remap`). Fix: `ResDir.files(path, ext)` from
+    `src/templates/godot/2d/scripts/res_dir.gd`, which strips
+    `.remap`/`.import` before comparing.
+  * a zero-width or BOM code point (U+FEFF, U+200B-U+200D, U+2060, U+FFFE)
+    inside a GDScript string literal - invisible in the editor, and Godot's
+    exported binary token stream can re-encode or drop it, silently turning
+    `begins_with("﻿")` into `begins_with("")`.
+  * ADVISORY: `FileAccess.open("res://...")` of a non-resource extension
+    (`.json`/`.txt`/`.csv`/...) - works in the editor, can fail in an export
+    if `export_presets.cfg`'s `include_filter` does not cover the file.
+
+Each finding carries `file:line`, `kind` and a `fix`. A BLOCKING finding
+(the first two kinds) fails `ok`; the advisory kind never does on its own.
+```
+
 ## godot_screenshot
 
 ```text
