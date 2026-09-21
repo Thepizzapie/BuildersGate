@@ -40,6 +40,14 @@ cd my-existing-game
 bgate adopt --pitch "what this game is"    # or: bgate adopt path/to/game
 ```
 
+Both `init` and `adopt` take `--brief FILE` and any number of `--ref IMAGE`.
+The brief is saved to `design/brief.md` and pointed at from the bible, the
+images are pinned as concept references and anchored beside it, and a note on
+the project thread says the kickoff is pending: the director's first turn is to
+read the brief, settle the thesis, write the bible and lay out the board. The
+dashboard's create card does the same with a brief box and an image drop, and
+starts the director on it as soon as the project exists.
+
 Adoption is additive. It never copies a template file and never rewrites a byte
 you wrote. It:
 

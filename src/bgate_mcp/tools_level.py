@@ -2437,7 +2437,7 @@ def room_build(godot_project: Annotated[str, Field(description='Directory holdin
                                  root_name=root_name, root_script=root_script,
                                  extra=extra, overwrite=bool(overwrite))
         if result.get("written"):
-            _note_tool_write(str(proj / scene.replace("res://", "")))
+            _note_tool_write(_root(), str(proj / scene.replace("res://", "")))
             _log("level", f"room_build {scene}: {result['cells']} cells, "
                           f"{len(result['props'])} props, {len(result['markers'])} markers; "
                           f"audit {'ok' if result['audit']['ok'] else 'FAIL'}")

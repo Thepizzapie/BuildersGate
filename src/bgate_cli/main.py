@@ -1,9 +1,10 @@
 """bgate, the console entrypoint.
 
     bgate init NAME [--kind 2d|3d] [--engine godot|web] [--dir DIR] [--pitch TEXT] [--without floor,music,...]
-                    [--force] [--replace]
+                    [--brief FILE] [--ref IMAGE ...] [--force] [--replace]
                                 create a project + a runnable game, and print where
     bgate adopt [DIR] [--name N] [--pitch TEXT] [--kind 2d|3d|2d+3d] [--json] [--without floor,music,...]
+                [--brief FILE] [--ref IMAGE ...]
                                 point Builders Gate at a game you ALREADY have.
                                 Never scaffolds, never overwrites. (default: .)
     bgate use [DIR|NAME]        make a project the active one for later commands
@@ -322,7 +323,8 @@ def hook_status(project_dir: str = "", as_json: bool = False) -> int:
 
 def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
                  force: bool = False, replace: bool = False,
-                 without: str = "", engine: str = "") -> int:
+                 without: str = "", engine: str = "", brief: str = "",
+                 refs: list | None = None) -> int:
     """Create the project store AND a runnable game, then say where it landed.
 
     The first-run gap the audit named: the only way to make a project was an MCP
@@ -396,6 +398,10 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     except Exception:
         pass
 
+    kicked = _seed_kickoff(root, brief, refs)
+    if kicked is None:
+        return 1
+
     print(f"created {name} ({kind}), {len(made['files'])} files")
     # SAY WHAT WAS PROTECTED, or a careful run reads as a broken one. `force`
     # now fills in what is missing and leaves anything the user has edited
@@ -414,7 +420,59 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     print(f"  cd {root}")
     print("  bgate serve            open the dashboard on this project")
     print("  bgate doctor           check the toolchain (godot, blender, ...)")
+    if kicked:
+        print("  the kickoff is on the thread: the director's first turn is to "
+              "read the brief and lay out the board")
     return 0
+
+
+def _all_of(argv: list, flag: str) -> list:
+    """Every value given for a repeatable flag, in order."""
+    out = []
+    for i, token in enumerate(argv):
+        if token == flag and i + 1 < len(argv):
+            out.append(argv[i + 1])
+    return out
+
+
+def _seed_kickoff(root, brief: str = "", refs: list | None = None):
+    """The card's brief-and-screenshots start, from the command line.
+
+    ``brief`` is a path to a text file, ``refs`` a list of image paths. Returns
+    the seed report, ``{}`` when nothing was asked for, or None after printing
+    an error (a brief file that does not exist is a typo to fix, not a project
+    to create without it).
+    """
+    if not brief and not refs:
+        return {}
+    from bgate_core.design import kickoff as _kickoff
+    text = ""
+    if brief:
+        try:
+            text = Path(brief).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"error: cannot read --brief {brief}: {exc}")
+            return None
+    entries = []
+    for image in refs or []:
+        src = Path(image).expanduser()
+        if not src.is_file():
+            print(f"error: --ref {image} is not a file")
+            return None
+        entries.append({"name": src.stem, "path": str(src), "kind": "concept"})
+    try:
+        seeded = _kickoff.seed(root, text, entries, actor="human")
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return None
+    if seeded.get("brief"):
+        print(f"brief saved to {seeded['brief']} "
+              f"(bible section #{seeded['brief_section']})")
+    for pin in seeded.get("pinned") or []:
+        print(f"pinned {pin['name']} ({pin['kind']})")
+    for skip in seeded.get("skipped") or []:
+        print(f"  not pinned {skip['name']}: {skip['why']}")
+    return seeded
 
 
 def _store_modules_off(root, without: str) -> str:
@@ -455,7 +513,8 @@ def _mb(n: int) -> str:
 
 def adopt_project(directory: str = "", name: str = "", pitch: str = "",
                   kind: str = "", as_json: bool = False,
-                  without: str = "") -> int:
+                  without: str = "", brief: str = "",
+                  refs: list | None = None) -> int:
     """Adopt an EXISTING game and print what we understood about it.
 
     The printout is not decoration. The person running this has months of work
@@ -485,6 +544,11 @@ def adopt_project(directory: str = "", name: str = "", pitch: str = "",
         return 2
 
     off_note = _store_modules_off(target, without)
+    kicked = _seed_kickoff(target, brief, refs)
+    if kicked is None:
+        return 1
+    if kicked:
+        report["kickoff"] = kicked
 
     if as_json:
         print(json.dumps(report, indent=2))
@@ -1441,7 +1505,8 @@ def main() -> int:
                     return rest[index]
             return default
 
-        flagged = {"--kind", "--dir", "--pitch", "--without", "--engine"}
+        flagged = {"--kind", "--dir", "--pitch", "--without", "--engine",
+                   "--brief", "--ref"}
         skip: set[int] = set()
         for i, token in enumerate(rest):
             if token in flagged:
@@ -1453,6 +1518,7 @@ def main() -> int:
             return 2
         return init_project(positional[0], kind=opt("--kind", "2d"),
                             dest=opt("--dir"), pitch=opt("--pitch"),
+                            brief=opt("--brief"), refs=_all_of(rest, "--ref"),
                             # --replace is the only way to overwrite from the
                             # command line. --force stopped meaning that when it
                             # was found destroying customised files in place -
@@ -1476,7 +1542,7 @@ def main() -> int:
                     return rest[index]
             return default
 
-        flagged = {"--name", "--pitch", "--kind", "--without"}
+        flagged = {"--name", "--pitch", "--kind", "--without", "--brief", "--ref"}
         skip: set[int] = set()
         for i, token in enumerate(rest):
             if token in flagged:
@@ -1486,7 +1552,8 @@ def main() -> int:
         return adopt_project(positional[0] if positional else "",
                              name=opt("--name"), pitch=opt("--pitch"),
                              kind=opt("--kind"), as_json="--json" in rest,
-                             without=opt("--without"))
+                             without=opt("--without"), brief=opt("--brief"),
+                             refs=_all_of(rest, "--ref"))
 
     if cmd in ("use", "switch", "select"):
         positional = [a for a in args[1:] if not a.startswith("-")]
