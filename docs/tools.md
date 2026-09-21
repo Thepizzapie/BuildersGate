@@ -3188,6 +3188,32 @@ linear filtering, where sampling at a region edge otherwise pulls in the
 neighbouring frame. Sheets long enough to exceed the safe texture width wrap
 into a padded grid automatically whatever this says.
 
+gate (default True): the per-frame identity gate (bgate_core.art.framegate) -
+cheap arithmetic, no model call - checked against THIS character's own
+anchor before the sheet ships as ok. MEASURED (EXIT 67, two art seats
+running): a sheet came back with frames belonging to a DIFFERENT character
+(the upload-collision bug, fixed separately in kie's content-hash naming),
+and every downstream check - alpha audit, stitch, sprite_sheet_check,
+consistency_check - passed the wrong character, because none compared a
+frame to its own anchor. This gate does: silhouette height/width ratio vs
+the anchor, palette distance vs the anchor's palette, translucency outside
+the main silhouette, a second connected component above the shoulder line
+("second head" - a known doubling artefact on fall/death poses), a
+component-count/detached-object sanity check, and near-duplicate adjacent
+frames in a cycle. A failing frame FAILS THE SHEET (`ok: False`, stage
+"frame_gate") with `frame_gate.frames[<pose>].checks` naming which check
+fired and its measured value - not a score, a named failure. Result also
+carries `frame_gate` when gate=False; nothing is hidden, only left
+non-fatal. `provenance` in the result records the anchor's content hash and
+any frame whose sidecar disagrees with (or is missing against) it - such a
+frame is dropped from the stitch rather than trusted, so a stale frame left
+over from a replaced anchor cannot ride into a new sheet.
+
+subject_class ("character" default, or "prop"): a prop additionally runs
+the limb-growth check (bbox aspect / component-count drift vs the anchor -
+MEASURED: a gas-pump turret grew arms and legs mid-set) and skips the
+identity/palette checks a moving prop legitimately varies on.
+
 THIS IS THE MOST EXPENSIVE TOOL HERE. The plan is priced before anything is
 bought and the estimate is reported, so a human sees what a set costs before
 they buy it. Nothing refuses it on money: this product keeps no ledger and
@@ -4432,6 +4458,15 @@ unbounded money pump wearing the gate's own uniform. queue.reopen counts
 the round AND carries the harness's record of what the last attempt
 already wrote into the new brief, so a fix round continues instead of
 regenerating.
+
+frame_verdicts: an art frame-gate result (image_sprites' `frame_gate`,
+bgate_core.art.framegate.gate_sheet's shape) - when given, its per-frame
+breakdown (pose name, which check fired, the measured value against its
+threshold) is appended alongside `reason`. MEASURED: "regenerate only what
+is actually wrong" with no per-frame detail left the next agent nothing to
+act on but the whole sheet - it could not tell WHICH frame was wrong or WHY
+without re-running the gate itself. A clean gate (nothing failed) adds
+nothing.
 ```
 
 ## queue_update

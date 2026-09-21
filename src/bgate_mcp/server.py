@@ -4494,7 +4494,9 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                   model: Annotated[str, Field(description='Provider model id; on krea defaults to nano-banana-2 (holds identity through pose changes).')] = "", ref_strength: Annotated[float, Field(description='How hard the reference pulls, 0-1 (krea). Default 0.6.')] = 0.6,
                   archetypes: Annotated[Optional[list[str]], Field(description='Catalogue animations (e.g. ["idle", "walk", "attack"]) used INSTEAD of `poses`; call sprite_plan first.')] = None, view: Annotated[str, Field(description='Camera convention prepended to every pose ("side view, facing right"); default reads the sprite contract.')] = "",
                   palette: Annotated[Optional[dict], Field(description='{"lock": auto|on|off, "colors": [...]}; locking quantises every frame to the reference palette.')] = None,
-                  sheet_padding: Annotated[int, Field(description='Transparent gutter between cells in px. 0 is a plain strip; 1-2 for non-integer scaling with linear filtering.')] = 0, anchor_views: Annotated[int, Field(description='How many views condition every pose: 3 (default) adds three-quarter and profile views; 1 is front-only.')] = 3) -> dict:
+                  sheet_padding: Annotated[int, Field(description='Transparent gutter between cells in px. 0 is a plain strip; 1-2 for non-integer scaling with linear filtering.')] = 0, anchor_views: Annotated[int, Field(description='How many views condition every pose: 3 (default) adds three-quarter and profile views; 1 is front-only.')] = 3,
+                  gate: Annotated[bool, Field(description='Run the per-frame identity gate (framegate: silhouette/palette/ghost/duplicate/prop-limb checks) against the anchor before shipping the sheet as ok. Default ON; a frame that disagrees with the anchor FAILS the sheet rather than passing a wrong character through.')] = True,
+                  subject_class: Annotated[str, Field(description='"character" (default) or "prop" - a prop additionally checks for limb-like protrusions and skips the palette/identity checks a moving prop legitimately varies on.')] = "character") -> dict:
     """PAINTED sprite set - REFERENCE-FIRST for consistency.
 
     Generates ONE reference (or reuses ref_image), then each pose as an EDIT
@@ -4568,6 +4570,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
         provider = _providers.provider_for("sheet", asked=provider, root=root)
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
+        from bgate_core.art import framegate as _framegate
 
         # FIVE DIALS, TWO DOORS. `max_retries`/`timeout`/`max_seconds` are all
         # one question - how long is this run allowed to take and how hard may
@@ -4729,6 +4732,19 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                                  f"{ref_reason}. Not spending on poses against a "
                                  "broken anchor - adjust character_prompt and retry."}
         result["reference"] = ref_path
+        # ITEMS 2/3 — PROVENANCE. Every file this run writes gets a sidecar
+        # recording the anchor it was generated against (by content hash, not
+        # path — the same identity kie's content-hash upload naming, de59d3a,
+        # uses). "regenerate only what is wrong" then has something to check
+        # a stale frame against instead of trusting whatever sits in the
+        # folder forever.
+        anchor_hash = _framegate.file_hash(ref_path)
+        try:
+            _framegate.write_provenance(
+                ref_path, anchor_hash=anchor_hash,
+                prompt=character_prompt, extra={"role": "reference"})
+        except Exception:
+            pass
 
         # 2. Each pose derives from the reference - same fighter, new stance.
         # ANCHOR + ROLLING conditioning: every edit carries (a) the character
@@ -4847,6 +4863,13 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                             if not got.get("ok") else _reference_sanity(view_png))
             if ok_view:
                 views.append(view_png)
+                try:
+                    _framegate.write_provenance(
+                        view_png, anchor_hash=anchor_hash,
+                        prompt=angle, extra={"role": "model_sheet_view",
+                                            "view": label})
+                except Exception:
+                    pass
             else:
                 result.setdefault("model_sheet_dropped", []).append(
                     {"view": label, "reason": why})
@@ -4879,6 +4902,12 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 prev_frame = out_png
                 if anim not in anim_first:
                     anim_first[anim] = out_png
+                try:
+                    _framegate.write_provenance(
+                        out_png, anchor_hash=anchor_hash, prompt=str(desc),
+                        extra={"role": "pose", "pose": pname})
+                except Exception:
+                    pass
                 # Register each pose as a candidate the moment it exists: the
                 # Assets gallery streams the batch live (reviewable mid-run)
                 # instead of going dark for a 30-minute silent mega-call.
@@ -4963,8 +4992,17 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             # resize cannot fix.
             fixed = _spritekit.normalise_heights(
                 [p for p, _ in pose_files], pose_path)
+            # ITEMS 2/3 — PROVENANCE REFUSAL. A frame whose sidecar disagrees
+            # with (or is missing against) the CURRENT anchor is dropped from
+            # the stitch rather than trusted - this is what stops a stale
+            # 05:xx frame from a since-replaced anchor riding in next to
+            # clean 08:xx frames just because it still sat in the folder.
+            stale = _framegate.stale_frames(
+                {p: pose_path[p] for p in pose_order}, anchor_hash)
+            stale_names = {s["name"] for s in stale}
+            usable_order = [p for p in pose_order if p not in stale_names]
             asm = _sp.from_pose_images(
-                [(p, pose_path[p]) for p in pose_order],
+                [(p, pose_path[p]) for p in usable_order],
                 out_dir=str(root / ".bgate_out" / "sprites"), name=name,
                 frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps,
                 ref_path=ref_path, timing=timing or None,
@@ -4973,6 +5011,10 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 pad=max(0, int(sheet_padding)))
             asm.setdefault("failed", [])
             asm["failed"].extend(pose_errors)
+            asm["failed"].extend(
+                {"name": s["name"], "error": f"stale provenance - {s['reason']}"}
+                for s in stale)
+            asm["provenance"] = {"anchor_hash": anchor_hash, "stale": stale}
             asm.setdefault("palette", {})["mode"] = lock_mode
             asm["palette"]["why"] = lock_why
             cons = {"ok": False}
@@ -5036,6 +5078,13 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 # Re-roll WITH the rolling refs, not the bare anchor - keep motion
                 # continuity while the gate chases identity (see _rolling_refs).
                 _edit_pose(pose_desc[pname], _rolling_refs(pname), pose_path[pname])
+                try:
+                    _framegate.write_provenance(
+                        pose_path[pname], anchor_hash=anchor_hash,
+                        prompt=pose_desc[pname],
+                        extra={"role": "pose", "pose": pname, "reroll": True})
+                except Exception:
+                    pass
             asm2, cons2 = _assemble_and_gate()
             new_min = cons2.get("min") if cons2.get("ok") else None
             # Better means: the judge's floor rose, or, when the judge sat
@@ -5191,6 +5240,40 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                     "The sheet and preview were kept for inspection but MUST NOT be "
                     "installed as-is - tighten character_prompt on the drifting "
                     "detail, or lower the floor if this is as good as the model gets.")
+
+            # ITEM 1/5/6 — THE IDENTITY GATE. Arithmetic, no model call: every
+            # frame vs THIS character's own anchor (silhouette ratio, palette
+            # distance, translucency/second-head/component-count ghosts, and
+            # for a prop subject, limb-growth). This is what the vision judge
+            # above (consistency, `_vision_consistency`) cannot be trusted to
+            # catch alone - it sat out with no key on the EXIT 67 build and
+            # every other gate downstream of it (sprite_sheet_check,
+            # consistency_check) still passed a wrong character's frames.
+            frame_gate = _framegate.gate_sheet(
+                frame_map, ref_path, subject_class=subject_class,
+                cycles={anim: [p for p in pose_order
+                              if p.split("/", 1)[0] == anim]
+                       for anim in anim_counts})
+            assembled["frame_gate"] = frame_gate
+            try:
+                _artifacts.record_check(_root(), assembled["sheet"],
+                                        "frame_gate",
+                                        {"ok": frame_gate["ok"],
+                                         "failed": frame_gate["failed"]})
+            except Exception:
+                pass
+            if gate and not frame_gate["ok"]:
+                assembled["ok"] = False
+                assembled["stage"] = "frame_gate"
+                assembled["error"] = (
+                    f"{len(frame_gate['failed'])}/{len(frame_gate['frames'])} "
+                    f"frames disagree with {name!r}'s own anchor: "
+                    f"{', '.join(frame_gate['failed'])}. Per-frame checks are in "
+                    "frame_gate.frames[<pose>].checks - each names which check "
+                    "fired and the measured value. The sheet and preview were "
+                    "kept for inspection but MUST NOT be installed as-is. Pass "
+                    "gate=False to ship anyway (never do this for a sheet you "
+                    "have not looked at).")
 
             # The .aseprite master, built whether or not a gate flipped ok -
             # a flagged sheet is exactly the one somebody opens to fix by
@@ -8835,7 +8918,8 @@ def _evidence_gate(root: str, item_id: int, evidence: str) -> Optional[dict]:
 
 
 @_tool
-def queue_reopen(item_id: int, reason: str) -> dict:
+def queue_reopen(item_id: int, reason: str,
+                 frame_verdicts: Annotated[Optional[dict], Field(description='A framegate.gate_sheet() result (image_sprites result["frame_gate"]) - appended as a per-frame breakdown (pose, which check fired, measured value) so the reopened agent knows WHICH frames, not just "something is wrong".')] = None) -> dict:
     """Send a done/failed item back to 'queued' for another round.
 
     The QA gate's FAIL path: reason is the ranked nitpick list, APPENDED to the
@@ -8855,7 +8939,8 @@ def queue_reopen(item_id: int, reason: str) -> dict:
         raise ValueError(
             f"item {item_id} is {item['status']!r} - only done/failed "
             "items can be reopened")
-    return _q.reopen(root, item_id, (reason or "").strip())
+    return _q.reopen(root, item_id, (reason or "").strip(),
+                     frame_verdicts=frame_verdicts)
 
 
 @_tool
