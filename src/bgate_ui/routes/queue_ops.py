@@ -144,6 +144,31 @@ def queue_cancel(item_id: int, payload: Optional[dict] = None) -> dict:
     return api.ok(result, agent_stopped=bool(stopped.get("ok")))
 
 
+@router.post("/api/queue/{item_id:int}/park")
+def queue_park(item_id: int, payload: Optional[dict] = None) -> dict:
+    """Take a live item off the board without cancelling it — see queue.park.
+    A live agent is killed first, same as cancel: parking work an agent is
+    still running on would just leave that run orphaned."""
+    item = _item(item_id)
+    reason = (payload or {}).get("reason", "")
+    stopped = _dispatch.stop(item_id) if item["status"] == "dispatched" else {}
+    try:
+        result = _queue.park(root(), item_id, reason)
+    except ValueError as exc:
+        raise api.bad_request(str(exc), item_id=item_id)
+    return api.ok(result, agent_stopped=bool(stopped.get("ok")))
+
+
+@router.post("/api/queue/{item_id:int}/unpark")
+def queue_unpark(item_id: int) -> dict:
+    """Put a parked item back on the board as 'queued' — see queue.unpark."""
+    _item(item_id)
+    try:
+        return api.ok(_queue.unpark(root(), item_id))
+    except ValueError as exc:
+        raise api.bad_request(str(exc), item_id=item_id)
+
+
 @router.get("/api/queue/{item_id:int}/diff")
 def queue_diff(item_id: int, path: Optional[str] = None) -> dict:
     """What the run actually changed, per file, since its base commit."""

@@ -4567,6 +4567,46 @@ without re-running the gate itself. A clean gate (nothing failed) adds
 nothing.
 ```
 
+## queue_park
+
+```text
+Take a live item OFF the board without cancelling it.
+
+Parking existed only as a human writing raw SQL UPDATEs on work_item, 18
+rows at a time, because there was no status between "still queued" and
+"cancelled forever" - and 'cancelled' reads as work that is DONE being
+considered, which parked work is not.
+
+A parked item is invisible to both dispatchers (ready(), a worker's
+queue_claim_next) exactly the way any non-'queued' status is, so nothing
+auto-dispatches it and nothing flags it as stalled - it simply is not on
+the board until queue_unpark puts it back. Refuses on an already-terminal
+status (done/cancelled/parked): those are not "on the board" in the sense
+parking is for.
+```
+
+## queue_unpark
+
+```text
+Put a parked item back on the board, as 'queued'.
+
+Always returns to 'queued' rather than whatever status it was parked
+from (dispatched, integrating): the agent that was running it is long
+gone by the time anyone gets around to unparking, so there is no run to
+resume - only work to dispatch again.
+```
+
+## queue_cancel
+
+```text
+A human calling work off for good.
+
+Distinct from queue_park (parked work may come back with no re-filing)
+and from stopping a live agent (that ends a running process; this is for
+work that should simply never run, live or not). Refuses if the item is
+already done or cancelled.
+```
+
 ## queue_update
 
 ```text

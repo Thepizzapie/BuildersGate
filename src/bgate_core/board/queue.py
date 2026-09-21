@@ -29,7 +29,14 @@ from ..store.util import rows
 # and under the builder's gate (bgate_core.board.gates) a human has not yet said yes.
 # It is deliberately NOT 'done' — a chain must not advance on unapproved work —
 # and deliberately not 'dispatched', which would claim an agent is still running.
-STATUSES = ("queued", "dispatched", "integrating", "review", "done", "failed", "cancelled")
+# 'parked' — ITEM 26 (EXIT 67). A human wants this OFF the board without
+# calling it dead: parking 18 items the night this was found took raw SQL
+# UPDATEs on work_item because there was no status between "still queued" and
+# "cancelled forever". Unlike 'cancelled' it is meant to come BACK (unpark);
+# unlike 'queued' it is never auto-dispatched or counted as ready — see
+# ready()'s exclusion below.
+STATUSES = ("queued", "dispatched", "integrating", "review", "done", "failed",
+           "cancelled", "parked")
 
 # Statuses a dependent item is allowed to start on top of. 'review' is not one
 # of them: the whole point of the hold is that the next link waits.
@@ -507,6 +514,41 @@ def _with_observed_writes(root, item_id: int, status: str, result: str) -> str:
     return (result.rstrip() + "\n\n" + observed) if result.strip() else observed
 
 
+# Statuses that mean "this item no longer has a live agent working it" —
+# LEASES DIE WITH THE PROCESS, not with their own timer. See _release_leases.
+_LEASE_RELEASING_STATUSES = ("done", "review", "failed", "cancelled",
+                             "integrating", "parked")
+
+
+def _release_leases(root: str | os.PathLike[str], item_id: int) -> None:
+    """Drop every path lease this item's execution holds.
+
+    MEASURED (EXIT 67, item 22): item #6 closed and left 12 ``path_lease`` rows
+    live until 18:48 — #60 was refused for an hour ("file_leased by item-6")
+    until a human deleted them by hand. ``assets.release_path_leases`` already
+    existed and nothing ever called it; a lease's own expiry (minutes) was the
+    only thing that ever cleared it, and a run that finished early left its
+    leases outliving it by however long was left on the clock.
+
+    Called from the ONE function every completion, kill and stop funnels
+    through, so it fires exactly once per transition into a resting state
+    regardless of which of those three paths caused it. Best-effort: a lease
+    store that will not read or write must not stop the status write it is
+    reacting to.
+    """
+    try:
+        from ..store import assets as _assets
+
+        released = _assets.release_path_leases(root, f"item-{item_id}")
+        if released:
+            activity.log(root, "queue",
+                         f"item {item_id}: released {released} stale path "
+                         f"lease(s) held by this item on completion",
+                         ref=str(item_id))
+    except Exception:                                             # noqa: BLE001
+        pass
+
+
 def set_status(root: str | os.PathLike[str], item_id: int, status: str,
                result: str = "") -> dict:
     if status not in STATUSES:
@@ -522,6 +564,8 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
     item = get(root, item_id)
     activity.log(root, "queue", f"item {item_id} -> {status}: {item['title'][:60]}",
                  seat=item["seat"], ref=str(item_id))
+    if status in _LEASE_RELEASING_STATUSES:
+        _release_leases(root, item_id)
     _notify(root, item)
     iteration_id = None
     conn = db.connect(root)
@@ -1280,6 +1324,73 @@ def was_stopped(item: dict) -> bool:
     return bool((item or {}).get("stopped_by"))
 
 
+def park(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
+    """Take a queued/dispatched item OFF the board without calling it dead.
+
+    ITEM 26 (EXIT 67). Parking 18 items the night this was found took raw SQL
+    UPDATEs on ``work_item`` because there was nothing between "still queued"
+    and "cancelled forever" — and 'cancelled' reads, to reopen() and every
+    chain/gate query, as work that is DONE being considered, which parked work
+    is not. ``ready()`` excludes 'parked' the same way it excludes any other
+    non-'queued' status, so a parked item is simply invisible to both
+    dispatchers until unpark() puts it back.
+
+    Refuses on a terminal status (done/failed/cancelled/parked already) —
+    those are not "on the board" in the sense parking is for, and calling
+    unpark() on them would silently resurrect finished or already-cancelled
+    work.
+    """
+    item = get(root, item_id)
+    if item["status"] in ("done", "cancelled", "parked"):
+        raise ValueError(f"item {item_id} is already {item['status']!r} — "
+                         "parking only applies to live board work")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("reason is required — say why this is parked")
+    prior_status = item["status"]
+    with db.tx(root) as conn:
+        conn.execute(
+            "UPDATE work_item SET status = 'parked', "
+            "updated_at = datetime('now') WHERE id = ?", (item_id,))
+    _release_leases(root, item_id)
+    item = get(root, item_id)
+    activity.log(root, "queue",
+                 f"item {item_id} parked (was {prior_status}): {reason[:120]}",
+                 seat=item["seat"], ref=str(item_id))
+    _emit(root, "item.parked", ref=str(item_id),
+          payload={**_item_event_payload(item), "reason": reason,
+                   "prior_status": prior_status})
+    return item
+
+
+def unpark(root: str | os.PathLike[str], item_id: int) -> dict:
+    """Put a parked item back on the board, as 'queued'.
+
+    Always returns to 'queued' rather than whatever it was parked from
+    (dispatched, integrating): the agent that was running it is long gone by
+    the time a human gets around to unparking, so there is no run to resume —
+    only work to dispatch again.
+    """
+    item = get(root, item_id)
+    if item["status"] != "parked":
+        raise ValueError(f"item {item_id} is {item['status']!r}, not parked")
+    return set_status(root, item_id, "queued",
+                      result="unparked — back on the board")
+
+
+def cancel(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
+    """A human calling work off for good — distinct from park (may come back)
+    and from stop() (an agent was killed mid-run; this is for work that never
+    got that far, or that a human has decided not to run at all).
+    """
+    item = get(root, item_id)
+    if item["status"] in ("done", "cancelled"):
+        raise ValueError(f"item {item_id} is already {item['status']!r}")
+    reason = (reason or "").strip()
+    said = reason or f"cancelled by {activity.current_actor() or 'the dashboard'}"
+    return set_status(root, item_id, "cancelled", result=said)
+
+
 def awaiting_review(root: str | os.PathLike[str]) -> list[dict]:
     """What the human owes an answer on, oldest first — a drain list."""
     return rows(db.connect(root).execute(
@@ -1623,6 +1734,20 @@ def claim_next(root: str | os.PathLike[str], seat: str,
                      seat=seat, ref=str(item["id"]))
         return item
     return None
+
+
+def claimed_by(root: str | os.PathLike[str], actor: str) -> list[dict]:
+    """Every item this execution ever claimed via queue_claim_next, in ANY
+    status — unlike claimed_open, which only sees the still-open ones.
+
+    ITEM 32 (EXIT 67): the harness's auto-commit wrote "item #N" for whichever
+    item the run was DISPATCHED on, even when that run went on to claim and
+    complete several more (#13, #44, ...) whose files landed in the same
+    commit under the wrong number. This is how a caller finds every id that
+    commit should have named.
+    """
+    return rows(db.connect(root).execute(
+        "SELECT * FROM work_item WHERE actor = ? ORDER BY id", (str(actor or ""),)))
 
 
 def claimed_open(root: str | os.PathLike[str], actor: str) -> list[dict]:
