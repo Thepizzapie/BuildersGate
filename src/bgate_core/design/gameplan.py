@@ -348,13 +348,22 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
 
     return {
         "window_hours": int(hours),
-        "finished": [{"id": r["id"], "seat": r["seat"], "title": r["title"][:90]}
+        # ITEM 34 (EXIT 67): #19 reopened #13, and the digest's "finished"
+        # line read #13 as done with no way to tell that from the ORIGINAL
+        # close — the redispatch had already landed by the time anyone
+        # checked, so "#13 done" was read as the first attempt succeeding.
+        # `attempts` is on every bucket now, not just `failed`, and a caller
+        # composing "#13 done" should say "#13 done (attempt N)" whenever
+        # N > 1 — see queue.reopen, which is the only thing that increments it.
+        "finished": [{"id": r["id"], "seat": r["seat"], "title": r["title"][:90],
+                     "attempts": int(r["attempts"] or 0)}
                      for r in done[:25]],
         "failed": [{"id": r["id"], "seat": r["seat"], "title": r["title"][:90],
                     "attempts": int(r["attempts"] or 0),
                     "why": str(r["result"] or "")[:200]} for r in failed[:25]],
         "awaiting_you": [{"id": r["id"], "seat": r["seat"],
-                          "title": r["title"][:90]} for r in review[:25]],
+                          "title": r["title"][:90],
+                          "attempts": int(r["attempts"] or 0)} for r in review[:25]],
         "counts": {"finished": len(done), "failed": len(failed),
                    "in_review": len(review), "still_queued": len(still_queued),
                    "running": len(running)},

@@ -341,6 +341,24 @@ class TestDigest:
         from bgate_core.design import gameplan as gp
         assert gp.digest(root)["blocked"] == ""
 
+    def test_finished_carries_the_attempt_count_item_34(self, root):
+        """MEASURED (EXIT 67): #19 reopened #13, and the digest's finished
+        line read #13 as done with no way to tell that from the first close —
+        `attempts` must be on 'finished' and 'awaiting_you' too, not just
+        'failed', so "#13 done" can read "#13 done (attempt 2)"."""
+        from bgate_core.design import gameplan as gp
+
+        item = queue.add(root, "tech", "flaky", brief="x")
+        queue.set_status(root, item["id"], "failed", result="broke")
+        queue.reopen(root, item["id"], "fix the null check")
+        queue.set_status(root, item["id"], "done", result="fixed")
+
+        got = gp.digest(root)
+        row = next(f for f in got["finished"] if f["id"] == item["id"])
+        assert row["attempts"] == 1, (
+            "queue.reopen incremented attempts; the digest must expose it"
+        )
+
 
 class TestPaidPathsPreflightTheAccount:
     """There is no budget to ask. What every paid path must still do is ask

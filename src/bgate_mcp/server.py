@@ -1342,13 +1342,20 @@ def project_select(project: str = "") -> dict:
     Full notes: docs/tools.md#project_select
     """
     known = _project.known_projects()
+    missing = _project.missing_registered()
     if not project:
         active = None
         try:
             active = _root()
         except Exception:
             pass
-        return {"active": active, "known": known}
+        out = {"active": active, "known": known}
+        if missing:
+            # ITEM 33: a registered path that no longer resolves (deleted, a
+            # temp scaffold dir that was cleaned up, an unplugged drive) used
+            # to just vanish from `known` with nothing said about it.
+            out["missing"] = missing
+        return out
     root = known.get(project, project)  # name wins, else treat as a path
     if not (_Path(root) / _db.DB_DIRNAME / _db.DB_FILENAME).exists():
         raise LookupError(
@@ -1400,15 +1407,22 @@ def project_status() -> dict:
         "facts": conn.execute("SELECT count(*) FROM canon_fact").fetchone()[0],
         "links": conn.execute("SELECT count(*) FROM lore_link").fetchone()[0],
     }
-    return {"project": _project.get(root), "root": root, "counts": counts,
-            # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
-            # sprite sheet go" has an answer nothing on any surface states,
-            # and the honest one - a directory under ~/.bgate that was
-            # created for you - is not a place anyone would think to look.
-            "scratch": _project.is_scratch(root),
-            # WHICH WORLD. The first thing an agent should know about a tree
-            # that has carried two of everything.
-            "canon": _canon_summary(root)}
+    missing = _project.missing_registered()
+    out = {"project": _project.get(root), "root": root, "counts": counts,
+           # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
+           # sprite sheet go" has an answer nothing on any surface states,
+           # and the honest one - a directory under ~/.bgate that was
+           # created for you - is not a place anyone would think to look.
+           "scratch": _project.is_scratch(root),
+           # WHICH WORLD. The first thing an agent should know about a tree
+           # that has carried two of everything.
+           "canon": _canon_summary(root)}
+    if missing:
+        # ITEM 33 (EXIT 67): a registered path that no longer exists (a Temp
+        # scaffold dir, a deleted checkout) used to just be silently dropped
+        # from every listing that filters on disk presence.
+        out["registered_but_missing"] = missing
+    return out
 
 
 def _canon_summary(root) -> dict:
@@ -8856,6 +8870,41 @@ def queue_reopen(item_id: int, reason: str) -> dict:
             f"item {item_id} is {item['status']!r} - only done/failed "
             "items can be reopened")
     return _q.reopen(root, item_id, (reason or "").strip())
+
+
+@_tool
+def queue_park(item_id: int, reason: str) -> dict:
+    """Take a live item OFF the board without cancelling it.
+
+    ITEM 26 (EXIT 67): parking work used to mean a human writing raw SQL
+    UPDATEs on work_item, 18 rows at a time, because there was no status
+    between "still queued" and "cancelled forever". A parked item is invisible
+    to both dispatchers (ready(), claim_next) until queue_unpark brings it
+    back. Refuses on an already-terminal status.
+    Full notes: docs/tools.md#queue_park
+    """
+    from bgate_core.board import queue as _q
+    return _q.park(_root(), item_id, (reason or "").strip())
+
+
+@_tool
+def queue_unpark(item_id: int) -> dict:
+    """Put a parked item back on the board as 'queued'.
+    Full notes: docs/tools.md#queue_unpark
+    """
+    from bgate_core.board import queue as _q
+    return _q.unpark(_root(), item_id)
+
+
+@_tool
+def queue_cancel(item_id: int, reason: str = "") -> dict:
+    """A human calling work off for good — distinct from queue_park (may come
+    back) and from stopping a live run (that is a kill; this is for work that
+    should simply never run).
+    Full notes: docs/tools.md#queue_cancel
+    """
+    from bgate_core.board import queue as _q
+    return _q.cancel(_root(), item_id, (reason or "").strip())
 
 
 @_tool
