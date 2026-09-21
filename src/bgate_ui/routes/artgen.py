@@ -24,7 +24,6 @@ from bgate_core.store import artifacts as _artifacts
 from bgate_core.art import chroma as _chroma
 from bgate_core.runtime import providers as _providers
 from bgate_core.art import refs as _refs
-from bgate_ui import api
 from bgate_ui.deps import root
 from bgate_ui.routes import jobs as _jobs
 

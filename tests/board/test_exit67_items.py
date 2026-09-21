@@ -111,8 +111,8 @@ class TestItem24SeatCap:
 # --------------------------------------------------------------------------
 class TestItem25PriorityOrder:
     def test_the_highest_priority_ready_item_dispatches_first(self, root, monkeypatch):
-        low = queue.add(root, "tech", "low", brief="x", priority=84)
-        mid = queue.add(root, "tech", "mid", brief="x", priority=87)
+        queue.add(root, "tech", "low", brief="x", priority=84)
+        queue.add(root, "tech", "mid", brief="x", priority=87)
         high = queue.add(root, "art", "high", brief="x", priority=94)
 
         sent_order = []

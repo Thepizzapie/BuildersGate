@@ -4,7 +4,6 @@ looking for somebody else's process when the process was its own.
 """
 from __future__ import annotations
 
-import os
 
 import pytest
 

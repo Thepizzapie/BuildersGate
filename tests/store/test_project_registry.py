@@ -1,7 +1,5 @@
 """register() must never lose the projects it did not touch."""
 import json
-import os
-from pathlib import Path
 
 from bgate_core.store import project
 
@@ -107,7 +105,7 @@ class TestItem33MissingRegistered:
     def test_missing_registered_is_empty_once_the_folder_is_real(
         self, tmp_path, monkeypatch
     ):
-        reg = _registry(monkeypatch, tmp_path)
+        _registry(monkeypatch, tmp_path)
         game = tmp_path / "game3"
         _make_project(game)
         project.register(game, "game3")
