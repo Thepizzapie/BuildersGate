@@ -7011,6 +7011,14 @@ def pending_decisions(limit: int = 40) -> dict:
         questions = _steerbox.open_questions(root)[:cap]
     except Exception:
         questions = []
+    try:
+        # GRIPE 39b(1). Its own list, not a filter the caller has to run: a
+        # question addressed to the director is waiting on the LIVE SESSION,
+        # not on the human reading this — surfacing it separately (with age)
+        # is what lets a human tell "the director owes this" from "I do".
+        questions_for_director = _steerbox.questions_for_director(root)[:cap]
+    except Exception:
+        questions_for_director = []
 
     state = _gatemode.state(root)
     total = len(parked) + len(candidates) + len(questions)
@@ -7020,6 +7028,7 @@ def pending_decisions(limit: int = 40) -> dict:
         "blocked_chains": parked,
         "candidates": candidates,
         "questions": questions,
+        "questions_for_director": questions_for_director,
         "total": total,
         "note": (
             "nothing is waiting on a human" if not total else
@@ -7936,8 +7945,19 @@ def queue_get(item_id: int) -> dict:
     The other half of queue_list's preview: scan the board with the list, read
     the one item you are about to act on with this.
     """
-    from bgate_core.board import queue as _q
-    return _q.get(_root(), int(item_id))
+    from bgate_core.board import agentreg as _agentreg, queue as _q
+
+    root = _root()
+    item = _q.get(root, int(item_id))
+    # Item 31c: per-run cost history, oldest first. Named 'attempts_detail'
+    # rather than 'attempts' — that key is already the round COUNTER
+    # (work_item.attempts, an int every caller in this codebase reads as a
+    # number) and overwriting it with a list would break every one of them.
+    try:
+        item["attempts_detail"] = _agentreg.runs_for_item(root, int(item_id))
+    except Exception:                                             # noqa: BLE001
+        item["attempts_detail"] = []
+    return item
 
 
 @_tool
@@ -8200,6 +8220,12 @@ def board_digest(hours: int = 12) -> dict:
 
     root = _root()
     out = _gameplan.digest(root, hours=int(hours))
+    try:
+        from bgate_core.board import steerbox as _steerbox
+
+        out["questions_for_director"] = _steerbox.questions_for_director(root)
+    except Exception:                                             # noqa: BLE001
+        out["questions_for_director"] = []
     try:
         from bgate_core.design import greenlight as _gl
 

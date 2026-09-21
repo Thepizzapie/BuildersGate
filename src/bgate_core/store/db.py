@@ -2257,6 +2257,18 @@ _MIGRATIONS: list = [
 
     # 0046 - Chaos completion parks the branch here until Director merge.
     _work_item_add_integrating_status,
+
+    # 0054 — EXIT 67 refinement, item D: the small fast lane.
+    #
+    # ``wants_qa_agent_for`` (bgate_core.board.gates) needs to know an item is
+    # SMALL before it can skip the auto-QA reviewer for it, and nothing on
+    # work_item said so. '' (the default) is not a size — it means "nobody
+    # sized this", and only an item EXPLICITLY marked 'small' with a passing
+    # check named in its own result qualifies for the fast lane; an unsized
+    # item still gets the ordinary gate.
+    """
+    ALTER TABLE work_item ADD COLUMN size TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

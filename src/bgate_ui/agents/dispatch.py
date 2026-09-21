@@ -1771,8 +1771,69 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
             _act.log(root, "dispatch",
                      f"item {item_id}: committed {len(made['committed'])} "
                      f"file(s) as {made['commit'][:8]}", ref=str(item_id))
+            _notify_peer_seats(root, item_id, made.get("committed") or [])
     except Exception:
         pass
+
+
+def _notify_peer_seats(root: str, item_id: int, committed_paths: list) -> None:
+    """GRIPE 39c. Warn every OTHER live agent whose seat lanes just moved.
+
+    THE GAP. An item's auto-commit can land inside another RUNNING agent's own
+    write_globs — two art items sharing ``game/assets/**``, say — and nothing
+    told the still-running one its files just changed under it. It kept
+    working off what it read at the start of its turn, and its own result
+    landed on top of the peer's, or contradicted it, with neither agent aware
+    the other had moved.
+
+    Read ``_live`` directly (not queue.list_items) because the question is
+    "which agents does THIS PROCESS actually have a pipe to steer", which is
+    exactly what ``_live`` is — see the module docstring on why steering has
+    to go through here rather than the MCP server.
+
+    Best-effort throughout: a steer that fails to post costs a peer a warning,
+    not the landing that triggered it.
+    """
+    if not committed_paths:
+        return
+    try:
+        from bgate_core.board import seats as _seats, steerbox as _steerbox
+    except Exception:
+        return
+    try:
+        roles = _seats.roles_for(root)
+    except Exception:
+        return
+    rel_paths = [str(p).replace("\\", "/").lstrip("/") for p in committed_paths]
+    for other_id, entry in list(_live.items()):
+        if int(other_id) == int(item_id):
+            continue
+        try:
+            if entry["proc"].poll() is not None:
+                continue
+        except Exception:
+            continue
+        other_seat = str(entry.get("seat") or "")
+        cfg = roles.get(other_seat) or {}
+        globs = cfg.get("write_globs") or []
+        if not globs:
+            continue
+        try:
+            hit = [p for p in rel_paths
+                   if any(_seats._glob_re(g).match(p) for g in globs)]
+        except Exception:
+            hit = []
+        if not hit:
+            continue
+        try:
+            _steerbox.post(
+                root, int(other_id),
+                f"peer #{item_id} landed {', '.join(hit[:5])}"
+                + (f" (+{len(hit) - 5} more)" if len(hit) > 5 else "")
+                + "; re-read before you write",
+                by="dispatch", note="peer-landing")
+        except Exception:
+            pass
 
 
 def _final_event(root: str, item_id: int) -> dict:

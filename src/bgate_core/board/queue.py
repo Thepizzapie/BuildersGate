@@ -132,7 +132,7 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
         chain_id: str = "", chain_pos: int = 0,
         depends_on: Optional[int] = None, chain_self: bool = False,
-        max_runtime_s: Optional[int] = None) -> dict:
+        max_runtime_s: Optional[int] = None, size: str = "") -> dict:
     # A `scope_tier_id` used to be filed here and run through scope.enforce
     # first — the cut line's one gate. It never refused an item in the product's
     # life: untiered work was deliberately allowed through, and nothing was ever
@@ -150,11 +150,12 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         cur = conn.execute(
             "INSERT INTO work_item (seat, title, brief, priority, source, "
             "source_ref, chain_id, chain_pos, depends_on, "
-            "max_runtime_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "max_runtime_s, size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (seat, title.strip(), brief, priority, source, source_ref,
              chain_id.strip(), int(chain_pos),
              int(depends_on) if depends_on is not None else None,
-             int(max_runtime_s) if max_runtime_s is not None else None),
+             int(max_runtime_s) if max_runtime_s is not None else None,
+             str(size or "").strip().lower()),
         )
         item_id = int(cur.lastrowid)
         if chain_self:
@@ -262,7 +263,8 @@ def get(root: str | os.PathLike[str], item_id: int) -> dict:
 def update(root: str | os.PathLike[str], item_id: int, *,
            title: Optional[str] = None, brief: Optional[str] = None,
            seat: Optional[str] = None, priority: Optional[int] = None,
-           max_runtime_s: Optional[int] = None) -> dict:
+           max_runtime_s: Optional[int] = None,
+           size: Optional[str] = None) -> dict:
     """Edit an existing item in place, without changing its status/lineage.
 
     This is how a reviewer enriches a ticket: e.g. the video-watching director
@@ -290,6 +292,8 @@ def update(root: str | os.PathLike[str], item_id: int, *,
         if int(max_runtime_s) <= 0:
             raise ValueError("max_runtime_s must be positive")
         sets.append("max_runtime_s = ?"); params.append(int(max_runtime_s))
+    if size is not None:
+        sets.append("size = ?"); params.append(str(size).strip().lower())
     if not sets:
         return get(root, item_id)
     params.append(item_id)
@@ -418,6 +422,9 @@ def _item_event_payload(item: dict) -> dict:
         "chain_id": item.get("chain_id") or "",
         "chain_pos": int(item.get("chain_pos") or 0),
         "attempts": int(item.get("attempts") or 0),
+        # Item 34 — the round THIS transition is (attempts is the count of
+        # PRIOR reopens, so the current pass is one more than that).
+        "attempt": int(item.get("attempts") or 0) + 1,
         "result": str(item.get("result") or "")[:400],
     }
 
@@ -520,7 +527,16 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
             (status, clip_result(result), item_id),
         )
     item = get(root, item_id)
-    activity.log(root, "queue", f"item {item_id} -> {status}: {item['title'][:60]}",
+    # Item 34 — THE ATTEMPT NUMBER, ON THE LANDING LINE. "item 13 -> done" and
+    # "item 13 -> done" (the fix round) read identically in the activity feed
+    # and in a completion event, so a human scanning either could not tell a
+    # first pass from the third without opening the item. attempts counts
+    # reopens, so the running attempt is attempts + 1 — only shown for the
+    # terminal statuses a completion actually reports.
+    attempt_note = (f" (attempt {int(item.get('attempts') or 0) + 1})"
+                    if status in ("done", "failed") else "")
+    activity.log(root, "queue",
+                 f"item {item_id} -> {status}{attempt_note}: {item['title'][:60]}",
                  seat=item["seat"], ref=str(item_id))
     _notify(root, item)
     iteration_id = None

@@ -97,7 +97,16 @@ def queue_stalled(seat: Optional[str] = None) -> dict:
 
 @router.get("/api/queue/{item_id:int}")
 def queue_item(item_id: int) -> dict:
-    return api.ok(_item(item_id))
+    item = _item(item_id)
+    # Item 31c — per-run cost history for the item card, under the total.
+    # 'attempts_detail' rather than 'attempts': that key is already the round
+    # counter (an int) every other reader of this row expects.
+    try:
+        from bgate_core.board import agentreg as _agentreg
+        item["attempts_detail"] = _agentreg.runs_for_item(root(), item_id)
+    except Exception:
+        item["attempts_detail"] = []
+    return api.ok(item)
 
 
 @router.patch("/api/queue/{item_id:int}")
