@@ -989,6 +989,22 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     blocked = _runners.preflight(runner, cwd, exe=exe)
     if blocked:
         return _refused("runner_unavailable", blocked, runner=runner.name)
+
+    # ITEM 13 — DOES THIS SEAT HAVE ANYWHERE TO SPEND, before it is spawned to
+    # try. MEASURED: Retro Diffusion ran dry ($0.11) on EXIT 67's night one;
+    # two Codex art runs stalled on it silently, each one burning a full turn
+    # to discover what this refuses in one dispatch-time read.
+    try:
+        from bgate_core.runtime import preflight as _preflight
+
+        drained = _preflight.check(root, str(item.get("seat") or ""))
+    except Exception:
+        drained = None
+    if drained:
+        return _refused(drained.get("code", "provider_drained"),
+                        drained.get("error", "no routable provider"),
+                        seat=item.get("seat") or "")
+
     native_images = _native_images(root, runner)
 
     log_dir = Path(root) / ".bgate" / "agents"

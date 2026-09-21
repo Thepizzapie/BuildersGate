@@ -129,6 +129,7 @@ LABELS: dict[str, str] = {
     "dispatch.auto_commit": "Commit completed agent work",
     "dispatch.isolation": "Use a separate worktree per agent",
     "dispatch.max_concurrent": "Concurrent agent limit",
+    "dispatch.default_max_paid_calls": "Paid-call budget per work item",
     "dispatch.model": "Default worker model",
     "dispatch.model_art": "Art worker model",
     "dispatch.max_turns": "Turn limit per agent",
@@ -200,6 +201,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.auto_commit": "Commit only the files changed by each completed agent run.",
     "dispatch.isolation": "Run each agent in a separate git worktree. Chaos mode always does this.",
     "dispatch.max_concurrent": "Maximum number of agent processes that may run at once.",
+    "dispatch.default_max_paid_calls": "Paid generation calls one work item may make before further spend is refused. A per-item override beats this.",
     "dispatch.model": "Model used by worker seats unless a seat-specific model is set.",
     "dispatch.model_art": "Model used by the art seat. Blank uses the default worker model.",
     "dispatch.max_turns": "Maximum assistant turns in one run. Set to 0 for no limit.",
@@ -425,6 +427,17 @@ SETTINGS: tuple[Setting, ...] = (
              "this, which is what stops a fan-out from eating the machine. "
              "Machine-writable would make it self-service: observed going from "
              "the 4 a human set to 9 and then 11 inside one run."),
+    Setting(
+        key="dispatch.default_max_paid_calls", group="Dispatch", kind=INT,
+        default=30, minimum=1, maximum=500,
+        store=("limits", "default_max_paid_calls"), human_only=True,
+        help="How many paid generation calls one work item may make before "
+             "chroma.generate and the audio generators refuse further spend "
+             "with budget_exceeded_item. MEASURED: EXIT 67 death frames were "
+             "re-rolled at $0.05-0.10 each with no ceiling; two items reached "
+             "$7.67 and $10.10 before a human killed the agent by hand. "
+             "queue_add / queue_update can set a per-item override "
+             "(max_paid_calls) that beats this default."),
     Setting(
         key="dispatch.model", group="Dispatch", kind=STRING, default="sonnet",
         store=("registry", "dispatch.model"), scope=MACHINE,

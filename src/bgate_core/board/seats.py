@@ -2142,6 +2142,7 @@ def _fit(payload: dict) -> dict:
             for ref in (payload.get("pinned_refs") or [])[:limit]]
 
     steps = [
+        lambda: payload.__setitem__("providers", (payload.get("providers") or [])[:4]),
         lambda: trim_bible(300),
         lambda: trim_refs(20),
         lambda: payload.__setitem__("approved_artifacts",
@@ -2166,8 +2167,16 @@ def _fit(payload: dict) -> dict:
             return payload
     # THE LADDER RAN OUT AND THE PAYLOAD IS STILL OVER. That used to return
     # anyway, which is how a ceiling that every caller trusted became a
-    # suggestion. The bible is the only field left big enough to matter, so it
-    # goes down to a table of contents; a seat that needs prose has bible_read.
+    # suggestion. Providers is the cheapest thing left to drop entirely -
+    # provider_status pages the same facts - so it goes before the bible
+    # gets cut down to a table of contents; a seat that needs prose has
+    # bible_read.
+    if payload.get("providers"):
+        payload["providers"] = []
+        if size() <= BRIEF_CHARS:
+            return payload
+    # The bible is the only field left big enough to matter, so it goes down
+    # to a table of contents; a seat that needs prose has bible_read.
     #
     # The row is rebuilt rather than having its body blanked, because blanking
     # the body left 10,038 characters of id/rank/version/created_at/updated_at
@@ -2365,6 +2374,16 @@ def _stage_block(root: str | os.PathLike[str], role: str) -> dict:
     }
 
 
+def _providers_for_brief(root: str | os.PathLike[str], role: str) -> list[dict]:
+    """Best-effort, never blocks a brief on a probe. See runtime.preflight."""
+    try:
+        from ..runtime import preflight as _preflight
+
+        return _preflight.providers_brief(root, role)
+    except Exception:
+        return []
+
+
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
     """Everything a seat needs to start, BOUNDED.
 
@@ -2490,6 +2509,12 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                             MAX_LOCKS, "asset_status (others)"),
         "notes": notes,
         "board": cap(board, MAX_BOARD, "queue_list"),
+        # ITEM 13 — WHICH PROVIDER THIS SEAT'S SPEND ACTUALLY ROUTES TO,
+        # right in the brief. MEASURED: Retro Diffusion ran dry ($0.11) and
+        # two agents discovered it themselves, mid-run, instead of reading it
+        # here first. Empty for a seat with no paid capability (already
+        # bounded to <=12 rows by preflight.providers_brief).
+        "providers": _providers_for_brief(root, role),
         # WHAT THE PROJECT IS ALLOWED TO BE DOING YET, and the sentence the
         # whole game is built on. In the brief rather than left for a refusal
         # to teach: a seat that discovers the stage by being held reads it as
