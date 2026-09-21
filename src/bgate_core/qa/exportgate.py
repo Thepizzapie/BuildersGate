@@ -171,6 +171,6 @@ def unmet(root: str | os.PathLike[str], godot_project: str) -> list[dict]:
             tool="qa.exportgate.unmet",
             inputs={"godot_project": godot_project},
             measured={"diffs": got.get("diffs", 0), "at": got.get("at")},
-            clears_by=(f"fix the diffs godot_export_verify reported, "
-                       f"re-export, and re-run it against the new pck")))
+            clears_by=("fix the diffs godot_export_verify reported, "
+                       "re-export, and re-run it against the new pck")))
     return rows
