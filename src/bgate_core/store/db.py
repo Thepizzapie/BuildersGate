@@ -2391,6 +2391,29 @@ _MIGRATIONS: list = [
     ALTER TABLE work_item ADD COLUMN max_paid_calls INTEGER;
     ALTER TABLE work_item ADD COLUMN paid_calls INTEGER NOT NULL DEFAULT 0;
     """,
+
+    # 0052 - GRIPE 41 (EXIT 67 postmortem, 2026-09-21): tickets filed too broad
+    # spread one agent across a whole feature instead of one deliverable.
+    # `size` lets the harness pick a runtime/turn ceiling (runlimits.py) and
+    # `acceptance` is the one-sentence check a non-director filer must name -
+    # queue.brief_breadth() grades the brief itself against the same problem.
+    """
+    ALTER TABLE work_item ADD COLUMN size TEXT NOT NULL DEFAULT 'medium';
+    ALTER TABLE work_item ADD COLUMN acceptance TEXT NOT NULL DEFAULT '';
+    """,
+
+    # 0053 - GRIPE 40 (EXIT 67 postmortem, 2026-09-21): per-size effort budgets
+    # (runlimits.SIZE_LIMITS) are settable per project the same way
+    # max_runtime_s already was - these columns are NULL until a project
+    # overrides its default, same convention as run_limits' existing pair.
+    """
+    ALTER TABLE run_limits ADD COLUMN small_runtime_s INTEGER;
+    ALTER TABLE run_limits ADD COLUMN small_turns INTEGER;
+    ALTER TABLE run_limits ADD COLUMN medium_runtime_s INTEGER;
+    ALTER TABLE run_limits ADD COLUMN medium_turns INTEGER;
+    ALTER TABLE run_limits ADD COLUMN large_runtime_s INTEGER;
+    ALTER TABLE run_limits ADD COLUMN large_turns INTEGER;
+    """,
 ]
 
 

@@ -49,6 +49,23 @@ def test_a_persona_line_is_appended_when_the_seat_has_one(root, monkeypatch):
     assert "MANNER: terse, dry, exact." in dispatch._prompt_for(str(root), _item(root))
 
 
+def test_ask_director_is_the_default_and_the_prompt_says_ask_promptly(root):
+    """GRIPE 39(a) (EXIT 67 postmortem, 2026-09-21): agents asked questions
+    only at the end. The prompt must say to ask when the question arises and
+    that ask_director, not ask_human, is the default recipient."""
+    text = dispatch._prompt_for(str(root), _item(root))
+    assert "ASK WHEN THE QUESTION ARISES" in text
+    assert "ask_director is the DEFAULT recipient" in text
+    assert "ask_human ONLY for spend, deletion, or a ruling" in text
+
+
+def test_verify_then_stop_rule_is_in_the_prompt(root):
+    """GRIPE 40(d): once the named check passes, complete - further edits
+    are a new item, not more polish."""
+    text = dispatch._prompt_for(str(root), _item(root))
+    assert "ONCE THE NAMED CHECK PASSES, COMPLETE" in text
+
+
 def test_native_images_switch_the_image_policy(root):
     native = dispatch._prompt_for(str(root), _item(root, "art"), native_images=True)
     piped = dispatch._prompt_for(str(root), _item(root, "art"), native_images=False)
