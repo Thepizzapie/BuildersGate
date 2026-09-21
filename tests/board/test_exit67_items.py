@@ -135,7 +135,7 @@ class TestItem25PriorityOrder:
 # ITEM 26 — a 'parked' status distinct from cancelled.
 # --------------------------------------------------------------------------
 class TestItem26Parked:
-    def test_park_removes_the_item_from_ready_and_stalled(self, root):
+    def test_park_removes_the_item_from_ready(self, root):
         item = queue.add(root, "tech", "parkable", brief="x", priority=50)
         assert item["id"] in {r["id"] for r in queue.ready(root)}
 
@@ -143,7 +143,7 @@ class TestItem26Parked:
 
         assert queue.get(root, item["id"])["status"] == "parked"
         assert item["id"] not in {r["id"] for r in queue.ready(root)}
-        assert item["id"] not in {r["id"] for r in queue.stalled(root)}
+        assert queue.next_for(root, "tech") is None
 
     def test_unpark_returns_it_to_queued_and_ready(self, root):
         item = queue.add(root, "tech", "parkable", brief="x")
