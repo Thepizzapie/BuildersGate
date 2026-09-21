@@ -794,6 +794,30 @@ def _tool(fn: Optional[Callable] = None, *,
             # server start can name what the last one was holding instead of
             # the work being gone with no record it existed.
             flight_root = _root_hint()
+            # ITEM 9b — a HUMAN who rejected this tool's output three times in
+            # 24h is refused a fourth round from a dispatched seat, until a
+            # human clears it (tool_unlock's rejections_clear). Fail-open on
+            # any error and skip entirely for the director (_seat() unset):
+            # this is a brake on a spawned worker repeating a human's "no",
+            # never a way to lock the top-level session out of its own tools.
+            if flight_root and _seat():
+                try:
+                    from bgate_core.board import rejections as _rejections
+
+                    if _rejections.blocked(flight_root, fn.__name__):
+                        return {"ok": False, "refused": "human_rejections",
+                                "tool": fn.__name__, "seat": _seat(),
+                                "rejections": _rejections.recent(
+                                    flight_root, fn.__name__),
+                                "note": f"a human rejected {fn.__name__}'s "
+                                        "output 3+ times in the last 24h — "
+                                        "STOP AND ASK a human rather than "
+                                        "trying again. rejections_clear"
+                                        f"(tool='{fn.__name__}') unblocks it, "
+                                        "and only a human's own call should "
+                                        "make that call."}
+                except Exception:                                # noqa: BLE001
+                    pass
             flight = ""
             if flight_root:
                 try:
@@ -3087,6 +3111,9 @@ def item_variants(item_class: Annotated[str, Field(description='One of item_clas
 
 
 def _guide_image(result: dict) -> list[str]:
+    pages = (result or {}).get("guides_pages_abs")
+    if pages:
+        return list(pages)
     path = (result or {}).get("guides_png_abs")
     return [path] if path else []
 
@@ -3133,16 +3160,21 @@ def sprite_sheet_slice(image: str, out_dir: str = "", pad: int = 0,
 def sprite_sheet_check(image: str, columns: int, rows: int = 1,
                        labels: Optional[list[str]] = None,
                        row_labels: Optional[list[str]] = None,
-                       guides: bool = True) -> dict:
+                       guides: bool = True,
+                       review_px: int = _spritekit.REVIEW_MIN_PX) -> dict:
     """LOOK AT A GENERATED POSE ROW OR CHARACTER SHEET BEFORE SPENDING ANYTHING
     ELSE ON IT. Free - calls no model, buys nothing, changes nothing.
 
     Call it the moment a multi-figure image comes back. Returns named
     findings (foot_drift, head_drift, size_drift, size_ramp, facing_flip,
     stray_ink, empty_cell per row; sheet_size_drift, sheet_size_ramp,
-    band_palette across rows) plus an ANNOTATED COPY of the image. A ramp
-    means the drift is monotonic: re-rolling will not fix it - generate each
-    pose against ONE reference (image_sprites). Advisory, never a gate.
+    band_palette across rows) plus an ANNOTATED COPY of the image, upscaled so
+    every frame renders at `review_px` (default 300) pixels or more - a
+    contact sheet shown at ~150px/frame passed a translucent second head and
+    an upright rifle standing alone; a verdict on a thumbnail is not a review.
+    Wide sheets split into `guides_pages`, one per row band. A ramp means the
+    drift is monotonic: re-rolling will not fix it - generate each pose
+    against ONE reference (image_sprites). Advisory, never a gate.
     Full notes: docs/tools.md#sprite_sheet_check
     """
     root = _Path(_root())
@@ -3156,9 +3188,14 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
     if guides:
         out = src.with_name(f"{src.stem}_guides.png")
         drawn = _spritekit.draw_guides(src, int(columns), out, int(rows),
-                                 report=report)
+                                 report=report, review_px=int(review_px))
         report["guides_png"] = _assets.normalize_path(root, out)
         report["guides_png_abs"] = str(out)
+        report["guides_pages"] = [_assets.normalize_path(root, p)
+                                  for p in drawn.get("pages", [])]
+        report["guides_pages_abs"] = list(drawn.get("pages", []))
+        report["review_px"] = drawn.get("review_px")
+        report["frame_px"] = drawn.get("frame_px")
         report["guides_note"] = drawn["note"]
     if not report["flagged"]:
         report["note"] = (
@@ -3294,6 +3331,43 @@ def sprite_family_check(sheets: list, standing_px: int = 0,
                                        palette=colors)
     except (_spritefit.FitError, OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _concept_compare_image(result: dict) -> list[str]:
+    path = (result or {}).get("path")
+    return [path] if path and (result or {}).get("ok") else []
+
+
+@_tool(images=_concept_compare_image)
+def concept_compare(candidate: str, concept_ref: str, out_name: str = "") -> dict:
+    """ITEM 37 — the landing check for any art item: does this read as the
+    SAME GAME beside the pinned concept sheet. Composes `candidate` beside
+    `concept_ref` (a ref_pin name, kind='concept', or a raw path) at equal
+    height into one review image under .bgate_out/art/checks/, plus cheap
+    measured deltas: palette_distance, ink_density (candidate vs concept),
+    figure_height_ratio. Free, local, no model. Call it on every art landing
+    - the numbers are a reason to look harder, the verdict is made against
+    the composed image, never the numbers alone.
+    """
+    root = _root()
+    rel = _assets.normalize_path(_Path(root), candidate)
+    cand_path = _Path(root) / rel
+    if not cand_path.exists():
+        return {"ok": False, "error": f"no image at {rel}"}
+    try:
+        concept_path = _refs.resolve(root, concept_ref)
+    except Exception as exc:                                     # noqa: BLE001
+        return {"ok": False, "error": f"concept_ref {concept_ref!r} did not "
+                                      f"resolve: {exc}"}
+    if not concept_path or not _Path(concept_path).exists():
+        return {"ok": False, "error": f"no concept reference at {concept_ref!r} "
+                                      "- ref_pin it first (kind='concept')"}
+    name = out_name.strip() or f"{cand_path.stem}_vs_concept.png"
+    out = _art_out(root, f"checks/{_Path(name).name}")
+    try:
+        return _spritekit.concept_compare(cand_path, concept_path, out)
+    except Exception as exc:                                      # noqa: BLE001
+        return _fail(exc)
 
 
 @_tool
@@ -7365,6 +7439,27 @@ def decision_add(title: str, acceptance: str, leaves_dark: str,
 
 
 @_tool
+def board_focus_set(focus: str) -> dict:
+    """ITEM 36 — set/clear board.focus, the ONE biome/vertical slice the board
+    works to shippable before a second opens (a graybox-verdict-and-after
+    rule; nothing before it). Free text, e.g. "Canal vertical slice"; "" clears
+    it. Same authority as decision_add(state='settled') - a dispatched agent
+    narrowing its OWN scope authorises its own work, so this is a director/
+    human call, not a seat's. queue_add warns (never refuses) when a brief
+    names a different slice while this is set.
+    """
+    if _caller_is_agent():
+        return _fail(PermissionError(
+            f"{_actor() or 'an agent session'} may not set board.focus - "
+            "narrowing what the whole board works on is the director's call. "
+            "Say so in your result note; the director sets it."))
+    from bgate_core.store import project as _project
+
+    out = _project.set_focus(_root(), focus)
+    return {"ok": True, "focus": out.get("focus") or ""}
+
+
+@_tool
 def decision_list(state: Optional[str] = None,
                   work_item_id: Optional[int] = None) -> dict:
     """What this project has settled, newest first - each with its test.
@@ -8026,6 +8121,23 @@ def _near_duplicate(_q, title: str, seat: str) -> Optional[dict]:
     return best if best_j >= 0.5 else None
 
 
+def _focus_warning(root, title: str, brief: str) -> str:
+    """ITEM 36 — non-blocking nudge when a new brief names a different slice
+    than board.focus. Never refuses: the human's ruling was ONE biome at a
+    time, not a hard lock the harness enforces by rejecting filings."""
+    from bgate_core.store import project as _project
+
+    focus = _project.focus_of(root)
+    if not focus:
+        return ""
+    haystack = f"{title} {brief}".lower()
+    if focus.lower() in haystack:
+        return ""
+    return (f"board.focus is {focus!r} - this item does not name it. If it is "
+            "genuinely off-slice, that is the director's call to make with "
+            "eyes open, not a mistake to silently file.")
+
+
 @_tool
 def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
               depends_on: Optional[int] = None) -> dict:
@@ -8069,6 +8181,9 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
                   source=f"seat:{_seat() or 'unknown'}",
                   source_ref=own_item,
                   depends_on=depends_on)
+    focus_warning = _focus_warning(_root(), title, brief)
+    if focus_warning:
+        item = {**item, "focus_warning": focus_warning}
     if depends_on is None:
         return item
     # SAY WHAT THE BOARD WILL DO WITH IT. A caller that files a dependency
@@ -9578,6 +9693,21 @@ def tool_unlock(craft: str) -> dict:
             "note": ("" if added else
                      "nothing to add: already held, or switched off by the "
                      "project's modules")}
+
+
+@_tool
+def rejections_clear(tool: str) -> dict:
+    """Clear the 3-human-rejections block on `tool` (ITEM 9b) so dispatched
+    seats can call it again.
+
+    Human-only in intent, not just in name: call this after the human says
+    what actually changes, not to make a refused tool run again unchanged.
+    The refusal itself names the last 3 rejections (`rejections` in its
+    result) - read those before clearing. Returns {ok, tool, cleared: n rows}.
+    """
+    from bgate_core.board import rejections as _rejections
+
+    return _rejections.clear(_root(), tool, by=_activity.current_actor())
 
 
 def _install_tool_index() -> None:

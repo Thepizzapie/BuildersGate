@@ -642,11 +642,26 @@ def dispatch_rules(root: str | os.PathLike[str], seat: str) -> str:
     # the rule itself defers to - that is one place to look, and it is the place
     # that worked in the benchmark.
     mesh_route = art_mesh_route_rule(root) if seat == "art" else ""
+    stop_and_ask = ""
+    try:
+        from . import rejections as _rejections
+        blocked = _rejections.blocked_tools(root, seat)
+        if blocked:
+            # ITEM 9b — named tools, named count, right in the dispatch prompt:
+            # the whole failure was that nothing upstream of the human noticed
+            # three rejections in a row, and a brief that does not say so is
+            # exactly that silence again.
+            stop_and_ask = "STOP AND ASK — a human rejected " + "; ".join(
+                f"{b['tool']} ({b['count']}x)" for b in blocked) + \
+                " in the last 24h. Do not call it again; report the block and " \
+                "wait, rejections_clear() is a human's decision, not yours."
+    except Exception:                                             # noqa: BLE001
+        pass
     # The seat's OWN rules stay last, so an override file's text is the final
     # word on the prompt; the project's geometry route is a setting above it.
     return "\n\n".join(part for part in
-                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, mesh_route, own)
-                        if part)
+                        (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, mesh_route,
+                         stop_and_ask, own) if part)
 
 
 # ---------------------------------------------------------------------------
@@ -776,17 +791,20 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "and deliver is import PLUS the lit stand-up photo that "
                    "proves it landed. "
                    "CONSISTENCY IS ENFORCED, NEVER REQUESTED: pin the reference, "
-                   "condition every frame on it, measure the result. A model asked "
-                   "to stay on-model will not. LOOK at the frame before you call "
-                   "it done. UI IS ART TOO: every project gets its OWN title, menu, "
+                   "condition every frame on it, measure the result. Before "
+                   "reporting a sheet done, OPEN it and compare frame to frame "
+                   "against the pinned anchor (consistency_check / "
+                   "sprite_family_check) and paste that per-frame verdict into "
+                   "the result - a result with no per-frame line is an "
+                   "unverified claim and the QA gate reopens it. UI IS ART TOO: "
+                   "every project gets its OWN title, menu, "
                    "HUD and results look - generated concept frames, a logo, a "
                    "palette and a Theme derived from them - before any Control node "
                    "is laid out. The scaffold theme is a placeholder that must not "
                    "ship; a HUD that looks like the last project's is a defect. "
-                   "AND THE ENGINE'S VIEW IS THE EXPORTED PCK, not the editor run: "
-                   "verify delivered meshes and scene overrides in an export "
-                   "(godot_export_probe), because the export silently drops what the "
-                   "editor tolerates.",
+                   "AND THE ENGINE'S VIEW IS THE EXPORTED PCK: verify delivered "
+                   "meshes and scene overrides in an export (godot_export_probe), "
+                   "the export silently drops what the editor tolerates.",
         # Mesh-bearing scenes are ART's to write. Without these the seat that
         # owns every visible mesh could not touch the .tscn a primitive lives
         # in, and the director read that as "not art's job" (Hot Cargo,
@@ -1180,10 +1198,12 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "scene argument before any release claim. ONE RUN IS PROOF: a "
                    "gate runs each check once (one re-run for a known flake), never a "
                    "sweep, and it does not file re-pin or re-check items for other "
-                   "seats - a red assertion after someone's change is reported to the "
-                   "director in the verdict. A release gate probes the EXPORTED pck "
-                   "(godot_export_probe), because the export drops what the editor run "
-                   "tolerates.",
+                   "seats - a red assertion is reported to the director in the "
+                   "verdict. A release gate probes the EXPORTED pck "
+                   "(godot_export_probe). Art is reviewed frame by frame at "
+                   ">= 300px, never a contact-sheet thumbnail - a verdict on one "
+                   "is not a review; landing an art item calls concept_compare "
+                   "against the pinned concept sheet.",
         "write_globs": ["tests/**", "game/tests/**"],
         "workflow": (
             "QA PERSONA, be the picky owner, not a cheerleader. No participation "
@@ -1483,13 +1503,12 @@ DIRECTOR_PROTOCOL = (
     "sentence and offer the closest thing you CAN do, then do it.\n"
     "\n"
     "DO THE WORK OR DELEGATE IT, BOTH ARE LEGITIMATE. Delegation buys "
-    "parallelism and the QA gate; doing it yourself buys "
-    "immediacy and your own judgment. Reach for the board when the work is "
-    "parallel, long-running, or should be QA-gated: queue_add(seat, title, "
-    "brief) files it for a spawned agent holding that seat's toolset "
-    "(seat_list for the table). Do it yourself when the human asked you to, "
-    "when it is faster than writing the brief, or when a dispatched agent "
-    "already failed at it and you can see why.\n"
+    "parallelism and the QA gate; doing it yourself buys immediacy and your "
+    "own judgment. Reach for the board when the work is parallel, "
+    "long-running, or should be QA-gated: queue_add(seat, title, brief) files "
+    "it for a spawned agent holding that seat's toolset (seat_list). Do it "
+    "yourself when the human asked, when it is faster than writing the brief, "
+    "or when a dispatched agent already failed and you can see why.\n"
     "\n"
     "WHAT YOU DISPATCH, YOU WATCH. A dispatched item is your responsibility "
     "until it lands: check board_digest / queue_list, read a running agent "
@@ -1538,9 +1557,12 @@ DIRECTOR_PROTOCOL = (
     "\n"
     "EVIDENCE, NOT ASSERTION. A claim about a game is cashed with the harness: "
     "godot_check_project for a build, godot_run for headless truth, "
-    "godot_screenshot / godot_evidence for anything a player would SEE. If a "
-    "change is not visible in the running game, say that plainly rather than "
-    "letting a green test stand in for it.\n"
+    "godot_screenshot / godot_evidence for anything a player would SEE - a "
+    "change not visible in the running game is said plainly, never let a "
+    "green test stand in for it. Art is reviewed frame by frame at >= 300px "
+    "(sprite_sheet_check's review_px), never a thumbnail - a verdict on a "
+    "contact sheet is not a review; a translucent second head and an upright "
+    "rifle both passed at 150px/frame.\n"
     "\n"
     "LEAVE A THREAD AS YOU GO. handoff_note(kind, text, refs) records IN-FLIGHT "
     "state, 'state', 'decision' (with the reason), 'deferred' (and why), "
@@ -1551,6 +1573,11 @@ DIRECTOR_PROTOCOL = (
     "note rather than restating them. The one that pays for itself is "
     "'deferred', an unlabelled deferral is what the next agent finds and "
     "'fixes' as a bug.\n"
+    "\n"
+    "AFTER A GRAYBOX VERDICT, ONE SLICE AT A TIME. Three art seats stayed on "
+    "parallel biomes past a human order to focus - board_focus_set(name) "
+    "names the one being worked to shippable; queue_add warns (not refuses) "
+    "on a brief that names a different one while it is set.\n"
     "\n"
     "IF BGATE_SEAT IS SET in this environment you are NOT the director, you are "
     "a spawned seat worker, and seat_brief(<your role>) carries the identity "
