@@ -447,7 +447,21 @@ def _director_session_live(root: str | os.PathLike[str]) -> dict:
 def ask_director(root: str | os.PathLike[str], question: str, *,
                  refs: Optional[list] = None, item_id: int = 0,
                  by: str = "") -> dict:
-    """Put a question to the DIRECTOR SESSION. Refuses if there is not one."""
+    """Put a question to the DIRECTOR SESSION. Refuses if there is not one.
+
+    GRIPE 39b. This used to be a fire-and-forget: the text went straight into
+    the director's stdin and nothing else recorded that a question existed.
+    A director that was mid-thought, or simply slow, left the question
+    unseen by anything that reads the board — ``pending_decisions``,
+    ``board_digest``, the stale-question reminder — because none of them
+    knew this call had ever happened.
+
+    Now it is ALSO recorded as a QUESTION_KIND event (seat='director'), the
+    same row ``ask_human`` files, before the live delivery attempt. That is
+    what lets ``open_questions``/``pending_decisions``/``board_digest`` show
+    it, and what lets :func:`remind_stale_directors` escalate it if the
+    director never answers.
+    """
     live = _director_session_live(root)
     if not live["available"]:
         raise NoRecipient(
@@ -462,13 +476,15 @@ def ask_director(root: str | os.PathLike[str], question: str, *,
     from bgate_ui.agents import directorsession as _ds
 
     text = str(question or "").strip()
+    filed = ask(root, text, refs=refs, item_id=item_id, seat="director", by=by)
     cited = "".join(f"\n  - {str(r)[:160]}" for r in (refs or [])[:MAX_REFS])
     _ds.send(root, (f"QUESTION from {by or 'an agent'}"
                     + (f" working item #{item_id}" if item_id else "")
+                    + f" (event {filed['seq']})"
                     + f":\n\n{text}"
                     + (f"\n\nRefs:{cited}" if cited else "")))
     return {"ok": True, "delivered_to": "director", "live": True,
-            "session": live["detail"]}
+            "seq": filed["seq"], "session": live["detail"]}
 
 
 def ask_seat(root: str | os.PathLike[str], seat: str, question: str, *,
@@ -715,6 +731,83 @@ def stale_questions(root: str | os.PathLike[str],
               ).strftime("%Y-%m-%d %H:%M:%S")
     return [q for q in open_questions(root, limit=OPEN_LIMIT * 5)
             if q["asked_at"] and q["asked_at"] < cutoff and not q["reminded_at"]]
+
+
+def questions_for_director(root: str | os.PathLike[str],
+                           limit: int = OPEN_LIMIT) -> list[dict]:
+    """Open questions ADDRESSED TO THE DIRECTOR, oldest first, with their age.
+
+    GRIPE 39b(1). ``open_questions`` mixes every recipient together; a human
+    reading ``pending_decisions``/``board_digest`` could not tell "the
+    director owes an answer" from "I owe an answer" without opening each one.
+    This is that one slice, plus ``age_min`` computed here rather than left
+    for every caller to parse ``asked_at`` itself.
+    """
+    now = datetime.now(timezone.utc)
+    out = []
+    for q in open_questions(root, limit=limit):
+        if q.get("seat") != "director":
+            continue
+        age_min = 0.0
+        try:
+            asked = datetime.strptime(q["asked_at"], "%Y-%m-%d %H:%M:%S"
+                                      ).replace(tzinfo=timezone.utc)
+            age_min = round((now - asked).total_seconds() / 60.0, 1)
+        except (ValueError, TypeError):
+            pass
+        out.append({**q, "age_min": age_min})
+    return out
+
+
+# How long the director may stay silent before the human is pulled in. Much
+# shorter than the general ask_human reminder window (12h) — the director is a
+# live session on THIS project, not a person who might be asleep, so a real
+# silence past ten minutes means the session is stuck, not merely busy.
+DIRECTOR_STALE_MIN = 10.0
+
+
+def stale_director_questions(root: str | os.PathLike[str],
+                             minutes: float = DIRECTOR_STALE_MIN) -> list[dict]:
+    """Director questions unanswered past ``minutes`` that have no reminder yet."""
+    window = max(0.5, float(minutes or DIRECTOR_STALE_MIN))
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window)
+              ).strftime("%Y-%m-%d %H:%M:%S")
+    return [q for q in questions_for_director(root, limit=OPEN_LIMIT * 5)
+            if q["asked_at"] and q["asked_at"] < cutoff and not q["reminded_at"]]
+
+
+def remind_stale_directors(root: str | os.PathLike[str],
+                           minutes: float = DIRECTOR_STALE_MIN) -> list[dict]:
+    """Escalate to the HUMAN every director question silent past ``minutes``.
+
+    GRIPE 39b(2). A director question that nobody answers used to sit
+    invisible until the general 12-hour ``remind_stale`` swept past it — which
+    is the wrong scale for a session that is supposed to be live right now.
+    One reminder per question, same idempotency stamp as ``remind_stale``
+    (``reminded_at``, written before the event so a crash costs the reminder,
+    not a repeat of it forever). The note names the silence, not the
+    question — "director silent for N min" — because a reminder that
+    re-asks is the one people mute.
+    """
+    out: list[dict] = []
+    try:
+        due = stale_director_questions(root, minutes)
+    except Exception:
+        return out
+    for q in due:
+        if not _mark_reminded(root, q["event_seq"]):
+            continue
+        age = int(round(q.get("age_min") or 0))
+        events.emit(root, REMINDER_KIND,
+                    ref=str(q["item_id"] or q["event_seq"]),
+                    payload={"reason": "director silent",
+                             "note": f"director silent for {age} min",
+                             "question_seq": q["event_seq"],
+                             "question": q["question"][:400],
+                             "item_id": q["item_id"], "asked_at": q["asked_at"],
+                             "minutes": round(float(minutes), 1)})
+        out.append(q)
+    return out
 
 
 def _mark_reminded(root: str | os.PathLike[str], seq: int) -> bool:

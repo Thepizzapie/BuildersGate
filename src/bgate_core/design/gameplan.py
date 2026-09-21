@@ -346,6 +346,22 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
                        "dashboard is down (`bgate serve`), autopilot is off, "
                        "or the concurrency cap is holding every dispatch.")
 
+    # GRIPE 40c. Elapsed vs its ceiling, per running item — without this a
+    # running row on the morning report says only "it is going", and the one
+    # question worth asking about a run that has been going a while ("is it
+    # near its own ceiling, or nowhere close?") had no answer without opening
+    # the item and doing the arithmetic by hand.
+    from ..board import runlimits as _runlimits
+    running_rows = []
+    for r in running:
+        item = dict(r)
+        ceiling = _runlimits.runtime_ceiling(root, item)
+        running_rows.append({
+            "id": item["id"], "seat": item["seat"], "title": item["title"][:90],
+            "elapsed_s": _runlimits.elapsed_s(root, item["id"]),
+            "ceiling_s": int(ceiling) if ceiling else None,
+        })
+
     return {
         "window_hours": int(hours),
         "finished": [{"id": r["id"], "seat": r["seat"], "title": r["title"][:90]}
@@ -355,6 +371,7 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
                     "why": str(r["result"] or "")[:200]} for r in failed[:25]],
         "awaiting_you": [{"id": r["id"], "seat": r["seat"],
                           "title": r["title"][:90]} for r in review[:25]],
+        "running": running_rows,
         "counts": {"finished": len(done), "failed": len(failed),
                    "in_review": len(review), "still_queued": len(still_queued),
                    "running": len(running)},

@@ -10,6 +10,14 @@ const OPEN = new Set(["queued", "ready", "review", "blocked", ...LIVE]);
 const titleOf = (brief: string) =>
   brief.trim().split(/\r?\n/)[0].replace(/^[-*#\s]+/, "").slice(0, 80);
 
+/** GRIPE 40c — "12 min / 60 min budget", or just "12 min" with no ceiling set. */
+function budgetLine(item: QueueItem): string | null {
+  if (item.elapsed_s == null) return null;
+  const mins = Math.max(0, Math.round(item.elapsed_s / 60));
+  if (!item.ceiling_s) return `${mins} min`;
+  return `${mins} min / ${Math.round(item.ceiling_s / 60)} min budget`;
+}
+
 export function Work({ seat, items, onRefresh }: {
   seat: Seat;
   active: boolean;
@@ -66,16 +74,28 @@ export function Work({ seat, items, onRefresh }: {
              itemId: item.id, title: item.title, seat: item.seat });
   }
 
-  const rows = (list: QueueItem[]) => list.map((item) => (
-    <button key={item.id} className="bgs-desk-item" onClick={() => inspect(item)}>
-      <span className={`bgs-desk-state${LIVE.has(item.status) ? " live" : ""}`} />
-      <span className="copy"><b>{item.title}</b><small>#{item.id} · {ago(item.updated_at)}</small></span>
-      {usd(item.total_cost_usd) && <span className="cost">{usd(item.total_cost_usd)}</span>}
-      <Tag tone={LIVE.has(item.status) ? "good" : item.status === "failed" ? "bad" : "off"}>
-        {item.status}
-      </Tag>
-    </button>
-  ));
+  const rows = (list: QueueItem[]) => list.map((item) => {
+    const budget = LIVE.has(item.status) ? budgetLine(item) : null;
+    const attempts = item.attempts_detail || [];
+    return (
+      <button key={item.id} className="bgs-desk-item" onClick={() => inspect(item)}>
+        <span className={`bgs-desk-state${LIVE.has(item.status) ? " live" : ""}`} />
+        <span className="copy">
+          <b>{item.title}</b>
+          <small>#{item.id} · {ago(item.updated_at)}{budget ? ` · ${budget}` : ""}</small>
+          {!!attempts.length && (
+            <small className="bgs-desk-attempts">
+              {attempts.map((a) => `#${a.n}${usd(a.cost_usd) ? ` ${usd(a.cost_usd)}` : ""}`).join("  ")}
+            </small>
+          )}
+        </span>
+        {usd(item.total_cost_usd) && <span className="cost">{usd(item.total_cost_usd)}</span>}
+        <Tag tone={LIVE.has(item.status) ? "good" : item.status === "failed" ? "bad" : "off"}>
+          {item.status}
+        </Tag>
+      </button>
+    );
+  });
 
   return (
     <div className="bgs-desk" style={{ ["--seat" as string]: `var(--c-${seat.role})` }}>
