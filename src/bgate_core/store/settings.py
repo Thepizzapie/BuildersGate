@@ -145,6 +145,7 @@ LABELS: dict[str, str] = {
     "art.lora_strength": "Trained style strength",
     "art.runner": "Art worker CLI",
     "art.image_backend": "Image generation path",
+    "art.codex_windows_sandbox": "Codex sandbox on Windows",
     "art.mesh_route": "Mesh creation workflow",
     "art.auto_approve": "Auto-approve generated art",
     # Generators
@@ -213,6 +214,7 @@ DESCRIPTIONS: dict[str, str] = {
     "art.lora_strength": "How strongly the trained style affects generated images.",
     "art.runner": "Coding CLI used for art-seat tasks. Other seats are unchanged.",
     "art.image_backend": "Use the Builders Gate image pipeline or the selected CLI's native image tool.",
+    "art.codex_windows_sandbox": "Which Windows sandbox Codex workers run under. Change only if the elevated one cannot start.",
     "art.mesh_route": "Choose automatic routing, generation APIs, or Blender for new 3D meshes.",
     "art.auto_approve": "Promote generated art without waiting for human review.",
     "art.provider": "Preferred image provider. Auto selects from configured providers.",
@@ -561,6 +563,23 @@ SETTINGS: tuple[Setting, ...] = (
              "reads refs, holds locks, checks consistency and registers what it "
              "made; only the generation call changes. On a runner with no image "
              "tool of its own this falls back to `bgate` rather than failing."),
+    Setting(
+        key="art.codex_windows_sandbox", group="Art", kind=ENUM, default="elevated",
+        choices=("elevated", "unelevated"),
+        store=("registry", "art.codex_windows_sandbox"), scope=MACHINE,
+        env="BGATE_CODEX_WINDOWS_SANDBOX",
+        help="Windows only. `elevated` runs a Codex worker as a separate "
+             "restricted user (CodexSandboxOffline) and is the default because "
+             "it is the stronger box. It also runs Codex's sandbox setup helper "
+             "before the first command, and that helper validates read access "
+             "over the whole Codex runtime tree. MEASURED (codex-cli 0.155.1): "
+             "the helper is not long-path aware, the runtime ships a 283-char "
+             "directory, the helper exits 1 and EVERY shell command is refused "
+             "with `helper_unknown_error: setup refresh had errors` while MCP "
+             "tools keep working. `unelevated` skips that helper and runs under "
+             "a restricted token as the same user — a weaker sandbox, so this is "
+             "a decision about the machine, not a default. The bgate PreToolUse "
+             "hook binds the worker either way."),
     Setting(
         key="art.mesh_route", group="Art", kind=ENUM, default="smart",
         choices=("smart", "api", "blender"),

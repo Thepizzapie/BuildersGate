@@ -17,6 +17,8 @@ import os
 
 from pathlib import Path
 
+import pytest
+
 from bgate_core.board import queue
 from bgate_core.store import settings
 from bgate_ui.agents import dispatch, runners
@@ -108,6 +110,28 @@ def test_codex_always_gets_the_mcp_server_and_the_real_directory():
     assert "--ignore-user-config" in argv
     # Never: it is what makes a non-repo write into a shadow copy silently.
     assert "--skip-git-repo-check" not in argv
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the flag is only passed on Windows")
+def test_the_windows_sandbox_backend_is_a_setting_and_always_named(monkeypatch):
+    """Elevated is the default because it is the stronger box. It is a setting
+    because its setup helper can fail to start on a machine (not long-path
+    aware, and the Codex runtime ships a 283-char directory), which refuses
+    every exec. What must never happen is NO backend: --ignore-user-config
+    skips the user's, and without one workspace-write is read-only."""
+    def backend() -> str:
+        argv = _codex_argv(True)
+        named = [a for a in argv if a.startswith("windows.sandbox=")]
+        assert len(named) == 1 and argv[argv.index(named[0]) - 1] == "-c"
+        return named[0]
+
+    monkeypatch.delenv("BGATE_CODEX_WINDOWS_SANDBOX", raising=False)
+    assert backend() == 'windows.sandbox="elevated"'
+    monkeypatch.setenv("BGATE_CODEX_WINDOWS_SANDBOX", "unelevated")
+    assert backend() == 'windows.sandbox="unelevated"'
+    # A typo must not reach the command line, and must not drop the flag.
+    monkeypatch.setenv("BGATE_CODEX_WINDOWS_SANDBOX", 'off" -c evil="1')
+    assert backend() == 'windows.sandbox="elevated"'
 
 
 def test_claude_ignores_the_image_backend_because_it_has_no_image_tool():
