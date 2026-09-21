@@ -794,7 +794,54 @@ def _tool(fn: Optional[Callable] = None, *,
             # server start can name what the last one was holding instead of
             # the work being gone with no record it existed.
             flight_root = _root_hint()
+            # A HUMAN RULING REFUSES THE TOOL IT FORBIDS, for the seat it binds.
+            # The seat brief and the dispatch prompt both SAY the tool is off;
+            # this is the part that makes it true. Fail-open on its own faults:
+            # a bible that will not read must not stop every tool call.
+            forbidden = None
+            if flight_root and _seat():
+                try:
+                    forbidden = _bible.tool_forbidden(flight_root, _seat(),
+                                                      fn.__name__)
+                except Exception:                                 # noqa: BLE001
+                    forbidden = None
+            if forbidden:
+                return {"ok": False, "refused": "ruling",
+                        "error": (f"{fn.__name__} is forbidden for the "
+                                  f"{_seat()} seat by a HUMAN RULING, bible "
+                                  f"#{forbidden['id']} {forbidden['title']!r}. "
+                                  "Do not route around it with another tool; "
+                                  "build what the ruling asks for, and if this "
+                                  "item cannot be finished without the tool, "
+                                  "fail the item naming the ruling."),
+                        "section_id": forbidden["id"],
+                        "ruling": forbidden["title"], "seat": _seat()}
+            # ITEM 9b — a HUMAN who rejected this tool's output three times in
+            # 24h is refused a fourth round from a dispatched seat, until a
+            # human clears it (tool_unlock's rejections_clear). Fail-open on
+            # any error and skip entirely for the director (_seat() unset):
+            # this is a brake on a spawned worker repeating a human's "no",
+            # never a way to lock the top-level session out of its own tools.
+            if flight_root and _seat():
+                try:
+                    from bgate_core.board import rejections as _rejections
+
+                    if _rejections.blocked(flight_root, fn.__name__):
+                        return {"ok": False, "refused": "human_rejections",
+                                "tool": fn.__name__, "seat": _seat(),
+                                "rejections": _rejections.recent(
+                                    flight_root, fn.__name__),
+                                "note": f"a human rejected {fn.__name__}'s "
+                                        "output 3+ times in the last 24h — "
+                                        "STOP AND ASK a human rather than "
+                                        "trying again. rejections_clear"
+                                        f"(tool='{fn.__name__}') unblocks it, "
+                                        "and only a human's own call should "
+                                        "make that call."}
+                except Exception:                                # noqa: BLE001
+                    pass
             flight = ""
+            flight_ctx = None
             if flight_root:
                 try:
                     from bgate_core.board import inflight as _inflight
@@ -802,6 +849,10 @@ def _tool(fn: Optional[Callable] = None, *,
                     flight = _inflight.begin(
                         flight_root, fn.__name__, seat=_seat(),
                         item_id=_work_item_id())
+                    # ITEM #19: bind so a Godot/Blender wait loop several
+                    # modules down can call inflight.touch(...) without
+                    # having root/token threaded all the way through.
+                    flight_ctx = _inflight.bind(flight_root, flight)
                 except Exception:                                 # noqa: BLE001
                     flight = ""
             try:
@@ -840,6 +891,8 @@ def _tool(fn: Optional[Callable] = None, *,
                     try:
                         from bgate_core.board import inflight as _inflight
 
+                        if flight_ctx is not None:
+                            _inflight.unbind(flight_ctx)
                         _inflight.end(flight_root, flight)
                     except Exception:                             # noqa: BLE001
                         pass
@@ -1103,6 +1156,77 @@ def _fail(exc: Exception) -> dict:
     return out
 
 
+def _bounded(payload: dict, limit: int = 40_000, more: str = "") -> dict:
+    """Cap a list-shaped tool result to ``limit`` serialised bytes.
+
+    MEASURED FAILURE: asset_status returned 595 KB and asset_verify 96 KB on a
+    ~200-asset project; an agent's first call on either answered "result
+    exceeds maximum allowed tokens" and the seat started blind, billed anyway.
+
+    Walks the payload (top level, and one level into any nested dict - the
+    shape every listing tool here actually uses, e.g. asset_verify's
+    ``integration.unreferenced``) collecting every list-valued field, then
+    trims the largest-serialised lists first, one element at a time, until
+    the whole payload fits. Every trimmed field keeps its original count
+    under ``truncated`` alongside ``more`` - the exact follow-up call to page
+    the rest. Counts computed by the caller BEFORE calling this (e.g. a
+    ``counts`` block) are untouched - this only ever removes list elements.
+    """
+    import copy
+    import json
+
+    def _size(obj: object) -> int:
+        try:
+            return len(json.dumps(obj, default=str).encode("utf-8"))
+        except Exception:
+            return limit + 1
+
+    if _size(payload) <= limit:
+        return payload
+
+    out = copy.deepcopy(payload)
+
+    def _collect(d: dict, prefix: str = "") -> list[tuple[str, dict, str]]:
+        found = []
+        for k, v in d.items():
+            if isinstance(v, list):
+                found.append((f"{prefix}{k}", d, k))
+            elif isinstance(v, dict):
+                found.extend(_collect(v, f"{prefix}{k}."))
+        return found
+
+    candidates = _collect(out)
+    originals = {path: len(container[key]) for path, container, key in candidates}
+    # The footer itself costs bytes, and it is added to `out` from the first
+    # iteration so the loop's size check - and the final cap - accounts for
+    # it, rather than checking against a payload that is about to grow.
+    out["truncated"] = {path: {"original": n, "shown": n}
+                         for path, n in originals.items()}
+    out["truncated"]["more"] = more
+    if not candidates:
+        out["truncated"] = {"note": "result exceeds the byte cap with no "
+                             "list field left to trim", "more": more}
+        return out
+
+    guard = 0
+    while _size(out) > limit and guard < 200_000:
+        guard += 1
+        candidates.sort(
+            key=lambda c: _size(c[1].get(c[2]) or []), reverse=True)
+        path, container, key = candidates[0]
+        lst = container.get(key) or []
+        if not lst:
+            break
+        lst.pop()
+        out["truncated"][path]["shown"] = len(lst)
+
+    trimmed = {path: v for path, v in out["truncated"].items()
+               if path != "more" and v["shown"] != v["original"]}
+    trimmed["more"] = more
+    out["truncated"] = trimmed
+    return out
+
+
 _RUN_SEQ = itertools.count()
 _RUN_SEQ_LOCK = threading.Lock()
 
@@ -1342,13 +1466,20 @@ def project_select(project: str = "") -> dict:
     Full notes: docs/tools.md#project_select
     """
     known = _project.known_projects()
+    missing = _project.missing_registered()
     if not project:
         active = None
         try:
             active = _root()
         except Exception:
             pass
-        return {"active": active, "known": known}
+        out = {"active": active, "known": known}
+        if missing:
+            # ITEM 33: a registered path that no longer resolves (deleted, a
+            # temp scaffold dir that was cleaned up, an unplugged drive) used
+            # to just vanish from `known` with nothing said about it.
+            out["missing"] = missing
+        return out
     root = known.get(project, project)  # name wins, else treat as a path
     if not (_Path(root) / _db.DB_DIRNAME / _db.DB_FILENAME).exists():
         raise LookupError(
@@ -1387,6 +1518,24 @@ def bgate_doctor(refresh: bool = False) -> dict:
 
 
 @_tool
+def project_current(hours: int = 6) -> dict:
+    """What changed OUTSIDE the board in the last ``hours`` - GRIPE 38 (EXIT
+    67 postmortem, 2026-09-21). The human repeatedly bypassed a slow or
+    underperforming board agent and edited a file directly through a CLI
+    session; no dispatched agent then knew that file had just moved.
+
+    Returns files changed by git commit or left uncommitted, grouped by lane,
+    with WHO changed them (a harness auto-commit reads "item #N ...";
+    anything else is a human or an outside agent), the items completed/failed
+    in that window, and the last handoff notes. Bounded to ~1.5 KB - this is
+    a "since you last looked" summary, not a full audit; `git log` is that.
+    Full notes: docs/tools.md#project_current
+    """
+    from bgate_core.board import current as _current
+    return _current.current_activity(_root(), hours=int(hours))
+
+
+@_tool
 def project_status() -> dict:
     """The project's identity plus a count of what's in the bible and lore."""
     root = _root()
@@ -1400,15 +1549,22 @@ def project_status() -> dict:
         "facts": conn.execute("SELECT count(*) FROM canon_fact").fetchone()[0],
         "links": conn.execute("SELECT count(*) FROM lore_link").fetchone()[0],
     }
-    return {"project": _project.get(root), "root": root, "counts": counts,
-            # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
-            # sprite sheet go" has an answer nothing on any surface states,
-            # and the honest one - a directory under ~/.bgate that was
-            # created for you - is not a place anyone would think to look.
-            "scratch": _project.is_scratch(root),
-            # WHICH WORLD. The first thing an agent should know about a tree
-            # that has carried two of everything.
-            "canon": _canon_summary(root)}
+    missing = _project.missing_registered()
+    out = {"project": _project.get(root), "root": root, "counts": counts,
+           # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
+           # sprite sheet go" has an answer nothing on any surface states,
+           # and the honest one - a directory under ~/.bgate that was
+           # created for you - is not a place anyone would think to look.
+           "scratch": _project.is_scratch(root),
+           # WHICH WORLD. The first thing an agent should know about a tree
+           # that has carried two of everything.
+           "canon": _canon_summary(root)}
+    if missing:
+        # ITEM 33 (EXIT 67): a registered path that no longer exists (a Temp
+        # scaffold dir, a deleted checkout) used to just be silently dropped
+        # from every listing that filters on disk presence.
+        out["registered_but_missing"] = missing
+    return out
 
 
 def _canon_summary(root) -> dict:
@@ -1500,7 +1656,7 @@ def canon_audit(godot_project: Optional[str] = None) -> dict:
         return {"ok": False, "error": "no engine project found under this root"}
     report = _canon.audit(root, game)
     report["ok"] = True
-    return report
+    return _bounded(report, more="canon_audit(...)")
 
 
 @_tool
@@ -1562,21 +1718,55 @@ def project_set_engine(engine: str) -> dict:
 # Design bible
 # ---------------------------------------------------------------------------
 @_tool
-def bible_add(kind: str, title: str, body: str = "", rank: int = 0) -> dict:
+def bible_add(kind: str, title: str, body: str = "", rank: int = 0,
+              stated_by: str = "", binds: Optional[list] = None,
+              forbids: Optional[list] = None) -> dict:
     """Add a bible section.
 
     kind: pillar | loop | constraint | reference.
     rank orders sections within a kind - it is the reading order of the
     document, lowest first.
+
+    A CONSTRAINT THE HUMAN STATED IS A RULING, AND IT IS WRITTEN BEFORE THE
+    WORK THAT DEPENDS ON IT IS FILED. stated_by='human' marks one (only the
+    human's own session may write that value; a dispatched agent is refused).
+    binds=['art'] names the seats it reaches ([] = every seat); forbids=
+    ['image_sprites'] names MCP tools a bound seat may not call while it
+    stands - the call is refused, and dispatch refuses a brief that names one.
+    Measured: the night the human said "frame sheets will not carry this game"
+    and the director dispatched 33 agents on frame sheets anyway.
     """
-    return _bible.add(_root(), kind, title, body=body, rank=rank)
+    if str(stated_by or "").strip().lower() == _bible.HUMAN and _caller_is_agent():
+        return _fail(PermissionError(
+            f"{_actor() or 'an agent session'} may not record a HUMAN ruling - "
+            "stated_by='human' is the value the gates enforce, and an agent that "
+            "writes it authorises its own constraints. Record it with "
+            "stated_by='director' or 'agent', or ask_human to have the human "
+            "state it."))
+    return _bible.add(_root(), kind, title, body=body, rank=rank,
+                      stated_by=stated_by, binds=binds, forbids=forbids)
 
 
 @_tool
 def bible_update(section_id: int, title: Optional[str] = None,
-                 body: Optional[str] = None, rank: Optional[int] = None) -> dict:
-    """Update a bible section in place. Omitted fields keep their current value."""
-    return _bible.update(_root(), section_id, title=title, body=body, rank=rank)
+                 body: Optional[str] = None, rank: Optional[int] = None,
+                 stated_by: Optional[str] = None, binds: Optional[list] = None,
+                 forbids: Optional[list] = None) -> dict:
+    """Update a bible section in place. Omitted fields keep their current value.
+    stated_by / binds / forbids are the ruling fields (see bible_add); an agent
+    may not set or clear stated_by='human'."""
+    if _caller_is_agent():
+        current = _bible.get(_root(), section_id)
+        was_human = str(current.get("stated_by") or "") == _bible.HUMAN
+        asks_human = str(stated_by or "").strip().lower() == _bible.HUMAN
+        if asks_human or (was_human and stated_by is not None):
+            return _fail(PermissionError(
+                "an agent may not set or clear a HUMAN ruling's stated_by"))
+        if was_human and (binds is not None or forbids is not None):
+            return _fail(PermissionError(
+                "an agent may not change what a HUMAN ruling binds or forbids"))
+    return _bible.update(_root(), section_id, title=title, body=body, rank=rank,
+                         stated_by=stated_by, binds=binds, forbids=forbids)
 
 
 @_tool
@@ -1683,7 +1873,9 @@ def lore_brief(ref: str) -> dict:
 @_tool
 def lore_list(kind: Optional[str] = None, status: Optional[str] = None) -> dict:
     """List entities, optionally filtered by kind and/or status."""
-    return {"entities": _lore.list_entities(_root(), kind=kind, status=status)}
+    return _bounded(
+        {"entities": _lore.list_entities(_root(), kind=kind, status=status)},
+        more=f"lore_list(kind={kind!r}, status={status!r})")
 
 
 @_tool
@@ -1761,7 +1953,7 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
     out["routing"] = _providers.routing(root)
     if capability:
         out["pick"] = _gateway.pick(root, str(capability))
-    return out
+    return _bounded(out, more=f"provider_status(capability={capability!r})")
 
 
 # ---------------------------------------------------------------------------
@@ -2748,7 +2940,8 @@ def image_generate(prompt: Annotated[str, Field(description='What to paint. Fram
                               anchors=anchor_paths, tileable=tileable,
                               root=root,
                               logical_name=_Path(filename).stem,
-                              work_item_id=_work_item_id())
+                              work_item_id=_work_item_id(),
+                              replace_reason=replace_reason)
     result["refs_used"] = named
     # WHAT HAPPENED, NOT WHAT WAS ASKED FOR. `tileable` above is the request;
     # chroma puts the mirror pass's own {ok, method, note} at result["tileable"]
@@ -2827,7 +3020,8 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
                               keyed=bool(transparent), ref_paths=resolved,
                               size=size, quality=quality, transparent=False,
                               root=root, logical_name=_Path(filename).stem,
-                              work_item_id=_work_item_id())
+                              work_item_id=_work_item_id(),
+                              replace_reason=replace_reason)
     if result.get("ok"):
         archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
         if archived:
@@ -3087,6 +3281,9 @@ def item_variants(item_class: Annotated[str, Field(description='One of item_clas
 
 
 def _guide_image(result: dict) -> list[str]:
+    pages = (result or {}).get("guides_pages_abs")
+    if pages:
+        return list(pages)
     path = (result or {}).get("guides_png_abs")
     return [path] if path else []
 
@@ -3133,16 +3330,21 @@ def sprite_sheet_slice(image: str, out_dir: str = "", pad: int = 0,
 def sprite_sheet_check(image: str, columns: int, rows: int = 1,
                        labels: Optional[list[str]] = None,
                        row_labels: Optional[list[str]] = None,
-                       guides: bool = True) -> dict:
+                       guides: bool = True,
+                       review_px: int = _spritekit.REVIEW_MIN_PX) -> dict:
     """LOOK AT A GENERATED POSE ROW OR CHARACTER SHEET BEFORE SPENDING ANYTHING
     ELSE ON IT. Free - calls no model, buys nothing, changes nothing.
 
     Call it the moment a multi-figure image comes back. Returns named
     findings (foot_drift, head_drift, size_drift, size_ramp, facing_flip,
     stray_ink, empty_cell per row; sheet_size_drift, sheet_size_ramp,
-    band_palette across rows) plus an ANNOTATED COPY of the image. A ramp
-    means the drift is monotonic: re-rolling will not fix it - generate each
-    pose against ONE reference (image_sprites). Advisory, never a gate.
+    band_palette across rows) plus an ANNOTATED COPY of the image, upscaled so
+    every frame renders at `review_px` (default 300) pixels or more - a
+    contact sheet shown at ~150px/frame passed a translucent second head and
+    an upright rifle standing alone; a verdict on a thumbnail is not a review.
+    Wide sheets split into `guides_pages`, one per row band. A ramp means the
+    drift is monotonic: re-rolling will not fix it - generate each pose
+    against ONE reference (image_sprites). Advisory, never a gate.
     Full notes: docs/tools.md#sprite_sheet_check
     """
     root = _Path(_root())
@@ -3156,9 +3358,14 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
     if guides:
         out = src.with_name(f"{src.stem}_guides.png")
         drawn = _spritekit.draw_guides(src, int(columns), out, int(rows),
-                                 report=report)
+                                 report=report, review_px=int(review_px))
         report["guides_png"] = _assets.normalize_path(root, out)
         report["guides_png_abs"] = str(out)
+        report["guides_pages"] = [_assets.normalize_path(root, p)
+                                  for p in drawn.get("pages", [])]
+        report["guides_pages_abs"] = list(drawn.get("pages", []))
+        report["review_px"] = drawn.get("review_px")
+        report["frame_px"] = drawn.get("frame_px")
         report["guides_note"] = drawn["note"]
     if not report["flagged"]:
         report["note"] = (
@@ -3296,6 +3503,43 @@ def sprite_family_check(sheets: list, standing_px: int = 0,
         return {"ok": False, "error": str(exc)}
 
 
+def _concept_compare_image(result: dict) -> list[str]:
+    path = (result or {}).get("path")
+    return [path] if path and (result or {}).get("ok") else []
+
+
+@_tool(images=_concept_compare_image)
+def concept_compare(candidate: str, concept_ref: str, out_name: str = "") -> dict:
+    """ITEM 37 — the landing check for any art item: does this read as the
+    SAME GAME beside the pinned concept sheet. Composes `candidate` beside
+    `concept_ref` (a ref_pin name, kind='concept', or a raw path) at equal
+    height into one review image under .bgate_out/art/checks/, plus cheap
+    measured deltas: palette_distance, ink_density (candidate vs concept),
+    figure_height_ratio. Free, local, no model. Call it on every art landing
+    - the numbers are a reason to look harder, the verdict is made against
+    the composed image, never the numbers alone.
+    """
+    root = _root()
+    rel = _assets.normalize_path(_Path(root), candidate)
+    cand_path = _Path(root) / rel
+    if not cand_path.exists():
+        return {"ok": False, "error": f"no image at {rel}"}
+    try:
+        concept_path = _refs.resolve(root, concept_ref)
+    except Exception as exc:                                     # noqa: BLE001
+        return {"ok": False, "error": f"concept_ref {concept_ref!r} did not "
+                                      f"resolve: {exc}"}
+    if not concept_path or not _Path(concept_path).exists():
+        return {"ok": False, "error": f"no concept reference at {concept_ref!r} "
+                                      "- ref_pin it first (kind='concept')"}
+    name = out_name.strip() or f"{cand_path.stem}_vs_concept.png"
+    out = _art_out(root, f"checks/{_Path(name).name}")
+    try:
+        return _spritekit.concept_compare(cand_path, concept_path, out)
+    except Exception as exc:                                      # noqa: BLE001
+        return _fail(exc)
+
+
 @_tool
 def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
                          frame_size: Optional[list[int]] = None) -> dict:
@@ -3312,6 +3556,30 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
     src = root / rel
     if not src.exists():
         return {"ok": False, "error": f"no image at {rel}"}
+
+    # STAMP THE CONFORM (EXIT 67 postmortem item 9). This is the tool that
+    # takes a GENERATED item icon into a character's equip slot, which makes
+    # it the last chance to catch a held weapon that drifted off the bible's
+    # pinned palette before it rides into every combat frame. `gear.
+    # stamp_generated` was speced for exactly this and never landed in this
+    # tree; conform_to_palette is its stand-in (see gear.py) and this call
+    # site does not change shape the day stamp_generated does either.
+    conform: dict = {"ok": True, "applied": False, "reason": "no pinned palette"}
+    try:
+        pinned_palette = _artdirection.palette_pinned(str(root))
+    except Exception:
+        pinned_palette = None
+    if pinned_palette:
+        from bgate_core.art import gear as _gear
+
+        stamp_fn = getattr(_gear, "stamp_generated", None) or _gear.conform_to_palette
+        try:
+            conform = stamp_fn(src, pinned_palette, stroke_width=1)
+            conform["applied"] = True
+        except Exception as exc:                                  # noqa: BLE001
+            conform = {"ok": False, "applied": False,
+                      "error": f"{type(exc).__name__}: {exc}"}
+
     from PIL import Image as _Img
     with _Img.open(src) as im:
         size = tuple(frame_size) if frame_size else im.size
@@ -3329,7 +3597,7 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
     tres_rel.write_text(tres, encoding="utf-8")
     return {"ok": True, "tres": _assets.normalize_path(root, tres_rel),
             "sheet": _assets.normalize_path(root, out_dir / sheet_name),
-            "animation": "default", "res_dir": res_dir}
+            "animation": "default", "res_dir": res_dir, "conform": conform}
 
 
 @_tool
@@ -4494,7 +4762,9 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                   model: Annotated[str, Field(description='Provider model id; on krea defaults to nano-banana-2 (holds identity through pose changes).')] = "", ref_strength: Annotated[float, Field(description='How hard the reference pulls, 0-1 (krea). Default 0.6.')] = 0.6,
                   archetypes: Annotated[Optional[list[str]], Field(description='Catalogue animations (e.g. ["idle", "walk", "attack"]) used INSTEAD of `poses`; call sprite_plan first.')] = None, view: Annotated[str, Field(description='Camera convention prepended to every pose ("side view, facing right"); default reads the sprite contract.')] = "",
                   palette: Annotated[Optional[dict], Field(description='{"lock": auto|on|off, "colors": [...]}; locking quantises every frame to the reference palette.')] = None,
-                  sheet_padding: Annotated[int, Field(description='Transparent gutter between cells in px. 0 is a plain strip; 1-2 for non-integer scaling with linear filtering.')] = 0, anchor_views: Annotated[int, Field(description='How many views condition every pose: 3 (default) adds three-quarter and profile views; 1 is front-only.')] = 3) -> dict:
+                  sheet_padding: Annotated[int, Field(description='Transparent gutter between cells in px. 0 is a plain strip; 1-2 for non-integer scaling with linear filtering.')] = 0, anchor_views: Annotated[int, Field(description='How many views condition every pose: 3 (default) adds three-quarter and profile views; 1 is front-only.')] = 3,
+                  gate: Annotated[bool, Field(description='Run the per-frame identity gate (framegate: silhouette/palette/ghost/duplicate/prop-limb checks) against the anchor before shipping the sheet as ok. Default ON; a frame that disagrees with the anchor FAILS the sheet rather than passing a wrong character through.')] = True,
+                  subject_class: Annotated[str, Field(description='"character" (default) or "prop" - a prop additionally checks for limb-like protrusions and skips the palette/identity checks a moving prop legitimately varies on.')] = "character") -> dict:
     """PAINTED sprite set - REFERENCE-FIRST for consistency.
 
     Generates ONE reference (or reuses ref_image), then each pose as an EDIT
@@ -4568,6 +4838,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
         provider = _providers.provider_for("sheet", asked=provider, root=root)
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
+        from bgate_core.art import framegate as _framegate
 
         # FIVE DIALS, TWO DOORS. `max_retries`/`timeout`/`max_seconds` are all
         # one question - how long is this run allowed to take and how hard may
@@ -4729,6 +5000,19 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                                  f"{ref_reason}. Not spending on poses against a "
                                  "broken anchor - adjust character_prompt and retry."}
         result["reference"] = ref_path
+        # ITEMS 2/3 — PROVENANCE. Every file this run writes gets a sidecar
+        # recording the anchor it was generated against (by content hash, not
+        # path — the same identity kie's content-hash upload naming, de59d3a,
+        # uses). "regenerate only what is wrong" then has something to check
+        # a stale frame against instead of trusting whatever sits in the
+        # folder forever.
+        anchor_hash = _framegate.file_hash(ref_path)
+        try:
+            _framegate.write_provenance(
+                ref_path, anchor_hash=anchor_hash,
+                prompt=character_prompt, extra={"role": "reference"})
+        except Exception:
+            pass
 
         # 2. Each pose derives from the reference - same fighter, new stance.
         # ANCHOR + ROLLING conditioning: every edit carries (a) the character
@@ -4847,6 +5131,13 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                             if not got.get("ok") else _reference_sanity(view_png))
             if ok_view:
                 views.append(view_png)
+                try:
+                    _framegate.write_provenance(
+                        view_png, anchor_hash=anchor_hash,
+                        prompt=angle, extra={"role": "model_sheet_view",
+                                            "view": label})
+                except Exception:
+                    pass
             else:
                 result.setdefault("model_sheet_dropped", []).append(
                     {"view": label, "reason": why})
@@ -4879,6 +5170,12 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 prev_frame = out_png
                 if anim not in anim_first:
                     anim_first[anim] = out_png
+                try:
+                    _framegate.write_provenance(
+                        out_png, anchor_hash=anchor_hash, prompt=str(desc),
+                        extra={"role": "pose", "pose": pname})
+                except Exception:
+                    pass
                 # Register each pose as a candidate the moment it exists: the
                 # Assets gallery streams the batch live (reviewable mid-run)
                 # instead of going dark for a 30-minute silent mega-call.
@@ -4963,8 +5260,22 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             # resize cannot fix.
             fixed = _spritekit.normalise_heights(
                 [p for p, _ in pose_files], pose_path)
+            # ITEMS 2/3 — PROVENANCE REFUSAL. A frame whose sidecar disagrees
+            # with (or is missing against) the CURRENT anchor is dropped from
+            # the stitch rather than trusted - this is what stops a stale
+            # 05:xx frame from a since-replaced anchor riding in next to
+            # clean 08:xx frames just because it still sat in the folder.
+            # Checked on the files the generator WROTE (pose_files), not on
+            # what normalise_heights just rewrote: a resized copy is a new
+            # path with no sidecar, and checking those dropped every frame
+            # of a clean run as "no provenance".
+            written = dict(pose_files)
+            stale = _framegate.stale_frames(
+                {p: written.get(p, pose_path[p]) for p in pose_order}, anchor_hash)
+            stale_names = {s["name"] for s in stale}
+            usable_order = [p for p in pose_order if p not in stale_names]
             asm = _sp.from_pose_images(
-                [(p, pose_path[p]) for p in pose_order],
+                [(p, pose_path[p]) for p in usable_order],
                 out_dir=str(root / ".bgate_out" / "sprites"), name=name,
                 frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps,
                 ref_path=ref_path, timing=timing or None,
@@ -4973,13 +5284,18 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 pad=max(0, int(sheet_padding)))
             asm.setdefault("failed", [])
             asm["failed"].extend(pose_errors)
+            asm["failed"].extend(
+                {"name": s["name"], "error": f"stale provenance - {s['reason']}"}
+                for s in stale)
+            asm["provenance"] = {"anchor_hash": anchor_hash, "stale": stale}
             asm.setdefault("palette", {})["mode"] = lock_mode
             asm["palette"]["why"] = lock_why
             cons = {"ok": False}
             if asm.get("ok"):
                 # The contract's standing height, on the assembled sheet.
+                contract = _contract_or_empty(name)
                 asm["fit"] = _fit_to_contract(asm["sheet"], (frame_width, frame_height),
-                                              _contract_or_empty(name))
+                                              contract)
                 fm = asm.get("frames", {})
                 cons = _vision_consistency(ref_path, [(p, fp) for p, fp in fm.items()])
                 # THE GEOMETRY RUNS EVEN WHEN THE JUDGE CANNOT. The vision
@@ -5003,6 +5319,21 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                             for fr in f["frames"]}
                 cons["flagged"] = sorted(
                     set(cons.get("flagged") or []) | geo_flag)
+                # EXIT 67 postmortem item 6 leftover: the contract now knows
+                # whether this is a character, a prop or a vehicle
+                # (spritecontract.SUBJECT_CLASSES) - framegate's prop check
+                # reads exactly this field to skip facing/mirror rules that
+                # only make sense for a character. framegate does not exist
+                # in this tree; this is the documented seam, read
+                # `contract["subject_class"]` here the day it lands rather
+                # than threading a new parameter through this function.
+                cons["subject_class"] = contract.get("subject_class", "character")
+                # _framegate is the enclosing function's import; rebinding it
+                # here made it a local of THIS closure and every earlier use
+                # in it an UnboundLocalError.
+                if hasattr(_framegate, "prop_check"):
+                    cons["prop_check"] = _framegate.prop_check(
+                        cons["subject_class"], fm, geom["findings"])
             return asm, cons
 
         assembled, consistency = _assemble_and_gate()
@@ -5036,6 +5367,13 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 # Re-roll WITH the rolling refs, not the bare anchor - keep motion
                 # continuity while the gate chases identity (see _rolling_refs).
                 _edit_pose(pose_desc[pname], _rolling_refs(pname), pose_path[pname])
+                try:
+                    _framegate.write_provenance(
+                        pose_path[pname], anchor_hash=anchor_hash,
+                        prompt=pose_desc[pname],
+                        extra={"role": "pose", "pose": pname, "reroll": True})
+                except Exception:
+                    pass
             asm2, cons2 = _assemble_and_gate()
             new_min = cons2.get("min") if cons2.get("ok") else None
             # Better means: the judge's floor rose, or, when the judge sat
@@ -5191,6 +5529,40 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                     "The sheet and preview were kept for inspection but MUST NOT be "
                     "installed as-is - tighten character_prompt on the drifting "
                     "detail, or lower the floor if this is as good as the model gets.")
+
+            # ITEM 1/5/6 — THE IDENTITY GATE. Arithmetic, no model call: every
+            # frame vs THIS character's own anchor (silhouette ratio, palette
+            # distance, translucency/second-head/component-count ghosts, and
+            # for a prop subject, limb-growth). This is what the vision judge
+            # above (consistency, `_vision_consistency`) cannot be trusted to
+            # catch alone - it sat out with no key on the EXIT 67 build and
+            # every other gate downstream of it (sprite_sheet_check,
+            # consistency_check) still passed a wrong character's frames.
+            frame_gate = _framegate.gate_sheet(
+                frame_map, ref_path, subject_class=subject_class,
+                cycles={anim: [p for p in pose_order
+                              if p.split("/", 1)[0] == anim]
+                       for anim in anim_counts})
+            assembled["frame_gate"] = frame_gate
+            try:
+                _artifacts.record_check(_root(), assembled["sheet"],
+                                        "frame_gate",
+                                        {"ok": frame_gate["ok"],
+                                         "failed": frame_gate["failed"]})
+            except Exception:
+                pass
+            if gate and not frame_gate["ok"]:
+                assembled["ok"] = False
+                assembled["stage"] = "frame_gate"
+                assembled["error"] = (
+                    f"{len(frame_gate['failed'])}/{len(frame_gate['frames'])} "
+                    f"frames disagree with {name!r}'s own anchor: "
+                    f"{', '.join(frame_gate['failed'])}. Per-frame checks are in "
+                    "frame_gate.frames[<pose>].checks - each names which check "
+                    "fired and the measured value. The sheet and preview were "
+                    "kept for inspection but MUST NOT be installed as-is. Pass "
+                    "gate=False to ship anyway (never do this for a sheet you "
+                    "have not looked at).")
 
             # The .aseprite master, built whether or not a gate flipped ok -
             # a flagged sheet is exactly the one somebody opens to fix by
@@ -5544,7 +5916,8 @@ def _script_source(script: str, godot_project: Optional[str]):
 
 @_tool
 def godot_run(script: str, godot_project: Optional[str] = None,
-              timeout: int = 120) -> dict:
+              timeout: int = 120, time_scale: float = 8.0,
+              force: bool = False) -> dict:
     """Run a GDScript headless and capture its output.
 
     `script` is EITHER the source itself OR a path to a .gd file. It MUST
@@ -5553,6 +5926,16 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     parse/script errors: Godot prints SCRIPT ERROR and still exits 0, so check
     `errors`, not the exit code. godot_project is the directory holding
     project.godot, not the Builders Gate root.
+
+    `time_scale` (default 8x - this tool is for scripted drives, which run
+    in real time by default and look idle) only takes effect on an `extends
+    Node` script; result.time_scale_applied says whether it did.
+
+    IDENTICAL-RUN CAP: the same script text against the same project inside
+    one work item is refused on the THIRD attempt (result.refused ==
+    "identical_run") - a re-run cannot see anything the first two did not
+    already show. Read the earlier result rather than running it again, or
+    pass force=True if you genuinely need to.
     Full notes: docs/tools.md#godot_run
     """
     _contained_path(godot_project, "godot_project")
@@ -5562,7 +5945,8 @@ def godot_run(script: str, godot_project: Optional[str] = None,
                                       "readable: pass the source itself, or a "
                                       "path that exists"}
     got = _godot.run_script(source if source is not None else script,
-                            project_dir=godot_project, timeout=timeout)
+                            project_dir=godot_project, timeout=timeout,
+                            time_scale=time_scale, force=force)
     return {**got, "ran_from": from_path} if from_path else got
 
 
@@ -5675,18 +6059,63 @@ def godot_scene_audit(godot_project: Annotated[str, Field(description='Directory
 def godot_export_verify(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
                         pck: Annotated[str, Field(description='The exported .pck (or .zip); absolute or relative to the project. `godot --headless --path <project> --export-pack <preset> <out.pck>` makes one.')],
                         scene: Annotated[str, Field(description='res:// scene to compare. EMPTY compares the boot scene.')] = "",
-                        timeout: int = 180) -> dict:
+                        timeout: int = 180,
+                        play_seconds: Annotated[float, Field(description='How long to actually run the exported pck headless after the diff, watching for SCRIPT ERROR lines. 0 skips the play step (diff only).')] = 5.0,
+                        drive_script: Annotated[str, Field(description='GDScript source OR a path to a .gd file, extends SceneTree, that drives the pck and calls quit(). Omit to just watch the boot scene run for play_seconds.')] = "") -> dict:
     """Load one scene from the PROJECT and from the PCK and diff what the
     engine built: node set, types, visibility, transforms, mesh and bounds,
     materials per surface (albedo, texture, shader), collider class and size,
     bone and animation counts, and every exported script variable - the
     per-instance overrides a pck has been seen to drop. `ok` is false on any
-    difference; each diff names the node, the field, and both values. Run it
+    difference; each diff names the node, the field, and both values.
+
+    Then it actually PLAYS the export: boots the pck headless for
+    `play_seconds` (or runs `drive_script` against it), counts SCRIPT ERROR
+    lines in what it printed, and records the outcome to
+    `.bgate/export_verify.json` (or `bgate_core.qa.exportgate` when this
+    project has one) so a release gate can read it later instead of trusting
+    that someone ran this by hand. A clean diff with a crashing boot scene is
+    the exact gap this closes - the diff proves the SHAPE shipped, not that
+    it runs. `ok` is false if either the diff or the play step failed. Run it
     after every export whose evidence came from an editor run.
     """
     from bgate_adapters import godot_audit as _audit
     _contained_path(godot_project, "godot_project")
-    return _audit.export_verify(godot_project, pck, scene or None, timeout=timeout)
+    result = _audit.export_verify(godot_project, pck, scene or None, timeout=timeout)
+    if play_seconds and play_seconds > 0:
+        drive_source = None
+        if drive_script:
+            source, from_path = _script_source(drive_script, godot_project)
+            if from_path and source is None:
+                result["play"] = {"ok": False,
+                                  "error": f"{drive_script} looks like a path and is not readable"}
+                result["ok"] = False
+                _audit.record_export_verify(godot_project, result)
+                return result
+            drive_source = source if source is not None else drive_script
+        play = _audit.play_verify(godot_project, pck, seconds=float(play_seconds),
+                                  drive_script=drive_source,
+                                  timeout=timeout)
+        result["play"] = play
+        result["ok"] = bool(result.get("ok")) and bool(play.get("ok"))
+    _audit.record_export_verify(godot_project, result)
+
+    # RECORD IT. This is the fact greenlight's release stage and the playtest
+    # gate now read (bgate_core.qa.exportgate) - a verify that ran once and
+    # was never checked again proves nothing about the build three commits
+    # later, which is exactly the gap that shipped EXIT 67 empty.
+    try:
+        from bgate_core.qa import exportgate as _exportgate
+
+        diffs = result.get("diffs")
+        _exportgate.record(
+            _root(), godot_project=godot_project, scene=scene or "",
+            pck=pck, ok=bool(result.get("ok")),
+            diffs=len(diffs) if isinstance(diffs, list) else 0,
+            by=_actor())
+    except Exception:                                             # noqa: BLE001
+        pass
+    return result
 
 
 # A LEVEL-DESIGN TOOL FOR DRIVING GAMES. MEASURED (Corniche, 2026-09-04): with no
@@ -6081,7 +6510,8 @@ def sfx_prompt(prompt: Annotated[str, Field(description='What it should sound li
 @_tool
 def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
                    godot_project: Optional[str] = None,
-                   mode: str = "failures_only") -> dict:
+                   mode: str = "failures_only", time_scale: float = 1.0,
+                   force: bool = False) -> dict:
     """Run this project's own Godot test scripts headless and score them.
 
     Discovers `<godot project>/tests/*.gd`; `paths` runs a subset. Dotfiles
@@ -6091,6 +6521,11 @@ def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
     engine ran cleanly); read `engine_error_scripts` - an engine complaint is
     not noise. A project with NO test scripts answers ok=false, no_tests=true.
     Every run is recorded to .bgate/engine-tests.jsonl.
+
+    `time_scale` defaults to 1x - a test asserting timing wants real time,
+    and only takes effect on an `extends Node` test script regardless. The
+    same script text against the same project inside one work item is
+    refused on the THIRD identical run unless force=True.
     Full notes: docs/tools.md#godot_test_run
     """
     _contained_path(godot_project, "godot_project")
@@ -6099,7 +6534,8 @@ def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
     try:
         return _tests.run(_root(), paths=paths, timeout=timeout,
                           godot_project=godot_project or "",
-                          actor=_actor(), mode=mode)
+                          actor=_actor(), mode=mode,
+                          time_scale=time_scale, force=force)
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "modes": list(_tests.MODES)}
 
@@ -6135,7 +6571,14 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
 def godot_check_project(godot_project: str, timeout: int = 180) -> dict:
     """Import/validate a project headless - the 'does it still build' check.
 
-    godot_project: the directory holding project.godot.
+    godot_project: the directory holding project.godot. Also runs a static
+    lint over every `*.gd` for export-breaking patterns invisible in the
+    editor (result.export_lint): a directory listing filtered with
+    `ends_with(".tres"|...)` that will be empty in an exported pck, a
+    zero-width/BOM code point inside a string literal, and an advisory on
+    `FileAccess.open("res://...")` of a non-resource file that export_filter
+    may not cover. A blocking export_lint finding fails `ok`.
+    Full notes: docs/tools.md#godot_check_project
     """
     _contained_path(godot_project, "godot_project")
     result = _godot.check_project(godot_project, timeout=timeout)
@@ -6710,7 +7153,8 @@ def ref_pin(name: str, path: str, kind: str = "style", note: str = "") -> dict:
 @_tool
 def ref_list(kind: Optional[str] = None) -> dict:
     """The pinned reference anchors. Check BEFORE generating character/style art."""
-    return {"refs": _refs.list_refs(_root(), kind=kind)}
+    return _bounded({"refs": _refs.list_refs(_root(), kind=kind)},
+                     more=f"ref_list(kind={kind!r})" if kind else "ref_list()")
 
 
 @_tool
@@ -6959,10 +7403,25 @@ def asset_track(path: str) -> dict:
 
 
 @_tool
-def asset_status(kind: Optional[str] = None, locked_only: bool = False) -> dict:
-    """List tracked assets, optionally by kind or only the locked ones."""
-    return {"assets": _assets.list_assets(_root(), kind=kind,
-                                          locked_only=locked_only)}
+def asset_status(kind: Optional[str] = None, locked_only: bool = False,
+                  prefix: Optional[str] = None, offset: int = 0,
+                  limit: int = 200) -> dict:
+    """List tracked assets, optionally by kind, path prefix, or only the
+    locked ones. PAGED: pass offset/limit to walk a large project; the
+    result is byte-capped and names the follow-up call under `truncated`."""
+    rows = _assets.list_assets(_root(), kind=kind, locked_only=locked_only)
+    if prefix:
+        rows = [r for r in rows if str(r.get("path") or "").startswith(prefix)]
+    total = len(rows)
+    cap = max(1, min(int(limit or 200), 500))
+    off = max(0, int(offset or 0))
+    shown = rows[off:off + cap]
+    payload = {"assets": shown, "total": total, "shown": len(shown),
+               "offset": off}
+    more = (f"asset_status(offset={off + cap}, limit={cap}"
+            + (f", kind={kind!r}" if kind else "")
+            + (f", prefix={prefix!r}" if prefix else "") + ")")
+    return _bounded(payload, more=more)
 
 
 @_tool
@@ -7011,6 +7470,14 @@ def pending_decisions(limit: int = 40) -> dict:
         questions = _steerbox.open_questions(root)[:cap]
     except Exception:
         questions = []
+    try:
+        # GRIPE 39b(1). Its own list, not a filter the caller has to run: a
+        # question addressed to the director is waiting on the LIVE SESSION,
+        # not on the human reading this — surfacing it separately (with age)
+        # is what lets a human tell "the director owes this" from "I do".
+        questions_for_director = _steerbox.questions_for_director(root)[:cap]
+    except Exception:
+        questions_for_director = []
 
     state = _gatemode.state(root)
     total = len(parked) + len(candidates) + len(questions)
@@ -7020,6 +7487,7 @@ def pending_decisions(limit: int = 40) -> dict:
         "blocked_chains": parked,
         "candidates": candidates,
         "questions": questions,
+        "questions_for_director": questions_for_director,
         "total": total,
         "note": (
             "nothing is waiting on a human" if not total else
@@ -7035,7 +7503,7 @@ def pending_decisions(limit: int = 40) -> dict:
 
 
 @_tool
-def asset_verify() -> dict:
+def asset_verify(offset: int = 0, limit: int = 200) -> dict:
     """PRESENCE IS NOT CORRECTNESS: is every asset intact, WIRED, and CURRENT?
 
     Three questions: `intact` ('modified' = content changed with no lock
@@ -7045,9 +7513,26 @@ def asset_verify() -> dict:
     disk; 'stale' names the ones to repair with godot_check_project). Costs
     nothing and spawns no engine. Run before builds and after any multi-agent
     session.
+    PAGED: offset/limit slice every list here (clean, modified, missing,
+    untracked_hash, locked, and integration's unreferenced/dangling/
+    stale_wired); `counts` always reflects the full scan. Byte-capped on top.
     Full notes: docs/tools.md#asset_verify
     """
-    return _assets.verify(_root())
+    result = _assets.verify(_root())
+    cap = max(1, min(int(limit or 200), 500))
+    off = max(0, int(offset or 0))
+    for key in ("clean", "modified", "missing", "untracked_hash", "locked"):
+        lst = result.get(key) or []
+        result[f"{key}_total"] = len(lst)
+        result[key] = lst[off:off + cap]
+    integration = result.get("integration") or {}
+    if isinstance(integration, dict):
+        for key in ("unreferenced", "dangling", "stale_wired"):
+            lst = integration.get(key) or []
+            integration[f"{key}_total"] = len(lst)
+            integration[key] = lst[off:off + cap]
+    more = f"asset_verify(offset={off + cap}, limit={cap})"
+    return _bounded(result, more=more)
 
 
 # ---------------------------------------------------------------------------
@@ -7149,7 +7634,9 @@ def playtest_brief(session_id: int, include_transcript: bool = False,
 @_tool
 def playtest_list(status: Optional[str] = None) -> dict:
     """List play sessions. status: recording | processing | ready | failed."""
-    return {"sessions": _playtest.list_sessions(_root(), status=status)}
+    return _bounded(
+        {"sessions": _playtest.list_sessions(_root(), status=status)},
+        more=f"playtest_list(status={status!r})")
 
 
 @_tool
@@ -7362,6 +7849,27 @@ def decision_add(title: str, acceptance: str, leaves_dark: str,
         return out
     except Exception as exc:
         return _fail(exc)
+
+
+@_tool
+def board_focus_set(focus: str) -> dict:
+    """ITEM 36 — set/clear board.focus, the ONE biome/vertical slice the board
+    works to shippable before a second opens (a graybox-verdict-and-after
+    rule; nothing before it). Free text, e.g. "Canal vertical slice"; "" clears
+    it. Same authority as decision_add(state='settled') - a dispatched agent
+    narrowing its OWN scope authorises its own work, so this is a director/
+    human call, not a seat's. queue_add warns (never refuses) when a brief
+    names a different slice while this is set.
+    """
+    if _caller_is_agent():
+        return _fail(PermissionError(
+            f"{_actor() or 'an agent session'} may not set board.focus - "
+            "narrowing what the whole board works on is the director's call. "
+            "Say so in your result note; the director sets it."))
+    from bgate_core.store import project as _project
+
+    out = _project.set_focus(_root(), focus)
+    return {"ok": True, "focus": out.get("focus") or ""}
 
 
 @_tool
@@ -7902,7 +8410,8 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
             graph = _q.graph(root)
         except Exception as exc:                                  # noqa: BLE001
             out["order_error"] = f"{type(exc).__name__}: {exc}"
-            return out
+            return _bounded(out, more=f"queue_list(status={status!r}, "
+                             f"seat={seat!r}, limit={cap})")
         rank = {n["id"]: n for n in graph["nodes"]}
         for item in items:
             node = rank.get(int(item["id"]))
@@ -7926,7 +8435,8 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
                         "work_item_dep are presented as ONE graph; which table "
                         "holds a link is not a question you should have to "
                         "answer.")
-    return out
+    return _bounded(out, more=f"queue_list(status={status!r}, seat={seat!r}, "
+                     f"limit={cap}, order={order!r})")
 
 
 @_tool
@@ -7936,8 +8446,19 @@ def queue_get(item_id: int) -> dict:
     The other half of queue_list's preview: scan the board with the list, read
     the one item you are about to act on with this.
     """
-    from bgate_core.board import queue as _q
-    return _q.get(_root(), int(item_id))
+    from bgate_core.board import agentreg as _agentreg, queue as _q
+
+    root = _root()
+    item = _q.get(root, int(item_id))
+    # Item 31c: per-run cost history, oldest first. Named 'attempts_detail'
+    # rather than 'attempts' — that key is already the round COUNTER
+    # (work_item.attempts, an int every caller in this codebase reads as a
+    # number) and overwriting it with a list would break every one of them.
+    try:
+        item["attempts_detail"] = _agentreg.runs_for_item(root, int(item_id))
+    except Exception:                                             # noqa: BLE001
+        item["attempts_detail"] = []
+    return item
 
 
 @_tool
@@ -8026,9 +8547,27 @@ def _near_duplicate(_q, title: str, seat: str) -> Optional[dict]:
     return best if best_j >= 0.5 else None
 
 
+def _focus_warning(root, title: str, brief: str) -> str:
+    """ITEM 36 — non-blocking nudge when a new brief names a different slice
+    than board.focus. Never refuses: the human's ruling was ONE biome at a
+    time, not a hard lock the harness enforces by rejecting filings."""
+    from bgate_core.store import project as _project
+
+    focus = _project.focus_of(root)
+    if not focus:
+        return ""
+    haystack = f"{title} {brief}".lower()
+    if focus.lower() in haystack:
+        return ""
+    return (f"board.focus is {focus!r} - this item does not name it. If it is "
+            "genuinely off-slice, that is the director's call to make with "
+            "eyes open, not a mistake to silently file.")
+
+
 @_tool
 def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
-              depends_on: Optional[int] = None) -> dict:
+              depends_on: Optional[int] = None, size: str = "medium",
+              acceptance: str = "") -> dict:
     """Queue work for a seat. Use when your work uncovers work that isn't yours.
 
     ``depends_on`` is an EXISTING item id this work must not start before;
@@ -8038,9 +8577,38 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     same tick - only a dependency does. Use queue_add_chain when filing a
     whole ordered group; use this to hang a follow-up off work already on the
     board. A dependency on a missing item is refused.
+
+    ``size`` (small|medium|large, default medium) sets the runtime/turn
+    ceiling (runlimits.SIZE_LIMITS) - use small for a single focused edit.
+    ``acceptance`` is ONE sentence naming the check that proves this item is
+    done ("godot_test_run shows 0 failures"); a non-director caller must
+    supply one - GRIPE 41 (EXIT 67 postmortem): a brief with no named check
+    is a brief nobody can verify against. A broad brief (more than one
+    deliverable, several bullets, over 900 chars, or paths spanning more than
+    two lanes - see queue.brief_breadth) is refused outright for a
+    non-director caller and returned as a warning for the director: split it
+    with queue_add_chain instead.
     Full notes: docs/tools.md#queue_add
     """
     from bgate_core.board import queue as _q
+    # CONTAINMENT FIRST. A seated agent pointed at another project must be
+    # refused for THAT, not told its brief lacks an acceptance line.
+    _root()
+    # The director is the top-level session: no BGATE_SEAT, no work item.
+    # Keying on BGATE_SEAT == "director" refused the human's own queue_add.
+    is_director = (_seat() or "") == "director" or not _caller_is_agent()
+    breadth = _q.brief_breadth(brief)
+    if breadth["score"] >= 2 and not is_director:
+        return {"ok": False, "refused": "too_broad",
+                "error": "this brief reads as more than one deliverable - "
+                         "split it: queue_add_chain(links=[...]) instead of "
+                         "one wide item. " + "; ".join(breadth["reasons"]),
+                "breadth": breadth}
+    if not is_director and not str(acceptance or "").strip():
+        return {"ok": False, "refused": "no_acceptance",
+                "error": "acceptance is required: name the one check that "
+                         "proves this item is done (e.g. 'godot_test_run "
+                         "shows 0 failures')"}
     # A SPAWNED AGENT FILES AT MOST TWO ITEMS, AND NEVER A DUPLICATE. MEASURED
     # (Corniche, 2026-09-04): 11 of 16 QA items and 6 duplicates of work the
     # director had already queued were filed agent-to-agent - re-pins, re-checks,
@@ -8068,7 +8636,13 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     item = _q.add(_root(), seat, title, brief=brief, priority=priority,
                   source=f"seat:{_seat() or 'unknown'}",
                   source_ref=own_item,
-                  depends_on=depends_on)
+                  depends_on=depends_on, size=size, acceptance=acceptance)
+    focus_warning = _focus_warning(_root(), title, brief)
+    if focus_warning:
+        item = {**item, "focus_warning": focus_warning}
+    warnings = list(breadth["reasons"]) if breadth["score"] >= 1 else []
+    if warnings:
+        item = {**item, "warnings": warnings}
     if depends_on is None:
         return item
     # SAY WHAT THE BOARD WILL DO WITH IT. A caller that files a dependency
@@ -8118,14 +8692,19 @@ def queue_add_chain(links: list, chain_id: str = "") -> dict:
 @_tool
 def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str] = None,
                  seat: Optional[str] = None, priority: Optional[int] = None,
-                 steer_running: bool = False) -> dict:
+                 steer_running: bool = False,
+                 max_paid_calls: Optional[int] = None) -> dict:
     """Edit an existing work item in place (title/brief/seat/priority).
 
     Only the fields you pass change; brief REPLACES, it does not append. THIS
     DOES NOT REACH A RUNNING AGENT: a brief change on a DISPATCHED item is
     refused with steer_running=False (default, naming the agent_steer call to
     make instead); steer_running=True updates the row AND delivers the change
-    as a steer. Every result carries `live_delivered`.
+    as a steer. Every result carries `live_delivered`. max_paid_calls raises
+    (or lowers) this item's paid-call budget above the project default
+    (dispatch.default_max_paid_calls) - use it when a generation gate refused
+    with budget_exceeded_item and the budget itself, not the approach, was
+    wrong.
     Full notes: docs/tools.md#queue_update
     """
     from bgate_core.board import queue as _q, steerbox as _steerbox
@@ -8148,7 +8727,8 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
         }
 
     updated = _q.update(root, item_id, title=title, brief=brief,
-                        seat=seat, priority=priority)
+                        seat=seat, priority=priority,
+                        max_paid_calls=max_paid_calls)
     delivered = False
     steer: dict = {}
     if running and changes_the_work and steer_running:
@@ -8201,6 +8781,12 @@ def board_digest(hours: int = 12) -> dict:
     root = _root()
     out = _gameplan.digest(root, hours=int(hours))
     try:
+        from bgate_core.board import steerbox as _steerbox
+
+        out["questions_for_director"] = _steerbox.questions_for_director(root)
+    except Exception:                                             # noqa: BLE001
+        out["questions_for_director"] = []
+    try:
         from bgate_core.design import greenlight as _gl
 
         state = _gl.state(root)
@@ -8239,7 +8825,7 @@ def board_digest(hours: int = 12) -> dict:
             out["orphaned"] = lost[:10]
     except Exception:                                             # noqa: BLE001
         pass
-    return out
+    return _bounded(out, more=f"board_digest(hours={hours})")
 
 
 @_tool
@@ -8835,7 +9421,8 @@ def _evidence_gate(root: str, item_id: int, evidence: str) -> Optional[dict]:
 
 
 @_tool
-def queue_reopen(item_id: int, reason: str) -> dict:
+def queue_reopen(item_id: int, reason: str,
+                 frame_verdicts: Annotated[Optional[dict], Field(description='A framegate.gate_sheet() result (image_sprites result["frame_gate"]) - appended as a per-frame breakdown (pose, which check fired, measured value) so the reopened agent knows WHICH frames, not just "something is wrong".')] = None) -> dict:
     """Send a done/failed item back to 'queued' for another round.
 
     The QA gate's FAIL path: reason is the ranked nitpick list, APPENDED to the
@@ -8855,7 +9442,43 @@ def queue_reopen(item_id: int, reason: str) -> dict:
         raise ValueError(
             f"item {item_id} is {item['status']!r} - only done/failed "
             "items can be reopened")
-    return _q.reopen(root, item_id, (reason or "").strip())
+    return _q.reopen(root, item_id, (reason or "").strip(),
+                     frame_verdicts=frame_verdicts)
+
+
+@_tool
+def queue_park(item_id: int, reason: str) -> dict:
+    """Take a live item OFF the board without cancelling it.
+
+    ITEM 26 (EXIT 67): parking work used to mean a human writing raw SQL
+    UPDATEs on work_item, 18 rows at a time, because there was no status
+    between "still queued" and "cancelled forever". A parked item is invisible
+    to both dispatchers (ready(), claim_next) until queue_unpark brings it
+    back. Refuses on an already-terminal status.
+    Full notes: docs/tools.md#queue_park
+    """
+    from bgate_core.board import queue as _q
+    return _q.park(_root(), item_id, (reason or "").strip())
+
+
+@_tool
+def queue_unpark(item_id: int) -> dict:
+    """Put a parked item back on the board as 'queued'.
+    Full notes: docs/tools.md#queue_unpark
+    """
+    from bgate_core.board import queue as _q
+    return _q.unpark(_root(), item_id)
+
+
+@_tool
+def queue_cancel(item_id: int, reason: str = "") -> dict:
+    """A human calling work off for good — distinct from queue_park (may come
+    back) and from stopping a live run (that is a kill; this is for work that
+    should simply never run).
+    Full notes: docs/tools.md#queue_cancel
+    """
+    from bgate_core.board import queue as _q
+    return _q.cancel(_root(), item_id, (reason or "").strip())
 
 
 @_tool
@@ -9047,12 +9670,57 @@ def cutout_templates() -> dict:
     from bgate_core.three_d import cutout as _cutout
     return {"ok": True, "templates": _cutout.templates(),
             "layout": "game/assets/characters/<name>/",
-            "not_built_yet": [
-                "cutout_kit_generate - generating the parts themselves "
-                "still goes through image_generate/chroma by hand against "
-                "a pinned reference",
-                "cutout_part_rerun - regenerate one part in place",
+            "how": [
+                "ref_pin the character's identity image (front or side), "
+                "profile_set its traits/style/negative",
+                "cutout_kit_generate(name, reference) - every part, one call, "
+                "assembled and emitted; read `flags` before wiring",
+                "cutout_part_rerun(name, slot) for the one part that is wrong",
+                "cutout_equip(name, 'weapon', <png>) - the grip is in the "
+                "hand bone; both hands land on it in the 'aim' clip",
             ]}
+
+
+def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
+                  producer: str, metadata: Optional[dict] = None) -> dict:
+    """Normalise, save the document, emit the scene and library, report.
+
+    One path for assemble, kit_generate, part_rerun and equip, so the
+    clobber stamp, the size table and the artifact row cannot drift between
+    them. Returns the emitter's dict plus `doc` and `status`.
+    """
+    from bgate_core.three_d import cutout as _cutout, cutoutwire as _wire
+    home = _cutout_dir(root, name)
+    doc = _cutout.normalise(doc)
+    sizes = {}
+    try:
+        from PIL import Image
+        for slot, entry in doc["skin"].items():
+            with Image.open(entry["texture"]) as img:
+                sizes[slot] = img.size
+    except Exception:
+        # A missing size means a part hangs from its top-left instead of
+        # its pivot: visibly wrong, and better than a guessed offset.
+        pass
+    doc_path = _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
+    emitted = _wire.emit(doc, project_dir=root,
+                         scene_path=home / f"{name}.tscn",
+                         sizes=sizes, force=force)
+    if not emitted.get("ok"):
+        return {**emitted, "doc": str(doc_path)}
+    status = _cutout.status(doc, root=root)
+    _log("cutout",
+         f"{producer}: {name} - {emitted['sprites']} sprites, "
+         f"{len(emitted['clips'])} clips",
+         ref=emitted["scene_res"])
+    _register_artifact(f"{name}.tscn", emitted["scene"], producer=producer,
+                       metadata={"template": doc["template"],
+                                 "slots": len(doc["slots"]),
+                                 "filled": len(doc["skin"]),
+                                 "reference": doc.get("reference") or "",
+                                 "reference_hash": doc.get("reference_hash") or "",
+                                 **(metadata or {})})
+    return {**emitted, "doc": str(doc_path), "status": status}
 
 
 @_tool
@@ -9071,12 +9739,11 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
     Full notes: docs/tools.md#cutout_assemble
     """
     try:
-        from bgate_core.three_d import cutout as _cutout, cutoutwire as _wire
+        from bgate_core.three_d import cutout as _cutout
         root = _root()
     except Exception as exc:
         return _fail(exc)
     try:
-        home = _cutout_dir(root, name)
         doc = _cutout.empty(name, template)
         spec = _cutout.template(template)
         skin = {}
@@ -9100,39 +9767,168 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
         doc["skin"] = skin
         doc["adjustments"] = adjustments or {}
         doc["notes"] = notes
-        doc = _cutout.normalise(doc)
-
-        sizes = {}
-        try:
-            from PIL import Image
-            for slot, entry in doc["skin"].items():
-                with Image.open(entry["texture"]) as img:
-                    sizes[slot] = img.size
-        except Exception:
-            # A missing size means a part hangs from its top-left instead of
-            # its pivot: visibly wrong, and better than a guessed offset.
-            pass
-
-        doc_path = _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
-        emitted = _wire.emit(doc, project_dir=root,
-                             scene_path=home / f"{name}.tscn",
-                             sizes=sizes, force=force)
-        if not emitted.get("ok"):
-            return {**emitted, "doc": str(doc_path)}
-        status = _cutout.status(doc, root=root)
-        _log("cutout",
-             f"assembled {name}: {emitted['sprites']} sprites, "
-             f"{len(emitted['clips'])} clips",
-             ref=emitted["scene_res"])
-        _register_artifact(f"{name}.tscn", emitted["scene"],
-                           producer="cutout_assemble",
-                           metadata={"template": template,
-                                     "slots": len(doc["slots"]),
-                                     "filled": len(doc["skin"])})
-        return {**emitted, "doc": str(doc_path), "status": status,
-                "how": [f"instance {emitted['scene_res']} in a scene",
+        written = _cutout_write(root, name, doc, force=force,
+                                producer="cutout_assemble")
+        if not written.get("ok"):
+            return written
+        return {**written,
+                "how": [f"instance {written['scene_res']} in a scene",
                         'call play("walk") on it - the rig script is on the root',
                         "connect its anim_event signal for hit frames"]}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
+                        parts: Optional[list] = None, provider: str = "",
+                        quality: str = "medium", note: str = "",
+                        adjustments: Optional[dict] = None,
+                        max_paid_calls: int = 20, force: bool = False) -> dict:
+    """Generate every part of a cutout character from ONE pinned reference,
+    then assemble and emit it. About nine paid images; the animation is the
+    template's and costs nothing.
+
+    THIS IS HOW A CHARACTER WITH MORE THAN AN IDLE GETS MADE IN 2D. Frame
+    sheets re-roll identity, proportions and the weapon in the hand on every
+    frame; a kit draws each part once and the rig moves it. `reference` is a
+    ref_pin NAME (preferred: profile_set traits ride into every prompt) or a
+    path. Every part records the reference hash it was drawn against, and
+    cutout_status flags any part from another run. `flags` lists parts whose
+    height is outside the template band - LOOK at those before wiring;
+    cutout_part_rerun redraws one. Refuses over max_paid_calls before buying
+    anything; stops after two consecutive provider failures rather than
+    re-rolling. `parts=[...]` regenerates a subset into an existing kit.
+    Full notes: docs/tools.md#cutout_kit_generate
+    """
+    try:
+        from bgate_core.three_d import cutout as _cutout, cutoutkit as _kit
+        root = _root()
+        refused = _provider_gate(str(root), "image",
+                                 f"a cutout part kit for {name!r}")
+        if refused:
+            return refused
+        ref_path = _refs.resolve(root, reference)
+        profile = None
+        try:
+            profile = _refs.profile_get(root, reference)
+        except Exception:
+            profile = None
+        home = _cutout_dir(root, name)
+        provider = _providers.provider_for("sprite", asked=provider, root=root)
+        # A subset lands INTO the existing document; a full run starts fresh.
+        existing = home / f"{name}{_cutout.SUFFIX}"
+        doc = (_cutout.load(existing) if parts and existing.is_file()
+               else _cutout.empty(name, template))
+        made = _kit.generate_kit(
+            root, name, ref_path, out_dir=home / "parts", provider=provider,
+            template=doc["template"], parts=parts, quality=quality, note=note,
+            profile=profile, max_paid_calls=max_paid_calls,
+            work_item_id=_work_item_id())
+        skin = dict(doc.get("skin") or {})
+        skin.update(made["parts"])
+        # Anything the near side just replaced, the far side follows.
+        for far, near in (_cutout.template(doc["template"]).get("reuse") or {}).items():
+            if near in made["parts"]:
+                skin.pop(far, None)
+        doc["skin"] = _kit.fill_reuse(skin, doc["template"])
+        doc["reference"] = reference
+        doc["reference_hash"] = made["reference_hash"]
+        if adjustments:
+            doc["adjustments"] = adjustments
+        if made["flags"]:
+            doc["notes"] = ((doc.get("notes") or "") + "\n" if doc.get("notes") else "") + \
+                "SCALE FLAGS: " + "; ".join(f["note"] for f in made["flags"])
+        for slot, entry in made["parts"].items():
+            _register_artifact(f"{name}.part.{slot}", entry["texture"],
+                               producer="cutout_kit_generate", refs=[reference],
+                               prompt=entry.get("prompt", ""),
+                               metadata={"slot": slot,
+                                         "anchor_hash": entry["anchor_hash"]})
+        written = _cutout_write(root, name, doc, force=force,
+                                producer="cutout_kit_generate",
+                                metadata={"calls": made["calls"],
+                                          "cost_usd": made["cost_usd"]})
+        generation = {k: made[k] for k in
+                      ("failed", "flags", "calls", "cost_usd", "stopped",
+                       "reference_height_px")}
+        generation["generated"] = sorted(made["parts"])
+        out = {**written, "generation": generation,
+               "ok": bool(written.get("ok")) and made["ok"]}
+        if made["flags"] or made["failed"] or made["stopped"]:
+            out["next"] = ("Read `generation.flags` and `generation.failed`; "
+                           "cutout_part_rerun(name, slot) redraws one part "
+                           "against the same reference. Do NOT re-run the whole "
+                           "kit for one bad part.")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cutout_part_rerun(name: str, slot: str, note: str = "", provider: str = "",
+                      quality: str = "medium", force: bool = False) -> dict:
+    """Regenerate ONE part of an existing kit against the kit's own reference
+    and re-emit. One paid image.
+
+    The fix for a flagged or wrong part. `note` is appended to the part prompt
+    ("the forearm is bare skin, not sleeved"). A far-side slot is refused -
+    redraw its near side and the far side follows. An AUTHORED pivot on the
+    slot stays and cutout_status flags it stale_pivot, because the pivot was
+    placed against the old drawing.
+    Full notes: docs/tools.md#cutout_part_rerun
+    """
+    try:
+        from bgate_core.three_d import cutout as _cutout, cutoutkit as _kit
+        root = _root()
+        home = _cutout_dir(root, name)
+        doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
+        if not doc.get("reference"):
+            return {"ok": False,
+                    "error": f"{name} was assembled from loose parts and names no "
+                             "reference; cutout_kit_generate(name, reference) "
+                             "makes a kit that can be regenerated part by part"}
+        refused = _provider_gate(str(root), "image", f"redrawing {name}.{slot}")
+        if refused:
+            return refused
+        ref_path = _refs.resolve(root, doc["reference"])
+        try:
+            profile = _refs.profile_get(root, doc["reference"])
+        except Exception:
+            profile = None
+        provider = _providers.provider_for("sprite", asked=provider, root=root)
+        made = _kit.generate_kit(
+            root, name, ref_path, out_dir=home / "parts", provider=provider,
+            template=doc["template"], parts=[slot], quality=quality, note=note,
+            profile=profile, max_paid_calls=1, work_item_id=_work_item_id())
+        if slot not in made["parts"]:
+            return {"ok": False, "generation": made,
+                    "error": f"{slot} did not come back: "
+                             + "; ".join(f["error"] for f in made["failed"])}
+        entry = dict(doc["skin"].get(slot) or {})
+        fresh = made["parts"][slot]
+        # Keep the authored pivot (status flags it stale); take everything else.
+        entry.update({k: v for k, v in fresh.items()
+                      if k not in ("pivot_source",) or "pivot_source" not in entry})
+        doc["skin"][slot] = entry
+        spec = _cutout.template(doc["template"])
+        for far, near in (spec.get("reuse") or {}).items():
+            if near == slot and doc["skin"].get(far, {}).get("reuse_of") == near:
+                doc["skin"].pop(far)
+        doc["skin"] = _kit.fill_reuse(doc["skin"], doc["template"])
+        doc["reference_hash"] = made["reference_hash"]
+        _register_artifact(f"{name}.part.{slot}", fresh["texture"],
+                           producer="cutout_part_rerun", refs=[doc["reference"]],
+                           prompt=fresh.get("prompt", ""),
+                           metadata={"slot": slot,
+                                     "anchor_hash": fresh["anchor_hash"],
+                                     "note": note})
+        written = _cutout_write(root, name, doc, force=force,
+                                producer="cutout_part_rerun",
+                                metadata={"slot": slot, "cost_usd": made["cost_usd"]})
+        return {**written, "slot": slot,
+                "generation": {k: made[k] for k in ("flags", "calls", "cost_usd")},
+                "ok": bool(written.get("ok")) and not made["flags"]}
     except Exception as exc:
         return _fail(exc)
 
@@ -9165,7 +9961,7 @@ def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = Non
     flags it if the part is later regenerated.
     Full notes: docs/tools.md#cutout_equip
     """
-    from bgate_core.three_d import cutout as _cutout, cutoutwire as _wire
+    from bgate_core.three_d import cutout as _cutout
     root = _root()
     home = _cutout_dir(root, name)
     doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
@@ -9181,22 +9977,8 @@ def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = Non
         entry["pivot"] = list(pivot)
         entry["pivot_source"] = "authored"
     doc["skin"][slot] = entry
-    doc = _cutout.normalise(doc)
-    sizes = {}
-    try:
-        from PIL import Image
-        for name_, ent in doc["skin"].items():
-            with Image.open(ent["texture"]) as img:
-                sizes[name_] = img.size
-    except Exception:
-        pass
-    _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
-    emitted = _wire.emit(doc, project_dir=root,
-                         scene_path=home / f"{name}.tscn",
-                         sizes=sizes, force=force)
-    if emitted.get("ok"):
-        _log("cutout", f"equipped {name}.{slot} -> {target.name}",
-             ref=emitted["scene_res"])
+    emitted = _cutout_write(root, name, doc, force=force, producer="cutout_equip",
+                            metadata={"slot": slot, "texture": target.name})
     return {**emitted, "slot": slot, "texture": str(target),
             "pivot_source": entry.get("pivot_source", "default")}
 
@@ -9578,6 +10360,21 @@ def tool_unlock(craft: str) -> dict:
             "note": ("" if added else
                      "nothing to add: already held, or switched off by the "
                      "project's modules")}
+
+
+@_tool
+def rejections_clear(tool: str) -> dict:
+    """Clear the 3-human-rejections block on `tool` (ITEM 9b) so dispatched
+    seats can call it again.
+
+    Human-only in intent, not just in name: call this after the human says
+    what actually changes, not to make a refused tool run again unchanged.
+    The refusal itself names the last 3 rejections (`rejections` in its
+    result) - read those before clearing. Returns {ok, tool, cleared: n rows}.
+    """
+    from bgate_core.board import rejections as _rejections
+
+    return _rejections.clear(_root(), tool, by=_activity.current_actor())
 
 
 def _install_tool_index() -> None:

@@ -332,7 +332,7 @@ def _drop_money_ledger(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS run_limits (
             id             INTEGER PRIMARY KEY CHECK (id = 1),
-            max_runtime_s  INTEGER NOT NULL DEFAULT 1800,
+            max_runtime_s  INTEGER NOT NULL DEFAULT 9800,
             max_concurrent INTEGER NOT NULL DEFAULT 4,
             updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -368,6 +368,59 @@ def _work_item_add_integrating_status(conn: sqlite3.Connection) -> None:
         return
     old = "('queued','dispatched','review','done',"
     new = "('queued','dispatched','integrating','review','done',"
+    rebuilt_sql = create_sql.replace(old, new, 1)
+    if rebuilt_sql == create_sql:
+        raise RuntimeError("work_item status CHECK has an unknown shape")
+
+    columns = [str(r[1]) for r in conn.execute("PRAGMA table_info(work_item)")]
+    quoted = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+    indexes = [str(r[0]) for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+        "AND tbl_name = 'work_item' AND sql IS NOT NULL")]
+
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("ALTER TABLE work_item RENAME TO work_item_old")
+        conn.execute(rebuilt_sql)
+        conn.execute(f"INSERT INTO work_item ({quoted}) SELECT {quoted} FROM work_item_old")
+        moved = conn.execute("SELECT COUNT(*) FROM work_item").fetchone()[0]
+        had = conn.execute("SELECT COUNT(*) FROM work_item_old").fetchone()[0]
+        if moved != had:
+            raise RuntimeError(f"work_item rebuild moved {moved} of {had} rows")
+        conn.execute("DROP TABLE work_item_old")
+        for sql in indexes:
+            conn.execute(sql)
+        conn.commit()
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise RuntimeError(f"work_item rebuild broke {len(broken)} references")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _work_item_add_parked_status(conn: sqlite3.Connection) -> None:
+    """0047 — ITEM 26: a status between 'queued' and 'cancelled' that a human
+    can put work into and take it back OUT of, without raw SQL.
+
+    Same rebuild shape as _work_item_add_integrating_status — see its
+    docstring. CHECK constraints cannot be ALTERed, so widening one is still a
+    full table rebuild even for a single new word.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'work_item'"
+    ).fetchone()
+    create_sql = str(row[0] if row else "")
+    if "'parked'" in create_sql:
+        return
+    old = "'cancelled'))"
+    new = "'cancelled','parked'))"
     rebuilt_sql = create_sql.replace(old, new, 1)
     if rebuilt_sql == create_sql:
         raise RuntimeError("work_item status CHECK has an unknown shape")
@@ -2257,6 +2310,110 @@ _MIGRATIONS: list = [
 
     # 0046 - Chaos completion parks the branch here until Director merge.
     _work_item_add_integrating_status,
+
+    # 0047 - A CONSTRAINT KNOWS WHO STATED IT AND WHAT IT FORBIDS.
+    #
+    # MEASURED, EXIT 67 (2026-09-20): on night one the human said a Metal Slug
+    # run-and-gun needs a 2D rig and that generated frame sheets would not
+    # carry it. The director answered "trust the process", dispatched the cast
+    # on image_sprites, and every art failure of the next twelve hours was a
+    # consequence. The bible had a `constraint` kind; nothing distinguished the
+    # human's ruling from a director's preference, nothing bound it to a seat,
+    # and nothing could refuse the tool the human had ruled out. Three columns:
+    #
+    #   stated_by  '' | human | director | agent - who said so. Only a human
+    #              session may write 'human'; that is the value the gates
+    #              key on.
+    #   binds      comma-separated seats the ruling reaches ('' = every seat).
+    #   forbids    comma-separated MCP tool names a bound seat may not call
+    #              while the ruling stands. The tool wrapper refuses them and
+    #              dispatch refuses a brief that names one.
+    """
+    ALTER TABLE bible_section ADD COLUMN stated_by TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bible_section ADD COLUMN binds TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bible_section ADD COLUMN forbids TEXT NOT NULL DEFAULT '';
+    """,
+
+    # 0048 — EXIT 67 fixes: a HUMAN rejection is a signal, not just a status
+    # flip, and "one biome at a time" needed somewhere to live.
+    #
+    # human_rejection: one row per human rejection of a tool's output (an
+    # artifacts.review 'rejected' by a human, or a queue.reject). ITEM 9b —
+    # agents shipped mixed sheets repeatedly with no course correction; every
+    # correction came from a human reopening a sheet, and a reopen produced
+    # another mixed sheet and another self-reported PASS. Three human
+    # rejections of the same tool's output on one project inside 24h now
+    # stops that tool for dispatched seats until a human clears it
+    # (bgate_core.board.rejections, tool_unlock's rejections_clear).
+    #
+    # project.focus: ITEM 36 — the free-text slice name board.focus names, so
+    # queue_add can warn when a brief names a different one.
+    """
+    CREATE TABLE human_rejection (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool       TEXT NOT NULL DEFAULT '',
+        seat       TEXT NOT NULL DEFAULT '',
+        item_id    INTEGER,
+        reason     TEXT NOT NULL DEFAULT '',
+        by         TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        cleared_at TEXT
+    );
+    CREATE INDEX idx_human_rejection_tool ON human_rejection(tool, created_at);
+    ALTER TABLE project ADD COLUMN focus TEXT NOT NULL DEFAULT '';
+    """,
+
+    # 0049 - ITEM 26: 'parked', a status between 'queued' and 'cancelled'.
+    _work_item_add_parked_status,
+
+    # 0050 - ITEM 29: the 1800s (30 min) default runtime ceiling killed
+    # chained queue_claim_next runs mid-work; raised by hand to 9800s and it
+    # held. Only touches a row still AT the old default - a project that
+    # deliberately set something else (including 1800) keeps its own choice.
+    """
+    UPDATE run_limits SET max_runtime_s = 9800, updated_at = datetime('now')
+    WHERE id = 1 AND max_runtime_s = 1800;
+    """,
+
+    # 0051 - A PAID-CALL BUDGET, so a re-rolling agent has a stop that is not
+    # a human watching the card total.
+    #
+    # MEASURED: EXIT 67 death frames were re-rolled at $0.05-0.10 each in a
+    # loop with no ceiling; #44 reached $7.67 and #21 $10.10 across attempts
+    # before a human killed the agent by hand. max_cost_usd (0034/0042) bounds
+    # DOLLARS and needs a priced provider to mean anything - kie's credits
+    # read back as $0.00 (see 0042's baseline comment) and the dollar gate
+    # never moved. `paid_calls` counts ATTEMPTS, which every provider has
+    # regardless of whether it prices itself back; `max_paid_calls` is the
+    # ceiling, NULL meaning "use the project default"
+    # (dispatch.default_max_paid_calls, 30).
+    """
+    ALTER TABLE work_item ADD COLUMN max_paid_calls INTEGER;
+    ALTER TABLE work_item ADD COLUMN paid_calls INTEGER NOT NULL DEFAULT 0;
+    """,
+
+    # 0052 - GRIPE 41 (EXIT 67 postmortem, 2026-09-21): tickets filed too broad
+    # spread one agent across a whole feature instead of one deliverable.
+    # `size` lets the harness pick a runtime/turn ceiling (runlimits.py) and
+    # `acceptance` is the one-sentence check a non-director filer must name -
+    # queue.brief_breadth() grades the brief itself against the same problem.
+    """
+    ALTER TABLE work_item ADD COLUMN size TEXT NOT NULL DEFAULT 'medium';
+    ALTER TABLE work_item ADD COLUMN acceptance TEXT NOT NULL DEFAULT '';
+    """,
+
+    # 0053 - GRIPE 40 (EXIT 67 postmortem, 2026-09-21): per-size effort budgets
+    # (runlimits.SIZE_LIMITS) are settable per project the same way
+    # max_runtime_s already was - these columns are NULL until a project
+    # overrides its default, same convention as run_limits' existing pair.
+    """
+    ALTER TABLE run_limits ADD COLUMN small_runtime_s INTEGER;
+    ALTER TABLE run_limits ADD COLUMN small_turns INTEGER;
+    ALTER TABLE run_limits ADD COLUMN medium_runtime_s INTEGER;
+    ALTER TABLE run_limits ADD COLUMN medium_turns INTEGER;
+    ALTER TABLE run_limits ADD COLUMN large_runtime_s INTEGER;
+    ALTER TABLE run_limits ADD COLUMN large_turns INTEGER;
+    """,
 ]
 
 

@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -224,9 +223,6 @@ def _codex_config() -> Path:
     return Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")) / "config.toml"
 
 
-_TOML_TABLE = re.compile(r"^\s*\[mcp_servers\.(?:\"([^\"]+)\"|([^\].]+))\]\s*$")
-_TOML_STR = re.compile(r"""^\s*command\s*=\s*(['"])(.*)\1\s*$""")
-_TOML_ARGS = re.compile(r"^\s*args\s*=\s*(\[.*\])\s*$")
 
 
 def _codex_read() -> dict:
@@ -248,43 +244,17 @@ def _codex_read() -> dict:
         out["error"] = "no ~/.codex/config.toml yet — Codex writes it on first run"
         return out
 
+    import tomllib
     try:
-        import tomllib
-    except ImportError:
-        tomllib = None                                           # noqa: N806
-    if tomllib is not None:
-        try:
-            doc = tomllib.loads(raw)
-        except Exception as exc:                                 # noqa: BLE001
-            out["error"] = f"{path} would not parse as TOML: {exc}"
-            return out
-        entry = (doc.get("mcp_servers") or {}).get(SERVER)
-        if isinstance(entry, dict):
-            args = entry.get("args")
-            out.update(found=True, command=str(entry.get("command") or ""),
-                       args=[str(a) for a in args] if isinstance(args, list) else [])
+        doc = tomllib.loads(raw)
+    except Exception as exc:                                     # noqa: BLE001
+        out["error"] = f"{path} would not parse as TOML: {exc}"
         return out
-
-    inside = False
-    for line in raw.splitlines():
-        header = _TOML_TABLE.match(line)
-        if header:
-            inside = (header.group(1) or header.group(2) or "").strip() == SERVER
-            if inside:
-                out["found"] = True
-            continue
-        if not inside:
-            continue
-        got = _TOML_STR.match(line)
-        if got:
-            out["command"] = got.group(2)
-            continue
-        got = _TOML_ARGS.match(line)
-        if got:
-            try:
-                out["args"] = [str(a) for a in json.loads(got.group(1))]
-            except ValueError:
-                pass
+    entry = (doc.get("mcp_servers") or {}).get(SERVER)
+    if isinstance(entry, dict):
+        args = entry.get("args")
+        out.update(found=True, command=str(entry.get("command") or ""),
+                   args=[str(a) for a in args] if isinstance(args, list) else [])
     return out
 
 

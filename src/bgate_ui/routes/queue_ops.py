@@ -42,32 +42,6 @@ def _base_commit(item: dict) -> str:
             or _dispatch.read_run_record(root(), item["id"]).get("base_commit", ""))
 
 
-@router.get("/api/queue/graph")
-def queue_graph() -> dict:
-    """The dependency graph, normalised, with a topological DISPLAY order.
-
-    THE READABILITY DEFECT THIS ANSWERS. The board showed
-
-        #42 enlarge rooms       done
-        #45 swap in furniture   running
-        #43 rebuild routes      queued
-
-    which reads as a scheduler that skipped #43. It did not: #43 was filed
-    after #42, and #45 was inserted BETWEEN them later, because the route
-    measurements had to wait for real furniture dimensions. The dependency
-    engine was correct the whole time. The presentation made it look broken,
-    and an operator who believes the scheduler is broken starts working around
-    it.
-
-    IDS ARE NOT RENUMBERED. They are in briefs, commit messages and people's
-    heads. `execution_position` is a display index derived from the graph;
-    `execution_state` is the one word a card colours by. `work_item.depends_on`
-    and `work_item_dep` are presented as ONE graph — which table holds a link is
-    not a question anybody should have to answer.
-    """
-    return api.ok(_queue.graph(root()))
-
-
 @router.get("/api/queue/{item_id:int}/path")
 def queue_path(item_id: int) -> dict:
     """Everything that has to happen before this item, in the order it happens.
@@ -81,23 +55,18 @@ def queue_path(item_id: int) -> dict:
                    "waiting_line": _queue.waiting_line(root(), item_id)})
 
 
-@router.get("/api/queue/stalled")
-def queue_stalled(seat: Optional[str] = None) -> dict:
-    """Queued work NO dispatcher will take, and what would release each row.
-
-    `/api/queue` answers "what is on the board". Nothing answered "what is
-    sitting here that nothing will ever start", and the difference between
-    those two lists is an operator's whole morning. An item whose retries are
-    spent, whose source is human-held, or whose seat the stage is holding
-    looked identical to fresh work; the only tell was reading the retry
-    counters off the row by hand.
-    """
-    return api.ok({"items": _queue.stalled(root(), seat=seat or "")})
-
-
 @router.get("/api/queue/{item_id:int}")
 def queue_item(item_id: int) -> dict:
-    return api.ok(_item(item_id))
+    item = _item(item_id)
+    # Item 31c — per-run cost history for the item card, under the total.
+    # 'attempts_detail' rather than 'attempts': that key is already the round
+    # counter (an int) every other reader of this row expects.
+    try:
+        from bgate_core.board import agentreg as _agentreg
+        item["attempts_detail"] = _agentreg.runs_for_item(root(), item_id)
+    except Exception:
+        item["attempts_detail"] = []
+    return api.ok(item)
 
 
 @router.patch("/api/queue/{item_id:int}")
@@ -142,6 +111,31 @@ def queue_cancel(item_id: int, payload: Optional[dict] = None) -> dict:
     stopped = _dispatch.stop(item_id) if item["status"] == "dispatched" else {}
     result = _queue.set_status(root(), item_id, "cancelled", result=str(reason)[:2000])
     return api.ok(result, agent_stopped=bool(stopped.get("ok")))
+
+
+@router.post("/api/queue/{item_id:int}/park")
+def queue_park(item_id: int, payload: Optional[dict] = None) -> dict:
+    """Take a live item off the board without cancelling it — see queue.park.
+    A live agent is killed first, same as cancel: parking work an agent is
+    still running on would just leave that run orphaned."""
+    item = _item(item_id)
+    reason = (payload or {}).get("reason", "")
+    stopped = _dispatch.stop(item_id) if item["status"] == "dispatched" else {}
+    try:
+        result = _queue.park(root(), item_id, reason)
+    except ValueError as exc:
+        raise api.bad_request(str(exc), item_id=item_id)
+    return api.ok(result, agent_stopped=bool(stopped.get("ok")))
+
+
+@router.post("/api/queue/{item_id:int}/unpark")
+def queue_unpark(item_id: int) -> dict:
+    """Put a parked item back on the board as 'queued' — see queue.unpark."""
+    _item(item_id)
+    try:
+        return api.ok(_queue.unpark(root(), item_id))
+    except ValueError as exc:
+        raise api.bad_request(str(exc), item_id=item_id)
 
 
 @router.get("/api/queue/{item_id:int}/diff")

@@ -254,14 +254,22 @@ def _model_for(root: str, seat: str,
         return None
 
 
-def _max_turns(root: str) -> int:
+def _max_turns(root: str, item: Optional[dict] = None) -> int:
     """The per-run turn ceiling, or 0 for none.
 
     Separate from the wall clock because they bound different runaways: a
     session can burn an hour on one long tool call, and it can also spin
     through two hundred cheap turns getting nowhere. Turns are counted by the
     CLI itself.
+
+    GRIPE 40: a small/medium item's size-derived cap (runlimits.SIZE_LIMITS)
+    wins over the project default when the size gives one — the whole point
+    of `size` is a TIGHTER ceiling than "whatever this project usually
+    allows", not a looser one. `large` (or no item) falls through unchanged.
     """
+    size_cap = _runlimits.turn_cap_for_item(root, item or {}) if item else 0
+    if size_cap:
+        return size_cap
     try:
         return max(0, int(_settings.get(root, "dispatch.max_turns") or 0))
     except Exception:
@@ -576,6 +584,19 @@ def _prompt_template(seat: str) -> str:
     return "".join(base.values())
 
 
+def _current_block(root: str) -> str:
+    """GRIPE 38: "SINCE <time>: N files changed outside the board: <paths>",
+    printed right under the item so an agent never edits a file the human
+    (or an outside CLI session) just touched without knowing. '' when
+    nothing has moved outside the board, or the project has no git."""
+    try:
+        from bgate_core.board import current as _current
+        text = _current.summary_text(root)
+    except Exception:
+        return ""
+    return ("\n" + text + "\n") if text else ""
+
+
 def _canon_block(root: str) -> str:
     """Which world this seat is in, or '' when the project has not said.
     Printed right under the item, before the protocol: the agents that
@@ -586,6 +607,19 @@ def _canon_block(root: str) -> str:
         from bgate_core.board import canon as _canon
         from bgate_core.store import project as _project
         block = _canon.block(root, _project.game_dir(root) or "")
+    except Exception:
+        return ""
+    return ("\n" + block + "\n") if block else ""
+
+
+def _ruling_block(root: str, seat: str) -> str:
+    """What the human ruled and this seat must build within, printed right
+    under the item beside the canon block - before the protocol, for the same
+    reason the canon block is: the decisions an agent makes in its first ten
+    turns are the ones a rule read later cannot undo."""
+    try:
+        from bgate_core.design import bible as _bible
+        block = _bible.describe_rulings(root, seat)
     except Exception:
         return ""
     return ("\n" + block + "\n") if block else ""
@@ -614,6 +648,8 @@ def _prompt_for(root: str, item: dict, native_images: bool = False,
                "worktree." if worktree else
                "Use that exact project_dir on every Builders Gate tool call.")),
         "canon_block": _canon_block(root),
+        "ruling_block": _ruling_block(root, seat),
+        "current_block": _current_block(root),
         "seat_rule_block": (seat_rule + "\n\n") if seat_rule else "",
         "policy_block": (policy + "\n\n") if policy else "",
         "verify_rule": _verify_rule(root),
@@ -790,6 +826,32 @@ def _live_count() -> int:
     return sum(1 for e in _live.values() if e["proc"].poll() is None)
 
 
+def _live_count_for_seat(seat: str) -> int:
+    return sum(1 for e in _live.values()
+               if e.get("seat") == seat and e["proc"].poll() is None)
+
+
+def _seat_cap(root: str, seat: str) -> int:
+    """The per-seat concurrency cap for ``seat``, or 0 for uncapped.
+
+    MEASURED (EXIT 67, item 24): three art agents ran in parallel and mixed
+    characters into each other's reference sheets (kie upload name collision,
+    fixed separately by content-hashing upload names) — the deeper problem is
+    that art generation shares provider-side state a single global concurrency
+    cap does not protect. ``dispatch.max_per_seat`` is a per-seat map read from
+    settings; the registry default is ``{"art": 1}``.
+    """
+    try:
+        from bgate_core.store import settings as _settings
+
+        caps = _settings.get(root, "dispatch.max_per_seat") or {}
+        if not isinstance(caps, dict):
+            return 0
+        return int(caps.get(seat) or 0)
+    except Exception:
+        return 0
+
+
 def _art_model_pref(root: str) -> str:
     """The stored image-model preference (art.model), or ""."""
     try:
@@ -883,10 +945,43 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                        item_id=item_id, waiting_on=held["id"],
                        waiting_on_status=held["status"])
 
+    # THE HUMAN'S RULINGS. A brief that names a tool the human forbade for
+    # this seat is an item that fails at its first tool call, after the
+    # briefing has been paid for - or worse, an agent that routes around the
+    # refusal. Measured on EXIT 67: the human ruled out frame sheets on night
+    # one and 33 agents were dispatched on them. Per-item, not a floor.
+    try:
+        from bgate_core.design import bible as _bible
+        violations = _bible.brief_violations(
+            root, str(item.get("seat") or ""),
+            f"{item.get('title') or ''}\n{item.get('brief') or ''}")
+    except Exception:
+        violations = []
+    if violations:
+        named = ", ".join(sorted({v["tool"] for v in violations}))
+        rulings = "; ".join(sorted({f"#{v['section_id']} {v['title']}"
+                                    for v in violations}))
+        _emit(root, "dispatch.blocked", ref=str(item_id),
+              payload={"code": "forbidden_by_ruling", "item": item_id,
+                       "seat": item.get("seat") or "",
+                       "title": str(item.get("title") or "")[:200],
+                       "tools": named, "rulings": rulings,
+                       "whole_board": False,
+                       "reason": f"the brief names {named}, forbidden for this "
+                                 f"seat by a human ruling ({rulings})"})
+        return _refuse(
+            "forbidden_by_ruling",
+            f"item {item_id}'s brief names {named}, which a HUMAN RULING forbids "
+            f"for the {item.get('seat')} seat ({rulings}). Rewrite the brief "
+            "around what the ruling asks for, or have the human change the "
+            "ruling (bible_update) - do not dispatch an agent to be refused.",
+            item_id=item_id, tools=sorted({v["tool"] for v in violations}),
+            rulings=[v["section_id"] for v in violations])
+
     # A cut-line re-check used to sit here, refusing to spend an agent on an
     # item whose scope tier had fallen below the line since it was queued. The
     # tier system is gone (nothing was ever filed under a tier, so this check
-    # never refused a dispatch either); the chain gate above is now the last
+    # never refused a dispatch either); the ruling gate above is now the last
     # thing between a queued item and a process.
     with _lock:
         if item_id in _live and _live[item_id]["proc"].poll() is None:
@@ -900,12 +995,24 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
             return _refuse("concurrency_limit",
                            f"{running} agents already running - the cap is {cap}",
                            running=running, max_concurrent=cap)
+        # PER-SEAT CAP. concurrency_limit above is a FLOOR refusal (autodeploy
+        # stops the whole tick on it); this one is per-ITEM, because a seat at
+        # its cap should not stop a different seat's work from dispatching —
+        # see refusal code `seat_cap`, deliberately not in autodeploy.FLOOR_CODES.
+        seat = str(item.get("seat") or "")
+        seat_cap = _seat_cap(root, seat)
+        seat_running = _live_count_for_seat(seat)
+        if seat_cap and seat_running >= seat_cap:
+            return _refuse("seat_cap",
+                           f"{seat_running} {seat} agent(s) already running - "
+                           f"the per-seat cap is {seat_cap}",
+                           running=seat_running, max_per_seat=seat_cap, seat=seat)
 
     # The wall-clock ceiling: the item's own override wins, then this call's,
     # then the project default. There is no money ceiling, a dollar cap on a
     # run was always a guess multiplied by a guess, and what actually stopped
     # runaway work in every benchmark was the clock.
-    ceiling_s = int(max_runtime_s or _runlimits.runtime_ceiling(root, item) or 0)
+    ceiling_s = int(max_runtime_s or _runlimits.runtime_ceiling_for_item(root, item) or 0)
 
     # THE RESERVATION - the queued->dispatched transition, taken atomically and
     # FIRST. There are two dispatchers now (this function, and a worker's
@@ -989,6 +1096,22 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     blocked = _runners.preflight(runner, cwd, exe=exe)
     if blocked:
         return _refused("runner_unavailable", blocked, runner=runner.name)
+
+    # ITEM 13 — DOES THIS SEAT HAVE ANYWHERE TO SPEND, before it is spawned to
+    # try. MEASURED: Retro Diffusion ran dry ($0.11) on EXIT 67's night one;
+    # two Codex art runs stalled on it silently, each one burning a full turn
+    # to discover what this refuses in one dispatch-time read.
+    try:
+        from bgate_core.runtime import preflight as _preflight
+
+        drained = _preflight.check(root, str(item.get("seat") or ""))
+    except Exception:
+        drained = None
+    if drained:
+        return _refused(drained.get("code", "provider_drained"),
+                        drained.get("error", "no routable provider"),
+                        seat=item.get("seat") or "")
+
     native_images = _native_images(root, runner)
 
     log_dir = Path(root) / ".bgate" / "agents"
@@ -1074,7 +1197,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         runner, model or _model_for(root, item.get("seat") or "", runner))
     args = runner.build_args(exe, permission_mode=permission_mode,
                              model=model, cwd=cwd, native_images=native_images,
-                             max_turns=_max_turns(root),
+                             max_turns=_max_turns(root, item),
                              mcp_env_vars=env.keys(),
                              auto_approve=(runner.name == "codex" and bool(
                                  _settings.get(root, "dispatch.codex_auto_approve"))))
@@ -1306,6 +1429,57 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
 _ERROR_SUBTYPES = ("error", "error_during_execution", "error_max_turns",
                    "error_max_tokens")
 
+# ITEM 28 (EXIT 67): a Claude agent froze on the account usage limit and the
+# item just went "failed", with the only trace of WHY being the card's last
+# message. Codex reports the same failure mode as a usage percentage climbing
+# toward 100 rather than a sentence. These are read off the run's own final
+# words - see detect_usage_limit - not off an exit code, because the process
+# often exits 0 or hangs rather than erroring cleanly.
+_USAGE_LIMIT_PATTERNS = (
+    re.compile(r"usage limit", re.I),
+    re.compile(r"rate limit", re.I),
+    re.compile(r"you'?ve hit your limit", re.I),
+    re.compile(r"you have (?:hit|reached) your (?:usage )?limit", re.I),
+    re.compile(r"5-hour limit", re.I),
+    re.compile(r"weekly limit", re.I),
+)
+# "resets at 3pm", "resets 03:00 UTC", "try again at 14:30"
+_USAGE_RESUME_RE = re.compile(
+    r"(?:resets?|try again)\s+(?:at\s+)?([0-9:apmAPM\s]{3,20}"
+    r"(?:UTC|GMT|[AP]M)?)", re.I)
+# Codex's own shape: a percentage climbing toward the ceiling rather than a
+# sentence - "usage: 93%" / "93% of your usage limit".
+_CODEX_USAGE_PCT_RE = re.compile(
+    r"usage[:\s]+(\d{1,3})\s*%|(\d{1,3})\s*%\s+of\s+(?:your\s+)?usage", re.I)
+CODEX_USAGE_PCT_FLOOR = 90
+
+
+def detect_usage_limit(text: str, *, runner: str = "") -> Optional[dict]:
+    """Is this the agent's own report that it hit a session/account limit?
+
+    Returns {"raw": <the matched sentence>, "resumes_at": <parsed text, or
+    "">, "runner": runner} or None. Best-effort text matching, deliberately —
+    there is no structured field for this in either CLI's event stream, only
+    the sentence a human would also have read to figure it out.
+    """
+    said = str(text or "")
+    if not said.strip():
+        return None
+    for pattern in _USAGE_LIMIT_PATTERNS:
+        hit = pattern.search(said)
+        if hit:
+            resume = _USAGE_RESUME_RE.search(said)
+            return {"raw": said[:300], "runner": runner,
+                    "resumes_at": resume.group(1).strip() if resume else ""}
+    if runner == "codex":
+        hit = _CODEX_USAGE_PCT_RE.search(said)
+        if hit:
+            pct = int(hit.group(1) or hit.group(2) or 0)
+            if pct >= CODEX_USAGE_PCT_FLOOR:
+                return {"raw": said[:300], "runner": runner, "resumes_at": "",
+                        "pct": pct}
+    return None
+
 
 def _terminal_error(root: str, item_id: int) -> str:
     """The sentence to fail this run with, or "" if it has not errored out.
@@ -1353,6 +1527,39 @@ def _send(entry: dict, text: str) -> bool:
         return False
 
 
+def _holder_item(root: str, item_id: int) -> Optional[int]:
+    """Which item a chained run's death actually belongs to.
+
+    MEASURED (EXIT 67, item 27): a run dispatched on #4 chains through
+    queue_claim_next to #35, #13, #42, #46 and dies at the runtime ceiling
+    mid-#46. The old code banked the kill against `item_id` (#4) unconditionally
+    — even though #4 had called queue_complete and closed hours earlier. #4,
+    #35, #13 and #42 each needed a manual re-close after being falsely failed.
+
+    The run's actor stamp (``agent:item-<item_id>``) is shared by every item it
+    claims, so the still-open ones (status='dispatched') are exactly the work
+    this process has not yet settled. The LAST of those — highest id among
+    open claims, since claim_next only ever claims forward — is what the
+    process is holding when it dies. If nothing is open under that actor, fall
+    back to `item_id` itself only if IT is still 'dispatched' (a run that
+    never claimed anything, the ordinary case). If neither holds, the run has
+    already banked everything it touched and there is nothing to fail —
+    returning None so the caller does not stamp a closed item.
+    """
+    try:
+        open_claims = _open_claims(root, item_id)
+    except Exception:
+        open_claims = []
+    if open_claims:
+        return int(max(open_claims, key=lambda r: int(r["id"]))["id"])
+    try:
+        if _queue.get(root, item_id)["status"] == "dispatched":
+            return item_id
+    except LookupError:
+        pass
+    return None
+
+
 def _trip(root: str, item_id: int, entry: dict, reason: str,
           recoverable: bool = True) -> None:
     """A ceiling the agent blew through: stop the tree and BANK what it wrote.
@@ -1386,22 +1593,29 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
                 "below EXISTS ON DISK and was written by this run. Read it "
                 "before reopening: the next agent should continue from these "
                 "files, not regenerate them.")
-    try:
-        _queue.set_status(root, item_id, "failed", result=note)
-    except LookupError:
-        pass
-    else:
-        # ANNOUNCE THE KILL. set_status never emits (by design - see
-        # queue.complete), and _reap skips complete() because the item is no
-        # longer 'dispatched' - so every ceiling kill was a failure with no
-        # item.failed event: no bell, no webhook, no auto-reopen, an item that
-        # just sat there. item.failed is in the default notify kinds; the most
-        # expensive failures this system has should be the loudest, not the
-        # only silent ones.
+    # ATTRIBUTE THE KILL TO WHAT THE RUN WAS ACTUALLY HOLDING, not to
+    # `item_id` (the item this run was originally dispatched on). A chained
+    # run may have long since closed `item_id` and be several claims deep —
+    # see _holder_item. `holder is None` means every item this run ever
+    # touched is already settled; the kill has nothing left to fail.
+    holder = _holder_item(root, item_id)
+    if holder is not None:
         try:
-            _queue.emit_terminal(root, item_id)
-        except Exception:
-            pass
+            _queue.set_status(root, holder, "failed", result=note)
+        except LookupError:
+            holder = None
+        else:
+            # ANNOUNCE THE KILL. set_status never emits (by design - see
+            # queue.complete), and _reap skips complete() because the item is no
+            # longer 'dispatched' - so every ceiling kill was a failure with no
+            # item.failed event: no bell, no webhook, no auto-reopen, an item that
+            # just sat there. item.failed is in the default notify kinds; the most
+            # expensive failures this system has should be the loudest, not the
+            # only silent ones.
+            try:
+                _queue.emit_terminal(root, holder)
+            except Exception:
+                pass
     _reap(root, item_id, entry, entry["proc"].poll())
 
 
@@ -1467,10 +1681,32 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         # alone overnight is the single most expensive failure this system can
         # have. 0 now means the hard cap, not infinity.
         limit_s = int(entry.get("max_runtime_s") or 0) or HARD_RUNTIME_S
-        if time.monotonic() - entry["started_at"] >= limit_s:
+        elapsed_s = time.monotonic() - entry["started_at"]
+        if elapsed_s >= limit_s:
             _trip(root, item_id, entry,
                   f"killed: exceeded the {limit_s // 60}-minute runtime limit")
             return
+
+        # GRIPE 40(b) — LAND WHAT YOU HAVE. Fired once per checkpoint per run
+        # (entry["budget_steered"] tracks which ones already went out), so a
+        # 2-second poll does not repost the same steer a dozen times before
+        # the agent's current step ends and it can read the inbox.
+        steered = entry.setdefault("budget_steered", set())
+        for pct in _runlimits.LAND_WHAT_YOU_HAVE_CHECKPOINTS:
+            if pct in steered:
+                continue
+            if elapsed_s < limit_s * pct:
+                continue
+            steered.add(pct)
+            try:
+                from bgate_core.board import steerbox as _steerbox
+
+                _steerbox.post_long(
+                    root, item_id,
+                    _runlimits.land_what_you_have_text(elapsed_s, limit_s, pct),
+                    by="harness:budget")
+            except Exception:
+                pass
 
         # HUNG, as distinct from slow. A wedged agent - one whose MCP child
         # died holding the pipe - is alive, costs nothing more, and will sit
@@ -1763,16 +1999,89 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
                      ref=str(item_id))
         if not split["mine"]:
             return
+        # ITEM 32: name every item this RUN carried, not just the one it was
+        # dispatched on. A chained run (queue_claim_next) may have completed
+        # several items under this process's clock, and all of their files
+        # land in the same commit — attributing it to only the first id is
+        # how #13's and #44's work got committed as "item #4".
+        try:
+            ids = sorted({item_id, *(int(r["id"])
+                                     for r in _queue.claimed_by(
+                                         root, f"agent:item-{item_id}"))})
+        except Exception:
+            ids = [item_id]
+        tag = " ".join(f"#{i}" for i in ids)
         made = _git.commit_paths(
             root, split["mine"],
-            f"bgate: item #{item_id}" + (f" [{seat}]" if seat else "")
+            f"bgate: item {tag}" + (f" [{seat}]" if seat else "")
             + " - committed by the harness so the board keeps moving")
         if made.get("ok"):
             _act.log(root, "dispatch",
                      f"item {item_id}: committed {len(made['committed'])} "
                      f"file(s) as {made['commit'][:8]}", ref=str(item_id))
+            _notify_peer_seats(root, item_id, made.get("committed") or [])
     except Exception:
         pass
+
+
+def _notify_peer_seats(root: str, item_id: int, committed_paths: list) -> None:
+    """GRIPE 39c. Warn every OTHER live agent whose seat lanes just moved.
+
+    THE GAP. An item's auto-commit can land inside another RUNNING agent's own
+    write_globs — two art items sharing ``game/assets/**``, say — and nothing
+    told the still-running one its files just changed under it. It kept
+    working off what it read at the start of its turn, and its own result
+    landed on top of the peer's, or contradicted it, with neither agent aware
+    the other had moved.
+
+    Read ``_live`` directly (not queue.list_items) because the question is
+    "which agents does THIS PROCESS actually have a pipe to steer", which is
+    exactly what ``_live`` is — see the module docstring on why steering has
+    to go through here rather than the MCP server.
+
+    Best-effort throughout: a steer that fails to post costs a peer a warning,
+    not the landing that triggered it.
+    """
+    if not committed_paths:
+        return
+    try:
+        from bgate_core.board import seats as _seats, steerbox as _steerbox
+    except Exception:
+        return
+    try:
+        roles = _seats.roles_for(root)
+    except Exception:
+        return
+    rel_paths = [str(p).replace("\\", "/").lstrip("/") for p in committed_paths]
+    for other_id, entry in list(_live.items()):
+        if int(other_id) == int(item_id):
+            continue
+        try:
+            if entry["proc"].poll() is not None:
+                continue
+        except Exception:
+            continue
+        other_seat = str(entry.get("seat") or "")
+        cfg = roles.get(other_seat) or {}
+        globs = cfg.get("write_globs") or []
+        if not globs:
+            continue
+        try:
+            hit = [p for p in rel_paths
+                   if any(_seats._glob_re(g).match(p) for g in globs)]
+        except Exception:
+            hit = []
+        if not hit:
+            continue
+        try:
+            _steerbox.post(
+                root, int(other_id),
+                f"peer #{item_id} landed {', '.join(hit[:5])}"
+                + (f" (+{len(hit) - 5} more)" if len(hit) > 5 else "")
+                + "; re-read before you write",
+                by="dispatch", note="peer-landing")
+        except Exception:
+            pass
 
 
 def _final_event(root: str, item_id: int) -> dict:
@@ -1831,24 +2140,46 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
         except Exception:
             pass
     outcome, result = _exit_verdict(root, item_id, code, entry)
+    # ITEM 28 (EXIT 67): a session frozen on the account's usage limit used to
+    # bank as a plain 'failed' with no signal beyond the card's last message -
+    # a human had to open the run and read it to learn the CLI, not the work,
+    # was the problem. Caught here off the run's own final words: the item
+    # goes back to 'queued' (it did not fail, it never got to run) and the
+    # runner is floored so autopilot stops re-feeding it into the same wall.
+    usage = None
+    if outcome != "done":
+        usage = detect_usage_limit(result, runner=str(entry.get("runner") or "claude"))
     try:
         # Only if the agent never spoke for itself: queue_complete's own result
         # is the better answer and must never be overwritten. Through complete()
         # rather than set_status so a session that exits cleanly without
         # self-reporting still lands in the approval gate instead of skipping it.
         if _queue.get(root, item_id)["status"] == "dispatched":
-            try:
-                chaos = (entry.get("worktree") and
-                         entry.get("dispatch_mode") == "chaos")
-            except Exception:
-                chaos = False
-            if chaos and outcome == "done":
-                _queue.set_status(root, item_id, "integrating", result=result)
+            if usage:
+                _queue.set_status(
+                    root, item_id, "queued",
+                    result=("USAGE LIMIT — not failed, requeued: " + usage["raw"]))
             else:
-                _queue.complete(root, item_id, result=result,
-                                failed=(outcome != "done"))
+                try:
+                    chaos = (entry.get("worktree") and
+                             entry.get("dispatch_mode") == "chaos")
+                except Exception:
+                    chaos = False
+                if chaos and outcome == "done":
+                    _queue.set_status(root, item_id, "integrating", result=result)
+                else:
+                    _queue.complete(root, item_id, result=result,
+                                    failed=(outcome != "done"))
     except LookupError:
         pass
+    if usage:
+        try:
+            from bgate_ui.agents import autodeploy as _auto
+
+            _auto.note_usage_limit(root, usage["runner"], usage.get("resumes_at") or "",
+                                   usage["raw"])
+        except Exception:
+            pass
     # CLAIMS DIE WITH THE RUN, BUT THE WORK DOES NOT. An item the agent claimed
     # (queue_claim_next) and never completed goes back on the board as 'queued'
     # rather than dying as a stranded 'dispatched' row - autodeploy re-dispatches

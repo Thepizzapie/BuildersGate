@@ -57,7 +57,22 @@ class EngineBusy(RuntimeError):
     An explicit failure rather than a silent parallel spawn: the parallel spawn
     is the deadlock, and a deadlock reported as a timeout sends the reader to
     the wrong file.
+
+    ``self_collision`` is True when the HOLDER is the same work item as the
+    caller — item #19: an agent's own scripted drive still held the engine
+    when the same agent asked for evidence, and the refusal read as "another
+    Godot process is running", which sends the reader to look for somebody
+    ELSE's process. There wasn't one. ``holder_pid``/``holder_what`` carry
+    what "self" actually means here so the message can say "stop your own
+    driver (pid N)" instead.
     """
+
+    def __init__(self, message: str, *, self_collision: bool = False,
+                holder_pid: object = None, holder_what: str = "") -> None:
+        super().__init__(message)
+        self.self_collision = self_collision
+        self.holder_pid = holder_pid
+        self.holder_what = holder_what
 
 
 def lock_path(project_dir: str | os.PathLike[str]) -> Path:
@@ -88,6 +103,11 @@ def _claim(path: Path, what: str, ttl: float) -> bool:
         "pid": os.getpid(),
         "what": str(what or "")[:200],
         "actor": os.environ.get("BGATE_LOCK_OWNER", "")[:120],
+        # THE OWNING WORK ITEM. Item #19: without this a refusal cannot tell
+        # "another agent's driver is running" from "MY OWN driver, still up
+        # from the last tool call" — and the second one is the one that ate
+        # an hour on the benchmark, misreported as the first.
+        "work_item": os.environ.get("BGATE_WORK_ITEM", "")[:120],
         "at": time.time(),
         "expires_at": time.time() + float(ttl),
     })
@@ -142,14 +162,30 @@ def hold(project_dir: str | os.PathLike[str], what: str = "",
                 pass
             continue
         if time.monotonic() >= deadline:
+            holder_pid = (current or {}).get("pid", "?")
+            holder_what = (current or {}).get("what", "unknown work")
+            holder_item = str((current or {}).get("work_item") or "")
+            mine_item = os.environ.get("BGATE_WORK_ITEM", "")
+            self_collision = bool(mine_item) and mine_item == holder_item
+            if self_collision:
+                raise EngineBusy(
+                    f"YOUR OWN driver still holds the engine on "
+                    f"{project_dir} (pid {holder_pid}, {holder_what!r}, "
+                    f"work item {mine_item!r}) and did not finish within "
+                    f"{wait_s:.0f}s. This is not another agent's process — "
+                    f"stop your own {holder_what!r} run (pid {holder_pid}) "
+                    "before asking for evidence again.",
+                    self_collision=True, holder_pid=holder_pid,
+                    holder_what=holder_what)
             raise EngineBusy(
                 "another Godot/Blender process is already running against "
-                f"{project_dir} (pid {(current or {}).get('pid', '?')}, "
-                f"{(current or {}).get('what', 'unknown work')!r}) and did not "
+                f"{project_dir} (pid {holder_pid}, {holder_what!r}) and did not "
                 f"finish within {wait_s:.0f}s. TWO ENGINE PROCESSES SHARING "
                 "ONE .godot CACHE DEADLOCK ON WINDOWS and the symptom is "
                 "identical to a hang, so this refuses rather than spawning. "
-                "Wait for that run, or stop it.")
+                "Wait for that run, or stop it.",
+                self_collision=False, holder_pid=holder_pid,
+                holder_what=holder_what)
         time.sleep(_POLL_S)
 
     waited = round(time.monotonic() - started, 2)

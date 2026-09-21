@@ -9,6 +9,120 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+- **A constraint the human stated is a ruling, and the harness enforces it.**
+  On the EXIT 67 build the human said on night one that a run-and-gun needs
+  a 2D rig and that generated frame sheets would not carry it; the director
+  answered "trust the process", dispatched the cast on `image_sprites`, and
+  every art failure of the next twelve hours followed. The bible had a
+  `constraint` kind with no idea who stated it. Bible sections now carry
+  `stated_by`, `binds` (seats) and `forbids` (MCP tools); `bible_add` and the
+  dashboard's constraint rows take them, and only a human session may write
+  `stated_by='human'`. A human ruling reaches a bound seat three ways: it is
+  printed under the work item in the dispatch prompt and untrimmed in
+  `seat_brief` (`rulings`); a forbidden tool refuses the seat's call at the
+  tool wrapper; and dispatch refuses a brief that names a forbidden tool
+  (`forbidden_by_ruling`, per item, not a floor). The director protocol says
+  to record the ruling before filing the work. (`bgate_core.design.bible`,
+  migration 0047)
+- **The human's own gripes after EXIT 67: what is current, who to ask,
+  how long an item gets, how big an item may be.** `project_current` and a
+  block under every dispatched item name the files changed OUTSIDE the board
+  in the last hours and who changed them, so an agent never edits a file the
+  human just touched by hand without knowing. The dispatch prompt says to ask
+  the moment a question arises and that `ask_director` is the default; an
+  open director question shows in `pending_decisions` and `board_digest` and
+  escalates to the human after ten minutes of director silence; a landed
+  item's commit steers every running agent whose lane it touched. Items
+  carry `size` and `acceptance`; size derives the runtime ceiling and turn
+  cap, the harness steers "land what you have" at 60 and 85 percent of the
+  budget, running rows and the card show elapsed against ceiling, and a
+  small item whose result names a passing check skips the QA agent.
+  `queue_add` refuses a broad or acceptance-less brief from an agent (split
+  it with `queue_add_chain`) and warns the director. Per-attempt cost sits
+  on the item card; events carry the attempt number. Leftovers landed too:
+  `artifacts.sweep_stale` moves a superseded name's loose files to
+  `.bgate_out/.stale/`, `godot_export_verify` boots the exported pck
+  headless and fails on a SCRIPT ERROR, a builder's-gate rejection counts
+  toward the tool's human-rejection stop, `item_to_spriteframes` conforms a
+  generated icon to the pinned palette, and the sprite contract carries
+  `subject_class` for the prop gate.
+- **The EXIT 67 refinement pass: thirty defects from one night, fixed
+  across the harness.** A Metal Slug style 2D run-and-gun was built over
+  twelve hours by ~33 agents and failed on sight. Every item below names
+  what was measured.
+  - *Art gates* (`bgate_core.art.framegate`): a per-frame gate against the
+    character's OWN anchor fails a frame - silhouette and palette drift,
+    translucent ghost limbs, a second head above the shoulders, a detached
+    object, near-duplicate adjacent frames, a prop that grew limbs. Every
+    pose and reference view written by `image_sprites` carries an
+    anchor-hash sidecar; stale frames are dropped before stitching and the
+    sheet fails with per-frame verdicts, which `queue_reopen` now carries
+    into the reopened brief. `gear.stamp_generated` conforms a stamped
+    weapon to the pinned palette and flags ink weight.
+  - *Export, not editor* (`bgate_core.qa.exportlint`, `exportgate`):
+    `godot_check_project` lints `get_files()` filtered on `.tres`/`.tscn`
+    without a `.remap` strip, zero-width and BOM literals, and unfiltered
+    `res://` FileAccess reads - the three patterns that shipped an empty
+    export; the 2D template gains `ResDir.files()`; the release
+    presentation check refuses a project whose export is unverified or
+    stale. `godot_run`/`godot_test_run` take `time_scale` (8 for drives);
+    identical runs in one item are refused on the third; the engine lock
+    reports a `self_collision`; inflight rows show "waiting on Godot pid
+    N". `scale_contract_set` refuses ratio classes that look like pixels.
+  - *Board plumbing*: leases die with the process and never gate on a path
+    merely named in a brief; `dispatch.max_per_seat` (art=1); `parked`
+    status with `queue_park`/`queue_unpark`/`queue_cancel`; a chained
+    agent's death is attributed to the item it holds; auto-commit names
+    every item the run claimed; a usage-limit message floors dispatch for
+    that runner, requeues instead of failing, and resumes on its own;
+    runtime ceiling 9800 s / 800 turns; temp-dir registrations lose to
+    real projects; `board_digest` rows carry the attempt number.
+  - *Money and payload*: every list-shaped tool result is capped at 40 KB
+    with a "more" pointer and `asset_status`/`asset_verify` page; each work
+    item has `max_paid_calls` (default 30) enforced where every paid
+    generation passes, and the same name generated three times in one item
+    needs a `replace_reason`; dispatch refuses a seat whose keyed provider
+    is drained and the brief carries the provider table; artifact revisions
+    keep a content-hash copy so the gallery never shows a stale file under
+    a shared path.
+  - *Director and review*: `sprite_sheet_check` renders review pages at
+    >= 300 px per frame; three human rejections of one tool's output block
+    that tool for dispatched seats with a STOP AND ASK line until
+    `rejections_clear`; the QA gate reopens an art item whose result has no
+    per-frame verdict; `board_focus_set` names the one slice in progress
+    and `queue_add` warns on a brief that names another; `concept_compare`
+    composes a candidate beside the pinned concept with measured deltas.
+- **`cutout_kit_generate` and `cutout_part_rerun`: the cutout rig generates
+  its own parts.** The rig, emitter and animation library shipped in July;
+  the parts were still made by hand and no project used it. One call now
+  draws every part of a template from ONE pinned reference through the
+  keyed-background contract, trims each to its alpha box, checks its height
+  against the reference figure (flagged, never rescaled), records the
+  reference hash on every part, assembles and emits. It refuses over
+  `max_paid_calls` before buying anything and stops after two consecutive
+  provider failures. `cutout_part_rerun` redraws one part. `cutout_status`
+  gains `stale_reference` (a part from another run or character) and
+  `reference_moved`. The biped template gains wrist bones and hand slots;
+  the weapon hangs from the near hand so the grip is inside the hand in
+  every frame, and an `aim` clip braces both hands on it - the pose the
+  frame pipeline could not hold. (`bgate_core.three_d.cutoutkit`)
+
+### Removed
+- **The spend ledger and every budget ceiling**
+
+### Added
+- **The director console runs on Codex as well as Claude Code**
+- **An opt-in, credential-free Claude usage bridge**
+- **Audio Lab separates a clip into stems locally**
+- **`art.mesh_route` settles how the art seat makes NEW geometry**
+- **`track_generate` builds a measured, drivable circuit from a JSON spec**
+- **`ui_concept` paints the game's screens and derives a palette and a Godot Theme**
+- **`sfx_prompt` generates real SFX through kie sounds**
+- **`godot_export_probe` runs a script against the EXPORTED pck**
+- **`bgate connect`, wiring your coding agent is a command, not a paragraph to retype**
+- …and 1 more, in the decisions file.
+
 ### Changed
 - **2D space and sheets, from one night's failures.** The benchmark game
   shipped complete with its towns graybox, its party four sizes of person

@@ -39,10 +39,28 @@ Contract:
 from __future__ import annotations
 
 import os
+import re
 
 from bgate_core.board import activity, gates as _gates, queue as _queue
 from bgate_core.store import db
 from bgate_core.store import settings as _settings
+
+# ITEM 9b — a result paragraph with no per-frame line is an unverified claim.
+# MEASURED at EXIT 67: art agents reported PASS on mixed sheets repeatedly
+# because nothing checked that "done" meant the sheet was actually opened and
+# compared frame to frame against the pinned anchor (consistency_check /
+# sprite_family_check) rather than just self-QA'd on aggregate. Loose on
+# purpose - it looks for the WORDS a result naming that check would use,
+# never for a specific tool call, so a differently-phrased but genuine
+# per-frame verdict is not punished for its wording.
+_PER_FRAME_RE = re.compile(
+    r"per[-\s]frame|consistency_check|sprite_family_check", re.IGNORECASE)
+
+
+def needs_per_frame_verdict(item: dict) -> bool:
+    """True when an ART item's result names no per-frame verdict at all."""
+    return (str(item.get("seat") or "") == "art"
+            and not _PER_FRAME_RE.search(str(item.get("result") or "")))
 
 # THE DEFAULT, NOT THE POLICY. This was the whole policy: a studio that wanted
 # QA on art alone had to edit this tuple in the harness source, which changed it
@@ -318,6 +336,15 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
     for row in rows:
         item = dict(row)
         ref = str(item["id"])
+        # GRIPE 40c/D — THE SMALL FAST LANE. A small item that already named
+        # its own passing check does not owe a reviewer; see
+        # gates.wants_qa_agent_for for the two shapes that count as "named".
+        if not _gates.wants_qa_agent_for(root, item):
+            activity.log(root, "qa-gate",
+                         f"small item, verify line present, QA skipped "
+                         f"(#{item['id']}: {item['title'][:60]})",
+                         seat="qa", ref=ref)
+            continue
         if _open_gate_exists(root, ref):
             continue
         # attempts counts the reopens; the first pass is attempt 1.
@@ -338,6 +365,16 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
         # reviewed this round. (updated_at bumps on the re-done fix round.)
         last = _latest_gate_created(root, ref)
         if last and item["updated_at"] <= last:
+            continue
+        if needs_per_frame_verdict(item):
+            # Reopen rather than spend a QA round reviewing a claim nobody
+            # can check yet - see the module docstring on needs_per_frame_verdict.
+            _queue.reopen(root, int(item["id"]),
+                         "ART RESULT HAS NO PER-FRAME VERDICT (ITEM 9b) - open "
+                         "the finished sheet, compare frame to frame against "
+                         "the pinned anchor (consistency_check / "
+                         "sprite_family_check), and paste that verdict into "
+                         "the result before re-closing.")
             continue
         opened = open_round(root, item)
         if opened.get("ok"):

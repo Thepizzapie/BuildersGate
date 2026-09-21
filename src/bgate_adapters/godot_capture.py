@@ -247,10 +247,7 @@ def capture_clips(project_dir, scene_res: str, out_dir, *, clips: Optional[list]
 
 def _sheets(frames: list, out: Path) -> list:
     """One PNG per clip: rows per view, columns per sample."""
-    try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        return []
+    from PIL import Image, ImageDraw
     by_clip: dict = {}
     for f in frames:
         by_clip.setdefault(f["clip"], {}).setdefault(f["view"], []).append(f)

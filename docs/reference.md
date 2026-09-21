@@ -336,9 +336,11 @@ animation; a cutout character pays once per template.
 
 ```text
 cutout_templates()                          # slots, bones, clips, parts list
-cutout_assemble(name="hero", parts={...}, template="biped_v1")
-cutout_status(name="hero")                  # missing parts, stale pivots, origin
-cutout_equip(name="hero", slot="hat", texture=…)
+cutout_kit_generate(name="hero", reference="hero_ref")   # ~9 paid parts, assembled
+cutout_part_rerun(name="hero", slot="forearm_near", note="bare skin")
+cutout_assemble(name="hero", parts={...}, template="biped_v1")   # from loose parts
+cutout_status(name="hero")                  # missing parts, stale pivots/reference, origin
+cutout_equip(name="hero", slot="weapon", texture=…)   # the grip is in the hand bone
 ```
 
 You get a Godot scene whose bones are Node2Ds and whose parts are Sprite2Ds,

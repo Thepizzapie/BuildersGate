@@ -263,7 +263,9 @@ class TestQaGateCap:
                          (f"2100-01-0{n + 1} 00:00:00", item_id))
 
     def test_the_loop_stops_and_escalates_to_a_human(self, root, dispatched):
-        item = queue.add(root, "art", "HUD meter")
+        # gameplay, not art: an art result with no per-frame verdict is
+        # reopened rather than reviewed, which is not the loop under test.
+        item = queue.add(root, "gameplay", "HUD meter")
         queue.set_status(root, item["id"], "done", result="v1")
 
         gates = 0

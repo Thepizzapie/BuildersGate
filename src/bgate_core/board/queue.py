@@ -15,11 +15,78 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Optional
+
+from typing import Callable
 
 from . import activity, iterations, seats as _seats
 from ..store import db
 from ..store.util import rows
+
+# EXIT 67 postmortem item 9b leftover: a human rejection in builders mode
+# needs to land on the TOOL that produced the rejected item's artifacts, not
+# only on the item. ``bgate_core.board.rejections`` is where that accounting
+# is meant to live (it would look up each artifact revision's producer for
+# this item and record a rejection count per tool/seat); this tree does not
+# have it yet. Rather than fork that module's job in here, ``reject()`` calls
+# a SEAM instead: every callback registered with :func:`add_rejection_hook`
+# runs with (root, item, reason) once an item is rejected. A future
+# ``rejections.record`` wires in by registering itself here — nothing about
+# this call site changes on that day.
+_REJECTION_HOOKS: list[Callable[[str, dict, str, str], None]] = []
+
+
+def add_rejection_hook(fn: Callable[[str, dict, str, str], None]) -> None:
+    """Register a callback run on every human rejection: ``fn(root, item, reason, by)``.
+
+    Never raises on the caller's behalf — a broken hook must not stop the
+    rejection it is trying to observe. See :func:`_record_human_rejections`.
+    """
+    _REJECTION_HOOKS.append(fn)
+
+
+def _wire_rejections_module() -> None:
+    """Auto-register ``bgate_core.board.rejections.record`` the day it exists,
+    so landing that module needs no matching edit here. Absent in this tree —
+    this is a no-op import guard, not a claim that the module is present."""
+    try:
+        from . import rejections as _rejections  # type: ignore
+    except ImportError:
+        return
+    if not hasattr(_rejections, "record"):
+        return
+
+    def _hook(root: str | os.PathLike[str], item: dict, reason: str, by: str) -> None:
+        from ..store import artifacts as _artifacts
+
+        item_id = item.get("id")
+        seat = item.get("seat", "")
+        producers = {
+            rev.get("producer")
+            for rev in _artifacts.list_revisions(root)
+            if rev.get("work_item_id") == item_id and rev.get("producer")
+        }
+        for tool in producers or {""}:
+            _rejections.record(root, tool, seat, item_id, reason, by)
+
+    add_rejection_hook(_hook)
+
+
+_wire_rejections_module()
+
+
+def _record_human_rejections(root: str | os.PathLike[str], item: dict,
+                             reason: str, by: str = "") -> None:
+    """Run every registered rejection hook. One hook's failure never blocks
+    another's, and never blocks the rejection itself."""
+    for fn in list(_REJECTION_HOOKS):
+        try:
+            fn(root, item, reason, by)
+        except Exception as exc:
+            activity.log(root, "queue",
+                         f"rejection hook {getattr(fn, '__name__', fn)!r} failed "
+                         f"for #{item.get('id')}: {type(exc).__name__}: {exc}")
 
 # 'cancelled' is a human calling work off — distinct from 'failed', which is an
 # agent (or the watchdog) reporting it could not finish. Only the second is
@@ -29,7 +96,14 @@ from ..store.util import rows
 # and under the builder's gate (bgate_core.board.gates) a human has not yet said yes.
 # It is deliberately NOT 'done' — a chain must not advance on unapproved work —
 # and deliberately not 'dispatched', which would claim an agent is still running.
-STATUSES = ("queued", "dispatched", "integrating", "review", "done", "failed", "cancelled")
+# 'parked' — ITEM 26 (EXIT 67). A human wants this OFF the board without
+# calling it dead: parking 18 items the night this was found took raw SQL
+# UPDATEs on work_item because there was no status between "still queued" and
+# "cancelled forever". Unlike 'cancelled' it is meant to come BACK (unpark);
+# unlike 'queued' it is never auto-dispatched or counted as ready — see
+# ready()'s exclusion below.
+STATUSES = ("queued", "dispatched", "integrating", "review", "done", "failed",
+           "cancelled", "parked")
 
 # Statuses a dependent item is allowed to start on top of. 'review' is not one
 # of them: the whole point of the hold is that the next link waits.
@@ -128,11 +202,84 @@ def clip_reason(text: str) -> str:
         "the whole of it is appended to the item's brief]")
 
 
+# GRIPE 41 (EXIT 67 postmortem, 2026-09-21): tickets filed too broad spread
+# one agent across a whole feature instead of one deliverable — the human's
+# own words were "agents spread thin". These are the shapes every measured
+# broad brief had: a chained "and then" doing a second deliverable, a bullet
+# list of several distinct asks, sheer length (an agent padding a brief with
+# everything it might need is an agent that has not picked ONE thing), and a
+# brief that names paths across more than two lanes (seats.py's write_globs).
+_BREADTH_CHAIN_RE = re.compile(
+    r"\band then\b|\bafterwards?\b|\bonce (that|this|it)('s| is) (done|"
+    r"finished)\b", re.I)
+_BREADTH_BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S", re.M)
+_BREADTH_MAX_CHARS = 900
+_BREADTH_MAX_LANES = 2
+
+
+def brief_breadth(brief: str) -> dict:
+    """Score how BROAD a brief reads, and say why. Pure — no DB, no seat
+    lookup — so a caller (queue_add's warning, a test) can grade a brief
+    before or after it is ever filed.
+
+    Returns ``{"score": int, "reasons": [str, ...]}``. Score is a simple sum
+    of how many of the four measured shapes fired; there is no claim it is a
+    calibrated probability, only that MORE of these firing means MORE likely
+    the ask is several deliverables wearing one item.
+    """
+    text = str(brief or "")
+    reasons: list[str] = []
+    score = 0
+
+    chain_hits = _BREADTH_CHAIN_RE.findall(text)
+    if chain_hits:
+        score += 1
+        reasons.append(
+            "reads like a chain ('and then' / 'once done') rather than one "
+            "deliverable — split it with queue_add_chain")
+
+    bullets = _BREADTH_BULLET_RE.findall(text)
+    if len(bullets) > 1:
+        score += 1
+        reasons.append(
+            f"lists {len(bullets)} separate bullet deliverables — file the "
+            "extras as their own items")
+
+    if len(text) > _BREADTH_MAX_CHARS:
+        score += 1
+        reasons.append(
+            f"brief is {len(text)} characters, over the {_BREADTH_MAX_CHARS} "
+            "guideline for a single deliverable")
+
+    lanes_touched = set()
+    try:
+        from . import seats as _seats_mod
+        lane_table = {role: cfg.get("write_globs", [])
+                      for role, cfg in _seats_mod.DEFAULT_SEATS.items()}
+    except Exception:
+        lane_table = {}
+    for seat_name, globs in (lane_table or {}).items():
+        for g in globs or ():
+            prefix = str(g).split("*", 1)[0].split("/", 1)[0]
+            if prefix and prefix in text:
+                lanes_touched.add(seat_name)
+                break
+    if len(lanes_touched) > _BREADTH_MAX_LANES:
+        score += 1
+        reasons.append(
+            f"names paths in {len(lanes_touched)} lanes "
+            f"({', '.join(sorted(lanes_touched))}) — one item should stay "
+            "inside one or two")
+
+    return {"score": score, "reasons": reasons}
+
+
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
         chain_id: str = "", chain_pos: int = 0,
         depends_on: Optional[int] = None, chain_self: bool = False,
-        max_runtime_s: Optional[int] = None) -> dict:
+        max_runtime_s: Optional[int] = None,
+        size: str = "medium", acceptance: str = "") -> dict:
     # A `scope_tier_id` used to be filed here and run through scope.enforce
     # first — the cut line's one gate. It never refused an item in the product's
     # life: untiered work was deliberately allowed through, and nothing was ever
@@ -146,15 +293,20 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         get(root, int(depends_on))          # LookupError if the link is a fiction
     if max_runtime_s is not None and int(max_runtime_s) <= 0:
         raise ValueError("max_runtime_s must be positive")
+    size = str(size or "medium").strip().lower()
+    if size not in ("small", "medium", "large"):
+        raise ValueError(f"unknown size {size!r}; sizes are small, medium, large")
     with db.tx(root) as conn:
         cur = conn.execute(
             "INSERT INTO work_item (seat, title, brief, priority, source, "
             "source_ref, chain_id, chain_pos, depends_on, "
-            "max_runtime_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "max_runtime_s, size, acceptance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (seat, title.strip(), brief, priority, source, source_ref,
              chain_id.strip(), int(chain_pos),
              int(depends_on) if depends_on is not None else None,
-             int(max_runtime_s) if max_runtime_s is not None else None),
+             int(max_runtime_s) if max_runtime_s is not None else None,
+             size, str(acceptance or "").strip()),
         )
         item_id = int(cur.lastrowid)
         if chain_self:
@@ -256,13 +408,33 @@ def get(root: str | os.PathLike[str], item_id: int) -> dict:
         "SELECT * FROM work_item WHERE id = ?", (item_id,)).fetchone()
     if row is None:
         raise LookupError(f"no work item {item_id}")
-    return dict(row)
+    item = dict(row)
+    # ITEM 11/31(c) — COST PER ATTEMPT, not just a running total. Card totals
+    # hid which attempt spent the money; one row per agent_runs entry for
+    # this item says it plainly. Named `run_attempts` - NOT `attempts` - the
+    # work_item row already has an `attempts` COLUMN (the auto-retry
+    # counter, an int); shadowing it here corrupted every caller that reads
+    # item["attempts"] as a number (queue_reopen's stamp being one of them).
+    try:
+        conn = db.connect(root)
+        run_attempts = [dict(r) for r in conn.execute(
+            "SELECT id, started_at, ended_at, status, cost_usd, runner "
+            "FROM agent_runs WHERE item_id = ? ORDER BY started_at",
+            (item_id,)).fetchall()]
+    except Exception:
+        run_attempts = []
+    item["run_attempts"] = run_attempts
+    item["run_attempts_cost_usd"] = round(
+        sum(float(a.get("cost_usd") or 0) for a in run_attempts), 4)
+    return item
 
 
 def update(root: str | os.PathLike[str], item_id: int, *,
            title: Optional[str] = None, brief: Optional[str] = None,
            seat: Optional[str] = None, priority: Optional[int] = None,
-           max_runtime_s: Optional[int] = None) -> dict:
+           max_runtime_s: Optional[int] = None,
+           max_paid_calls: Optional[int] = None,
+           size: Optional[str] = None) -> dict:
     """Edit an existing item in place, without changing its status/lineage.
 
     This is how a reviewer enriches a ticket: e.g. the video-watching director
@@ -290,6 +462,15 @@ def update(root: str | os.PathLike[str], item_id: int, *,
         if int(max_runtime_s) <= 0:
             raise ValueError("max_runtime_s must be positive")
         sets.append("max_runtime_s = ?"); params.append(int(max_runtime_s))
+    # THE PER-ITEM PAID-CALL CEILING (0047). Overrides
+    # dispatch.default_max_paid_calls for one item — the escape hatch when
+    # the default was wrong for this ask, not a way around the stop.
+    if max_paid_calls is not None:
+        if int(max_paid_calls) <= 0:
+            raise ValueError("max_paid_calls must be positive")
+        sets.append("max_paid_calls = ?"); params.append(int(max_paid_calls))
+    if size is not None:
+        sets.append("size = ?"); params.append(str(size).strip().lower())
     if not sets:
         return get(root, item_id)
     params.append(item_id)
@@ -418,6 +599,9 @@ def _item_event_payload(item: dict) -> dict:
         "chain_id": item.get("chain_id") or "",
         "chain_pos": int(item.get("chain_pos") or 0),
         "attempts": int(item.get("attempts") or 0),
+        # Item 34 — the round THIS transition is (attempts is the count of
+        # PRIOR reopens, so the current pass is one more than that).
+        "attempt": int(item.get("attempts") or 0) + 1,
         "result": str(item.get("result") or "")[:400],
     }
 
@@ -507,6 +691,41 @@ def _with_observed_writes(root, item_id: int, status: str, result: str) -> str:
     return (result.rstrip() + "\n\n" + observed) if result.strip() else observed
 
 
+# Statuses that mean "this item no longer has a live agent working it" —
+# LEASES DIE WITH THE PROCESS, not with their own timer. See _release_leases.
+_LEASE_RELEASING_STATUSES = ("done", "review", "failed", "cancelled",
+                             "integrating", "parked")
+
+
+def _release_leases(root: str | os.PathLike[str], item_id: int) -> None:
+    """Drop every path lease this item's execution holds.
+
+    MEASURED (EXIT 67, item 22): item #6 closed and left 12 ``path_lease`` rows
+    live until 18:48 — #60 was refused for an hour ("file_leased by item-6")
+    until a human deleted them by hand. ``assets.release_path_leases`` already
+    existed and nothing ever called it; a lease's own expiry (minutes) was the
+    only thing that ever cleared it, and a run that finished early left its
+    leases outliving it by however long was left on the clock.
+
+    Called from the ONE function every completion, kill and stop funnels
+    through, so it fires exactly once per transition into a resting state
+    regardless of which of those three paths caused it. Best-effort: a lease
+    store that will not read or write must not stop the status write it is
+    reacting to.
+    """
+    try:
+        from ..store import assets as _assets
+
+        released = _assets.release_path_leases(root, f"item-{item_id}")
+        if released:
+            activity.log(root, "queue",
+                         f"item {item_id}: released {released} stale path "
+                         f"lease(s) held by this item on completion",
+                         ref=str(item_id))
+    except Exception:                                             # noqa: BLE001
+        pass
+
+
 def set_status(root: str | os.PathLike[str], item_id: int, status: str,
                result: str = "") -> dict:
     if status not in STATUSES:
@@ -520,8 +739,19 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
             (status, clip_result(result), item_id),
         )
     item = get(root, item_id)
-    activity.log(root, "queue", f"item {item_id} -> {status}: {item['title'][:60]}",
+    # Item 34 — THE ATTEMPT NUMBER, ON THE LANDING LINE. "item 13 -> done" and
+    # "item 13 -> done" (the fix round) read identically in the activity feed
+    # and in a completion event, so a human scanning either could not tell a
+    # first pass from the third without opening the item. attempts counts
+    # reopens, so the running attempt is attempts + 1 — only shown for the
+    # terminal statuses a completion actually reports.
+    attempt_note = (f" (attempt {int(item.get('attempts') or 0) + 1})"
+                    if status in ("done", "failed") else "")
+    activity.log(root, "queue",
+                 f"item {item_id} -> {status}{attempt_note}: {item['title'][:60]}",
                  seat=item["seat"], ref=str(item_id))
+    if status in _LEASE_RELEASING_STATUSES:
+        _release_leases(root, item_id)
     _notify(root, item)
     iteration_id = None
     conn = db.connect(root)
@@ -998,6 +1228,7 @@ def reject(root: str | os.PathLike[str], item_id: int, reason: str,
     _emit(root, "item.rejected", ref=str(item_id),
           payload={**_item_event_payload(sent_back), "by": actor[:120],
                    "reason": reason[:400]})
+    _record_human_rejections(root, sent_back, reason, actor)
     return sent_back
 
 
@@ -1280,6 +1511,73 @@ def was_stopped(item: dict) -> bool:
     return bool((item or {}).get("stopped_by"))
 
 
+def park(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
+    """Take a queued/dispatched item OFF the board without calling it dead.
+
+    ITEM 26 (EXIT 67). Parking 18 items the night this was found took raw SQL
+    UPDATEs on ``work_item`` because there was nothing between "still queued"
+    and "cancelled forever" — and 'cancelled' reads, to reopen() and every
+    chain/gate query, as work that is DONE being considered, which parked work
+    is not. ``ready()`` excludes 'parked' the same way it excludes any other
+    non-'queued' status, so a parked item is simply invisible to both
+    dispatchers until unpark() puts it back.
+
+    Refuses on a terminal status (done/failed/cancelled/parked already) —
+    those are not "on the board" in the sense parking is for, and calling
+    unpark() on them would silently resurrect finished or already-cancelled
+    work.
+    """
+    item = get(root, item_id)
+    if item["status"] in ("done", "cancelled", "parked"):
+        raise ValueError(f"item {item_id} is already {item['status']!r} — "
+                         "parking only applies to live board work")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("reason is required — say why this is parked")
+    prior_status = item["status"]
+    with db.tx(root) as conn:
+        conn.execute(
+            "UPDATE work_item SET status = 'parked', "
+            "updated_at = datetime('now') WHERE id = ?", (item_id,))
+    _release_leases(root, item_id)
+    item = get(root, item_id)
+    activity.log(root, "queue",
+                 f"item {item_id} parked (was {prior_status}): {reason[:120]}",
+                 seat=item["seat"], ref=str(item_id))
+    _emit(root, "item.parked", ref=str(item_id),
+          payload={**_item_event_payload(item), "reason": reason,
+                   "prior_status": prior_status})
+    return item
+
+
+def unpark(root: str | os.PathLike[str], item_id: int) -> dict:
+    """Put a parked item back on the board, as 'queued'.
+
+    Always returns to 'queued' rather than whatever it was parked from
+    (dispatched, integrating): the agent that was running it is long gone by
+    the time a human gets around to unparking, so there is no run to resume —
+    only work to dispatch again.
+    """
+    item = get(root, item_id)
+    if item["status"] != "parked":
+        raise ValueError(f"item {item_id} is {item['status']!r}, not parked")
+    return set_status(root, item_id, "queued",
+                      result="unparked — back on the board")
+
+
+def cancel(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
+    """A human calling work off for good — distinct from park (may come back)
+    and from stop() (an agent was killed mid-run; this is for work that never
+    got that far, or that a human has decided not to run at all).
+    """
+    item = get(root, item_id)
+    if item["status"] in ("done", "cancelled"):
+        raise ValueError(f"item {item_id} is already {item['status']!r}")
+    reason = (reason or "").strip()
+    said = reason or f"cancelled by {activity.current_actor() or 'the dashboard'}"
+    return set_status(root, item_id, "cancelled", result=said)
+
+
 def awaiting_review(root: str | os.PathLike[str]) -> list[dict]:
     """What the human owes an answer on, oldest first — a drain list."""
     return rows(db.connect(root).execute(
@@ -1287,13 +1585,49 @@ def awaiting_review(root: str | os.PathLike[str]) -> list[dict]:
         "ORDER BY updated_at, id"))
 
 
-def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
+def format_frame_verdicts(frame_gate: dict) -> str:
+    """A framegate.gate_sheet() result -> the per-frame text a reopen brief
+    carries.
+
+    MEASURED (ITEM 12, EXIT 67 refinement): the reopen text for a failed art
+    item said "regenerate only what is actually wrong" with no per-frame
+    verdict, so the agent had nothing to act on but the sheet itself - it
+    could not tell WHICH frame was wrong or WHY without re-running the gate
+    by hand. Every failed frame gets its own line: the pose name, which
+    check(s) fired, and the measured value against the threshold - the exact
+    three facts the item asks for. A frame_gate with nothing failed returns
+    "" (nothing to add - a caller should not stamp an empty section).
+    """
+    failed = list(frame_gate.get("failed") or [])
+    if not failed:
+        return ""
+    frames = frame_gate.get("frames") or {}
+    lines = [f"PER-FRAME VERDICTS ({len(failed)} frame(s) failed the identity gate):"]
+    for pname in failed:
+        v = frames.get(pname) or {}
+        fired = [c for c in (v.get("checks") or []) if c.get("fired")]
+        if not fired:
+            lines.append(f"  - {pname}: failed (no check detail recorded)")
+            continue
+        for c in fired:
+            lines.append(
+                f"  - {pname}: {c['name']} - measured {c['measured']!r} "
+                f"vs threshold {c['threshold']!r} ({c.get('detail', '')})")
+    return "\n".join(lines)
+
+
+def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
+          frame_verdicts: Optional[dict] = None) -> dict:
     """Send a done/failed item back to 'queued' for another round.
 
     Retrying failed work is the most common motion in an agent runner, and the
     reason is the whole payload: it is APPENDED to the brief so the next agent
     reads exactly what to fix rather than repeating the run that failed.
     ``attempts`` counts the rounds, which is what makes a loop visible.
+
+    frame_verdicts, when given a framegate.gate_sheet() result, is formatted
+    (format_frame_verdicts) and appended alongside the reason - see ITEM 12:
+    a reopened art item names WHICH frames and WHICH check, not just "wrong".
     """
     item = get(root, item_id)
     if item["status"] not in ("done", "failed", "cancelled"):
@@ -1319,8 +1653,16 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
                        "regenerate only what is actually wrong.\n" + observed)
     except Exception:
         already = ""
+    verdict_text = ""
+    if frame_verdicts:
+        try:
+            formatted = format_frame_verdicts(frame_verdicts)
+            if formatted:
+                verdict_text = "\n\n" + formatted
+        except Exception:
+            verdict_text = ""
     stamp = (("\n\n--- REOPENED (attempt %d) ---\n" % (item["attempts"] + 2))
-             + reason + already)
+             + reason + verdict_text + already)
     update(root, item_id, brief=(item["brief"] or "") + stamp[:6000])
     with db.tx(root) as conn:
         conn.execute("UPDATE work_item SET attempts = attempts + 1 WHERE id = ?",
@@ -1357,6 +1699,74 @@ def set_run_fields(root: str | os.PathLike[str], item_id: int, **fields) -> dict
     return get(root, item_id)
 
 
+def paid_call_budget(root: str | os.PathLike[str], item_id: int) -> tuple[int, int]:
+    """(paid calls made so far, the budget that applies) for one item.
+
+    The budget is the item's own ``max_paid_calls`` when set, else the
+    project setting ``dispatch.default_max_paid_calls`` (30). Read-only; use
+    :func:`spend_paid_call` at the actual spend seam, which checks and
+    increments atomically.
+    """
+    from ..store import settings as _settings
+    row = db.connect(root).execute(
+        "SELECT paid_calls, max_paid_calls FROM work_item WHERE id = ?",
+        (item_id,)).fetchone()
+    if row is None:
+        return 0, int(_settings.get(root, "dispatch.default_max_paid_calls") or 30)
+    used = int(row["paid_calls"] or 0)
+    budget = row["max_paid_calls"]
+    if budget is None:
+        budget = int(_settings.get(root, "dispatch.default_max_paid_calls") or 30)
+    return used, int(budget)
+
+
+def spend_paid_call(root: str | os.PathLike[str], item_id: int) -> dict:
+    """THE ONE SEAM: check the paid-call ceiling and count this call against it.
+
+    MEASURED: EXIT 67 death frames were re-rolled at $0.05-0.10 each with no
+    stop; two items reached $7.67 and $10.10 across attempts before a human
+    killed the agent by hand. Checked and incremented inside one transaction
+    so two paid calls racing on the same item cannot both read "room left".
+
+    ``item_id`` of ``None`` (no work item on this session) is not budget-
+    checked at all — there is nothing to charge it to, and the human's own
+    session must never be rate-limited by a mechanism built for dispatched
+    agents. Returns ``{"ok": True, "used", "budget"}`` when the call may
+    proceed, or a refusal carrying ``code: "budget_exceeded_item"``.
+    """
+    if item_id is None:
+        return {"ok": True, "note": "no work item on this call; not budget-checked"}
+    from ..store import settings as _settings
+    with db.tx(root) as conn:
+        row = conn.execute(
+            "SELECT paid_calls, max_paid_calls FROM work_item WHERE id = ?",
+            (item_id,)).fetchone()
+        if row is None:
+            return {"ok": True, "note": f"work item #{item_id} not found; "
+                     "not budget-checked"}
+        used = int(row["paid_calls"] or 0)
+        budget = row["max_paid_calls"]
+        if budget is None:
+            budget = int(_settings.get(root, "dispatch.default_max_paid_calls") or 30)
+        budget = int(budget)
+        if used >= budget:
+            return {
+                "ok": False, "code": "budget_exceeded_item",
+                "used": used, "budget": budget, "work_item_id": item_id,
+                "error": (
+                    f"work item #{item_id} has made {used} paid calls against "
+                    f"a budget of {budget}. Nothing was generated and nothing "
+                    "was spent by THIS call. This is a STOP, not a smaller "
+                    "retry: change the approach, escalate to a human, or "
+                    "queue_update the item's max_paid_calls if the budget "
+                    "itself was wrong - do not keep re-rolling the same ask."),
+            }
+        conn.execute(
+            "UPDATE work_item SET paid_calls = paid_calls + 1 WHERE id = ?",
+            (item_id,))
+        return {"ok": True, "used": used + 1, "budget": budget}
+
+
 def next_for(root: str | os.PathLike[str], seat: str) -> Optional[dict]:
     """The highest-priority READY item for a seat — what an agent works next.
 
@@ -1377,61 +1787,6 @@ def next_for(root: str | os.PathLike[str], seat: str) -> Optional[dict]:
     """
     found = ready(root, seat=seat, limit=20)
     return dict(found[0]) if found else None
-
-
-def stalled(root: str | os.PathLike[str], seat: str = "") -> list[dict]:
-    """Queued work that NO dispatcher will take, and why. The other half of ready().
-
-    ``ready`` answers "what may start". Nothing answered "what is sitting here
-    that never will", and the difference between those two lists is the whole
-    of an operator's morning. An item whose automatic retries are spent, whose
-    source is human-held, or whose seat the production stage is holding looks
-    identical to fresh work in every listing — the only tell was the retry
-    counters, read by hand, on the row.
-
-    Each row carries ``stalled_because`` and ``needs``, where ``needs`` names
-    the human or director action that would release it.
-    """
-    from ..design import greenlight as _greenlight
-
-    try:
-        held = set(_greenlight.held_seats(root))
-    except Exception:
-        held = set()
-    dispatchable = {int(r["id"]) for r in ready(root, seat=seat, limit=500)}
-    out: list[dict] = []
-    for row in list_items(root, status="queued", seat=seat or None):
-        item = dict(row)
-        item_id = int(item["id"])
-        if item_id in dispatchable:
-            continue
-        source = str(item.get("source") or "")
-        auto = int(item.get("auto_retries") or 0)
-        if source in HELD_SOURCES:
-            because = (f"source {source!r} is never auto-dispatched — it "
-                       "exists because a person has to decide")
-            needs = "a human (or the director session) takes it by hand"
-        elif str(item.get("seat")) in held:
-            because = "the production stage is holding this seat"
-            needs = "greenlight_advance, or a per-seat waiver"
-        elif str(item.get("brief") or "").startswith("(preparing"):
-            because = "the brief is still a placeholder"
-            needs = "whatever is filing this item finishes writing it"
-        elif blocker(root, item_id) is not None:
-            blk = blocker(root, item_id)
-            because = waiting_line(root, item_id)
-            needs = ("nothing — this is the board working" if
-                     blk["status"] in ("queued", "dispatched", "review") else
-                     f"#{blk['id']} is {blk['status']!r} and will not reach "
-                     "'done' on its own: queue_reopen it, or "
-                     "queue_cut_dependency to release this")
-        else:
-            continue
-        item["stalled_because"] = because
-        item["needs"] = needs
-        item["auto_retries"] = auto
-        out.append(item)
-    return out
 
 
 def reserve(root: str | os.PathLike[str], item_id: int) -> bool:
@@ -1579,6 +1934,20 @@ def claim_next(root: str | os.PathLike[str], seat: str,
                      seat=seat, ref=str(item["id"]))
         return item
     return None
+
+
+def claimed_by(root: str | os.PathLike[str], actor: str) -> list[dict]:
+    """Every item this execution ever claimed via queue_claim_next, in ANY
+    status — unlike claimed_open, which only sees the still-open ones.
+
+    ITEM 32 (EXIT 67): the harness's auto-commit wrote "item #N" for whichever
+    item the run was DISPATCHED on, even when that run went on to claim and
+    complete several more (#13, #44, ...) whose files landed in the same
+    commit under the wrong number. This is how a caller finds every id that
+    commit should have named.
+    """
+    return rows(db.connect(root).execute(
+        "SELECT * FROM work_item WHERE actor = ? ORDER BY id", (str(actor or ""),)))
 
 
 def claimed_open(root: str | os.PathLike[str], actor: str) -> list[dict]:

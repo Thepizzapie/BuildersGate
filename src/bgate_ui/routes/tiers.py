@@ -45,12 +45,3 @@ def tier_catalogue() -> dict:
         "ladders": ladders,
         "flat": flat,
     })
-
-
-@router.get("/api/tiers/{kind}")
-def tier_for_kind(kind: str, tier: str = "") -> dict:
-    """One rung — what a node will actually call, and what it will cost."""
-    try:
-        return api.ok(_tiers.resolve(kind, tier or _tiers.DEFAULT_TIER))
-    except _tiers.NoSuchTier as exc:
-        raise api.bad_request(str(exc), kind=kind, tier=tier)

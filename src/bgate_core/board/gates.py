@@ -37,6 +37,7 @@ Every public function below keeps its shape, including ``state()['env_override']
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Optional
 
@@ -199,6 +200,52 @@ def holds_for_human(root: str | os.PathLike[str]) -> bool:
 def wants_qa_agent(root: str | os.PathLike[str]) -> bool:
     """Should a completed maker-seat item spawn the auto-QA reviewer?"""
     return mode(root) == AGENT
+
+
+# GRIPE 40c/D — THE SMALL FAST LANE. A one-line copy fix and a HUD boss fight
+# pay the same QA round under 'agent' mode, and the round is the same cost
+# either way: an agent spawned, a screenshot taken, a verdict written. That is
+# right for the boss fight and wasted on the copy fix — but only when the
+# maker seat ALREADY did the verifying itself and said so. A "PASS" with
+# nothing behind it is not a passing check; this looks for one of the two
+# concrete shapes that are.
+_VERIFY_LINE_RE = re.compile(r"(?i)\bverif\w*\s*:\s*\S")
+_PYTEST_PASS_RE = re.compile(r"(?i)\b\d+\s+passed\b")
+_PYTEST_FAIL_RE = re.compile(r"(?i)\b[1-9]\d*\s+failed\b")
+
+
+def names_passing_check(result: str) -> bool:
+    """Does this item's own result note point at a check it actually ran?
+
+    Two shapes count: a ``Verify: <what and how it held>`` line (the seat
+    naming its own evidence), or a pytest-style summary with passes and no
+    failures (``12 passed``, not ``12 passed, 1 failed``). Anything vaguer —
+    bare "PASS", "looks good", "done" — does not, because those are exactly
+    the claims the QA gate exists to check rather than take on faith.
+    """
+    text = str(result or "")
+    if _VERIFY_LINE_RE.search(text):
+        return True
+    if _PYTEST_PASS_RE.search(text) and not _PYTEST_FAIL_RE.search(text):
+        return True
+    return False
+
+
+def wants_qa_agent_for(root: str | os.PathLike[str], item: dict) -> bool:
+    """Item-aware ``wants_qa_agent``: the small fast lane.
+
+    Under 'agent' mode, an item sized 'small' whose OWN result paragraph
+    names a passing check (see :func:`names_passing_check`) skips the
+    reviewer — the maker seat already did the verifying and said how.
+    Every other item, and every item under any other size, still gets the
+    ordinary gate: this narrows ``wants_qa_agent``, it never widens it.
+    """
+    if not wants_qa_agent(root):
+        return False
+    size = str((item or {}).get("size") or "").strip().lower()
+    if size == "small" and names_passing_check((item or {}).get("result") or ""):
+        return False
+    return True
 
 
 def describe(root: str | os.PathLike[str], seat: Optional[str] = None) -> str:

@@ -84,12 +84,7 @@ def make_tileable(path: str, out_path: Optional[str] = None) -> dict:
     """
     src = Path(path)
     dst = Path(out_path or path)
-    try:
-        from PIL import Image
-    except ImportError:
-        return {"ok": False, "path": str(src), "method": "",
-                "note": "Pillow is not installed — the image was left as it is, "
-                        "so its edges are only as seamless as the model made them"}
+    from PIL import Image
     try:
         with Image.open(src) as im:
             # The SOURCE knows what it is even when the destination path does
@@ -178,10 +173,6 @@ def available() -> dict:
         return {"available": False,
                 "reason": "OPENAI_API_KEY not set — put it in the project's .env "
                           "(gitignored) or the machine environment"}
-    try:
-        import openai  # noqa: F401
-    except ImportError:
-        return {"available": False, "reason": "openai package not installed"}
     return {"available": True,
             "model_transparent": _model_for(True),
             "model_opaque": _model_for(False)}

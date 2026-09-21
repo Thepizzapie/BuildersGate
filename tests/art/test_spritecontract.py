@@ -118,3 +118,41 @@ class TestViewClause:
         for view in sc.VIEWS:
             assert sc.view_clause(view)
         assert sc.view_clause("cinematic-drone-shot") == ""
+
+
+class TestSubjectClass:
+    """EXIT 67 item 6 leftover: framegate's prop check needs to know whether
+    a contract describes a character, a prop or a vehicle."""
+
+    def test_default_is_character(self):
+        got = sc.normalise({})
+        assert got["subject_class"] == "character"
+
+    def test_an_unknown_subject_class_is_refused(self):
+        with pytest.raises(sc.ContractError):
+            sc.normalise({"subject_class": "furniture"})
+
+    def test_a_character_can_override_the_project_default(self, root):
+        sc.apply_preset(root, "single", {
+            "characters": {"crate": {"subject_class": "prop"}}})
+        crate = sc.contract_for(root, "crate")
+        assert crate["subject_class"] == "prop"
+        # A character nobody scoped keeps the project default.
+        other = sc.contract_for(root, "hero")
+        assert other["subject_class"] == "character"
+
+    def test_an_unknown_subject_class_on_a_character_is_refused(self, root):
+        with pytest.raises(sc.ContractError):
+            sc.apply_preset(root, "single", {
+                "characters": {"crate": {"subject_class": "furniture"}}})
+
+    def test_subject_class_is_not_an_action_override(self, root):
+        # A crate does not become a character mid-swing — the field is
+        # per-character only, so an attempt to scope it under an action is
+        # silently dropped by the same override ladder as any other
+        # character-only field, not promoted into the action spec.
+        sc.apply_preset(root, "single", {
+            "characters": {"crate": {"subject_class": "prop",
+                                     "actions": {"idle": {"subject_class": "vehicle"}}}}})
+        got = sc.contract_for(root, "crate", "idle")
+        assert got["subject_class"] == "prop"

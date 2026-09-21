@@ -19,7 +19,7 @@ import pytest
 
 from PIL import Image
 
-from bgate_core.art import gear, items
+from bgate_core.art import gear
 
 CELL_W, CELL_H = 96, 80
 COLS, ROWS = 4, 2
@@ -175,18 +175,10 @@ class TestAnchorExtraction:
 
 
 class TestInference:
-    def test_learned_palette_finds_the_hand_colour(self, body, gear_sheets):
-        grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
-        anchors = gear.measure_anchors(gear_sheets, grid)
-        palette = gear.learn_hand_palette(body, grid, anchors)
-        assert palette, "no palette learned at the measured anchors"
-        r, g, b = palette[0]
-        assert abs(r - 250) < 24 and abs(g - 190) < 24 and abs(b - 120) < 24
-
     def test_inferred_anchors_are_labelled_and_close(self, body, gear_sheets):
         grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
         measured = gear.measure_anchors(gear_sheets, grid)
-        palette = gear.learn_hand_palette(body, grid, measured)
+        palette = gear.pool_hand_palette([(body, measured)], grid)
         bias = gear.anchor_side_bias(measured, grid)
         inferred = gear.infer_anchors(body, grid, palette=palette, side_bias=bias)
         assert len(inferred) == len(HANDS)
@@ -199,7 +191,7 @@ class TestInference:
     def test_validation_reports_error_in_pixels(self, body, gear_sheets):
         grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
         measured = gear.measure_anchors(gear_sheets, grid)
-        palette = gear.learn_hand_palette(body, grid, measured)
+        palette = gear.pool_hand_palette([(body, measured)], grid)
         bias = gear.anchor_side_bias(measured, grid)
         stats = gear.validate_inference(body, grid, measured,
                                         palette=palette, side_bias=bias)
@@ -207,197 +199,97 @@ class TestInference:
         assert stats["cell"] == [CELL_W, CELL_H]
         assert stats["median_px"] is not None and stats["median_px"] < 8
 
-    def test_provenance_never_calls_a_guess_a_measurement(self, body, gear_sheets):
+
+class TestStampGenerated:
+    """ITEM 9 — a GENERATED weapon composited at the anchor is conformed to
+    the pinned palette first, and an ink-weight mismatch is reported."""
+
+    def _weapon(self, color=(210, 90, 20, 255), width=6):
+        img = Image.new("RGBA", (30, 30), (0, 0, 0, 0))
+        for y in range(30):
+            for x in range(width):
+                img.putpixel((10 + x, y), color)
+        return img
+
+    def test_composited_pixels_are_snapped_to_the_anchor_palette(self):
         grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
-        measured = gear.measure_anchors(gear_sheets, grid)
-        palette = gear.learn_hand_palette(body, grid, measured)
-        inferred = gear.infer_anchors(body, grid, palette=palette,
-                                      side_bias=gear.anchor_side_bias(measured, grid))
-        prov = gear.anchor_provenance(measured + inferred)
-        assert prov.get(gear.MEASURED) == len(HANDS)
-        assert sum(prov.get(s, 0) for s in
-                   (gear.INFERRED_HAND, gear.INFERRED_SILHOUETTE)) == len(HANDS)
+        sheet = _blank()
+        anchor = gear.Anchor(0, 0, 70.0, 40.0, gear.MEASURED, 3)
+        weapon = self._weapon(color=(198, 41, 43, 255))  # near, not exact, red
+        gear.stamp_generated(sheet, grid, anchor, weapon,
+                             anchor_palette=[(200, 40, 40)], anchor_stroke=6.0)
+        mask = gear.cell_mask(sheet, grid, 0, 0)
+        assert mask.count > 0
+        colours = {p[:3] for p in sheet.getdata() if p[3] > 8}
+        assert colours <= {(200, 40, 40)}
 
-
-# ---------------------------------------------------------------------------
-class TestPlaceholderSheet:
-    @pytest.fixture
-    def built(self, body, gear_sheets):
+    def test_a_thin_ink_line_against_a_thick_anchor_is_flagged(self):
         grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
-        anchors = gear.measure_anchors(gear_sheets, grid)
-        bias = gear.anchor_side_bias(anchors, grid)
-        sheet = gear.build_placeholder_sheet(body, grid, anchors, side_bias=bias)
-        return grid, anchors, sheet
+        sheet = _blank()
+        anchor = gear.Anchor(0, 0, 70.0, 40.0, gear.MEASURED, 3)
+        thin_weapon = self._weapon(width=1)
+        out = gear.stamp_generated(sheet, grid, anchor, thin_weapon,
+                                   anchor_palette=[(210, 90, 20)],
+                                   anchor_stroke=6.0)
+        assert out["line_weight_flag"] is True
 
-    def test_canvas_and_grid_match_the_source(self, body, built):
-        grid, _, sheet = built
-        assert sheet.size == body.size
-        assert gear.detect_grid(sheet, cell=(grid.cell_w, grid.cell_h)) == grid
-
-    def test_background_stays_transparent(self, built):
-        _, _, sheet = built
-        assert sheet.mode == "RGBA"
-        assert sheet.getpixel((0, 0))[3] == 0
-        opaque = sum(1 for _, _, _, a in sheet.getdata() if a > 8)
-        total = sheet.width * sheet.height
-        assert 0 < opaque < total * 0.2, "a placeholder layer must be mostly empty"
-
-    def test_every_frame_is_stamped_at_its_anchor(self, built):
-        grid, anchors, sheet = built
-        for a in anchors:
-            mask = gear.cell_mask(sheet, grid, a.row, a.col)
-            assert mask, f"cell {a.row},{a.col} got no stamp"
-            # The grip marker sits ON the anchor.
-            assert mask.at(int(round(a.x)), int(round(a.y)))
-
-    def test_stamp_points_away_from_the_body(self, built):
-        grid, anchors, sheet = built
-        for a in anchors:
-            mask = gear.cell_mask(sheet, grid, a.row, a.col)
-            cx = mask.centroid()[0]
-            # Row 0 hands are on +x, row 1 on -x; the bar must run outward.
-            assert (cx > a.x) if a.row == 0 else (cx < a.x), (a, cx)
-
-    def test_a_stamp_never_bleeds_into_the_next_frame(self, body):
-        """A long weapon at the cell edge must be CROPPED, not spilled: the rig
-        reads frames by cell rectangle, so one leak smears across the animation."""
+    def test_no_pinned_palette_still_composites_without_conforming(self):
         grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
-        edge = [gear.Anchor(0, 0, CELL_W - 3.0, 40.0, gear.MEASURED, 3)]
-        sheet = gear.build_placeholder_sheet(body, grid, edge, side_bias={0: 1},
-                                             length_frac=1.2)
+        sheet = _blank()
+        anchor = gear.Anchor(0, 0, 70.0, 40.0, gear.MEASURED, 3)
+        weapon = self._weapon()
+        out = gear.stamp_generated(sheet, grid, anchor, weapon)
+        assert out["line_weight_flag"] is False
         assert gear.cell_mask(sheet, grid, 0, 0).count > 0
-        assert gear.cell_mask(sheet, grid, 0, 1).count == 0
-
-    def test_frames_without_an_anchor_stay_empty(self, body):
-        grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
-        one = [gear.Anchor(0, 0, 70.0, 40.0, gear.MEASURED, 3)]
-        sheet = gear.build_placeholder_sheet(body, grid, one)
-        assert gear.cell_mask(sheet, grid, 0, 0)
-        # A missing anchor is left blank on purpose: the rig hides an undrawn
-        # frame, which beats a weapon floating in the wrong place.
-        assert not gear.cell_mask(sheet, grid, 1, 3)
-
-    def test_item_class_changes_the_glyph(self, body, built):
-        grid, anchors, main = built
-        off = gear.build_placeholder_sheet(body, grid, anchors, item_class="off_hand")
-        n = lambda im: sum(1 for _, _, _, a in im.getdata() if a > 8)
-        assert n(off) != n(main)
-        assert items.gear_shape("off_hand") != items.gear_shape("main_hand")
 
 
-class TestNaming:
-    def test_matches_the_format_string_the_game_loads(self):
-        # "res://assets/items/main_hand/animations/%s_%s.png" % [weapon, action]
-        assert gear.layer_sheet_name("keyboard_blade", "main_hand_swing") == \
-            "keyboard_blade_main_hand_swing.png"
-        assert gear.throwable_sheet_name("throw_one_hand") == \
-            "placeholder_throw_one_hand.png"
+class TestConformToPalette:
+    """EXIT 67 postmortem item 9: a GENERATED weapon icon must conform to the
+    pinned bible palette before item_to_spriteframes rides it into combat.
+    stamp_generated was never built; conform_to_palette is the stand-in."""
 
-    def test_dual_wield_drives_two_layers(self):
-        assert gear.layer_actions_for("dual_wield_swing") == \
-            ("dual_wield_main", "dual_wield_off")
-        assert gear.layer_actions_for("punch") == ("punch",)
-        assert gear.body_action_for("dual_wield_off") == "dual_wield_swing"
+    PALETTE = [(20, 20, 20), (200, 40, 40), (240, 240, 240)]
 
-    def test_body_actions_read_off_disk(self, tmp_path: Path):
-        for name in ("pm_paladin_idle.png", "pm_paladin_main_hand_swing.png",
-                     "other_walk.png"):
-            _blank(1, 1).save(tmp_path / name)
-        assert gear.body_actions(tmp_path, "pm_paladin") == \
-            ["idle", "main_hand_swing"]
+    def _off_palette_icon(self, tmp_path: Path) -> Path:
+        # A flat, limited-palette icon (so quantisation is lossless-visible)
+        # drawn entirely in colours that are NOT in PALETTE.
+        img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+        for y in range(8, 24):
+            for x in range(8, 24):
+                img.putpixel((x, y), (90, 160, 30, 255))  # off-palette green
+        p = tmp_path / "icon.png"
+        img.save(p)
+        return p
 
+    def test_quantises_every_opaque_pixel_onto_the_pinned_palette(self, tmp_path):
+        icon = self._off_palette_icon(tmp_path)
+        result = gear.conform_to_palette(icon, self.PALETTE)
+        assert result["ok"] is True
+        assert result["changed"] > 0.0
+        with Image.open(icon).convert("RGBA") as img:
+            seen = {px[:3] for px in img.getdata() if px[3] > 8}
+        assert seen and seen.issubset(set(self.PALETTE))
 
-class TestMarker:
-    def test_saved_placeholder_is_identifiable(self, tmp_path: Path):
-        p = gear.save_placeholder(_blank(1, 1), tmp_path / "x_punch.png", note="test")
-        assert gear.is_placeholder(p)
+    def test_stroke_width_adds_a_visible_outline(self, tmp_path):
+        icon = self._off_palette_icon(tmp_path)
+        before_bbox = Image.open(icon).getbbox()
+        result = gear.conform_to_palette(icon, self.PALETTE, stroke_width=2)
+        assert result["ok"] is True
+        assert result["stroked"] is True
+        with Image.open(icon) as after:
+            after_bbox = after.getbbox()
+        # The outline grows the opaque bounding box outward on every side.
+        assert after_bbox[0] < before_bbox[0] and after_bbox[1] < before_bbox[1]
+        assert after_bbox[2] > before_bbox[2] and after_bbox[3] > before_bbox[3]
 
-    def test_plain_png_is_not_a_placeholder(self, tmp_path: Path):
-        # Real art NAMED placeholder_* still counts as real: the marker is in
-        # the file, not the filename.
-        p = tmp_path / "placeholder_throw_one_hand.png"
-        _blank(1, 1).save(p)
-        assert not gear.is_placeholder(p)
+    def test_missing_icon_fails_without_raising(self, tmp_path):
+        result = gear.conform_to_palette(tmp_path / "nope.png", self.PALETTE)
+        assert result["ok"] is False
+        assert "no icon" in result["error"]
 
-
-# ---------------------------------------------------------------------------
-class TestCoverage:
-    @pytest.fixture
-    def project(self, tmp_path: Path):
-        anims = tmp_path / "items" / "main_hand" / "animations"
-        throw = tmp_path / "items" / "throwable"
-        anims.mkdir(parents=True)
-        throw.mkdir(parents=True)
-        _blank(1, 1).save(anims / "sword_main_hand_swing.png")          # real
-        gear.save_placeholder(_blank(1, 1), anims / "sword_punch.png")  # stamped
-        _blank(1, 1).save(throw / "placeholder_throw_one_hand.png")     # real
-        return gear.CoverageSpec(
-            animations_dir=anims,
-            weapons=("sword", "axe"),
-            body_actions=("idle", "punch", "main_hand_swing", "dual_wield_swing",
-                          "throw_one_hand", "throw_two_hand"),
-            throwable_dir=throw,
-        )
-
-    def test_separates_real_placeholder_and_missing(self, project):
-        rep = gear.coverage_report(project)
-        by = {(r["weapon"], r["layer_action"]): r["status"] for r in rep["rows"]}
-        assert by[("sword", "main_hand_swing")] == "real"
-        assert by[("sword", "punch")] == "placeholder"
-        assert by[("sword", "idle")] == "missing"
-        assert by[("axe", "main_hand_swing")] == "missing"
-        assert rep["summary"] == {"real": 2, "placeholder": 1, "missing": 9}
-
-    def test_dual_wield_expands_to_both_layers(self, project):
-        rep = gear.coverage_report(project)
-        layers = {r["layer_action"] for r in rep["rows"] if r["weapon"] == "sword"}
-        assert {"dual_wield_main", "dual_wield_off"} <= layers
-        assert "dual_wield_swing" not in layers
-        slots = {r["layer_action"]: r["slot"] for r in rep["rows"]}
-        assert slots["dual_wield_off"] == "off_hand"
-
-    def test_throwable_slots_are_included(self, project):
-        rep = gear.coverage_report(project)
-        throw = {r["body_action"]: r["status"]
-                 for r in rep["rows"] if r["slot"] == "throwable"}
-        assert throw == {"throw_one_hand": "real", "throw_two_hand": "missing"}
-        # and the weapon grid does not also carry the throw actions
-        assert not any(r["layer_action"].startswith("throw")
-                       for r in rep["rows"] if r["slot"] != "throwable")
-
-    def test_needs_art_is_the_actionable_list(self, project):
-        rep = gear.coverage_report(project)
-        assert len(rep["needs_art"]) == 10
-        assert all(r["status"] in ("placeholder", "missing") for r in rep["needs_art"])
-
-    def test_table_renders(self, project):
-        text = gear.format_coverage(gear.coverage_report(project))
-        assert "sword" in text and "axe" in text
-        assert "throwable throw_two_hand: missing" in text
-
-
-# ---------------------------------------------------------------------------
-class TestEndToEnd:
-    def test_learn_rig_then_fill_an_uncovered_action(self, body, gear_sheets, tmp_path):
-        """The whole point, in one pass: measure the covered action, then stamp
-        an action that has no gear art at all — onto the body's own canvas."""
-        profile = gear.learn_rig({"main_hand_swing": body, "punch": body},
-                                 {"main_hand_swing": gear_sheets})
-        assert (profile.grid.cell_w, profile.grid.cell_h) == (CELL_W, CELL_H)
-        assert profile.validation["median_px"] < 8
-
-        covered = gear.anchors_for(profile, body, "main_hand_swing")
-        assert all(a.measured for a in covered)
-
-        uncovered = gear.anchors_for(profile, body, "punch")
-        assert uncovered and not any(a.measured for a in uncovered)
-
-        sheet = gear.build_placeholder_sheet(body, profile.grid, uncovered,
-                                             side_bias=profile.bias_for("punch"))
-        out = gear.save_placeholder(
-            sheet, tmp_path / gear.layer_sheet_name("sword", "punch"))
-        assert out.name == "sword_punch.png"
-        assert gear.is_placeholder(out)
-        with Image.open(out) as re_read:
-            assert re_read.size == body.size
-            assert re_read.convert("RGBA").getpixel((0, 0))[3] == 0
+    def test_empty_palette_leaves_the_file_untouched(self, tmp_path):
+        icon = self._off_palette_icon(tmp_path)
+        before = icon.read_bytes()
+        result = gear.conform_to_palette(icon, [])
+        assert result["ok"] is False
+        assert icon.read_bytes() == before

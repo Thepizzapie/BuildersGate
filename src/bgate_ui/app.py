@@ -1081,6 +1081,20 @@ def _with_chain_state(root: Path, row: dict) -> dict:
     row["ready"] = True
     status = str(row.get("status") or "")
 
+    # GRIPE 40c. Elapsed vs the runtime ceiling, on the same row the seat
+    # card polls — without this a running card said only "running", and the
+    # one question worth asking mid-run ("is this near its ceiling?") needed
+    # opening the item and doing arithmetic against max_runtime_s by hand.
+    if status == "dispatched":
+        try:
+            from bgate_core.board import runlimits as _runlimits
+
+            ceiling = _runlimits.runtime_ceiling(root, row)
+            row["elapsed_s"] = _runlimits.elapsed_s(root, int(row["id"]))
+            row["ceiling_s"] = int(ceiling) if ceiling else None
+        except Exception:                                         # noqa: BLE001
+            pass
+
     # THE HARNESS STOPPED BUYING ROUNDS FOR THIS ONE. Before migration 0043 this
     # was two counters a reader had to add up by hand, and two readers did it
     # differently on the same board.

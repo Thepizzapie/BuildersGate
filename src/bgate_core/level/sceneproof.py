@@ -79,10 +79,6 @@ STALE_DAYS = 30
 MAX_TEXT = 2000
 
 
-class NoDefaultScene(ValueError):
-    """The project declares no main scene, so there is nothing to boot."""
-
-
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 

@@ -336,6 +336,58 @@ class TestReservation:
         assert queue.get(root, item["id"])["status"] == "queued"
 
 
+class TestReopenFrameVerdicts:
+    """ITEM 12 — a reopen brief carries WHICH frames failed and WHY, not just
+    a generic "regenerate what is wrong"."""
+
+    _GATE = {
+        "ok": False,
+        "failed": ["death/1"],
+        "frames": {
+            "death/0": {"ok": True, "checks": [], "failed": []},
+            "death/1": {
+                "ok": False,
+                "failed": ["translucency_ghost"],
+                "checks": [
+                    {"name": "translucency_ghost", "fired": True,
+                     "measured": 420, "threshold": 180,
+                     "detail": "translucent pixels outside the main silhouette"},
+                    {"name": "wrong_palette", "fired": False, "measured": 12.0,
+                     "threshold": 90.0, "detail": "mean nearest-colour distance"},
+                ],
+            },
+        },
+    }
+
+    def test_format_frame_verdicts_names_frame_check_and_measurement(self):
+        text = queue.format_frame_verdicts(self._GATE)
+        assert "death/1" in text
+        assert "translucency_ghost" in text
+        assert "420" in text and "180" in text
+        assert "wrong_palette" not in text  # only FIRED checks are named
+
+    def test_format_frame_verdicts_of_a_clean_gate_is_empty(self):
+        clean = {"ok": True, "failed": [], "frames": {}}
+        assert queue.format_frame_verdicts(clean) == ""
+
+    def test_reopen_appends_the_per_frame_breakdown_to_the_brief(self, root):
+        item = queue.add(root, "art", "sniper death sheet", brief="original brief")
+        queue.set_status(root, item["id"], "done", result="shipped")
+        queue.reopen(root, item["id"], "identity gate failed",
+                    frame_verdicts=self._GATE)
+        after = queue.get(root, item["id"])
+        assert "translucency_ghost" in after["brief"]
+        assert "death/1" in after["brief"]
+        assert "measured 420" in after["brief"]
+
+    def test_reopen_without_frame_verdicts_is_unchanged(self, root):
+        item = queue.add(root, "art", "portrait", brief="original brief")
+        queue.set_status(root, item["id"], "done", result="shipped")
+        queue.reopen(root, item["id"], "looks off model")
+        after = queue.get(root, item["id"])
+        assert "PER-FRAME VERDICTS" not in after["brief"]
+
+
 class TestClaimNext:
     """The worker pickup loop: claim atomically, honour every hold."""
 

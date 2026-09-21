@@ -290,3 +290,71 @@ class TestExportVerify:
         ghost = [d for d in drift["diffs"] if d["node"] == "Ghost"][0]
         assert ghost["editor"] is None and ghost["shipped"] == "MeshInstance3D"
         assert json.dumps(drift)  # serialisable for the MCP payload
+
+
+class TestPlayVerify:
+    """EXIT 67 item 17: a clean diff proved the SHAPE shipped, never that it
+    ran. play_verify actually boots the pck. No real engine needed here — a
+    fake runner stands in for it, same pattern as test_godot.py's _spawn
+    tests (monkeypatch godot.subprocess.run)."""
+
+    def _fake_pck(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "project.godot").write_text("", encoding="utf-8")
+        build = proj / "build"
+        build.mkdir()
+        pck = build / "game.pck"
+        pck.write_bytes(b"fake-pck")
+        return proj, pck
+
+    def test_running_pck_that_never_quits_times_out_clean(self, tmp_path, monkeypatch):
+        proj, pck = self._fake_pck(tmp_path)
+        monkeypatch.setenv("BGATE_GODOT", "godot")
+        monkeypatch.setattr(godot, "_is_usable", lambda p: True)
+
+        def spy(cmd, **kwargs):
+            # subprocess.run() itself kills the child and re-collects output
+            # before re-raising TimeoutExpired — this stands in for that.
+            exc = subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+            exc.stdout = "booted the boot scene\n"
+            exc.stderr = ""
+            raise exc
+
+        monkeypatch.setattr(godot.subprocess, "run", spy)
+        result = godot_audit.play_verify(str(proj), str(pck), seconds=2.0)
+        assert result["timed_out"] is True
+        assert result["ok"] is True, result
+        assert result["errors"] == []
+
+    def test_script_error_line_fails_the_verify(self, tmp_path, monkeypatch):
+        proj, pck = self._fake_pck(tmp_path)
+        monkeypatch.setenv("BGATE_GODOT", "godot")
+        monkeypatch.setattr(godot, "_is_usable", lambda p: True)
+
+        def spy(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                'SCRIPT ERROR: Invalid get index \'foo\' (on base: \'null instance\')\n',
+                "")
+
+        monkeypatch.setattr(godot.subprocess, "run", spy)
+        result = godot_audit.play_verify(str(proj), str(pck), seconds=2.0)
+        assert result["ok"] is False
+        assert result["timed_out"] is False
+        assert any("SCRIPT ERROR" in e for e in result["errors"])
+
+    def test_missing_pck_is_an_error_not_a_timeout(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        result = godot_audit.play_verify(str(proj), "build/nope.pck", seconds=1.0)
+        assert result["ok"] is False
+        assert "no pck" in result["error"]
+
+    def test_record_export_verify_writes_the_fallback_file(self, tmp_path):
+        result = {"ok": False, "errors": ["SCRIPT ERROR: boom"], "pck": "build/game.pck"}
+        record = godot_audit.record_export_verify(tmp_path, result)
+        assert record["ok"] is False
+        assert record["errors"] == ["SCRIPT ERROR: boom"]
+        written = json.loads((tmp_path / ".bgate" / "export_verify.json").read_text(encoding="utf-8"))
+        assert written == record

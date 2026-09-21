@@ -68,26 +68,6 @@ class TestDatasetGate:
         got = krea.check_training_set([str(bad)])
         assert "png/jpg/webp" in got["rejected"][0]["why"]
 
-    def test_no_pillow_reports_that_sizes_were_not_checked(self, tmp_path,
-                                                           monkeypatch):
-        """Silence here would be the expensive kind: the set looks clean and Krea
-        refuses it after the upload."""
-        import builtins
-        paths = [_png(tmp_path / f"g{i}.png") for i in range(5)]   # before the block
-        real = builtins.__import__
-
-        def blocked(name, *a, **kw):
-            if name == "PIL":
-                raise ImportError("no PIL")
-            return real(name, *a, **kw)
-
-        monkeypatch.setattr(builtins, "__import__", blocked)
-        got = krea.check_training_set(paths)
-        assert any("Pillow is not installed" in w for w in got["warnings"])
-        # And it does NOT quietly pass them as verified.
-        assert got["usable"] == paths
-
-
 class TestTrainRequest:
     def test_the_payload_matches_the_documented_shape(self, captured):
         krea.train_style("Dark Neon Office", [f"https://k/{i}.png" for i in range(8)],
