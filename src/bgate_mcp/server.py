@@ -1156,6 +1156,77 @@ def _fail(exc: Exception) -> dict:
     return out
 
 
+def _bounded(payload: dict, limit: int = 40_000, more: str = "") -> dict:
+    """Cap a list-shaped tool result to ``limit`` serialised bytes.
+
+    MEASURED FAILURE: asset_status returned 595 KB and asset_verify 96 KB on a
+    ~200-asset project; an agent's first call on either answered "result
+    exceeds maximum allowed tokens" and the seat started blind, billed anyway.
+
+    Walks the payload (top level, and one level into any nested dict - the
+    shape every listing tool here actually uses, e.g. asset_verify's
+    ``integration.unreferenced``) collecting every list-valued field, then
+    trims the largest-serialised lists first, one element at a time, until
+    the whole payload fits. Every trimmed field keeps its original count
+    under ``truncated`` alongside ``more`` - the exact follow-up call to page
+    the rest. Counts computed by the caller BEFORE calling this (e.g. a
+    ``counts`` block) are untouched - this only ever removes list elements.
+    """
+    import copy
+    import json
+
+    def _size(obj: object) -> int:
+        try:
+            return len(json.dumps(obj, default=str).encode("utf-8"))
+        except Exception:
+            return limit + 1
+
+    if _size(payload) <= limit:
+        return payload
+
+    out = copy.deepcopy(payload)
+
+    def _collect(d: dict, prefix: str = "") -> list[tuple[str, dict, str]]:
+        found = []
+        for k, v in d.items():
+            if isinstance(v, list):
+                found.append((f"{prefix}{k}", d, k))
+            elif isinstance(v, dict):
+                found.extend(_collect(v, f"{prefix}{k}."))
+        return found
+
+    candidates = _collect(out)
+    originals = {path: len(container[key]) for path, container, key in candidates}
+    # The footer itself costs bytes, and it is added to `out` from the first
+    # iteration so the loop's size check - and the final cap - accounts for
+    # it, rather than checking against a payload that is about to grow.
+    out["truncated"] = {path: {"original": n, "shown": n}
+                         for path, n in originals.items()}
+    out["truncated"]["more"] = more
+    if not candidates:
+        out["truncated"] = {"note": "result exceeds the byte cap with no "
+                             "list field left to trim", "more": more}
+        return out
+
+    guard = 0
+    while _size(out) > limit and guard < 200_000:
+        guard += 1
+        candidates.sort(
+            key=lambda c: _size(c[1].get(c[2]) or []), reverse=True)
+        path, container, key = candidates[0]
+        lst = container.get(key) or []
+        if not lst:
+            break
+        lst.pop()
+        out["truncated"][path]["shown"] = len(lst)
+
+    trimmed = {path: v for path, v in out["truncated"].items()
+               if path != "more" and v["shown"] != v["original"]}
+    trimmed["more"] = more
+    out["truncated"] = trimmed
+    return out
+
+
 _RUN_SEQ = itertools.count()
 _RUN_SEQ_LOCK = threading.Lock()
 
@@ -1567,7 +1638,7 @@ def canon_audit(godot_project: Optional[str] = None) -> dict:
         return {"ok": False, "error": "no engine project found under this root"}
     report = _canon.audit(root, game)
     report["ok"] = True
-    return report
+    return _bounded(report, more="canon_audit(...)")
 
 
 @_tool
@@ -1784,7 +1855,9 @@ def lore_brief(ref: str) -> dict:
 @_tool
 def lore_list(kind: Optional[str] = None, status: Optional[str] = None) -> dict:
     """List entities, optionally filtered by kind and/or status."""
-    return {"entities": _lore.list_entities(_root(), kind=kind, status=status)}
+    return _bounded(
+        {"entities": _lore.list_entities(_root(), kind=kind, status=status)},
+        more=f"lore_list(kind={kind!r}, status={status!r})")
 
 
 @_tool
@@ -1862,7 +1935,7 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
     out["routing"] = _providers.routing(root)
     if capability:
         out["pick"] = _gateway.pick(root, str(capability))
-    return out
+    return _bounded(out, more=f"provider_status(capability={capability!r})")
 
 
 # ---------------------------------------------------------------------------
@@ -2849,7 +2922,8 @@ def image_generate(prompt: Annotated[str, Field(description='What to paint. Fram
                               anchors=anchor_paths, tileable=tileable,
                               root=root,
                               logical_name=_Path(filename).stem,
-                              work_item_id=_work_item_id())
+                              work_item_id=_work_item_id(),
+                              replace_reason=replace_reason)
     result["refs_used"] = named
     # WHAT HAPPENED, NOT WHAT WAS ASKED FOR. `tileable` above is the request;
     # chroma puts the mirror pass's own {ok, method, note} at result["tileable"]
@@ -2928,7 +3002,8 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
                               keyed=bool(transparent), ref_paths=resolved,
                               size=size, quality=quality, transparent=False,
                               root=root, logical_name=_Path(filename).stem,
-                              work_item_id=_work_item_id())
+                              work_item_id=_work_item_id(),
+                              replace_reason=replace_reason)
     if result.get("ok"):
         archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
         if archived:
@@ -6986,7 +7061,8 @@ def ref_pin(name: str, path: str, kind: str = "style", note: str = "") -> dict:
 @_tool
 def ref_list(kind: Optional[str] = None) -> dict:
     """The pinned reference anchors. Check BEFORE generating character/style art."""
-    return {"refs": _refs.list_refs(_root(), kind=kind)}
+    return _bounded({"refs": _refs.list_refs(_root(), kind=kind)},
+                     more=f"ref_list(kind={kind!r})" if kind else "ref_list()")
 
 
 @_tool
@@ -7235,10 +7311,25 @@ def asset_track(path: str) -> dict:
 
 
 @_tool
-def asset_status(kind: Optional[str] = None, locked_only: bool = False) -> dict:
-    """List tracked assets, optionally by kind or only the locked ones."""
-    return {"assets": _assets.list_assets(_root(), kind=kind,
-                                          locked_only=locked_only)}
+def asset_status(kind: Optional[str] = None, locked_only: bool = False,
+                  prefix: Optional[str] = None, offset: int = 0,
+                  limit: int = 200) -> dict:
+    """List tracked assets, optionally by kind, path prefix, or only the
+    locked ones. PAGED: pass offset/limit to walk a large project; the
+    result is byte-capped and names the follow-up call under `truncated`."""
+    rows = _assets.list_assets(_root(), kind=kind, locked_only=locked_only)
+    if prefix:
+        rows = [r for r in rows if str(r.get("path") or "").startswith(prefix)]
+    total = len(rows)
+    cap = max(1, min(int(limit or 200), 500))
+    off = max(0, int(offset or 0))
+    shown = rows[off:off + cap]
+    payload = {"assets": shown, "total": total, "shown": len(shown),
+               "offset": off}
+    more = (f"asset_status(offset={off + cap}, limit={cap}"
+            + (f", kind={kind!r}" if kind else "")
+            + (f", prefix={prefix!r}" if prefix else "") + ")")
+    return _bounded(payload, more=more)
 
 
 @_tool
@@ -7311,7 +7402,7 @@ def pending_decisions(limit: int = 40) -> dict:
 
 
 @_tool
-def asset_verify() -> dict:
+def asset_verify(offset: int = 0, limit: int = 200) -> dict:
     """PRESENCE IS NOT CORRECTNESS: is every asset intact, WIRED, and CURRENT?
 
     Three questions: `intact` ('modified' = content changed with no lock
@@ -7321,9 +7412,26 @@ def asset_verify() -> dict:
     disk; 'stale' names the ones to repair with godot_check_project). Costs
     nothing and spawns no engine. Run before builds and after any multi-agent
     session.
+    PAGED: offset/limit slice every list here (clean, modified, missing,
+    untracked_hash, locked, and integration's unreferenced/dangling/
+    stale_wired); `counts` always reflects the full scan. Byte-capped on top.
     Full notes: docs/tools.md#asset_verify
     """
-    return _assets.verify(_root())
+    result = _assets.verify(_root())
+    cap = max(1, min(int(limit or 200), 500))
+    off = max(0, int(offset or 0))
+    for key in ("clean", "modified", "missing", "untracked_hash", "locked"):
+        lst = result.get(key) or []
+        result[f"{key}_total"] = len(lst)
+        result[key] = lst[off:off + cap]
+    integration = result.get("integration") or {}
+    if isinstance(integration, dict):
+        for key in ("unreferenced", "dangling", "stale_wired"):
+            lst = integration.get(key) or []
+            integration[f"{key}_total"] = len(lst)
+            integration[key] = lst[off:off + cap]
+    more = f"asset_verify(offset={off + cap}, limit={cap})"
+    return _bounded(result, more=more)
 
 
 # ---------------------------------------------------------------------------
@@ -7425,7 +7533,9 @@ def playtest_brief(session_id: int, include_transcript: bool = False,
 @_tool
 def playtest_list(status: Optional[str] = None) -> dict:
     """List play sessions. status: recording | processing | ready | failed."""
-    return {"sessions": _playtest.list_sessions(_root(), status=status)}
+    return _bounded(
+        {"sessions": _playtest.list_sessions(_root(), status=status)},
+        more=f"playtest_list(status={status!r})")
 
 
 @_tool
@@ -8199,7 +8309,8 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
             graph = _q.graph(root)
         except Exception as exc:                                  # noqa: BLE001
             out["order_error"] = f"{type(exc).__name__}: {exc}"
-            return out
+            return _bounded(out, more=f"queue_list(status={status!r}, "
+                             f"seat={seat!r}, limit={cap})")
         rank = {n["id"]: n for n in graph["nodes"]}
         for item in items:
             node = rank.get(int(item["id"]))
@@ -8223,7 +8334,8 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
                         "work_item_dep are presented as ONE graph; which table "
                         "holds a link is not a question you should have to "
                         "answer.")
-    return out
+    return _bounded(out, more=f"queue_list(status={status!r}, seat={seat!r}, "
+                     f"limit={cap}, order={order!r})")
 
 
 @_tool
@@ -8435,14 +8547,19 @@ def queue_add_chain(links: list, chain_id: str = "") -> dict:
 @_tool
 def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str] = None,
                  seat: Optional[str] = None, priority: Optional[int] = None,
-                 steer_running: bool = False) -> dict:
+                 steer_running: bool = False,
+                 max_paid_calls: Optional[int] = None) -> dict:
     """Edit an existing work item in place (title/brief/seat/priority).
 
     Only the fields you pass change; brief REPLACES, it does not append. THIS
     DOES NOT REACH A RUNNING AGENT: a brief change on a DISPATCHED item is
     refused with steer_running=False (default, naming the agent_steer call to
     make instead); steer_running=True updates the row AND delivers the change
-    as a steer. Every result carries `live_delivered`.
+    as a steer. Every result carries `live_delivered`. max_paid_calls raises
+    (or lowers) this item's paid-call budget above the project default
+    (dispatch.default_max_paid_calls) - use it when a generation gate refused
+    with budget_exceeded_item and the budget itself, not the approach, was
+    wrong.
     Full notes: docs/tools.md#queue_update
     """
     from bgate_core.board import queue as _q, steerbox as _steerbox
@@ -8465,7 +8582,8 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
         }
 
     updated = _q.update(root, item_id, title=title, brief=brief,
-                        seat=seat, priority=priority)
+                        seat=seat, priority=priority,
+                        max_paid_calls=max_paid_calls)
     delivered = False
     steer: dict = {}
     if running and changes_the_work and steer_running:
@@ -8556,7 +8674,7 @@ def board_digest(hours: int = 12) -> dict:
             out["orphaned"] = lost[:10]
     except Exception:                                             # noqa: BLE001
         pass
-    return out
+    return _bounded(out, more=f"board_digest(hours={hours})")
 
 
 @_tool

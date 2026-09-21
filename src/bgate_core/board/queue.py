@@ -263,13 +263,32 @@ def get(root: str | os.PathLike[str], item_id: int) -> dict:
         "SELECT * FROM work_item WHERE id = ?", (item_id,)).fetchone()
     if row is None:
         raise LookupError(f"no work item {item_id}")
-    return dict(row)
+    item = dict(row)
+    # ITEM 11/31(c) — COST PER ATTEMPT, not just a running total. Card totals
+    # hid which attempt spent the money; one row per agent_runs entry for
+    # this item says it plainly. Named `run_attempts` - NOT `attempts` - the
+    # work_item row already has an `attempts` COLUMN (the auto-retry
+    # counter, an int); shadowing it here corrupted every caller that reads
+    # item["attempts"] as a number (queue_reopen's stamp being one of them).
+    try:
+        conn = db.connect(root)
+        run_attempts = [dict(r) for r in conn.execute(
+            "SELECT id, started_at, ended_at, status, cost_usd, runner "
+            "FROM agent_runs WHERE item_id = ? ORDER BY started_at",
+            (item_id,)).fetchall()]
+    except Exception:
+        run_attempts = []
+    item["run_attempts"] = run_attempts
+    item["run_attempts_cost_usd"] = round(
+        sum(float(a.get("cost_usd") or 0) for a in run_attempts), 4)
+    return item
 
 
 def update(root: str | os.PathLike[str], item_id: int, *,
            title: Optional[str] = None, brief: Optional[str] = None,
            seat: Optional[str] = None, priority: Optional[int] = None,
-           max_runtime_s: Optional[int] = None) -> dict:
+           max_runtime_s: Optional[int] = None,
+           max_paid_calls: Optional[int] = None) -> dict:
     """Edit an existing item in place, without changing its status/lineage.
 
     This is how a reviewer enriches a ticket: e.g. the video-watching director
@@ -297,6 +316,13 @@ def update(root: str | os.PathLike[str], item_id: int, *,
         if int(max_runtime_s) <= 0:
             raise ValueError("max_runtime_s must be positive")
         sets.append("max_runtime_s = ?"); params.append(int(max_runtime_s))
+    # THE PER-ITEM PAID-CALL CEILING (0047). Overrides
+    # dispatch.default_max_paid_calls for one item — the escape hatch when
+    # the default was wrong for this ask, not a way around the stop.
+    if max_paid_calls is not None:
+        if int(max_paid_calls) <= 0:
+            raise ValueError("max_paid_calls must be positive")
+        sets.append("max_paid_calls = ?"); params.append(int(max_paid_calls))
     if not sets:
         return get(root, item_id)
     params.append(item_id)
@@ -1510,6 +1536,74 @@ def set_run_fields(root: str | os.PathLike[str], item_id: int, **fields) -> dict
         conn.execute(f"UPDATE work_item SET {assignments} WHERE id = ?",
                      [*sets.values(), item_id])
     return get(root, item_id)
+
+
+def paid_call_budget(root: str | os.PathLike[str], item_id: int) -> tuple[int, int]:
+    """(paid calls made so far, the budget that applies) for one item.
+
+    The budget is the item's own ``max_paid_calls`` when set, else the
+    project setting ``dispatch.default_max_paid_calls`` (30). Read-only; use
+    :func:`spend_paid_call` at the actual spend seam, which checks and
+    increments atomically.
+    """
+    from ..store import settings as _settings
+    row = db.connect(root).execute(
+        "SELECT paid_calls, max_paid_calls FROM work_item WHERE id = ?",
+        (item_id,)).fetchone()
+    if row is None:
+        return 0, int(_settings.get(root, "dispatch.default_max_paid_calls") or 30)
+    used = int(row["paid_calls"] or 0)
+    budget = row["max_paid_calls"]
+    if budget is None:
+        budget = int(_settings.get(root, "dispatch.default_max_paid_calls") or 30)
+    return used, int(budget)
+
+
+def spend_paid_call(root: str | os.PathLike[str], item_id: int) -> dict:
+    """THE ONE SEAM: check the paid-call ceiling and count this call against it.
+
+    MEASURED: EXIT 67 death frames were re-rolled at $0.05-0.10 each with no
+    stop; two items reached $7.67 and $10.10 across attempts before a human
+    killed the agent by hand. Checked and incremented inside one transaction
+    so two paid calls racing on the same item cannot both read "room left".
+
+    ``item_id`` of ``None`` (no work item on this session) is not budget-
+    checked at all — there is nothing to charge it to, and the human's own
+    session must never be rate-limited by a mechanism built for dispatched
+    agents. Returns ``{"ok": True, "used", "budget"}`` when the call may
+    proceed, or a refusal carrying ``code: "budget_exceeded_item"``.
+    """
+    if item_id is None:
+        return {"ok": True, "note": "no work item on this call; not budget-checked"}
+    from ..store import settings as _settings
+    with db.tx(root) as conn:
+        row = conn.execute(
+            "SELECT paid_calls, max_paid_calls FROM work_item WHERE id = ?",
+            (item_id,)).fetchone()
+        if row is None:
+            return {"ok": True, "note": f"work item #{item_id} not found; "
+                     "not budget-checked"}
+        used = int(row["paid_calls"] or 0)
+        budget = row["max_paid_calls"]
+        if budget is None:
+            budget = int(_settings.get(root, "dispatch.default_max_paid_calls") or 30)
+        budget = int(budget)
+        if used >= budget:
+            return {
+                "ok": False, "code": "budget_exceeded_item",
+                "used": used, "budget": budget, "work_item_id": item_id,
+                "error": (
+                    f"work item #{item_id} has made {used} paid calls against "
+                    f"a budget of {budget}. Nothing was generated and nothing "
+                    "was spent by THIS call. This is a STOP, not a smaller "
+                    "retry: change the approach, escalate to a human, or "
+                    "queue_update the item's max_paid_calls if the budget "
+                    "itself was wrong - do not keep re-rolling the same ask."),
+            }
+        conn.execute(
+            "UPDATE work_item SET paid_calls = paid_calls + 1 WHERE id = ?",
+            (item_id,))
+        return {"ok": True, "used": used + 1, "budget": budget}
 
 
 def next_for(root: str | os.PathLike[str], seat: str) -> Optional[dict]:

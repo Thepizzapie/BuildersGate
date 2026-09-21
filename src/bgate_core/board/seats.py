@@ -792,11 +792,10 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "proves it landed. "
                    "CONSISTENCY IS ENFORCED, NEVER REQUESTED: pin the reference, "
                    "condition every frame on it, measure the result. Before "
-                   "reporting a sheet done, OPEN it and compare frame to frame "
-                   "against the pinned anchor (consistency_check / "
-                   "sprite_family_check) and paste that per-frame verdict into "
-                   "the result - a result with no per-frame line is an "
-                   "unverified claim and the QA gate reopens it. UI IS ART TOO: "
+                   "reporting a sheet done, compare it frame to frame against "
+                   "the pinned anchor (consistency_check / sprite_family_check) "
+                   "and paste the per-frame verdict into the result; without "
+                   "it the QA gate reopens the item. UI IS ART TOO: "
                    "every project gets its OWN title, menu, "
                    "HUD and results look - generated concept frames, a logo, a "
                    "palette and a Theme derived from them - before any Control node "
@@ -2132,9 +2131,13 @@ MAX_SECTIONS = 14        # bible sections quoted in a brief
 BODY_CHARS = 600         # per bible section
 NOTE_CHARS = 300         # per blackboard note
 FEEDBACK_CHARS = 300     # per promoted complaint
-# The ceiling the whole brief has to fit under, in characters. ~6k tokens: big
-# enough to brief a seat, small enough that no CLI spills it to disk.
-BRIEF_CHARS = 24000
+# The ceiling the whole brief has to fit under, in characters. ~6.5k tokens: big
+# enough to brief a seat, small enough that no CLI spills it to disk. Raised
+# from 24000 on 2026-09-21: the EXIT 67 rules (human rulings, the per-frame
+# verdict, review at full size, one slice in focus, the provider table) put
+# ~1.2k of fixed prose on the art brief, and the fitter had nothing left to
+# cut but the workflow the seat is briefed with.
+BRIEF_CHARS = 26000
 
 
 def _fit(payload: dict) -> dict:
@@ -2183,6 +2186,7 @@ def _fit(payload: dict) -> dict:
             for ref in (payload.get("pinned_refs") or [])[:limit]]
 
     steps = [
+        lambda: payload.__setitem__("providers", (payload.get("providers") or [])[:4]),
         lambda: trim_bible(300),
         lambda: trim_refs(20),
         lambda: payload.__setitem__("approved_artifacts",
@@ -2211,8 +2215,16 @@ def _fit(payload: dict) -> dict:
             return payload
     # THE LADDER RAN OUT AND THE PAYLOAD IS STILL OVER. That used to return
     # anyway, which is how a ceiling that every caller trusted became a
-    # suggestion. The bible is the only field left big enough to matter, so it
-    # goes down to a table of contents; a seat that needs prose has bible_read.
+    # suggestion. Providers is the cheapest thing left to drop entirely -
+    # provider_status pages the same facts - so it goes before the bible
+    # gets cut down to a table of contents; a seat that needs prose has
+    # bible_read.
+    if payload.get("providers"):
+        payload["providers"] = []
+        if size() <= BRIEF_CHARS:
+            return payload
+    # The bible is the only field left big enough to matter, so it goes down
+    # to a table of contents; a seat that needs prose has bible_read.
     #
     # The row is rebuilt rather than having its body blanked, because blanking
     # the body left 10,038 characters of id/rank/version/created_at/updated_at
@@ -2446,6 +2458,16 @@ def _bounded_blockers(blockers: list) -> dict:
     }
 
 
+def _providers_for_brief(root: str | os.PathLike[str], role: str) -> list[dict]:
+    """Best-effort, never blocks a brief on a probe. See runtime.preflight."""
+    try:
+        from ..runtime import preflight as _preflight
+
+        return _preflight.providers_brief(root, role)
+    except Exception:
+        return []
+
+
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
     """Everything a seat needs to start, BOUNDED.
 
@@ -2575,6 +2597,12 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                             MAX_LOCKS, "asset_status (others)"),
         "notes": notes,
         "board": cap(board, MAX_BOARD, "queue_list"),
+        # ITEM 13 — WHICH PROVIDER THIS SEAT'S SPEND ACTUALLY ROUTES TO,
+        # right in the brief. MEASURED: Retro Diffusion ran dry ($0.11) and
+        # two agents discovered it themselves, mid-run, instead of reading it
+        # here first. Empty for a seat with no paid capability (already
+        # bounded to <=12 rows by preflight.providers_brief).
+        "providers": _providers_for_brief(root, role),
         # WHAT THE PROJECT IS ALLOWED TO BE DOING YET, and the sentence the
         # whole game is built on. In the brief rather than left for a refusal
         # to teach: a seat that discovers the stage by being held reads it as
@@ -2588,8 +2616,8 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "traps": traps_for(role, dimension),
         "rules": [
             TOOLING_RULE,
-            "A HUMAN RULING OUTRANKS THIS LIST: `rulings` above. A tool one "
-            "forbids refuses your call; build within it or fail naming it.",
+            "HUMAN `rulings` above outrank this list: a forbidden tool refuses "
+            "your call; build within them or fail naming them.",
             "Stay inside the project you were dispatched for - that boundary "
             "is enforced. Your lanes inside it are the map of what is yours; "
             "prefer them, route big cross-seat work with queue_add, and when "
