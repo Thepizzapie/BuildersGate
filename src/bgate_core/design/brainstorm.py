@@ -189,15 +189,6 @@ class AlreadyHere(Exception):
     """
 
 
-class NoPartner(RuntimeError):
-    """Nothing can be spawned here, and the reason is a sentence.
-
-    Raised by :func:`invite` when the runner has not declared a read-only
-    conversational mode, or its CLI is not on this machine. Deliberately NOT a
-    ValueError: it is a fact about the environment, not about the request, and
-    the two want different HTTP codes and different buttons.
-    """
-
 
 class PartialDeploy(ValueError):
     """The queue refused an item PART WAY THROUGH, and some are already on it.

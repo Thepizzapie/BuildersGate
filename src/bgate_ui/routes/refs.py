@@ -35,26 +35,6 @@ def refs_list(kind: str | None = None) -> dict:
     return {"refs": _refs.list_refs(root(), kind=kind)}
 
 
-@router.post("/api/refs/pin")
-def refs_pin(payload: dict) -> dict:
-    """Pin a file already inside the project (by project-relative path) as a
-    global reference."""
-    r = root()
-    rel = (payload.get("path") or "").strip()
-    name = (payload.get("name") or "").strip()
-    if not rel or not name:
-        raise HTTPException(400, "name and path are required")
-    src = (r / rel).resolve()
-    try:
-        src.relative_to(r.resolve())
-    except ValueError:
-        raise HTTPException(403, "path escapes the project root")
-    if not src.is_file():
-        raise HTTPException(404, f"no file at {rel}")
-    return _refs.pin(r, name, str(src), kind=payload.get("kind", "style"),
-                     note=payload.get("note", ""))
-
-
 @router.post("/api/refs/upload")
 def refs_upload(payload: dict) -> dict:
     """Pin an uploaded image (base64 data-URL or raw base64) as a global ref."""

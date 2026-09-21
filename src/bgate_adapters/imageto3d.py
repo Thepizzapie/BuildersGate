@@ -1429,13 +1429,7 @@ def check_input(path: str | os.PathLike[str]) -> dict:
                 "reason": f"unsupported input type {p.suffix!r} — "
                           + "/".join(sorted(s.lstrip(".") for s in INPUT_SUFFIXES))
                           + " only"}
-    try:
-        from PIL import Image                    # noqa: PLC0415 — optional
-    except ImportError:
-        warnings.append("Pillow is not installed, so the image was NOT measured "
-                        f"— a plate under {INPUT_MIN_SIDE}px carries nothing to "
-                        "reconstruct from")
-        return {"ok": True, "path": str(p), "reason": "", "warnings": warnings}
+    from PIL import Image
     try:
         with Image.open(p) as img:
             w, h = img.size
