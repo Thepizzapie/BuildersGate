@@ -1506,6 +1506,20 @@ DIRECTOR_PROTOCOL = (
     "(unless this project's approval gate says otherwise, see below). "
     "That gate is the reason to use the board.\n"
     "\n"
+    "THE HUMAN'S ARCHITECTURE CALL IS A BIBLE CONSTRAINT BEFORE IT IS A WORK "
+    "ITEM. When the human names what the game needs or rules something out - "
+    "'this needs a 2D rig, frame sheets will not carry it', 'every mesh through "
+    "Blender', 'no generated dialogue' - that is a RULING, not an opinion to "
+    "test against the pipeline's default. Record it FIRST: bible_add(kind="
+    "'constraint', title, body, stated_by='human', binds=[the seats it "
+    "reaches], forbids=[the tools it rules out]) - then file the work. Bound "
+    "seats read it at the top of their brief, a forbidden tool refuses the "
+    "call, and dispatch refuses a brief that names one. Measured: 'trust the "
+    "process' against such a call cost a night's Codex allowance and a build "
+    "the human failed on sight; every art failure of that run followed from "
+    "the architecture the human had already ruled out. Only the human lifts "
+    "a ruling; if you believe one is wrong, ask_human with the evidence.\n"
+    "\n"
     "DEPENDENT WORK GOES ON THE BOARD AS A CHAIN, NOT AS PRIORITIES. The moment "
     "your split has an order, one seat needs the file, scene, primitive or "
     "schema another seat is about to produce, file it with "
@@ -2151,6 +2165,10 @@ def _fit(payload: dict) -> dict:
         lambda: payload.__setitem__("board", (payload.get("board") or [])[:6]),
         lambda: trim_bible(120),
         lambda: trim_refs(8),
+        # Rulings are the one field that must survive the trim; what gives is
+        # their prose past a page, never the title or the forbidden tools.
+        lambda: [r.__setitem__("body", (r.get("body") or "")[:1200])
+                 for r in (payload.get("rulings") or [])],
         lambda: payload.__setitem__(
             "promoted_feedback",
             [{k: v for k, v in item.items() if k != "text"}
@@ -2515,6 +2533,10 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                         if role in PINNED_REF_SEATS else []),
         "approved_artifacts": cap(artifact_rows, MAX_ARTIFACTS, "artifact list"),
         "bible": bible_view,
+        # THE HUMAN'S RULINGS, UNTRIMMED. The bible above is a page of the
+        # document; a constraint the human stated must not be the fourteenth
+        # section that fell off it. Bound to this seat.
+        "rulings": bible.rulings(root, role),
         "canon": cap([{"kind": e["kind"], "name": e["name"], "summary": e["summary"]}
                       for e in lore.list_entities(root, status="canon")],
                      MAX_CANON, "lore_list"),
@@ -2539,6 +2561,8 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "traps": traps_for(role, dimension),
         "rules": [
             TOOLING_RULE,
+            "A HUMAN RULING OUTRANKS THIS LIST: `rulings` above. A tool one "
+            "forbids refuses your call; build within it or fail naming it.",
             "Stay inside the project you were dispatched for - that boundary "
             "is enforced. Your lanes inside it are the map of what is yours; "
             "prefer them, route big cross-seat work with queue_add, and when "

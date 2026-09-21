@@ -794,6 +794,28 @@ def _tool(fn: Optional[Callable] = None, *,
             # server start can name what the last one was holding instead of
             # the work being gone with no record it existed.
             flight_root = _root_hint()
+            # A HUMAN RULING REFUSES THE TOOL IT FORBIDS, for the seat it binds.
+            # The seat brief and the dispatch prompt both SAY the tool is off;
+            # this is the part that makes it true. Fail-open on its own faults:
+            # a bible that will not read must not stop every tool call.
+            forbidden = None
+            if flight_root and _seat():
+                try:
+                    forbidden = _bible.tool_forbidden(flight_root, _seat(),
+                                                      fn.__name__)
+                except Exception:                                 # noqa: BLE001
+                    forbidden = None
+            if forbidden:
+                return {"ok": False, "refused": "ruling",
+                        "error": (f"{fn.__name__} is forbidden for the "
+                                  f"{_seat()} seat by a HUMAN RULING, bible "
+                                  f"#{forbidden['id']} {forbidden['title']!r}. "
+                                  "Do not route around it with another tool; "
+                                  "build what the ruling asks for, and if this "
+                                  "item cannot be finished without the tool, "
+                                  "fail the item naming the ruling."),
+                        "section_id": forbidden["id"],
+                        "ruling": forbidden["title"], "seat": _seat()}
             flight = ""
             if flight_root:
                 try:
@@ -1562,21 +1584,55 @@ def project_set_engine(engine: str) -> dict:
 # Design bible
 # ---------------------------------------------------------------------------
 @_tool
-def bible_add(kind: str, title: str, body: str = "", rank: int = 0) -> dict:
+def bible_add(kind: str, title: str, body: str = "", rank: int = 0,
+              stated_by: str = "", binds: Optional[list] = None,
+              forbids: Optional[list] = None) -> dict:
     """Add a bible section.
 
     kind: pillar | loop | constraint | reference.
     rank orders sections within a kind - it is the reading order of the
     document, lowest first.
+
+    A CONSTRAINT THE HUMAN STATED IS A RULING, AND IT IS WRITTEN BEFORE THE
+    WORK THAT DEPENDS ON IT IS FILED. stated_by='human' marks one (only the
+    human's own session may write that value; a dispatched agent is refused).
+    binds=['art'] names the seats it reaches ([] = every seat); forbids=
+    ['image_sprites'] names MCP tools a bound seat may not call while it
+    stands - the call is refused, and dispatch refuses a brief that names one.
+    Measured: the night the human said "frame sheets will not carry this game"
+    and the director dispatched 33 agents on frame sheets anyway.
     """
-    return _bible.add(_root(), kind, title, body=body, rank=rank)
+    if str(stated_by or "").strip().lower() == _bible.HUMAN and _caller_is_agent():
+        return _fail(PermissionError(
+            f"{_actor() or 'an agent session'} may not record a HUMAN ruling - "
+            "stated_by='human' is the value the gates enforce, and an agent that "
+            "writes it authorises its own constraints. Record it with "
+            "stated_by='director' or 'agent', or ask_human to have the human "
+            "state it."))
+    return _bible.add(_root(), kind, title, body=body, rank=rank,
+                      stated_by=stated_by, binds=binds, forbids=forbids)
 
 
 @_tool
 def bible_update(section_id: int, title: Optional[str] = None,
-                 body: Optional[str] = None, rank: Optional[int] = None) -> dict:
-    """Update a bible section in place. Omitted fields keep their current value."""
-    return _bible.update(_root(), section_id, title=title, body=body, rank=rank)
+                 body: Optional[str] = None, rank: Optional[int] = None,
+                 stated_by: Optional[str] = None, binds: Optional[list] = None,
+                 forbids: Optional[list] = None) -> dict:
+    """Update a bible section in place. Omitted fields keep their current value.
+    stated_by / binds / forbids are the ruling fields (see bible_add); an agent
+    may not set or clear stated_by='human'."""
+    if _caller_is_agent():
+        current = _bible.get(_root(), section_id)
+        was_human = str(current.get("stated_by") or "") == _bible.HUMAN
+        asks_human = str(stated_by or "").strip().lower() == _bible.HUMAN
+        if asks_human or (was_human and stated_by is not None):
+            return _fail(PermissionError(
+                "an agent may not set or clear a HUMAN ruling's stated_by"))
+        if was_human and (binds is not None or forbids is not None):
+            return _fail(PermissionError(
+                "an agent may not change what a HUMAN ruling binds or forbids"))
+    return _bible.update(_root(), section_id, title=title, body=body, rank=rank,
+                         stated_by=stated_by, binds=binds, forbids=forbids)
 
 
 @_tool
@@ -9047,12 +9103,57 @@ def cutout_templates() -> dict:
     from bgate_core.three_d import cutout as _cutout
     return {"ok": True, "templates": _cutout.templates(),
             "layout": "game/assets/characters/<name>/",
-            "not_built_yet": [
-                "cutout_kit_generate - generating the parts themselves "
-                "still goes through image_generate/chroma by hand against "
-                "a pinned reference",
-                "cutout_part_rerun - regenerate one part in place",
+            "how": [
+                "ref_pin the character's identity image (front or side), "
+                "profile_set its traits/style/negative",
+                "cutout_kit_generate(name, reference) - every part, one call, "
+                "assembled and emitted; read `flags` before wiring",
+                "cutout_part_rerun(name, slot) for the one part that is wrong",
+                "cutout_equip(name, 'weapon', <png>) - the grip is in the "
+                "hand bone; both hands land on it in the 'aim' clip",
             ]}
+
+
+def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
+                  producer: str, metadata: Optional[dict] = None) -> dict:
+    """Normalise, save the document, emit the scene and library, report.
+
+    One path for assemble, kit_generate, part_rerun and equip, so the
+    clobber stamp, the size table and the artifact row cannot drift between
+    them. Returns the emitter's dict plus `doc` and `status`.
+    """
+    from bgate_core.three_d import cutout as _cutout, cutoutwire as _wire
+    home = _cutout_dir(root, name)
+    doc = _cutout.normalise(doc)
+    sizes = {}
+    try:
+        from PIL import Image
+        for slot, entry in doc["skin"].items():
+            with Image.open(entry["texture"]) as img:
+                sizes[slot] = img.size
+    except Exception:
+        # A missing size means a part hangs from its top-left instead of
+        # its pivot: visibly wrong, and better than a guessed offset.
+        pass
+    doc_path = _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
+    emitted = _wire.emit(doc, project_dir=root,
+                         scene_path=home / f"{name}.tscn",
+                         sizes=sizes, force=force)
+    if not emitted.get("ok"):
+        return {**emitted, "doc": str(doc_path)}
+    status = _cutout.status(doc, root=root)
+    _log("cutout",
+         f"{producer}: {name} - {emitted['sprites']} sprites, "
+         f"{len(emitted['clips'])} clips",
+         ref=emitted["scene_res"])
+    _register_artifact(f"{name}.tscn", emitted["scene"], producer=producer,
+                       metadata={"template": doc["template"],
+                                 "slots": len(doc["slots"]),
+                                 "filled": len(doc["skin"]),
+                                 "reference": doc.get("reference") or "",
+                                 "reference_hash": doc.get("reference_hash") or "",
+                                 **(metadata or {})})
+    return {**emitted, "doc": str(doc_path), "status": status}
 
 
 @_tool
@@ -9071,12 +9172,11 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
     Full notes: docs/tools.md#cutout_assemble
     """
     try:
-        from bgate_core.three_d import cutout as _cutout, cutoutwire as _wire
+        from bgate_core.three_d import cutout as _cutout
         root = _root()
     except Exception as exc:
         return _fail(exc)
     try:
-        home = _cutout_dir(root, name)
         doc = _cutout.empty(name, template)
         spec = _cutout.template(template)
         skin = {}
@@ -9100,39 +9200,168 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
         doc["skin"] = skin
         doc["adjustments"] = adjustments or {}
         doc["notes"] = notes
-        doc = _cutout.normalise(doc)
-
-        sizes = {}
-        try:
-            from PIL import Image
-            for slot, entry in doc["skin"].items():
-                with Image.open(entry["texture"]) as img:
-                    sizes[slot] = img.size
-        except Exception:
-            # A missing size means a part hangs from its top-left instead of
-            # its pivot: visibly wrong, and better than a guessed offset.
-            pass
-
-        doc_path = _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
-        emitted = _wire.emit(doc, project_dir=root,
-                             scene_path=home / f"{name}.tscn",
-                             sizes=sizes, force=force)
-        if not emitted.get("ok"):
-            return {**emitted, "doc": str(doc_path)}
-        status = _cutout.status(doc, root=root)
-        _log("cutout",
-             f"assembled {name}: {emitted['sprites']} sprites, "
-             f"{len(emitted['clips'])} clips",
-             ref=emitted["scene_res"])
-        _register_artifact(f"{name}.tscn", emitted["scene"],
-                           producer="cutout_assemble",
-                           metadata={"template": template,
-                                     "slots": len(doc["slots"]),
-                                     "filled": len(doc["skin"])})
-        return {**emitted, "doc": str(doc_path), "status": status,
-                "how": [f"instance {emitted['scene_res']} in a scene",
+        written = _cutout_write(root, name, doc, force=force,
+                                producer="cutout_assemble")
+        if not written.get("ok"):
+            return written
+        return {**written,
+                "how": [f"instance {written['scene_res']} in a scene",
                         'call play("walk") on it - the rig script is on the root',
                         "connect its anim_event signal for hit frames"]}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
+                        parts: Optional[list] = None, provider: str = "",
+                        quality: str = "medium", note: str = "",
+                        adjustments: Optional[dict] = None,
+                        max_paid_calls: int = 20, force: bool = False) -> dict:
+    """Generate every part of a cutout character from ONE pinned reference,
+    then assemble and emit it. About nine paid images; the animation is the
+    template's and costs nothing.
+
+    THIS IS HOW A CHARACTER WITH MORE THAN AN IDLE GETS MADE IN 2D. Frame
+    sheets re-roll identity, proportions and the weapon in the hand on every
+    frame; a kit draws each part once and the rig moves it. `reference` is a
+    ref_pin NAME (preferred: profile_set traits ride into every prompt) or a
+    path. Every part records the reference hash it was drawn against, and
+    cutout_status flags any part from another run. `flags` lists parts whose
+    height is outside the template band - LOOK at those before wiring;
+    cutout_part_rerun redraws one. Refuses over max_paid_calls before buying
+    anything; stops after two consecutive provider failures rather than
+    re-rolling. `parts=[...]` regenerates a subset into an existing kit.
+    Full notes: docs/tools.md#cutout_kit_generate
+    """
+    try:
+        from bgate_core.three_d import cutout as _cutout, cutoutkit as _kit
+        root = _root()
+        refused = _provider_gate(str(root), "image",
+                                 f"a cutout part kit for {name!r}")
+        if refused:
+            return refused
+        ref_path = _refs.resolve(root, reference)
+        profile = None
+        try:
+            profile = _refs.profile_get(root, reference)
+        except Exception:
+            profile = None
+        home = _cutout_dir(root, name)
+        provider = _providers.provider_for("sprite", asked=provider, root=root)
+        # A subset lands INTO the existing document; a full run starts fresh.
+        existing = home / f"{name}{_cutout.SUFFIX}"
+        doc = (_cutout.load(existing) if parts and existing.is_file()
+               else _cutout.empty(name, template))
+        made = _kit.generate_kit(
+            root, name, ref_path, out_dir=home / "parts", provider=provider,
+            template=doc["template"], parts=parts, quality=quality, note=note,
+            profile=profile, max_paid_calls=max_paid_calls,
+            work_item_id=_work_item_id())
+        skin = dict(doc.get("skin") or {})
+        skin.update(made["parts"])
+        # Anything the near side just replaced, the far side follows.
+        for far, near in (_cutout.template(doc["template"]).get("reuse") or {}).items():
+            if near in made["parts"]:
+                skin.pop(far, None)
+        doc["skin"] = _kit.fill_reuse(skin, doc["template"])
+        doc["reference"] = reference
+        doc["reference_hash"] = made["reference_hash"]
+        if adjustments:
+            doc["adjustments"] = adjustments
+        if made["flags"]:
+            doc["notes"] = ((doc.get("notes") or "") + "\n" if doc.get("notes") else "") + \
+                "SCALE FLAGS: " + "; ".join(f["note"] for f in made["flags"])
+        for slot, entry in made["parts"].items():
+            _register_artifact(f"{name}.part.{slot}", entry["texture"],
+                               producer="cutout_kit_generate", refs=[reference],
+                               prompt=entry.get("prompt", ""),
+                               metadata={"slot": slot,
+                                         "anchor_hash": entry["anchor_hash"]})
+        written = _cutout_write(root, name, doc, force=force,
+                                producer="cutout_kit_generate",
+                                metadata={"calls": made["calls"],
+                                          "cost_usd": made["cost_usd"]})
+        generation = {k: made[k] for k in
+                      ("failed", "flags", "calls", "cost_usd", "stopped",
+                       "reference_height_px")}
+        generation["generated"] = sorted(made["parts"])
+        out = {**written, "generation": generation,
+               "ok": bool(written.get("ok")) and made["ok"]}
+        if made["flags"] or made["failed"] or made["stopped"]:
+            out["next"] = ("Read `generation.flags` and `generation.failed`; "
+                           "cutout_part_rerun(name, slot) redraws one part "
+                           "against the same reference. Do NOT re-run the whole "
+                           "kit for one bad part.")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cutout_part_rerun(name: str, slot: str, note: str = "", provider: str = "",
+                      quality: str = "medium", force: bool = False) -> dict:
+    """Regenerate ONE part of an existing kit against the kit's own reference
+    and re-emit. One paid image.
+
+    The fix for a flagged or wrong part. `note` is appended to the part prompt
+    ("the forearm is bare skin, not sleeved"). A far-side slot is refused -
+    redraw its near side and the far side follows. An AUTHORED pivot on the
+    slot stays and cutout_status flags it stale_pivot, because the pivot was
+    placed against the old drawing.
+    Full notes: docs/tools.md#cutout_part_rerun
+    """
+    try:
+        from bgate_core.three_d import cutout as _cutout, cutoutkit as _kit
+        root = _root()
+        home = _cutout_dir(root, name)
+        doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
+        if not doc.get("reference"):
+            return {"ok": False,
+                    "error": f"{name} was assembled from loose parts and names no "
+                             "reference; cutout_kit_generate(name, reference) "
+                             "makes a kit that can be regenerated part by part"}
+        refused = _provider_gate(str(root), "image", f"redrawing {name}.{slot}")
+        if refused:
+            return refused
+        ref_path = _refs.resolve(root, doc["reference"])
+        try:
+            profile = _refs.profile_get(root, doc["reference"])
+        except Exception:
+            profile = None
+        provider = _providers.provider_for("sprite", asked=provider, root=root)
+        made = _kit.generate_kit(
+            root, name, ref_path, out_dir=home / "parts", provider=provider,
+            template=doc["template"], parts=[slot], quality=quality, note=note,
+            profile=profile, max_paid_calls=1, work_item_id=_work_item_id())
+        if slot not in made["parts"]:
+            return {"ok": False, "generation": made,
+                    "error": f"{slot} did not come back: "
+                             + "; ".join(f["error"] for f in made["failed"])}
+        entry = dict(doc["skin"].get(slot) or {})
+        fresh = made["parts"][slot]
+        # Keep the authored pivot (status flags it stale); take everything else.
+        entry.update({k: v for k, v in fresh.items()
+                      if k not in ("pivot_source",) or "pivot_source" not in entry})
+        doc["skin"][slot] = entry
+        spec = _cutout.template(doc["template"])
+        for far, near in (spec.get("reuse") or {}).items():
+            if near == slot and doc["skin"].get(far, {}).get("reuse_of") == near:
+                doc["skin"].pop(far)
+        doc["skin"] = _kit.fill_reuse(doc["skin"], doc["template"])
+        doc["reference_hash"] = made["reference_hash"]
+        _register_artifact(f"{name}.part.{slot}", fresh["texture"],
+                           producer="cutout_part_rerun", refs=[doc["reference"]],
+                           prompt=fresh.get("prompt", ""),
+                           metadata={"slot": slot,
+                                     "anchor_hash": fresh["anchor_hash"],
+                                     "note": note})
+        written = _cutout_write(root, name, doc, force=force,
+                                producer="cutout_part_rerun",
+                                metadata={"slot": slot, "cost_usd": made["cost_usd"]})
+        return {**written, "slot": slot,
+                "generation": {k: made[k] for k in ("flags", "calls", "cost_usd")},
+                "ok": bool(written.get("ok")) and not made["flags"]}
     except Exception as exc:
         return _fail(exc)
 
@@ -9165,7 +9394,7 @@ def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = Non
     flags it if the part is later regenerated.
     Full notes: docs/tools.md#cutout_equip
     """
-    from bgate_core.three_d import cutout as _cutout, cutoutwire as _wire
+    from bgate_core.three_d import cutout as _cutout
     root = _root()
     home = _cutout_dir(root, name)
     doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
@@ -9181,22 +9410,8 @@ def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = Non
         entry["pivot"] = list(pivot)
         entry["pivot_source"] = "authored"
     doc["skin"][slot] = entry
-    doc = _cutout.normalise(doc)
-    sizes = {}
-    try:
-        from PIL import Image
-        for name_, ent in doc["skin"].items():
-            with Image.open(ent["texture"]) as img:
-                sizes[name_] = img.size
-    except Exception:
-        pass
-    _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
-    emitted = _wire.emit(doc, project_dir=root,
-                         scene_path=home / f"{name}.tscn",
-                         sizes=sizes, force=force)
-    if emitted.get("ok"):
-        _log("cutout", f"equipped {name}.{slot} -> {target.name}",
-             ref=emitted["scene_res"])
+    emitted = _cutout_write(root, name, doc, force=force, producer="cutout_equip",
+                            metadata={"slot": slot, "texture": target.name})
     return {**emitted, "slot": slot, "texture": str(target),
             "pivot_source": entry.get("pivot_source", "default")}
 

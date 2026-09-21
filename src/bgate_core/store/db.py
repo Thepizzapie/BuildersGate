@@ -2257,6 +2257,29 @@ _MIGRATIONS: list = [
 
     # 0046 - Chaos completion parks the branch here until Director merge.
     _work_item_add_integrating_status,
+
+    # 0047 - A CONSTRAINT KNOWS WHO STATED IT AND WHAT IT FORBIDS.
+    #
+    # MEASURED, EXIT 67 (2026-09-20): on night one the human said a Metal Slug
+    # run-and-gun needs a 2D rig and that generated frame sheets would not
+    # carry it. The director answered "trust the process", dispatched the cast
+    # on image_sprites, and every art failure of the next twelve hours was a
+    # consequence. The bible had a `constraint` kind; nothing distinguished the
+    # human's ruling from a director's preference, nothing bound it to a seat,
+    # and nothing could refuse the tool the human had ruled out. Three columns:
+    #
+    #   stated_by  '' | human | director | agent - who said so. Only a human
+    #              session may write 'human'; that is the value the gates
+    #              key on.
+    #   binds      comma-separated seats the ruling reaches ('' = every seat).
+    #   forbids    comma-separated MCP tool names a bound seat may not call
+    #              while the ruling stands. The tool wrapper refuses them and
+    #              dispatch refuses a brief that names one.
+    """
+    ALTER TABLE bible_section ADD COLUMN stated_by TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bible_section ADD COLUMN binds TEXT NOT NULL DEFAULT '';
+    ALTER TABLE bible_section ADD COLUMN forbids TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

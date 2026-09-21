@@ -87,6 +87,8 @@ KEYED_KINDS = frozenset({
     "animation",  # pose frames / sheets
     "item",       # inventory and gear art
     "sprite", "sheet", "gear", "prop", "portrait", "icon",
+    "part",       # one cutout-rig part (a forearm, a head) — a lone limb on a
+                  # keyed backdrop, composited at a bone. See three_d/cutoutkit.
     "vfx",        # an effect key frame — composites over the game, so alpha or
                   # nothing. See bgate_core.art.vfx for what happens to it next.
 }) | TEXT_SUBJECT_KINDS
