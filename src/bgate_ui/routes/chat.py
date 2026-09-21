@@ -274,19 +274,3 @@ def session_stop(session_id: int, request: Request,
     return api.ok(out)
 
 
-@router.post("/api/chat/item/{item_id:int}")
-def item_status(item_id: int, payload: dict) -> dict:
-    """Promote or dismiss one captured remark.
-
-    Promoting does NOT file work — it marks the item as one the dev wants
-    carried into the digest with weight. The same disposition playtest feedback
-    has, meaning the same thing: 'new' is a candidate nobody has judged.
-    """
-    body = payload if isinstance(payload, dict) else {}
-    try:
-        return api.ok(_fb.set_item_status(root(), item_id,
-                                          str(body.get("status") or "")))
-    except _fb.Missing as exc:
-        raise api.not_found(str(exc), item_id=item_id)
-    except ValueError as exc:
-        raise api.bad_request(str(exc), item_id=item_id)

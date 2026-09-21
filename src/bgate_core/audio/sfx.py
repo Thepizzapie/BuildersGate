@@ -48,7 +48,7 @@ import wave
 from pathlib import Path
 from typing import Optional
 
-from ..store.project import game_dir
+from ..store.project import game_dir, res_path as _res_path
 
 RECIPE_VERSION = 1
 GENERATOR = "bgate.sfx/1"
@@ -681,12 +681,3 @@ def _relative(root: str | os.PathLike[str], path: str) -> str:
         return str(path)
 
 
-def _res_path(root: str | os.PathLike[str], path: str) -> str:
-    base = game_dir(root)
-    if base is None:
-        return ""
-    try:
-        return "res://" + Path(path).resolve().relative_to(
-            Path(base).resolve()).as_posix()
-    except ValueError:
-        return ""

@@ -437,27 +437,6 @@ def hook_overrides() -> list[str]:
 HOOK_MATCHER = "^(Bash|PowerShell|apply_patch|Write|Edit|MultiEdit|Read|Glob|Grep)$"
 
 
-def _codex_director_args(exe: str, *, model: Optional[str], cwd: str,
-                         resume: str = "") -> list[str]:
-    """A full Codex director turn, new or resumed.
-
-    ``codex exec`` is intentionally one process per turn. Its native resume
-    command preserves the conversation while avoiding a fake long-lived stdin
-    channel (Codex closes stdin after one prompt). Both shapes keep the same
-    workspace sandbox and Builders Gate MCP overlay as dispatched Codex work.
-    """
-    if not resume:
-        return _codex_args(
-            exe, permission_mode="acceptEdits", model=model, cwd=cwd,
-            native_images=True, auto_approve=False) + ["-"]
-    args = [exe, "exec", "resume", "--json"]
-    args += mcp_overrides()
-    args += ["--enable", "image_generation"]
-    if model:
-        args += ["--model", model]
-    return args + [resume, "-"]
-
-
 def _codex_app_server_args(exe: str) -> list[str]:
     """Codex director transport with interactive approvals over stdio."""
     args = [exe, "app-server", "--stdio"]

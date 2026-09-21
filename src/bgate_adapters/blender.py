@@ -1657,10 +1657,7 @@ def _has_transparency(path: Path) -> Optional[bool]:
     the channel count marks every fully-opaque PNG as cut-out, which costs a
     render pass in the engine for nothing.
     """
-    try:
-        from PIL import Image
-    except ImportError:
-        return None
+    from PIL import Image
     try:
         with Image.open(path) as im:
             if im.mode not in ("RGBA", "LA", "PA") and "transparency" not in im.info:
@@ -2079,10 +2076,7 @@ def _exposure_report(path: Path) -> dict:
     they always did. See BLOWN_FRACTION for why the difference decides the
     verdict rather than shading it.
     """
-    try:
-        from PIL import Image
-    except ImportError:
-        return {"checked": False}
+    from PIL import Image
     try:
         with Image.open(path) as im:
             pixels = list(im.convert("RGBA").getdata())
@@ -6381,10 +6375,7 @@ def collision_verdict(report: dict, *, max_pct: float = COLLISION_MAX_PCT) -> di
 def _proof_sheets(report: dict, out: Path, stem: str) -> list:
     """One PNG per clip: the side row over the three-quarter row. THE PICTURE
     IS THE ACCEPTANCE, a number cannot say whether a walk reads as a walk."""
-    try:
-        from PIL import Image
-    except ImportError:
-        return []
+    from PIL import Image
     sheets = []
     by_clip: dict = {}
     for r in report.get("renders") or []:
