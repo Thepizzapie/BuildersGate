@@ -833,7 +833,13 @@ def play_verify(project_dir: str, pck: str, *, seconds: float = 5.0,
     timed_out = False
     try:
         try:
-            proc = _godot._spawn(cmd, timeout=wait_for, cwd=str(pck_path.parent))
+            # subprocess.run on purpose, not the watched _spawn: a timeout
+            # here is the GOOD outcome (the game kept running), and run()
+            # kills the child and hands back its output on TimeoutExpired,
+            # which is the contract the except below reads.
+            proc = _godot.subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=wait_for, cwd=str(pck_path.parent))
             out, err, exit_code = proc.stdout or "", proc.stderr or "", proc.returncode
         except subprocess.TimeoutExpired as exc:
             # THE GOOD OUTCOME: the game was still running when the clock ran
@@ -873,7 +879,16 @@ def record_export_verify(root: str | os.PathLike[str], result: dict) -> dict:
     except ImportError:
         _exportgate = None
     if _exportgate is not None and hasattr(_exportgate, "record"):
-        return _exportgate.record(root, result)
+        diffs = result.get("diffs")
+        try:
+            _exportgate.record(
+                root, godot_project=str(result.get("godot_project") or root),
+                scene=str(result.get("scene") or ""),
+                pck=str(result.get("pck") or ""), ok=bool(result.get("ok")),
+                diffs=len(diffs) if isinstance(diffs, list) else 0,
+                by=str(result.get("by") or ""))
+        except Exception:
+            pass   # the flat file below is still written
 
     from datetime import datetime, timezone
 
