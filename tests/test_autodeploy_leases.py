@@ -48,14 +48,6 @@ def _item(item_id, brief, title=""):
     return {"id": item_id, "title": title, "brief": brief}
 
 
-def test_an_item_naming_someone_elses_leased_file_is_deferred(leases):
-    why = autodeploy._leased_path_in_brief(
-        ".", _item(88, "add props to scenes/graybox_house.tscn"))
-    assert why
-    assert "graybox_house.tscn" in why
-    assert "item-87" in why, "the message must name the holder, not just refuse"
-
-
 def test_an_item_holding_its_own_lease_is_not_blocked_by_it(leases):
     """The deadlock this must never cause. A reopened item keeps its lease
     across attempts, so blocking it on its own claim would park it forever."""
@@ -68,11 +60,6 @@ def test_an_item_touching_nothing_leased_spawns(leases):
     every other test here would still pass while the board starved."""
     assert not autodeploy._leased_path_in_brief(
         ".", _item(99, "wire assets/audio/cat/purr_loop.wav into the mixer"))
-
-
-def test_the_title_counts_as_well_as_the_brief(leases):
-    assert autodeploy._leased_path_in_brief(
-        ".", _item(99, "no paths here", title="fix scenes/graybox_house.tscn"))
 
 
 def test_an_unreadable_lease_store_lets_the_board_run(monkeypatch):

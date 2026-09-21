@@ -45,6 +45,12 @@ def calls(monkeypatch, routable_gateway):
         img = Image.new("RGBA", (240, 360), (0, 0, 0, 0))
         ImageDraw.Draw(img).rectangle((80, 40, 160, 330),
                                       fill=(200, 60, 40, 255))
+        # Each frame differs a little: the frame gate (framegate.near_duplicate)
+        # fails a cycle whose adjacent frames are byte-identical, which is the
+        # sniper death_1/death_2 failure it exists for, not a fake to satisfy.
+        n = len(seen)
+        ImageDraw.Draw(img).rectangle((60 + 4 * n, 300, 100 + 6 * n, 340),
+                                      fill=(200, 60, 40, 255))
         from pathlib import Path
 
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)

@@ -82,6 +82,9 @@ def last(root: str | os.PathLike[str], godot_project: str) -> Optional[dict]:
     return got if isinstance(got, dict) else None
 
 
+STALE_GRACE_S = 2.0
+
+
 def _newest_source_mtime(godot_project: str) -> tuple[float, str]:
     """The newest mtime among this project's .gd/.tscn, and which file it was.
 
@@ -145,7 +148,11 @@ def unmet(root: str | os.PathLike[str], godot_project: str) -> list[dict]:
             verified_at = 0.0
 
     rows: list[dict] = []
-    if newest > verified_at:
+    # A source written in the same breath as the verify is not a later edit.
+    # Filesystem mtimes and time.time() are not the same clock on every
+    # runner (CI showed a fresh touch landing "after" the record that
+    # followed it); two seconds is below anything a human does in order.
+    if newest > verified_at + STALE_GRACE_S:
         rows.append(_findings.make(
             gate="export", key=f"export:{godot_project}:stale",
             kind=_findings.BLOCKING,

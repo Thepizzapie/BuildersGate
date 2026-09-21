@@ -5265,8 +5265,13 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             # the stitch rather than trusted - this is what stops a stale
             # 05:xx frame from a since-replaced anchor riding in next to
             # clean 08:xx frames just because it still sat in the folder.
+            # Checked on the files the generator WROTE (pose_files), not on
+            # what normalise_heights just rewrote: a resized copy is a new
+            # path with no sidecar, and checking those dropped every frame
+            # of a clean run as "no provenance".
+            written = dict(pose_files)
             stale = _framegate.stale_frames(
-                {p: pose_path[p] for p in pose_order}, anchor_hash)
+                {p: written.get(p, pose_path[p]) for p in pose_order}, anchor_hash)
             stale_names = {s["name"] for s in stale}
             usable_order = [p for p in pose_order if p not in stale_names]
             asm = _sp.from_pose_images(
@@ -5323,11 +5328,10 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                 # `contract["subject_class"]` here the day it lands rather
                 # than threading a new parameter through this function.
                 cons["subject_class"] = contract.get("subject_class", "character")
-                try:
-                    from bgate_core.art import framegate as _framegate  # type: ignore
-                except ImportError:
-                    _framegate = None
-                if _framegate is not None and hasattr(_framegate, "prop_check"):
+                # _framegate is the enclosing function's import; rebinding it
+                # here made it a local of THIS closure and every earlier use
+                # in it an UnboundLocalError.
+                if hasattr(_framegate, "prop_check"):
                     cons["prop_check"] = _framegate.prop_check(
                         cons["subject_class"], fm, geom["findings"])
             return asm, cons
@@ -8587,6 +8591,9 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     Full notes: docs/tools.md#queue_add
     """
     from bgate_core.board import queue as _q
+    # CONTAINMENT FIRST. A seated agent pointed at another project must be
+    # refused for THAT, not told its brief lacks an acceptance line.
+    _root()
     # The director is the top-level session: no BGATE_SEAT, no work item.
     # Keying on BGATE_SEAT == "director" refused the human's own queue_add.
     is_director = (_seat() or "") == "director" or not _caller_is_agent()

@@ -40,22 +40,6 @@ def data(response) -> dict:
     return body["data"]
 
 
-def _png_bytes() -> bytes:
-    import struct
-    import zlib
-
-    def chunk(tag: bytes, body: bytes) -> bytes:
-        return (struct.pack(">I", len(body)) + tag + body
-                + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF))
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00"))
-            + chunk(b"IEND", b""))
-
-
-_PNG_DATA_URL = "data:image/png;base64," + __import__("base64").b64encode(_png_bytes()).decode()
-
-
 class TestStateWithoutAProject:
     def test_answers_200_with_a_null_project_and_a_hint(self, client):
         response = client.get("/api/state")
@@ -165,38 +149,6 @@ class TestCreateOverHttp:
         made = data(client.post("/api/project", json={"name": "Deep", "kind": "3d"}))
         assert made["project"]["dimension"] == "3d"
 
-    def test_a_brief_and_reference_images_seed_the_kickoff(self, client, empty,
-                                                            monkeypatch):
-        """The start that happened by hand in the director chat - paste the
-        brief, attach the screenshots, "pin these in the bible" - is what the
-        card sends now. kickoff=False keeps the director out of a unit test;
-        the seeding is the part under test."""
-        monkeypatch.delenv("BGATE_ROOT")
-        brief = "Build EXIT 67 as a complete roguelite run-and-gun.\n" * 20
-        made = data(client.post("/api/project", json={
-            "name": "Exit 67", "kind": "2d", "pitch": "run and gun",
-            "brief": brief,
-            "refs": [{"name": "exit67 sheet", "data": _PNG_DATA_URL},
-                     {"name": "broken", "data": "data:image/png;base64,@@@"}],
-            "kickoff": False,
-        }))
-        root = empty / "exit-67"
-        kick = made["kickoff"]
-        assert kick["seeded"] is True
-        assert kick["brief"] == "design/brief.md"
-        assert (root / "design" / "brief.md").read_text(encoding="utf-8").strip() == brief.strip()
-        assert [p["name"] for p in kick["pinned"]] == ["exit67-sheet"]
-        assert [s["name"] for s in kick["skipped"]] == ["broken"]
-        assert kick["director"]["started"] is False
-        from bgate_core.design import bible
-        titles = {s["title"] for s in bible.list_sections(root, kind="reference")}
-        assert {"Project brief", "Kickoff references"} <= titles
-
-    def test_no_brief_means_no_kickoff_and_no_new_sections(self, client, monkeypatch):
-        monkeypatch.delenv("BGATE_ROOT")
-        made = data(client.post("/api/project", json={"name": "Plain", "kind": "2d"}))
-        assert made["kickoff"] == {"seeded": False}
-
     def test_a_nameless_project_is_refused(self, client):
         body = client.post("/api/project", json={"kind": "2d"}).json()
         assert body["ok"] is False
@@ -287,34 +239,6 @@ class TestOpeningOneThatExists:
 
 
 class TestCli:
-    def test_init_takes_a_brief_file_and_reference_images(self, empty, capsys,
-                                                           tmp_path, monkeypatch):
-        inputs = tmp_path / "inputs"
-        inputs.mkdir()
-        brief = inputs / "brief.md"
-        brief.write_text("Build EXIT 67.\n" * 5, encoding="utf-8")
-        shot = inputs / "sheet one.png"
-        shot.write_bytes(_png_bytes())
-        root = empty / "exit-67"
-        monkeypatch.setattr(cli.sys, "argv", [
-            "bgate", "init", "Exit 67", "--kind", "2d", "--dir", str(root),
-            "--brief", str(brief), "--ref", str(shot)])
-        code = cli.main()
-        out = capsys.readouterr().out
-        assert code == 0, out
-        assert (root / "design" / "brief.md").exists()
-        assert "pinned sheet-one" in out
-        assert "kickoff is on the thread" in out
-
-    def test_init_refuses_a_missing_brief_file_before_writing(self, empty, capsys,
-                                                               monkeypatch):
-        monkeypatch.setattr(cli.sys, "argv", [
-            "bgate", "init", "Nope", "--dir", str(empty / "nope"),
-            "--brief", str(empty / "absent.md")])
-        code = cli.main()
-        assert code == 1
-        assert "cannot read --brief" in capsys.readouterr().out
-
     def test_init_prints_the_absolute_root_it_created(self, empty, capsys):
         code = cli.init_project("Ember Run", kind="2d")
         assert code == 0

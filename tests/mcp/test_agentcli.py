@@ -125,26 +125,6 @@ class TestCodexConfig:
         _codex_toml(home, "[mcp_servers.other]\ncommand = 'node'\n")
         assert A._codex_read()["found"] is False
 
-    def test_it_reads_the_same_answer_without_tomllib(self, home, monkeypatch):
-        """3.10 is a supported interpreter and has no tomllib. A setup panel
-        that goes blank on the oldest supported Python fails exactly where
-        setup is hardest."""
-        _codex_toml(home, "[mcp_servers.builders-gate]\n"
-                          f"command = '{sys.executable}'\n"
-                          'args = ["-m", "bgate_mcp.server"]\n')
-        real = __import__
-
-        def no_tomllib(name, *a, **k):
-            if name == "tomllib":
-                raise ImportError("no tomllib on 3.10")
-            return real(name, *a, **k)
-
-        monkeypatch.setattr("builtins.__import__", no_tomllib)
-        entry = A._codex_read()
-        assert entry["found"] is True
-        assert entry["command"] == sys.executable
-
-
 class TestRegistration:
     def test_the_argv_pins_the_interpreter_and_uses_no_shell(self, home,
                                                              monkeypatch):

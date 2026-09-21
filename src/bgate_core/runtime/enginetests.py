@@ -466,8 +466,15 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
                             "error": f"unreadable: {exc}"})
             failed += 1
             continue
+        # The two new knobs travel only when set: every fake run_script in
+        # the test suite, and any adapter shim, takes the old three arguments.
+        extra = {}
+        if time_scale and float(time_scale) != 1.0:
+            extra["time_scale"] = time_scale
+        if force:
+            extra["force"] = force
         got = _godot.run_script(source, project_dir=str(base), timeout=timeout,
-                                time_scale=time_scale, force=force)
+                                **extra)
         # A REFUSAL IS NOT A RESULT. The runner declined to spawn the engine at
         # all, so this script has no assertions and no engine behaviour to
         # report. Scoring it 0 passed / 0 failed WAS THE BUG: the autoload gate
