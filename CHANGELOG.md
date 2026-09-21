@@ -108,6 +108,21 @@ repository at first publication. There is no earlier release history to record.
   every frame, and an `aim` clip braces both hands on it - the pose the
   frame pipeline could not hold. (`bgate_core.three_d.cutoutkit`)
 
+### Removed
+- **The spend ledger and every budget ceiling**
+
+### Added
+- **The director console runs on Codex as well as Claude Code**
+- **An opt-in, credential-free Claude usage bridge**
+- **Audio Lab separates a clip into stems locally**
+- **`art.mesh_route` settles how the art seat makes NEW geometry**
+- **`track_generate` builds a measured, drivable circuit from a JSON spec**
+- **`ui_concept` paints the game's screens and derives a palette and a Godot Theme**
+- **`sfx_prompt` generates real SFX through kie sounds**
+- **`godot_export_probe` runs a script against the EXPORTED pck**
+- **`bgate connect`, wiring your coding agent is a command, not a paragraph to retype**
+- …and 1 more, in the decisions file.
+
 ### Changed
 - **2D space and sheets, from one night's failures.** The benchmark game
   shipped complete with its towns graybox, its party four sizes of person
