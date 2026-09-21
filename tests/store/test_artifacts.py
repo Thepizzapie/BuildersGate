@@ -75,9 +75,12 @@ def test_sweep_stale_moves_orphaned_sibling_not_the_live_file(root):
     sheet.write_bytes(b"run-one-sheet")
     artifacts.register(root, "flyer", sheet, producer="image_sprites")
 
-    # A discarded run's leftover pose frame sits right next to it, never
-    # registered, from a run that never finished.
-    orphan = out / "pose_0.png"
+    # A discarded run's leftover copy of the SAME name sits in another
+    # folder, never registered. Only an exact stem match is swept: a sibling
+    # pose_*.png is another run's work in progress (image_sprites registers
+    # each pose as it lands), and sweeping those emptied a live run once.
+    orphan = out / "old" / "flyer.png"
+    orphan.parent.mkdir()
     orphan.write_bytes(b"discarded-pose-frame")
 
     # A second, real revision of the same sheet — the run that actually shipped.
@@ -89,7 +92,7 @@ def test_sweep_stale_moves_orphaned_sibling_not_the_live_file(root):
     assert not orphan.exists()
 
     stale_dir = root / ".bgate_out" / ".stale" / "flyer"
-    moved = list(stale_dir.rglob("pose_0.png"))
+    moved = list(stale_dir.rglob("flyer.png"))
     assert len(moved) == 1
     assert moved[0].read_bytes() == b"discarded-pose-frame"
     assert artifacts.get(root, second["id"])["hash"] != ""

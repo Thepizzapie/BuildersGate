@@ -193,6 +193,8 @@ CRAFTS: dict[str, tuple[str, ...]] = {
               # The fit and the family: one standing height per character,
               # on every sheet, before anything is handed over.
               "sprite_fit", "sprite_family_check",
+              # The landing comparison against the pinned concept sheet.
+              "concept_compare",
               # The local generator board: 2D and 3D on this machine.
               "local_status",
               # Scale and room composition are the art seat's own checks
@@ -357,6 +359,11 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "queue_add_chain", "queue_add_dependency", "queue_claim_next",
         "queue_complete", "queue_cut_dependency", "queue_get",
         "queue_list", "queue_next", "queue_reopen", "queue_update",
+        # Parking, cancelling, what is current, the one slice in focus and
+        # clearing a human-rejection stop: board plumbing every seat may be
+        # told about, the director's to call.
+        "queue_park", "queue_unpark", "queue_cancel", "project_current",
+        "board_focus_set", "rejections_clear",
         "recall", "ref_list", "ref_pin", "ref_unpin",
         "seat_brief", "seat_can_write", "seat_configure", "seat_list",
         "seat_notes", "seat_post_note",

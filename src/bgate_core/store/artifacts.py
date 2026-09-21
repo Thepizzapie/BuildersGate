@@ -960,14 +960,17 @@ def sweep_stale(root: str | os.PathLike[str], logical_name: str) -> list[dict]:
             fpath = current / fname
             if fpath.resolve() == live_abs:
                 continue
+            # Sidecars describe the file beside them and go with IT, never
+            # on their own; and only an EXACT stem match is swept. MEASURED:
+            # the first cut also swept `pose_*` siblings in the live folder,
+            # and image_sprites registers each pose the moment it lands - so
+            # registering pose 1 swept pose 0 and every provenance sidecar
+            # of the run in progress, and the sheet assembled with "no poses".
+            if fname.endswith(".provenance.json") or fname.endswith(".json"):
+                continue
             stem = fpath.stem
-            if stem == logical_name:
-                candidates.append(fpath)
-            elif current == live_folder and (
-                stem == f"{logical_name}_sheet"
-                or stem.startswith(f"{logical_name}_")
-                or stem.startswith("pose_")
-            ):
+            if stem == logical_name or (
+                    current == live_folder and stem == f"{logical_name}_sheet"):
                 candidates.append(fpath)
 
     if not candidates:

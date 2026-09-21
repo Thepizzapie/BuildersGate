@@ -336,10 +336,12 @@ class TestTempDirCleanup:
         before = _scratch("bgate_godot_")
         monkeypatch.setattr(godot, "find_godot", lambda *a, **k: "godot.exe")
 
-        def spy(cmd, **kwargs):
+        def spy(cmd, *a, **kwargs):
             raise subprocess.TimeoutExpired(cmd, 1)
 
-        monkeypatch.setattr(godot.subprocess, "run", spy)
+        # run_script goes through the watched _spawn now (item 19), not a
+        # bare subprocess.run; the seam a test fakes moved with it.
+        monkeypatch.setattr(godot, "_spawn", spy)
         got = godot.run_script("extends SceneTree", timeout=1)
         assert got["ok"] is False
         assert _scratch("bgate_godot_") == before
@@ -348,8 +350,8 @@ class TestTempDirCleanup:
         before = _scratch("bgate_godot_")
         monkeypatch.setattr(godot, "find_godot", lambda *a, **k: "godot.exe")
         monkeypatch.setattr(
-            godot.subprocess, "run",
-            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "done", ""))
+            godot, "_spawn",
+            lambda cmd, *a, **kw: subprocess.CompletedProcess(cmd, 0, "done", ""))
         assert godot.run_script("extends SceneTree", timeout=1)["ok"] is True
         assert _scratch("bgate_godot_") == before
 

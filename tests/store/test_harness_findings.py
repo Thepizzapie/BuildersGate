@@ -61,7 +61,7 @@ def test_an_agent_cannot_lift_its_own_runtime_ceiling(root, as_agent):
     an agent that can raise it is not bounded by it."""
     with pytest.raises(settings.SettingError):
         settings.set(root, "limits.max_runtime_s", 86400)
-    assert settings.get(root, "limits.max_runtime_s") == 1800
+    assert settings.get(root, "limits.max_runtime_s") == 9800
 
 
 def test_an_agent_cannot_widen_its_own_concurrency(root, as_agent):

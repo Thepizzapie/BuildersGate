@@ -70,8 +70,11 @@ def _kinds(actions) -> list:
 
 class TestBranchTable:
     def test_the_agent_gate_opens_a_qa_round(self, root):
+        # A tech item: an ART result with no per-frame verdict is REOPENED by
+        # the gate (EXIT 67 item 9b), which is the other branch.
         got = followup.decide([_ev(1, "item.done", 41)], _settings(gate_mode="agent"),
-                              _board([_item(41)]))
+                              _board([_item(41, seat="tech", title="a script",
+                                            result="wired it")]))
         assert "qa_spawn" in _kinds(got)
 
     def test_no_gate_spawns_nothing(self, root):
