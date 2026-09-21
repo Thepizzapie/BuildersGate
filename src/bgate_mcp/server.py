@@ -8499,7 +8499,7 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     from bgate_core.board import queue as _q
     # The director is the top-level session: no BGATE_SEAT, no work item.
     # Keying on BGATE_SEAT == "director" refused the human's own queue_add.
-    is_director = not _caller_is_agent()
+    is_director = (_seat() or "") == "director" or not _caller_is_agent()
     breadth = _q.brief_breadth(brief)
     if breadth["score"] >= 2 and not is_director:
         return {"ok": False, "refused": "too_broad",
