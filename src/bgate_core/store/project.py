@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -145,15 +146,50 @@ def set_active(root: str | os.PathLike[str]) -> Path:
     return resolved
 
 
+def _is_temp_path(path: str | os.PathLike[str]) -> bool:
+    """Is this root sitting inside the OS temp directory (or a throwaway
+    ``kick_*`` scaffold dir)?
+
+    MEASURED (EXIT 67, item 33): `bgate init` ran inside a Temp ``kick_*``
+    directory, and its registration + active pointer beat the real project's
+    — every tool answered about the wrong root until a human deleted the
+    entry and re-registered by hand. A temp-dir root is real work exactly as
+    often as it is scratch spun up for one command; it must never be the
+    thing `active_root`/`require_root` prefer when a non-temp project is
+    known.
+    """
+    try:
+        resolved = os.path.normcase(os.path.normpath(str(Path(path).resolve())))
+    except OSError:
+        resolved = os.path.normcase(os.path.normpath(str(path)))
+    tmp = os.path.normcase(os.path.normpath(str(Path(tempfile.gettempdir()).resolve())))
+    if resolved.startswith(tmp):
+        return True
+    return Path(path).name.lower().startswith("kick_")
+
+
 def active_root() -> Optional[Path]:
     """The remembered project, or None. Never raises, a corrupt or stale
-    pointer degrades to 'no preference', which is the pre-existing behaviour."""
+    pointer degrades to 'no preference', which is the pre-existing behaviour.
+
+    A remembered path under a temp directory is skipped in favour of any
+    known REAL project — see :func:`_is_temp_path`. It is returned anyway if
+    it is the only project known at all: a temp-dir project still beats no
+    project.
+    """
     try:
         data = json.loads(_active_path().read_text(encoding="utf-8"))
         root = Path(data["root"])
     except Exception:
         return None
-    return root if (root / db.DB_DIRNAME / db.DB_FILENAME).exists() else None
+    if not (root / db.DB_DIRNAME / db.DB_FILENAME).exists():
+        return None
+    if _is_temp_path(root):
+        for _name, other in known_projects().items():
+            other_path = Path(other)
+            if other_path != root and not _is_temp_path(other_path):
+                return other_path
+    return root
 
 
 def clear_active() -> bool:
@@ -230,6 +266,23 @@ def known_projects() -> dict[str, str]:
         seen.add(key)
         out[name] = root
     return out
+
+
+def missing_registered() -> dict[str, str]:
+    """{name: root} for registry rows whose folder is gone, unreadable, or not
+    a project any more — the ones ``known_projects()`` silently drops.
+
+    ITEM 33: a stale registration used to fail invisibly, at whatever tool
+    call happened to hit it next. ``project_select``/``project_status`` read
+    this so a missing path is something a human is TOLD about rather than
+    something they discover by a LookupError three tools later.
+    """
+    try:
+        raw = _read_registry_raw()
+    except Exception:
+        return {}
+    return {name: root for name, root in raw.items()
+            if not (Path(root) / db.DB_DIRNAME / db.DB_FILENAME).exists()}
 
 
 def init(root: str | os.PathLike[str], name: str, pitch: str = "",
