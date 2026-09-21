@@ -5501,6 +5501,13 @@ cars where every editor screenshot showed six liveries). ok is false on any
 difference; each diff names the node, the field and both values. Make the
 pck with `godot --headless --path <project> --export-pack <preset> out.pck`
 and run this after every export whose evidence came from an editor run.
+
+Then it actually PLAYS the export: boots the pck headless for play_seconds
+(or runs drive_script against it, extends SceneTree, calls quit()), counts
+SCRIPT ERROR lines, and records {at, commit, ok, errors, pck} to
+.bgate/export_verify.json so a release gate can read it later. A clean diff
+proves the SHAPE shipped, not that the boot scene runs - this closes that
+gap. play_seconds=0 skips the play step.
 ```
 
 ## godot_export_probe

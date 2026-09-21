@@ -3556,6 +3556,30 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
     src = root / rel
     if not src.exists():
         return {"ok": False, "error": f"no image at {rel}"}
+
+    # STAMP THE CONFORM (EXIT 67 postmortem item 9). This is the tool that
+    # takes a GENERATED item icon into a character's equip slot, which makes
+    # it the last chance to catch a held weapon that drifted off the bible's
+    # pinned palette before it rides into every combat frame. `gear.
+    # stamp_generated` was speced for exactly this and never landed in this
+    # tree; conform_to_palette is its stand-in (see gear.py) and this call
+    # site does not change shape the day stamp_generated does either.
+    conform: dict = {"ok": True, "applied": False, "reason": "no pinned palette"}
+    try:
+        pinned_palette = _artdirection.palette_pinned(str(root))
+    except Exception:
+        pinned_palette = None
+    if pinned_palette:
+        from bgate_core.art import gear as _gear
+
+        stamp_fn = getattr(_gear, "stamp_generated", None) or _gear.conform_to_palette
+        try:
+            conform = stamp_fn(src, pinned_palette, stroke_width=1)
+            conform["applied"] = True
+        except Exception as exc:                                  # noqa: BLE001
+            conform = {"ok": False, "applied": False,
+                      "error": f"{type(exc).__name__}: {exc}"}
+
     from PIL import Image as _Img
     with _Img.open(src) as im:
         size = tuple(frame_size) if frame_size else im.size
@@ -3573,7 +3597,7 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
     tres_rel.write_text(tres, encoding="utf-8")
     return {"ok": True, "tres": _assets.normalize_path(root, tres_rel),
             "sheet": _assets.normalize_path(root, out_dir / sheet_name),
-            "animation": "default", "res_dir": res_dir}
+            "animation": "default", "res_dir": res_dir, "conform": conform}
 
 
 @_tool
@@ -5264,8 +5288,9 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             cons = {"ok": False}
             if asm.get("ok"):
                 # The contract's standing height, on the assembled sheet.
+                contract = _contract_or_empty(name)
                 asm["fit"] = _fit_to_contract(asm["sheet"], (frame_width, frame_height),
-                                              _contract_or_empty(name))
+                                              contract)
                 fm = asm.get("frames", {})
                 cons = _vision_consistency(ref_path, [(p, fp) for p, fp in fm.items()])
                 # THE GEOMETRY RUNS EVEN WHEN THE JUDGE CANNOT. The vision
@@ -5289,6 +5314,22 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                             for fr in f["frames"]}
                 cons["flagged"] = sorted(
                     set(cons.get("flagged") or []) | geo_flag)
+                # EXIT 67 postmortem item 6 leftover: the contract now knows
+                # whether this is a character, a prop or a vehicle
+                # (spritecontract.SUBJECT_CLASSES) - framegate's prop check
+                # reads exactly this field to skip facing/mirror rules that
+                # only make sense for a character. framegate does not exist
+                # in this tree; this is the documented seam, read
+                # `contract["subject_class"]` here the day it lands rather
+                # than threading a new parameter through this function.
+                cons["subject_class"] = contract.get("subject_class", "character")
+                try:
+                    from bgate_core.art import framegate as _framegate  # type: ignore
+                except ImportError:
+                    _framegate = None
+                if _framegate is not None and hasattr(_framegate, "prop_check"):
+                    cons["prop_check"] = _framegate.prop_check(
+                        cons["subject_class"], fm, geom["findings"])
             return asm, cons
 
         assembled, consistency = _assemble_and_gate()
@@ -6014,18 +6055,47 @@ def godot_scene_audit(godot_project: Annotated[str, Field(description='Directory
 def godot_export_verify(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
                         pck: Annotated[str, Field(description='The exported .pck (or .zip); absolute or relative to the project. `godot --headless --path <project> --export-pack <preset> <out.pck>` makes one.')],
                         scene: Annotated[str, Field(description='res:// scene to compare. EMPTY compares the boot scene.')] = "",
-                        timeout: int = 180) -> dict:
+                        timeout: int = 180,
+                        play_seconds: Annotated[float, Field(description='How long to actually run the exported pck headless after the diff, watching for SCRIPT ERROR lines. 0 skips the play step (diff only).')] = 5.0,
+                        drive_script: Annotated[str, Field(description='GDScript source OR a path to a .gd file, extends SceneTree, that drives the pck and calls quit(). Omit to just watch the boot scene run for play_seconds.')] = "") -> dict:
     """Load one scene from the PROJECT and from the PCK and diff what the
     engine built: node set, types, visibility, transforms, mesh and bounds,
     materials per surface (albedo, texture, shader), collider class and size,
     bone and animation counts, and every exported script variable - the
     per-instance overrides a pck has been seen to drop. `ok` is false on any
-    difference; each diff names the node, the field, and both values. Run it
+    difference; each diff names the node, the field, and both values.
+
+    Then it actually PLAYS the export: boots the pck headless for
+    `play_seconds` (or runs `drive_script` against it), counts SCRIPT ERROR
+    lines in what it printed, and records the outcome to
+    `.bgate/export_verify.json` (or `bgate_core.qa.exportgate` when this
+    project has one) so a release gate can read it later instead of trusting
+    that someone ran this by hand. A clean diff with a crashing boot scene is
+    the exact gap this closes - the diff proves the SHAPE shipped, not that
+    it runs. `ok` is false if either the diff or the play step failed. Run it
     after every export whose evidence came from an editor run.
     """
     from bgate_adapters import godot_audit as _audit
     _contained_path(godot_project, "godot_project")
     result = _audit.export_verify(godot_project, pck, scene or None, timeout=timeout)
+    if play_seconds and play_seconds > 0:
+        drive_source = None
+        if drive_script:
+            source, from_path = _script_source(drive_script, godot_project)
+            if from_path and source is None:
+                result["play"] = {"ok": False,
+                                  "error": f"{drive_script} looks like a path and is not readable"}
+                result["ok"] = False
+                _audit.record_export_verify(godot_project, result)
+                return result
+            drive_source = source if source is not None else drive_script
+        play = _audit.play_verify(godot_project, pck, seconds=float(play_seconds),
+                                  drive_script=drive_source,
+                                  timeout=timeout)
+        result["play"] = play
+        result["ok"] = bool(result.get("ok")) and bool(play.get("ok"))
+    _audit.record_export_verify(godot_project, result)
+
     # RECORD IT. This is the fact greenlight's release stage and the playtest
     # gate now read (bgate_core.qa.exportgate) - a verify that ran once and
     # was never checked again proves nothing about the build three commits

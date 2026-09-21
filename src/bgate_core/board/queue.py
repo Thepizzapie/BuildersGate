@@ -18,9 +18,75 @@ import os
 import re
 from typing import Optional
 
+from typing import Callable
+
 from . import activity, iterations, seats as _seats
 from ..store import db
 from ..store.util import rows
+
+# EXIT 67 postmortem item 9b leftover: a human rejection in builders mode
+# needs to land on the TOOL that produced the rejected item's artifacts, not
+# only on the item. ``bgate_core.board.rejections`` is where that accounting
+# is meant to live (it would look up each artifact revision's producer for
+# this item and record a rejection count per tool/seat); this tree does not
+# have it yet. Rather than fork that module's job in here, ``reject()`` calls
+# a SEAM instead: every callback registered with :func:`add_rejection_hook`
+# runs with (root, item, reason) once an item is rejected. A future
+# ``rejections.record`` wires in by registering itself here — nothing about
+# this call site changes on that day.
+_REJECTION_HOOKS: list[Callable[[str, dict, str, str], None]] = []
+
+
+def add_rejection_hook(fn: Callable[[str, dict, str, str], None]) -> None:
+    """Register a callback run on every human rejection: ``fn(root, item, reason, by)``.
+
+    Never raises on the caller's behalf — a broken hook must not stop the
+    rejection it is trying to observe. See :func:`_record_human_rejections`.
+    """
+    _REJECTION_HOOKS.append(fn)
+
+
+def _wire_rejections_module() -> None:
+    """Auto-register ``bgate_core.board.rejections.record`` the day it exists,
+    so landing that module needs no matching edit here. Absent in this tree —
+    this is a no-op import guard, not a claim that the module is present."""
+    try:
+        from . import rejections as _rejections  # type: ignore
+    except ImportError:
+        return
+    if not hasattr(_rejections, "record"):
+        return
+
+    def _hook(root: str | os.PathLike[str], item: dict, reason: str, by: str) -> None:
+        from ..store import artifacts as _artifacts
+
+        item_id = item.get("id")
+        seat = item.get("seat", "")
+        producers = {
+            rev.get("producer")
+            for rev in _artifacts.list_revisions(root)
+            if rev.get("work_item_id") == item_id and rev.get("producer")
+        }
+        for tool in producers or {""}:
+            _rejections.record(root, tool, seat, item_id, reason, by)
+
+    add_rejection_hook(_hook)
+
+
+_wire_rejections_module()
+
+
+def _record_human_rejections(root: str | os.PathLike[str], item: dict,
+                             reason: str, by: str = "") -> None:
+    """Run every registered rejection hook. One hook's failure never blocks
+    another's, and never blocks the rejection itself."""
+    for fn in list(_REJECTION_HOOKS):
+        try:
+            fn(root, item, reason, by)
+        except Exception as exc:
+            activity.log(root, "queue",
+                         f"rejection hook {getattr(fn, '__name__', fn)!r} failed "
+                         f"for #{item.get('id')}: {type(exc).__name__}: {exc}")
 
 # 'cancelled' is a human calling work off — distinct from 'failed', which is an
 # agent (or the watchdog) reporting it could not finish. Only the second is
@@ -1162,6 +1228,7 @@ def reject(root: str | os.PathLike[str], item_id: int, reason: str,
     _emit(root, "item.rejected", ref=str(item_id),
           payload={**_item_event_payload(sent_back), "by": actor[:120],
                    "reason": reason[:400]})
+    _record_human_rejections(root, sent_back, reason, actor)
     return sent_back
 
 

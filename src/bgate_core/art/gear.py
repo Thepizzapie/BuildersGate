@@ -921,3 +921,84 @@ def format_coverage(report: dict) -> str:
     lines.append(f"## real {s['real']}   :: placeholder {s['placeholder']}   "
                  f"-- missing {s['missing']}")
     return "\n".join(lines)
+
+
+# EXIT 67 postmortem item 9: `stamp_generated` — the tool that would conform a
+# GENERATED weapon icon to the pinned bible palette before it ever reaches
+# item_to_spriteframes — was speced but never landed, and nothing calls it.
+# This tree has no `stamp_generated` to route through, so this is that seam's
+# stand-in: the quantiser itself already exists (spritekit.lock_palette, used
+# by image_sprites for the same reason), so this does not reimplement it — it
+# adds the one thing an ICON needs that a body sheet's palette lock does not:
+# an optional outline, because a held item read against a game floor needs a
+# silhouette line a body sprite (always read against its own shadow) does not.
+def conform_to_palette(icon_path: str | Path, palette: Sequence[Sequence[int]],
+                       *, stroke_width: int = 0,
+                       stroke_color: Optional[Sequence[int]] = None,
+                       out_path: Optional[str | Path] = None) -> dict:
+    """Snap a generated icon onto the pinned palette, then outline it.
+
+    `palette` is RGB triples (bible-pinned or sampled from the character's own
+    sheets — same shape :func:`bgate_core.art.spritekit.lock_palette` and
+    ``image_sprites``' palette_lock already take). Quantisation is delegated
+    there wholesale rather than forked.
+
+    `stroke_width` > 0 dilates the icon's opaque silhouette by that many
+    pixels and fills the ring BEHIND the (already-quantised) icon with
+    `stroke_color` (default: the darkest palette entry) — a cheap, deterministic
+    outline so a held weapon icon still reads against a busy floor tile, which a
+    body sheet locked to its own palette never needed. Never raises: a stroke
+    or a lock that fails leaves the source file untouched and says why.
+    """
+    from bgate_core.art import spritekit as _spritekit
+
+    src = Path(icon_path)
+    dst = Path(out_path or icon_path)
+    if not src.is_file():
+        return {"ok": False, "path": str(src), "error": f"no icon at {src}"}
+
+    lock = _spritekit.lock_palette(src, palette, out_path=dst)
+    result = {"ok": bool(lock.get("ok")), "path": str(dst),
+              "colors": lock.get("colors", 0), "changed": lock.get("changed", 0.0),
+              "palette_note": lock.get("note", ""), "stroke_width": int(stroke_width),
+              "stroked": False}
+    if not lock.get("ok") or stroke_width <= 0:
+        return result
+
+    try:
+        img = Image.open(dst).convert("RGBA")
+        alpha = img.getchannel("A")
+        mask = alpha.point(lambda a: 255 if a > ALPHA_THRESHOLD else 0)
+        from PIL import ImageFilter
+
+        # MaxFilter grows the opaque region by roughly (size-1)/2 px per pass;
+        # odd kernel size, chained so a stroke_width of any size is reachable
+        # with a small, always-odd filter.
+        dilated = mask
+        remaining = max(1, int(stroke_width))
+        while remaining > 0:
+            step = min(remaining, 3)
+            k = step * 2 + 1
+            dilated = dilated.filter(ImageFilter.MaxFilter(k))
+            remaining -= step
+        ring = Image.eval(dilated, lambda a: a)
+        color = tuple(int(c) for c in (stroke_color or _darkest(palette))[:3])
+        outline = Image.new("RGBA", img.size, color + (0,))
+        outline.putalpha(ring)
+        composed = Image.alpha_composite(outline, img)
+        composed.save(dst)
+        result["stroked"] = True
+        result["stroke_color"] = list(color)
+    except OSError as exc:
+        result["stroke_error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+def _darkest(palette: Sequence[Sequence[int]]) -> tuple[int, int, int]:
+    """Fallback stroke colour when none is given: the darkest palette entry,
+    which reads as an outline on flat/cel art far more often than black does
+    (black is frequently already IN the palette as a highlight or a line)."""
+    entries = [tuple(int(c) for c in rgb[:3]) for rgb in palette if len(rgb) >= 3]
+    if not entries:
+        return (0, 0, 0)
+    return min(entries, key=sum)
