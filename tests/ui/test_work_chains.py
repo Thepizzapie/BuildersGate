@@ -276,8 +276,11 @@ class TestQaGateHonoursTheMode:
         calls: list[int] = []
         monkeypatch.setattr(_dispatch, "dispatch",
                             lambda r, i, **k: calls.append(i) or {"ok": True})
-        item = queue.add(root, "art", "a sprite")
-        queue.set_status(root, item["id"], "done", result="drew it")
+        # A tech item: an ART result with no per-frame verdict is reopened by
+        # the gate rather than reviewed (EXIT 67 item 9b), which is a
+        # different path from the one this test measures.
+        item = queue.add(root, "tech", "a script")
+        queue.set_status(root, item["id"], "done", result="wired it")
 
         gates.set_mode(root, gates.NONE)
         qa_gate._scan_once(str(root), "1970-01-01 00:00:00")
