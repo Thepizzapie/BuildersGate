@@ -587,6 +587,44 @@ def stamp_placeholder(sheet: Image.Image, grid: Grid, anchor: Anchor, *,
     sheet.alpha_composite(layer, dest=(ox, oy))
 
 
+def stamp_generated(sheet: Image.Image, grid: Grid, anchor: Anchor,
+                    generated: Image.Image, *,
+                    anchor_palette: Sequence[tuple[int, int, int]] = (),
+                    anchor_stroke: float = 0.0) -> dict:
+    """Composite a GENERATED weapon/gear image at the anchor - ITEM 9.
+
+    MEASURED: a weapon generated separately from the body (its own model
+    call, its own 1px ink line, a warmer palette than the pinned one) gets
+    stamped straight onto a torso that WAS conformed to the pinned palette,
+    and the seam is visible - the weapon's colours and line weight are both
+    a different asset's. Unlike ``stamp_placeholder`` (a drawn hazard bar,
+    no real pixels to conform), this path has real pixels: it runs them
+    through ``framegate.conform_stamp`` first - nearest-colour snap to the
+    anchor palette, plus a reported (never silently "fixed") ink-weight flag
+    a palette conform cannot correct - THEN composites, same clip-at-cell-edge
+    discipline as the placeholder path.
+
+    Returns {line_weight_flag, stamp_stroke, anchor_stroke}. `anchor_palette`/
+    `anchor_stroke` empty skips the conform (the composite still happens) -
+    a caller with no pinned palette gets the old behaviour, not a refusal.
+    """
+    from . import framegate as _fg
+    conformed = (_fg.conform_stamp(generated, anchor_palette, anchor_stroke)
+                if anchor_palette else
+                {"image": generated, "line_weight_flag": False,
+                 "stamp_stroke": 0.0, "anchor_stroke": anchor_stroke})
+    img = conformed["image"]
+    layer = Image.new("RGBA", (grid.cell_w, grid.cell_h), (0, 0, 0, 0))
+    layer.alpha_composite(
+        img, dest=(int(round(anchor.x - img.width / 2)),
+                  int(round(anchor.y - img.height / 2))))
+    ox, oy, _, _ = grid.box(anchor.row, anchor.col)
+    sheet.alpha_composite(layer, dest=(ox, oy))
+    return {"line_weight_flag": conformed["line_weight_flag"],
+           "stamp_stroke": conformed["stamp_stroke"],
+           "anchor_stroke": conformed["anchor_stroke"]}
+
+
 def outward_direction(body: Image.Image, grid: Grid, anchor: Anchor, *,
                       side: int, alpha_threshold: int = ALPHA_THRESHOLD
                       ) -> tuple[float, float]:
