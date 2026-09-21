@@ -725,10 +725,7 @@ def prepare_training_image(path: str | os.PathLike, *,
     effect is one nobody can call twice.
     """
     src = Path(path)
-    try:
-        from PIL import Image
-    except ImportError:
-        return str(src), ""
+    from PIL import Image
     try:
         with Image.open(src) as im:
             w, h = im.size
@@ -799,10 +796,7 @@ def check_training_set(paths: list) -> dict:
     without it the resolution floor cannot be checked, and that is REPORTED
     rather than assumed to pass.
     """
-    try:
-        from PIL import Image            # noqa: PLC0415 — optional dependency
-    except ImportError:
-        Image = None                     # type: ignore[assignment]
+    from PIL import Image
 
     usable: list[str] = []
     upscaled: list[dict] = []
@@ -822,9 +816,6 @@ def check_training_set(paths: list) -> dict:
             continue
         if p.suffix.lower() not in TRAIN_SUFFIXES:
             rejected.append({"path": str(p), "why": f"{p.suffix} is not png/jpg/webp"})
-            continue
-        if Image is None:
-            usable.append(str(p))
             continue
         try:
             with Image.open(p) as img:
@@ -850,10 +841,6 @@ def check_training_set(paths: list) -> dict:
                                     round(h * TRAIN_MIN_SIDE / short)]})
         usable.append(str(p))
 
-    if Image is None:
-        warnings.append("Pillow is not installed, so image sizes were NOT "
-                        "checked — Krea will refuse anything under "
-                        f"{TRAIN_MIN_SIDE}px on the short side")
     if len(usable) < TRAIN_GOOD_IMAGES and len(usable) >= TRAIN_MIN_IMAGES:
         warnings.append(f"{len(usable)} images is above Krea's minimum but below "
                         f"{TRAIN_GOOD_IMAGES}; coverage will be thin and the LoRA "

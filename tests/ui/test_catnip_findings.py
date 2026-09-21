@@ -716,16 +716,6 @@ class TestLiveChannelsAndExhaustion:
         assert queue.ready(root, seat="director") == []
         assert queue.next_for(root, "director") is None
 
-    def test_stalled_names_what_would_release_each_row(self, root):
-        queue.add(root, "director", "escalation",
-                  brief="a brief that is long enough",
-                  source="qa-gate-escalation", source_ref="1")
-        rows = queue.stalled(root)
-        assert len(rows) == 1
-        assert "never auto-dispatched" in rows[0]["stalled_because"]
-        assert rows[0]["needs"]
-
-
 # ---------------------------------------------------------------------------
 # §15 A question addressed to the director must not become a question to a human
 # ---------------------------------------------------------------------------

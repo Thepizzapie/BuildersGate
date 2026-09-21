@@ -83,12 +83,6 @@ def director_usage_disconnect(request: Request) -> dict:
     return {"ok": True, **claudeusage.uninstall()}
 
 
-@router.post("/api/director/stop")
-def director_stop() -> dict:
-    """End the session process. The conversation resumes on the next message."""
-    return _director.stop(str(root()))
-
-
 @router.post("/api/director/approvals/{approval_id}")
 def director_approval(approval_id: str, payload: dict, request: Request) -> dict:
     """Let the signed-in human answer a live Codex app-server prompt."""

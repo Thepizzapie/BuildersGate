@@ -79,10 +79,6 @@ class UnityNotFound(RuntimeError):
     pass
 
 
-class UnityProjectError(RuntimeError):
-    pass
-
-
 # ---------------------------------------------------------------------------
 # The binary
 # ---------------------------------------------------------------------------

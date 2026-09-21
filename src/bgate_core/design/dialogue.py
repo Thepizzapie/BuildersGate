@@ -38,7 +38,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-from ..store.project import game_dir
+from ..store.project import game_dir, res_path as _res_path
 from ..store.util import slugify
 
 FORMAT_VERSION = 1
@@ -349,12 +349,3 @@ def _relative(root: str | os.PathLike[str], path: Path) -> str:
         return str(path)
 
 
-def _res_path(root: str | os.PathLike[str], path: Path) -> str:
-    """The ``res://`` the game loads it by, or '' when there is no Godot project."""
-    base = game_dir(root)
-    if base is None:
-        return ""
-    try:
-        return "res://" + path.resolve().relative_to(Path(base).resolve()).as_posix()
-    except ValueError:
-        return ""

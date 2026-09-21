@@ -1379,61 +1379,6 @@ def next_for(root: str | os.PathLike[str], seat: str) -> Optional[dict]:
     return dict(found[0]) if found else None
 
 
-def stalled(root: str | os.PathLike[str], seat: str = "") -> list[dict]:
-    """Queued work that NO dispatcher will take, and why. The other half of ready().
-
-    ``ready`` answers "what may start". Nothing answered "what is sitting here
-    that never will", and the difference between those two lists is the whole
-    of an operator's morning. An item whose automatic retries are spent, whose
-    source is human-held, or whose seat the production stage is holding looks
-    identical to fresh work in every listing — the only tell was the retry
-    counters, read by hand, on the row.
-
-    Each row carries ``stalled_because`` and ``needs``, where ``needs`` names
-    the human or director action that would release it.
-    """
-    from ..design import greenlight as _greenlight
-
-    try:
-        held = set(_greenlight.held_seats(root))
-    except Exception:
-        held = set()
-    dispatchable = {int(r["id"]) for r in ready(root, seat=seat, limit=500)}
-    out: list[dict] = []
-    for row in list_items(root, status="queued", seat=seat or None):
-        item = dict(row)
-        item_id = int(item["id"])
-        if item_id in dispatchable:
-            continue
-        source = str(item.get("source") or "")
-        auto = int(item.get("auto_retries") or 0)
-        if source in HELD_SOURCES:
-            because = (f"source {source!r} is never auto-dispatched — it "
-                       "exists because a person has to decide")
-            needs = "a human (or the director session) takes it by hand"
-        elif str(item.get("seat")) in held:
-            because = "the production stage is holding this seat"
-            needs = "greenlight_advance, or a per-seat waiver"
-        elif str(item.get("brief") or "").startswith("(preparing"):
-            because = "the brief is still a placeholder"
-            needs = "whatever is filing this item finishes writing it"
-        elif blocker(root, item_id) is not None:
-            blk = blocker(root, item_id)
-            because = waiting_line(root, item_id)
-            needs = ("nothing — this is the board working" if
-                     blk["status"] in ("queued", "dispatched", "review") else
-                     f"#{blk['id']} is {blk['status']!r} and will not reach "
-                     "'done' on its own: queue_reopen it, or "
-                     "queue_cut_dependency to release this")
-        else:
-            continue
-        item["stalled_because"] = because
-        item["needs"] = needs
-        item["auto_retries"] = auto
-        out.append(item)
-    return out
-
-
 def reserve(root: str | os.PathLike[str], item_id: int) -> bool:
     """Atomically take a queued item for dispatch: queued -> dispatched.
 
