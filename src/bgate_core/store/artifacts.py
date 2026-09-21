@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -975,7 +976,14 @@ def sweep_stale(root: str | os.PathLike[str], logical_name: str) -> list[dict]:
     from datetime import datetime, timezone
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    dest_dir = stale_root / logical_name / stamp
+    # CONTAINED. logical_name is a tool argument, i.e. model output; a name
+    # like "../../x" must not turn the stale bin into a write anywhere under
+    # the project. Only the safe characters of the name reach the path, and
+    # the result is checked against the bin it must stay inside.
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(logical_name)).strip("._") or "unnamed"
+    dest_dir = (stale_root / safe / stamp).resolve()
+    if stale_root.resolve() not in dest_dir.parents:
+        return []
     swept: list[dict] = []
     for src in candidates:
         try:
