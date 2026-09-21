@@ -16,6 +16,39 @@ def test_a_call_appears_while_it_runs_and_clears_when_it_lands(root):
     assert inflight.active(root) == []
 
 
+def test_detail_shows_up_on_the_active_row(root):
+    # ITEM #19: a phase name told a human nothing for the two hours a
+    # scripted drive sat waiting on its own engine subprocess.
+    token = inflight.begin(root, "godot_run", seat="tech", item_id=3)
+    inflight.detail(root, token, "waiting on Godot pid 4821 for 42s, godot_run")
+    row = inflight.active(root)[0]
+    assert row["detail"] == "waiting on Godot pid 4821 for 42s, godot_run"
+    inflight.end(root, token)
+
+
+def test_a_call_with_no_detail_reports_an_empty_string(root):
+    token = inflight.begin(root, "queue_list", seat="director", item_id=1)
+    row = inflight.active(root)[0]
+    assert row["detail"] == ""
+    inflight.end(root, token)
+
+
+def test_touch_updates_the_bound_call_without_root_or_token_in_scope(root):
+    token = inflight.begin(root, "godot_run", seat="tech", item_id=3)
+    ctx = inflight.bind(root, token)
+    try:
+        inflight.touch("waiting on Godot pid 100 for 5s, godot_run")
+    finally:
+        inflight.unbind(ctx)
+    row = inflight.active(root)[0]
+    assert "pid 100" in row["detail"]
+    inflight.end(root, token)
+
+
+def test_touch_with_nothing_bound_does_not_raise(root):
+    inflight.touch("nobody is listening")
+
+
 def test_a_dead_process_leaves_orphans_not_active_calls(root):
     # A pid that cannot be running: the file is the evidence a server died
     # holding this call.

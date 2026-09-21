@@ -370,7 +370,8 @@ def record(root: str | os.PathLike[str], result: dict) -> dict:
 
 def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
         timeout: int = 180, godot_project: str = "", actor: str = "",
-        mode: str = DEFAULT_MODE, platform: str = "", filter: str = "") -> dict:
+        mode: str = DEFAULT_MODE, platform: str = "", filter: str = "",
+        time_scale: float = 1.0, force: bool = False) -> dict:
     """Run the suite headless, score it, and RECORD the score.
 
     TWO SIGNALS, KEPT APART. Exit code alone is not the verdict: Godot prints
@@ -465,7 +466,8 @@ def run(root: str | os.PathLike[str], *, paths: Optional[list[str]] = None,
                             "error": f"unreadable: {exc}"})
             failed += 1
             continue
-        got = _godot.run_script(source, project_dir=str(base), timeout=timeout)
+        got = _godot.run_script(source, project_dir=str(base), timeout=timeout,
+                                time_scale=time_scale, force=force)
         # A REFUSAL IS NOT A RESULT. The runner declined to spawn the engine at
         # all, so this script has no assertions and no engine behaviour to
         # report. Scoring it 0 passed / 0 failed WAS THE BUG: the autoload gate
