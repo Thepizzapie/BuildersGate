@@ -47,11 +47,6 @@ _WRITABLE_SUFFIXES = _CODE_SUFFIXES - {".import"}
 # past this arrived by another route.
 _MAX_WRITE = 1_000_000
 
-# Trees that are not the game: the engine's import cache, the tool's own
-# backups, build output. Same set screenmap and scenewire prune.
-_SKIP_TREES = {".godot", ".bgate_out", ".bgate", ".git", ".asset_work",
-               "export", "build", "__pycache__"}
-
 # A timeout under 5s cannot survive Godot's own startup, and nothing here has a
 # legitimate reason to run past 10 minutes.
 MIN_TIMEOUT = 5
@@ -181,33 +176,6 @@ def _project(project_dir: str | None) -> Path:
     return p
 
 
-def _tree(base: Path, root_dir: Path, want: set[str], depth: int = 0) -> list[dict]:
-    out = []
-    if depth > 8:
-        return out
-    try:
-        entries = sorted(base.iterdir(), key=lambda e: (e.is_file(), e.name.lower()))
-    except OSError:
-        return out
-    for e in entries:
-        # .godot was EXPLICITLY allowed here, which meant the file tree walked
-        # the engine's import cache, ~2000 files on a real project, none of
-        # them yours, all of them .import/.md5 noise. It is the single biggest
-        # directory in a Godot project and nothing in this workspace can open
-        # anything inside it.
-        if e.name.startswith(".") or e.name in _SKIP_TREES:
-            continue
-        if e.is_dir():
-            kids = _tree(e, root_dir, want, depth + 1)
-            if kids:
-                out.append({"name": e.name, "dir": True, "children": kids})
-        elif e.suffix.lower() in want:
-            out.append({"name": e.name, "dir": False,
-                        "rel": str(e.relative_to(root_dir)).replace("\\", "/"),
-                        "bytes": e.stat().st_size})
-    return out
-
-
 @router.get("/api/godot/status")
 def godot_status() -> dict:
     engine = _engine_of(root())
@@ -315,16 +283,6 @@ def engine_check(request: Request, payload: dict | None = None,
                           request_body={"project_dir": str(where),
                                         "timeout": timeout}, request=request)
     return _guard(call)
-
-
-@router.get("/api/godot/files")
-def godot_files(project_dir: str | None = None, kind: str = "all") -> dict:
-    """The project's scenes/scripts/resources as a tree for the workspace nav."""
-    p = _project(project_dir)
-    want = {".tscn": {".tscn"}, ".gd": {".gd", ".cs"}}.get(kind)
-    if want is None:
-        want = _CODE_SUFFIXES
-    return {"project": str(p), "tree": _tree(p, p, want)}
 
 
 def _in_project(p: Path, rel: str) -> Path:
@@ -476,23 +434,6 @@ def godot_file_write(payload: dict) -> dict:
             "bytes": len(text.encode("utf-8")),
             "backup": str(backup.relative_to(r)).replace("\\", "/"),
             "unchanged": False}
-
-
-@router.post("/api/godot/inspect")
-def godot_inspect(payload: dict, request: Request,
-                  async_: int = Query(0, alias="async")):
-    """Load a resource in-engine (scene tree, meshes, tris)."""
-    res = payload.get("res_path")
-    if not res:
-        raise HTTPException(400, "res_path required")
-    p = _project(payload.get("project_dir"))
-    timeout = clamp_timeout(payload.get("timeout"), 180)
-    call = lambda: _godot.inspect_resource(str(p), res, timeout=timeout)
-    if jobs_api.wants_async(payload, async_):
-        return _async_202("godot.inspect", f"inspecting {res}", timeout, call,
-                          request_body={"res_path": res, "project_dir": str(p),
-                                        "timeout": timeout}, request=request)
-    return _guard(call)
 
 
 @router.post("/api/godot/run")

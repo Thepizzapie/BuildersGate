@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
-from PIL import Image, ImageDraw, PngImagePlugin
+from PIL import Image, ImageDraw
 
 # A pixel counts as drawn above this alpha. Sprite sheets carry feathered edges;
 # 8 keeps the halo out of centroids without eating genuine soft pixels.
@@ -380,20 +380,6 @@ def pool_hand_palette(samples: Sequence[tuple[Image.Image, Sequence[Anchor]]],
     return [(r + 8, g + 8, b + 8) for (r, g, b), _ in ranked]
 
 
-def learn_hand_palette(body: Image.Image, grid: Grid, anchors: Sequence[Anchor],
-                       **kw) -> list[tuple[int, int, int]]:
-    """The colours the body wears AT a measured grip — i.e. the hand.
-
-    No hardcoded skin tone: this samples the body sheet in a disc around each
-    ground-truth anchor and keeps the most common quantized colours. Whatever
-    the hand is — bare, gloved, gauntleted — it is the one thing every measured
-    anchor has under it, so it wins the count. Very dark pixels are dropped
-    because the outline colour is common to every part of the character and
-    would match everywhere.
-    """
-    return pool_hand_palette([(body, anchors)], grid, **kw)
-
-
 def _components(flags: list[bool], w: int, h: int, min_size: int) -> list[list[tuple[int, int]]]:
     """8-connected blobs of a boolean bitmap, largest-noise filtered."""
     seen = [False] * len(flags)
@@ -644,31 +630,6 @@ def outward_direction(body: Image.Image, grid: Grid, anchor: Anchor, *,
     return (dx, dy)
 
 
-def build_placeholder_sheet(body: Image.Image, grid: Grid, anchors: Sequence[Anchor], *,
-                            side_bias: Optional[dict[int, int]] = None,
-                            item_class: str = "main_hand",
-                            length_frac: Optional[float] = None,
-                            width_frac: Optional[float] = None) -> Image.Image:
-    """A full aligned sheet: the body's exact canvas and grid, gear only.
-
-    Same size, same lattice, transparent everywhere the gear is not — that is the
-    entire aligned-sheet contract, and it is what lets the rig overlay the result
-    1:1 with no offset. Frames with no anchor stay empty rather than getting a
-    guessed stamp; the rig hides a layer for a frame it cannot draw, which is a
-    better failure than a weapon floating in the wrong place.
-    """
-    sheet = Image.new("RGBA", (grid.cell_w * grid.cols, grid.cell_h * grid.rows),
-                      (0, 0, 0, 0))
-    from bgate_core.art.items import gear_shape   # taxonomy owns the proportions
-    default_len, default_wid = gear_shape(item_class)
-    bias = side_bias or {}
-    length = max(4, int(round(grid.cell_h * (length_frac or default_len))))
-    width = max(3, int(round(grid.cell_h * (width_frac or default_wid))))
-    for a in anchors:
-        side = bias.get(a.row, bias.get(0, 1))
-        d = outward_direction(body, grid, a, side=side)
-        stamp_placeholder(sheet, grid, a, direction=d, length=length, width=width)
-    return sheet
 
 
 # ---------------------------------------------------------------------------
@@ -701,60 +662,6 @@ class RigProfile:
         return self.side_bias.get(hand) or next(iter(self.side_bias.values()), {})
 
 
-def learn_rig(body_sheets: dict[str, Image.Image],
-              gear_sheets: dict[str, Sequence[Image.Image]], *,
-              grid: Optional[Grid] = None,
-              alpha_threshold: int = ALPHA_THRESHOLD) -> RigProfile:
-    """Measure the covered actions, then calibrate the inference against them.
-
-    body_sheets is body_action -> sheet; gear_sheets is layer_action -> the
-    aligned sheets that exist for it (one per weapon). The grid comes from a
-    BODY sheet, never a gear sheet: gear art is sparse and a sparse sheet gives
-    detection less to work with, while the aligned-sheet convention guarantees
-    the two lattices are identical anyway.
-    """
-    if not body_sheets:
-        raise ValueError("no body sheets — the grid and the hand palette both "
-                         "come from the character, not from the gear")
-    if grid is None:
-        grid = detect_grid(next(iter(body_sheets.values())),
-                           alpha_threshold=alpha_threshold)
-
-    measured: dict[str, list[Anchor]] = {}
-    for layer_action, sheets in gear_sheets.items():
-        if sheets:
-            measured[layer_action] = measure_anchors(list(sheets), grid,
-                                                     alpha_threshold=alpha_threshold)
-
-    bias: dict[str, dict[int, int]] = {}
-    for layer_action, anchors in measured.items():
-        hand = LAYER_HAND.get(layer_action, "main_hand")
-        bias.setdefault(hand, {}).update(anchor_side_bias(anchors, grid))
-
-    samples = [(body_sheets[body_action_for(la)], anchors)
-               for la, anchors in measured.items()
-               if body_action_for(la) in body_sheets]
-    palette = pool_hand_palette(samples, grid, alpha_threshold=alpha_threshold)
-
-    profile = RigProfile(grid, palette, bias, measured, {})
-    validation: dict = {}
-    for layer_action, anchors in measured.items():
-        body = body_sheets.get(body_action_for(layer_action))
-        if body is None:
-            continue
-        validation[layer_action] = validate_inference(
-            body, grid, anchors, palette=palette,
-            side_bias=profile.bias_for(layer_action),
-            alpha_threshold=alpha_threshold)
-    errs = [v["median_px"] for v in validation.values() if v.get("median_px") is not None]
-    profile.validation = {
-        "per_action": validation,
-        "median_px": round(sorted(errs)[len(errs) // 2], 1) if errs else None,
-        "cell": [grid.cell_w, grid.cell_h],
-    }
-    return profile
-
-
 def anchors_for(profile: RigProfile, body: Image.Image, layer_action: str, *,
                 alpha_threshold: int = ALPHA_THRESHOLD) -> list[Anchor]:
     """The anchors to stamp for one layer action — measured if we have them."""
@@ -764,14 +671,6 @@ def anchors_for(profile: RigProfile, body: Image.Image, layer_action: str, *,
     return infer_anchors(body, profile.grid, palette=profile.palette,
                          side_bias=profile.bias_for(layer_action),
                          alpha_threshold=alpha_threshold)
-
-
-def anchor_provenance(anchors: Sequence[Anchor]) -> dict[str, int]:
-    """How many anchors came from where — printed next to any anchor dump."""
-    out: dict[str, int] = {}
-    for a in anchors:
-        out[a.source] = out.get(a.source, 0) + 1
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -792,18 +691,6 @@ def throwable_sheet_name(body_action: str) -> str:
 def layer_actions_for(body_action: str) -> tuple[str, ...]:
     """The gear layer(s) a body animation drives."""
     return BODY_TO_LAYER_ACTIONS.get(body_action, (body_action,))
-
-
-def save_placeholder(sheet: Image.Image, path: Path, *, note: str = "") -> Path:
-    """Write a placeholder sheet WITH the marker that makes coverage truthful."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    info = PngImagePlugin.PngInfo()
-    info.add_text(MARKER_KEY, MARKER_VALUE)
-    if note:
-        info.add_text("bgate_note", note)
-    sheet.save(path, "PNG", pnginfo=info)
-    return path
 
 
 def is_placeholder(path: Path) -> bool:
@@ -827,111 +714,6 @@ def body_actions(char_dir: Path, prefix: str) -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Coverage — the thing that tells a human what still needs drawing
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class CoverageSpec:
-    """What SHOULD exist. Coverage is the diff between this and the disk."""
-    animations_dir: Path
-    weapons: tuple[str, ...]
-    body_actions: tuple[str, ...]
-    throwable_dir: Optional[Path] = None
-
-
-def coverage_report(spec: CoverageSpec) -> dict:
-    """Which (weapon x action) sheets are real art, which are stamped
-    placeholders, and which are simply absent.
-
-    "Absent" is the load-bearing category: a missing sheet is not a cosmetic gap,
-    it is the equipped weapon disappearing for that whole action. The throwable
-    slot is included because the same disappearance happens there, off a
-    different naming convention.
-    """
-    rows: list[dict] = []
-    layer_of_body: list[tuple[str, str]] = []
-    for action in spec.body_actions:
-        if action in THROWABLE_BODY_ACTIONS:
-            continue
-        for layer in layer_actions_for(action):
-            layer_of_body.append((action, layer))
-
-    for weapon in spec.weapons:
-        for body_action, layer in layer_of_body:
-            path = Path(spec.animations_dir) / layer_sheet_name(weapon, layer)
-            rows.append({
-                "slot": LAYER_HAND.get(layer, "main_hand"),
-                "weapon": weapon,
-                "body_action": body_action,
-                "layer_action": layer,
-                "path": str(path),
-                "status": ("placeholder" if is_placeholder(path)
-                           else "real" if path.exists() else "missing"),
-            })
-
-    if spec.throwable_dir is not None:
-        for action in spec.body_actions:
-            if action not in THROWABLE_BODY_ACTIONS:
-                continue
-            path = Path(spec.throwable_dir) / throwable_sheet_name(action)
-            rows.append({
-                "slot": "throwable",
-                "weapon": "*",
-                "body_action": action,
-                "layer_action": action,
-                "path": str(path),
-                "status": ("placeholder" if is_placeholder(path)
-                           else "real" if path.exists() else "missing"),
-            })
-
-    summary = {"real": 0, "placeholder": 0, "missing": 0}
-    for r in rows:
-        summary[r["status"]] += 1
-    return {
-        "weapons": list(spec.weapons),
-        "body_actions": list(spec.body_actions),
-        "rows": rows,
-        "summary": summary,
-        "needs_art": [r for r in rows if r["status"] != "real"],
-    }
-
-
-def format_coverage(report: dict) -> str:
-    """The coverage table a human reads: weapons down, layer actions across."""
-    marks = {"real": "##", "placeholder": "::", "missing": "--"}
-    layers: list[str] = []
-    for r in report["rows"]:
-        if r["slot"] != "throwable" and r["layer_action"] not in layers:
-            layers.append(r["layer_action"])
-    weapons = report["weapons"]
-    cell = {(r["weapon"], r["layer_action"]): r["status"] for r in report["rows"]}
-    wide = max([len(w) for w in weapons] + [8])
-    head = " " * wide + " | " + " | ".join(a[:14].center(14) for a in layers)
-    lines = [head, "-" * len(head)]
-    for w in weapons:
-        lines.append(w.ljust(wide) + " | " + " | ".join(
-            marks.get(cell.get((w, a), "missing"), "--").center(14) for a in layers))
-    extra = [r for r in report["rows"] if r["slot"] == "throwable"]
-    if extra:
-        lines.append("")
-        for r in extra:
-            lines.append(f"throwable {r['body_action']}: {r['status']}")
-    s = report["summary"]
-    lines.append("")
-    lines.append(f"## real {s['real']}   :: placeholder {s['placeholder']}   "
-                 f"-- missing {s['missing']}")
-    return "\n".join(lines)
-
-
-# EXIT 67 postmortem item 9: `stamp_generated` — the tool that would conform a
-# GENERATED weapon icon to the pinned bible palette before it ever reaches
-# item_to_spriteframes — was speced but never landed, and nothing calls it.
-# This tree has no `stamp_generated` to route through, so this is that seam's
-# stand-in: the quantiser itself already exists (spritekit.lock_palette, used
-# by image_sprites for the same reason), so this does not reimplement it — it
-# adds the one thing an ICON needs that a body sheet's palette lock does not:
-# an optional outline, because a held item read against a game floor needs a
-# silhouette line a body sprite (always read against its own shadow) does not.
 def conform_to_palette(icon_path: str | Path, palette: Sequence[Sequence[int]],
                        *, stroke_width: int = 0,
                        stroke_color: Optional[Sequence[int]] = None,

@@ -530,15 +530,3 @@ def retarget_library(project_dir, character_res: str, source: str, *,
             "engine_errors": [l for l in text.splitlines() if "ERROR" in l][:10],
             "steps": steps, "warnings": warnings,
             "error": "" if alive else "no retargeted clip moved the character"}
-
-
-def library_clips(project_dir, lib_res: str) -> dict:
-    """What a saved library holds, from its sidecar - no engine."""
-    project = Path(project_dir)
-    side = project / (lib_res[len("res://"):] + ".json")
-    if not side.is_file():
-        return {}
-    try:
-        return json.loads(side.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}

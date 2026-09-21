@@ -137,12 +137,6 @@ def set_entry(root, name: str, path: str, kind: str = "", note: str = "") -> dic
     return _save(root, doc)
 
 
-def drop_entry(root, name: str) -> dict:
-    doc = get(root)
-    doc["entries"].pop(str(name or "").strip(), None)
-    return _save(root, doc)
-
-
 def retire(root, pattern: str, successor: str = "", reason: str = "") -> dict:
     """Mark a path (or glob) as no longer the game. `successor` is what to
     use instead and is what the hook's refusal names."""

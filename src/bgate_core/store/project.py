@@ -544,6 +544,21 @@ def game_dir(root: str | os.PathLike[str],
     return None
 
 
+def res_path(root: str | os.PathLike[str], path: str | os.PathLike[str]) -> str:
+    """The ``res://`` a Godot project loads ``path`` by, or '' when there is no
+    Godot project (or ``path`` is not under it). Shared by every module that
+    reports a generated asset's engine-facing path — sfx, dialogue — so the
+    resolution rule lives in exactly one place."""
+    base = game_dir(root)
+    if base is None:
+        return ""
+    try:
+        return "res://" + Path(path).resolve().relative_to(
+            Path(base).resolve()).as_posix()
+    except ValueError:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # The scratch project, somewhere for work that belongs to no game
 # ---------------------------------------------------------------------------
