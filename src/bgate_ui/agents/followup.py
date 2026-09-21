@@ -843,6 +843,12 @@ def _branch_qa(ev: dict, item: dict, settings: dict, board: dict) -> list[dict]:
     if int(item.get("gate_skip") or 0):
         return []          # a human closed this by hand; see queue.complete
     item_id = int(item["id"])
+    if _qa_gate.needs_per_frame_verdict(item):
+        # ITEM 9b — do not spend a QA round on a claim nobody can check yet.
+        return [_action(
+            "reopen_unverified", 2, ev, f"item:{item_id}:no-per-frame",
+            f"#{item_id}'s result names no per-frame verdict - reopened "
+            "instead of QA'd", item=item_id, updated_at=str(item.get("updated_at") or ""))]
     qa = (board.get("qa") or {}).get(item_id) or {}
     cap = int(settings.get("max_rounds") or _qa_gate.MAX_ROUNDS)
     rounds = int(item.get("attempts") or 0) + 1
@@ -1124,6 +1130,8 @@ def apply_action(root: str | os.PathLike[str], action: dict) -> dict:
     try:
         if kind == "reopen":
             return {**out, **_do_reopen(root, action)}
+        if kind == "reopen_unverified":
+            return {**out, **_do_reopen_unverified(root, action)}
         if kind == "fail_escalate":
             return {**out, **_do_fail_escalate(root, action)}
         if kind == "qa_spawn":
@@ -1142,6 +1150,27 @@ def apply_action(root: str | os.PathLike[str], action: dict) -> dict:
         # finish is then routed by nothing at all.
         return {**out, "why": f"{type(exc).__name__}: {exc}"}
     return {**out, "why": f"unknown action {kind!r}"}
+
+
+def _do_reopen_unverified(root, action: dict) -> dict:
+    """ITEM 9b — reopen a DONE art item whose result named no per-frame
+    verdict, instead of spending a QA round reviewing an unverifiable claim.
+    """
+    item_id = int(action.get("item") or 0)
+    item = _item(root, item_id)
+    if item is None or str(item.get("status")) != "done":
+        return {"why": "the item is no longer done — already moved"}
+    if str(item.get("updated_at") or "") != str(action.get("updated_at") or ""):
+        return {"why": "the item moved since this was decided"}
+    if not _qa_gate.needs_per_frame_verdict(item):
+        return {"why": "a per-frame verdict landed since this was decided"}
+    reopened = _queue.reopen(
+        root, item_id,
+        "ART RESULT HAS NO PER-FRAME VERDICT (ITEM 9b) - open the finished "
+        "sheet, compare frame to frame against the pinned anchor "
+        "(consistency_check / sprite_family_check), and paste that verdict "
+        "into the result before re-closing.")
+    return {"why": "", "item": item_id, "status": reopened.get("status")}
 
 
 def _do_reopen(root, action: dict) -> dict:

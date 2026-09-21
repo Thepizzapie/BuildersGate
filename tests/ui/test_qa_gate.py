@@ -39,7 +39,8 @@ def _gates(root) -> list[dict]:
         "SELECT * FROM work_item WHERE source = 'qa-gate' ORDER BY id")]
 
 
-def _done(root, seat: str, title: str, result: str = "shipped it", **kw) -> dict:
+def _done(root, seat: str, title: str,
+         result: str = "shipped it (per-frame: n/a, not art)", **kw) -> dict:
     item = queue.add(root, seat, title, **kw)
     return queue.set_status(root, item["id"], "done", result=result)
 
@@ -55,7 +56,8 @@ def _bump(root, item_id: int, stamp: str) -> None:
 class TestScan:
     def test_a_done_maker_item_gets_a_qa_follow_up_and_is_dispatched(
             self, root, dispatched):
-        item = _done(root, "art", "HUD meter", result="frame + fill shipped")
+        item = _done(root, "art", "HUD meter",
+                    result="frame + fill shipped; per-frame: matches anchor")
         qa_gate._scan_once(root, EPOCH)
 
         gates = _gates(root)
@@ -143,7 +145,8 @@ class TestRounds:
         queue.set_status(root, gate["id"], "done",
                          result="VERDICT: FAIL — bare fills")
         queue.reopen(root, item["id"], "bare fills, no hollow frame")
-        queue.set_status(root, item["id"], "done", result="round two")
+        queue.set_status(root, item["id"], "done",
+                        result="round two; per-frame: matches anchor now")
         _bump(root, item["id"], "2999-01-01 00:00:00")  # strictly after the gate
 
         qa_gate._scan_once(root, EPOCH)
@@ -273,3 +276,32 @@ class TestStart:
         assert any(t.name == "bgate-followup" and t.is_alive()
                    for t in threading.enumerate())
         followup.reset()
+
+
+class TestPerFrameVerdict:
+    """ITEM 9b — an art result with no per-frame verdict is an unverified
+    claim: the gate must reopen it rather than spend a QA round reviewing a
+    claim nobody can check yet."""
+
+    def test_an_art_item_with_no_per_frame_verdict_is_reopened_not_gated(
+            self, root, dispatched):
+        item = _done(root, "art", "gnome sheet",
+                    result="stitched, gates green, PASS")
+        qa_gate._scan_once(root, EPOCH)
+        assert _gates(root) == []               # no QA round opened
+        assert dispatched == []
+        reopened = queue.get(root, item["id"])
+        assert reopened["status"] == "queued"
+        assert "PER-FRAME VERDICT" in reopened["brief"]
+
+    def test_an_art_item_that_names_the_check_is_gated_normally(
+            self, root, dispatched):
+        _done(root, "art", "gnome sheet v2",
+             result="sprite_family_check per-frame: all clear")
+        qa_gate._scan_once(root, EPOCH)
+        assert len(_gates(root)) == 1
+
+    def test_a_non_art_item_is_unaffected(self, root, dispatched):
+        _done(root, "audio", "footsteps", result="shipped, no mention of frames")
+        qa_gate._scan_once(root, EPOCH)
+        assert len(_gates(root)) == 1

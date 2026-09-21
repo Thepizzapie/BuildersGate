@@ -203,7 +203,10 @@ class TestGuides:
     def test_it_writes_an_image_with_a_line_per_row(self, tmp_path):
         path = row(tmp_path, [[{"foot": 30}, {}, {}, {}], [{}] * 4], bands=2)
         out = tmp_path / "guides.png"
-        got = kit.draw_guides(path, 4, out, 2)
+        # review_px=1: the native size, isolating THIS test to "one line per
+        # row" rather than the review-floor upscaling covered separately in
+        # tests/art/test_review_render.py.
+        got = kit.draw_guides(path, 4, out, 2, review_px=1)
         assert got["ok"] and out.exists()
         assert got["guides"] == 8
         with Image.open(out) as drawn:
@@ -217,7 +220,7 @@ class TestGuides:
         blank = Image.new("RGBA", (400, 200), BACK)
         path = tmp_path / "blank.png"
         blank.save(path)
-        got = kit.draw_guides(str(path), 4, tmp_path / "g.png")
+        got = kit.draw_guides(str(path), 4, tmp_path / "g.png", review_px=1)
         assert got["ok"] and got["guides"] == 0
 
 

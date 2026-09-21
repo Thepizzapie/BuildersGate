@@ -370,6 +370,31 @@ def set_dimension(root: str | os.PathLike[str], dimension: str) -> dict:
     return get(root)
 
 
+def set_focus(root: str | os.PathLike[str], focus: str) -> dict:
+    """ITEM 36 — the ONE biome/vertical slice the board is working right now.
+
+    Free text, no enum: "DMV interior", "Canal vertical slice", whatever the
+    human's ruling names. Empty string clears it. Read by queue_add, which
+    warns (never refuses) when a new brief names a different slice while
+    focus is set - MEASURED at EXIT 67: three art seats stayed on parallel
+    biomes (DMV, Canal, Truck Stop) after the human ordered one at a time, and
+    scope spread made contamination and re-rolling unreadable.
+    """
+    focus = (focus or "").strip()[:200]
+    with db.tx(root) as conn:
+        conn.execute("UPDATE project SET focus = ?, "
+                     "updated_at = datetime('now') WHERE id = 1", (focus,))
+    return get(root)
+
+
+def focus_of(root: str | os.PathLike[str]) -> str:
+    """The current board.focus, or "" when the board has not narrowed yet."""
+    try:
+        return str(get(root).get("focus") or "")
+    except Exception:                                             # noqa: BLE001
+        return ""
+
+
 def engine_of(root: str | os.PathLike[str]) -> str:
     """This project's recorded engine, defaulting rather than raising.
 

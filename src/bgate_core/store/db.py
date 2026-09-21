@@ -2280,6 +2280,35 @@ _MIGRATIONS: list = [
     ALTER TABLE bible_section ADD COLUMN binds TEXT NOT NULL DEFAULT '';
     ALTER TABLE bible_section ADD COLUMN forbids TEXT NOT NULL DEFAULT '';
     """,
+
+    # 0048 — EXIT 67 fixes: a HUMAN rejection is a signal, not just a status
+    # flip, and "one biome at a time" needed somewhere to live.
+    #
+    # human_rejection: one row per human rejection of a tool's output (an
+    # artifacts.review 'rejected' by a human, or a queue.reject). ITEM 9b —
+    # agents shipped mixed sheets repeatedly with no course correction; every
+    # correction came from a human reopening a sheet, and a reopen produced
+    # another mixed sheet and another self-reported PASS. Three human
+    # rejections of the same tool's output on one project inside 24h now
+    # stops that tool for dispatched seats until a human clears it
+    # (bgate_core.board.rejections, tool_unlock's rejections_clear).
+    #
+    # project.focus: ITEM 36 — the free-text slice name board.focus names, so
+    # queue_add can warn when a brief names a different one.
+    """
+    CREATE TABLE human_rejection (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool       TEXT NOT NULL DEFAULT '',
+        seat       TEXT NOT NULL DEFAULT '',
+        item_id    INTEGER,
+        reason     TEXT NOT NULL DEFAULT '',
+        by         TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        cleared_at TEXT
+    );
+    CREATE INDEX idx_human_rejection_tool ON human_rejection(tool, created_at);
+    ALTER TABLE project ADD COLUMN focus TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 
