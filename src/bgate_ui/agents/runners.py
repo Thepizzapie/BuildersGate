@@ -378,7 +378,16 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
         # sandbox that was not there. With the backend named, the same run
         # echoes, writes its file and stays inside the workspace as a
         # restricted user (CodexSandboxOffline) with the network cut.
-        args += ["-c", 'windows.sandbox="elevated"']
+        #
+        # WHICH backend is art.codex_windows_sandbox, default "elevated". It is
+        # a setting because elevated can fail to START on a machine through no
+        # fault of the project: its setup helper is not long-path aware and
+        # the Codex runtime ships a >260-char directory, so the helper exits 1
+        # and every exec is refused (MEASURED 0.155.1). Naming a backend is
+        # still mandatory - the value only ever chooses between the two.
+        from bgate_core.store import settings as _settings
+        backend = str(_settings.get(cwd, "art.codex_windows_sandbox"))
+        args += ["-c", f'windows.sandbox="{backend}"']
     args += mcp_overrides(env_vars=mcp_env_vars)
     # Under `never` an MCP tool that would have asked is REFUSED ("MCP tool
     # call requires approval, but approval policy is never" - MEASURED, on
