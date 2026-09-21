@@ -285,6 +285,49 @@ class TestPlaceholderSheet:
         assert items.gear_shape("off_hand") != items.gear_shape("main_hand")
 
 
+class TestStampGenerated:
+    """ITEM 9 — a GENERATED weapon composited at the anchor is conformed to
+    the pinned palette first, and an ink-weight mismatch is reported."""
+
+    def _weapon(self, color=(210, 90, 20, 255), width=6):
+        img = Image.new("RGBA", (30, 30), (0, 0, 0, 0))
+        for y in range(30):
+            for x in range(width):
+                img.putpixel((10 + x, y), color)
+        return img
+
+    def test_composited_pixels_are_snapped_to_the_anchor_palette(self):
+        grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
+        sheet = _blank()
+        anchor = gear.Anchor(0, 0, 70.0, 40.0, gear.MEASURED, 3)
+        weapon = self._weapon(color=(198, 41, 43, 255))  # near, not exact, red
+        gear.stamp_generated(sheet, grid, anchor, weapon,
+                             anchor_palette=[(200, 40, 40)], anchor_stroke=6.0)
+        mask = gear.cell_mask(sheet, grid, 0, 0)
+        assert mask.count > 0
+        colours = {p[:3] for p in sheet.getdata() if p[3] > 8}
+        assert colours <= {(200, 40, 40)}
+
+    def test_a_thin_ink_line_against_a_thick_anchor_is_flagged(self):
+        grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
+        sheet = _blank()
+        anchor = gear.Anchor(0, 0, 70.0, 40.0, gear.MEASURED, 3)
+        thin_weapon = self._weapon(width=1)
+        out = gear.stamp_generated(sheet, grid, anchor, thin_weapon,
+                                   anchor_palette=[(210, 90, 20)],
+                                   anchor_stroke=6.0)
+        assert out["line_weight_flag"] is True
+
+    def test_no_pinned_palette_still_composites_without_conforming(self):
+        grid = gear.Grid(CELL_W, CELL_H, COLS, ROWS)
+        sheet = _blank()
+        anchor = gear.Anchor(0, 0, 70.0, 40.0, gear.MEASURED, 3)
+        weapon = self._weapon()
+        out = gear.stamp_generated(sheet, grid, anchor, weapon)
+        assert out["line_weight_flag"] is False
+        assert gear.cell_mask(sheet, grid, 0, 0).count > 0
+
+
 class TestNaming:
     def test_matches_the_format_string_the_game_loads(self):
         # "res://assets/items/main_hand/animations/%s_%s.png" % [weapon, action]

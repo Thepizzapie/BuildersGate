@@ -1287,13 +1287,49 @@ def awaiting_review(root: str | os.PathLike[str]) -> list[dict]:
         "ORDER BY updated_at, id"))
 
 
-def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
+def format_frame_verdicts(frame_gate: dict) -> str:
+    """A framegate.gate_sheet() result -> the per-frame text a reopen brief
+    carries.
+
+    MEASURED (ITEM 12, EXIT 67 refinement): the reopen text for a failed art
+    item said "regenerate only what is actually wrong" with no per-frame
+    verdict, so the agent had nothing to act on but the sheet itself - it
+    could not tell WHICH frame was wrong or WHY without re-running the gate
+    by hand. Every failed frame gets its own line: the pose name, which
+    check(s) fired, and the measured value against the threshold - the exact
+    three facts the item asks for. A frame_gate with nothing failed returns
+    "" (nothing to add - a caller should not stamp an empty section).
+    """
+    failed = list(frame_gate.get("failed") or [])
+    if not failed:
+        return ""
+    frames = frame_gate.get("frames") or {}
+    lines = [f"PER-FRAME VERDICTS ({len(failed)} frame(s) failed the identity gate):"]
+    for pname in failed:
+        v = frames.get(pname) or {}
+        fired = [c for c in (v.get("checks") or []) if c.get("fired")]
+        if not fired:
+            lines.append(f"  - {pname}: failed (no check detail recorded)")
+            continue
+        for c in fired:
+            lines.append(
+                f"  - {pname}: {c['name']} - measured {c['measured']!r} "
+                f"vs threshold {c['threshold']!r} ({c.get('detail', '')})")
+    return "\n".join(lines)
+
+
+def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
+          frame_verdicts: Optional[dict] = None) -> dict:
     """Send a done/failed item back to 'queued' for another round.
 
     Retrying failed work is the most common motion in an agent runner, and the
     reason is the whole payload: it is APPENDED to the brief so the next agent
     reads exactly what to fix rather than repeating the run that failed.
     ``attempts`` counts the rounds, which is what makes a loop visible.
+
+    frame_verdicts, when given a framegate.gate_sheet() result, is formatted
+    (format_frame_verdicts) and appended alongside the reason - see ITEM 12:
+    a reopened art item names WHICH frames and WHICH check, not just "wrong".
     """
     item = get(root, item_id)
     if item["status"] not in ("done", "failed", "cancelled"):
@@ -1319,8 +1355,16 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
                        "regenerate only what is actually wrong.\n" + observed)
     except Exception:
         already = ""
+    verdict_text = ""
+    if frame_verdicts:
+        try:
+            formatted = format_frame_verdicts(frame_verdicts)
+            if formatted:
+                verdict_text = "\n\n" + formatted
+        except Exception:
+            verdict_text = ""
     stamp = (("\n\n--- REOPENED (attempt %d) ---\n" % (item["attempts"] + 2))
-             + reason + already)
+             + reason + verdict_text + already)
     update(root, item_id, brief=(item["brief"] or "") + stamp[:6000])
     with db.tx(root) as conn:
         conn.execute("UPDATE work_item SET attempts = attempts + 1 WHERE id = ?",
