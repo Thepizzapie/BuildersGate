@@ -2358,10 +2358,46 @@ def _stage_block(root: str | os.PathLike[str], role: str) -> dict:
                          if thesis else {}),
         "dominant_strategy_to_watch_for": thesis.get("dominant_strategy") or "",
         "held_seats": state.get("held_seats") or [],
-        "blocking_the_next_stage": state.get("blockers") or [],
+        **_bounded_blockers(state.get("blockers") or []),
         "note": ("greenlight_status is the long answer, including the enemy "
                  "roster, the objective shapes, the scale contract and the "
                  "room reviews"),
+    }
+
+
+# How many blockers a seat brief carries verbatim. MEASURED on EXIT 67
+# (2026-09-21): the greenlight doc held 427 presentation-QA blockers, the brief
+# serialised to 175 KB, and every agent's FIRST tool call answered "result
+# exceeds maximum allowed tokens" - the seat started blind, having paid for
+# the brief anyway. The brief's own docstring promises it is BOUNDED; the
+# stage block was the one section that was not.
+STAGE_BLOCKERS_SHOWN = 8
+
+
+def _bounded_blockers(blockers: list) -> dict:
+    """The first few blockers verbatim, the rest as a count per family.
+
+    A blocker is a sentence whose prefix up to the first colon names the gate
+    that raised it ("presentation QA: ..."); the family tally keeps the shape
+    of the problem visible when the list itself is cut.
+    """
+    shown = [str(b) for b in blockers[:STAGE_BLOCKERS_SHOWN]]
+    rest = blockers[STAGE_BLOCKERS_SHOWN:]
+    if not rest:
+        return {"blocking_the_next_stage": shown}
+    families: dict[str, int] = {}
+    for b in rest:
+        key = str(b).split(":", 1)[0].strip()[:40] or "other"
+        families[key] = families.get(key, 0) + 1
+    return {
+        "blocking_the_next_stage": shown,
+        "blocking_the_next_stage_more": {
+            "not_shown": len(rest),
+            "by_family": families,
+            "read_them_with": "greenlight_status (the full list); a seat "
+                              "fixes the ones in its own lane, it does not "
+                              "answer the list",
+        },
     }
 
 
