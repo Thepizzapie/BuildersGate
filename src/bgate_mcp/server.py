@@ -9910,10 +9910,16 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
                         parts: Optional[list] = None, provider: str = "",
                         quality: str = "medium", note: str = "",
                         adjustments: Optional[dict] = None,
-                        max_paid_calls: int = 20, force: bool = False) -> dict:
+                        max_paid_calls: int = 20, force: bool = False,
+                        mode: str = "sheet") -> dict:
     """Generate every part of a cutout character from ONE pinned reference,
-    then assemble and emit it. About nine paid images; the animation is the
-    template's and costs nothing.
+    then assemble and emit it. ONE paid image by default (`mode="sheet"`):
+    the whole kit is drawn beside the figure on a layout Builders Gate
+    draws, then cropped back out, so every part shares one style and one
+    scale by construction. `mode="parts"` is the old one-image-per-part
+    loop; it produced nine parts in three styles at three scales and is
+    kept only for a provider that cannot follow a layout. The animation is
+    the template's and costs nothing.
 
     THIS IS HOW A CHARACTER WITH MORE THAN AN IDLE GETS MADE IN 2D. Frame
     sheets re-roll identity, proportions and the weapon in the hand on every
@@ -9950,7 +9956,11 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
             root, name, ref_path, out_dir=home / "parts", provider=provider,
             template=doc["template"], parts=parts, quality=quality, note=note,
             profile=profile, max_paid_calls=max_paid_calls,
-            work_item_id=_work_item_id())
+            work_item_id=_work_item_id(), mode=mode)
+        if made.get("sheet") and os.path.isfile(made["sheet"]):
+            _register_artifact(f"{name}.parts_sheet", made["sheet"],
+                               producer="cutout_kit_generate", refs=[reference],
+                               metadata={"mode": "sheet"})
         skin = dict(doc.get("skin") or {})
         skin.update(made["parts"])
         # Anything the near side just replaced, the far side follows.

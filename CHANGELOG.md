@@ -10,6 +10,15 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **A cutout kit is one parts sheet, not nine generations.**
+  `cutout_kit_generate` now draws a layout (the full figure beside one
+  labelled cell per part), buys ONE image of the model redrawing it, keys
+  the backdrop and crops each cell back out. Every part shares one style and
+  one scale by construction and a cell can hold only its own part. Measured:
+  nine per-part generations came back in three styles at three scales with
+  rig pieces mixed into one another ("most unusable"). `mode="parts"` keeps
+  the old loop; an empty cell is a failed slot, never a blank texture; the
+  sheet is registered as `<name>.parts_sheet`.
 - **Questions carry their choices.** `ask_human(options=[...])` (2-6
   answers, 80 characters each) become buttons on every question card in the
   dashboard (director rail, orchestration inbox); a click is the whole

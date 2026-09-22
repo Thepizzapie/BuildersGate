@@ -234,9 +234,15 @@ def generate_kit(root: str | os.PathLike[str], name: str, reference_path: str,
                  profile: Optional[dict] = None,
                  max_paid_calls: int = DEFAULT_MAX_PAID_CALLS,
                  work_item_id: Optional[int] = None,
-                 generate: Optional[Callable] = None) -> dict:
+                 generate: Optional[Callable] = None,
+                 mode: str = "sheet") -> dict:
     """Generate every planned part against one reference. Never raises for a
     provider failure; refuses BEFORE spending for a plan it must not buy.
+
+    ``mode="sheet"`` (the default) buys ONE image: the whole kit drawn beside
+    the figure on a layout we draw, then cropped back out (see the sheet
+    section). ``mode="parts"`` is the old one-call-per-part loop, kept for a
+    provider that cannot follow a layout.
 
     Returns ``{ok, parts: {slot: skin entry}, failed: [...], flags: [...],
     calls, cost_usd, reference_hash, stopped}``. ``ok`` is True only when
@@ -245,7 +251,10 @@ def generate_kit(root: str | os.PathLike[str], name: str, reference_path: str,
     todo = plan(template, parts)
     if not todo:
         raise KitError("nothing to generate - every requested slot is reused")
-    if len(todo) > int(max_paid_calls):
+    mode = str(mode or "sheet").strip().lower()
+    if mode not in ("sheet", "parts"):
+        raise KitError(f"mode is 'sheet' or 'parts', not {mode!r}")
+    if mode == "parts" and len(todo) > int(max_paid_calls):
         raise KitError(
             f"this kit is {len(todo)} paid generations against a ceiling of "
             f"{max_paid_calls} (max_paid_calls). Raise the ceiling on purpose, "
@@ -262,6 +271,19 @@ def generate_kit(root: str | os.PathLike[str], name: str, reference_path: str,
     out.mkdir(parents=True, exist_ok=True)
     ref_hash = file_hash(ref)
     ref_h = reference_height(ref)
+
+    if mode == "sheet":
+        got = generate_sheet(root, name, str(ref), todo, out_dir=out,
+                             provider=provider, spec=spec, quality=quality,
+                             note=note, profile=profile,
+                             work_item_id=work_item_id, generate=generate)
+        return {
+            "ok": not got["failed"] and not got["flags"] and not got["stopped"],
+            "parts": got["made"], "failed": got["failed"], "flags": got["flags"],
+            "calls": got["calls"], "cost_usd": round(got["cost"], 4),
+            "reference_hash": ref_hash, "reference_height_px": ref_h,
+            "stopped": got["stopped"], "sheet": got["sheet"], "mode": "sheet",
+        }
 
     made: dict[str, dict] = {}
     failed: list[dict] = []
@@ -309,8 +331,224 @@ def generate_kit(root: str | os.PathLike[str], name: str, reference_path: str,
         "parts": made, "failed": failed, "flags": flags,
         "calls": calls, "cost_usd": round(cost, 4),
         "reference_hash": ref_hash, "reference_height_px": ref_h,
-        "stopped": stopped,
+        "stopped": stopped, "mode": "parts",
     }
+
+
+# ---------------------------------------------------------------------------
+# The parts SHEET: one generation, every part, one style, one scale
+# ---------------------------------------------------------------------------
+# MEASURED (exit-67-r2 #8, 2026-09-22): nine parts bought one at a time from
+# nine "ONE ISOLATED BODY PART" prompts came back in three different styles
+# (painted, pixel, inked), at three different scales, and half were the wrong
+# thing - a "hip" that was both legs and a boot, a "thigh" that was a pair of
+# jeans, a "foot" the size of the torso, an "upper arm" that was a hand.
+# Nothing in a per-part prompt can hold style or scale across calls, because
+# the model never sees the other eight. The human's verdict: "art generation
+# for the 2D rigging is impossible".
+#
+# A SHEET IS ONE CALL. The layout image below is drawn by us: the full figure
+# in a big left cell, and one outlined, labelled cell per part. The model is
+# asked to redraw the layout with each cell filled by the named part of that
+# same figure; style and scale hold because every part is painted in one
+# image beside the figure it is cut from. We key the flat backdrop ourselves
+# and crop each cell back out by its known rectangle. Nine paid calls become
+# one, and the result is judged as a whole.
+
+SHEET_SIZE = (1536, 1024)
+SHEET_MARGIN = 16
+SHEET_LABEL = 26
+SHEET_FIGURE_W = 400
+SHEET_LAYOUT = "_sheet_layout"
+
+
+def sheet_layout(parts: list[dict], reference_path: str | os.PathLike[str],
+                 out_dir: str | os.PathLike[str],
+                 chroma_rgb: tuple[int, int, int]) -> dict:
+    """Draw the layout the model redraws. Returns ``{png, json, cells,
+    figure_height_px, size}`` and writes both files into ``out_dir``.
+
+    ``cells`` maps slot -> (x0, y0, x1, y1) in layout pixels, the rectangle
+    BELOW the label strip, which is all that is cropped back out.
+    """
+    from PIL import Image, ImageDraw
+
+    W, H = SHEET_SIZE
+    M, L = SHEET_MARGIN, SHEET_LABEL
+    canvas = Image.new("RGBA", (W, H), (*chroma_rgb, 255))
+    draw = ImageDraw.Draw(canvas)
+    ink = (40, 40, 40, 255)
+
+    # The figure, plated onto the key colour so a keyed reference and an
+    # opaque one land the same way, scaled to the cell.
+    fig_box = (M, M + L, M + SHEET_FIGURE_W, H - M)
+    fw, fh = fig_box[2] - fig_box[0], fig_box[3] - fig_box[1]
+    with Image.open(reference_path) as src:
+        img = src.convert("RGBA")
+        box = img.getbbox() or (0, 0, img.width, img.height)
+        img = img.crop(box)
+        scale = min((fw - 20) / max(1, img.width), (fh - 20) / max(1, img.height))
+        img = img.resize((max(1, int(img.width * scale)),
+                          max(1, int(img.height * scale))), Image.LANCZOS)
+    fx = fig_box[0] + (fw - img.width) // 2
+    fy = fig_box[3] - 10 - img.height
+    canvas.alpha_composite(img, (fx, fy))
+    figure_h = img.height
+    draw.rectangle(fig_box, outline=ink, width=2)
+    draw.text((fig_box[0] + 4, M + 4), "FULL FIGURE (do not change)", fill=ink)
+
+    n = max(1, len(parts))
+    rows = 1 if n <= 4 else 2
+    cols = -(-n // rows)
+    x_start = fig_box[2] + M
+    area_w = W - M - x_start
+    cell_w = (area_w - (cols - 1) * M) // cols
+    cell_h = (H - (rows + 1) * M - rows * L) // rows
+    cells: dict[str, tuple[int, int, int, int]] = {}
+    for i, part in enumerate(parts):
+        r, c = divmod(i, cols)
+        x0 = x_start + c * (cell_w + M)
+        y_top = M + r * (cell_h + L + M)
+        y0 = y_top + L
+        rect = (x0, y0, x0 + cell_w, y0 + cell_h)
+        cells[part["slot"]] = rect
+        draw.rectangle(rect, outline=ink, width=2)
+        draw.text((x0 + 4, y_top + 4), part["slot"].upper(), fill=ink)
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    png = out / f"{SHEET_LAYOUT}.png"
+    canvas.save(png)
+    meta = {"size": [W, H], "cells": {k: list(v) for k, v in cells.items()},
+            "figure_height_px": figure_h, "chroma": list(chroma_rgb)}
+    js = out / f"{SHEET_LAYOUT}.json"
+    js.write_text(__import__("json").dumps(meta, indent=1), encoding="utf-8")
+    return {"png": str(png), "json": str(js), "cells": cells,
+            "figure_height_px": figure_h, "size": (W, H)}
+
+
+def sheet_prompt(parts: list[dict], *, view: str = "side",
+                 profile: Optional[dict] = None, note: str = "") -> str:
+    """The whole kit in one prompt: redraw the layout, fill each cell."""
+    traits = (profile or {}).get("traits") or ""
+    style = (profile or {}).get("style") or ""
+    negative = (profile or {}).get("negative") or ""
+    cells = "; ".join(f"{p['slot'].upper()}: {p.get('what') or p['slot']}"
+                      for p in parts)
+    lines = [
+        "A 2D CUTOUT PUPPET PARTS SHEET, an exact redraw of the layout image "
+        "(the second reference). Keep the full character in the large left "
+        "cell exactly as it is. In each outlined, labelled cell draw ONLY the "
+        "body part named above it, cut from that same character: the same "
+        "style, colours, line weight and SCALE as the figure on the left, "
+        f"strict {view} view, the same projection as the figure.",
+        "Each part is cut clean at its joint seams with flat colour under the "
+        "seam so it can overlap its neighbour. One part per cell, nothing "
+        "else in the cell: no whole figures, no extra parts, no props, no "
+        "shadows, no text besides the existing labels.",
+        f"Cells: {cells}.",
+        "Keep every cell where it is and leave the space around the parts "
+        "flat backdrop colour.",
+    ]
+    if traits:
+        lines.append(f"Character: {traits}.")
+    if style:
+        lines.append(f"Style: {style}.")
+    if negative:
+        lines.append(f"Never: {negative}.")
+    if note:
+        lines.append(note.strip())
+    return " ".join(lines)
+
+
+def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
+                out_dir: str | os.PathLike[str],
+                chroma_rgb: tuple[int, int, int]) -> dict:
+    """Key the sheet and crop every cell back out to ``<slot>.png``.
+
+    Returns ``{parts: {slot: path}, empty: [slots], scale: (sx, sy)}``. A
+    cell with nothing but backdrop in it is EMPTY, not a part: it is reported
+    so the caller can re-run that slot, never written as a blank texture.
+    """
+    from PIL import Image
+    from ..art import chroma as _chroma
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    lw, lh = layout["size"]
+    with Image.open(sheet_path) as src:
+        sheet = src.convert("RGBA")
+        _chroma.key(sheet, chroma_rgb)
+        sx, sy = sheet.width / lw, sheet.height / lh
+        parts: dict[str, str] = {}
+        empty: list[str] = []
+        inset = 4
+        for slot, (x0, y0, x1, y1) in layout["cells"].items():
+            rect = (int(x0 * sx) + inset, int(y0 * sy) + inset,
+                    int(x1 * sx) - inset, int(y1 * sy) - inset)
+            cell = sheet.crop(rect)
+            box = cell.getbbox()
+            if not box or (box[2] - box[0]) < 4 or (box[3] - box[1]) < 4:
+                empty.append(slot)
+                continue
+            target = out / f"{slot}.png"
+            cell.crop(box).save(target)
+            parts[slot] = str(target)
+    return {"parts": parts, "empty": empty, "scale": (sx, sy)}
+
+
+def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
+                   *, out_dir, provider: str, spec: dict, quality: str,
+                   note: str, profile: Optional[dict], work_item_id,
+                   generate: Callable) -> dict:
+    """One paid call for the whole kit. Same return shape as the per-part
+    loop's inner bookkeeping: ``(made, failed, flags, calls, cost, stopped)``.
+    """
+    from ..art import chroma as _chroma
+
+    ref = Path(reference_path)
+    chroma_name, chroma_rgb = _chroma.pick(str(ref))
+    layout = sheet_layout(todo, ref, out_dir, chroma_rgb)
+    prompt = sheet_prompt(todo, view=spec.get("view", "side"),
+                          profile=profile, note=note)
+    prompt = prompt + _chroma.clause((chroma_name, chroma_rgb))
+    sheet_png = Path(out_dir) / "_sheet.png"
+    # keyed=False: WE key it, against the colour WE drew the layout in. The
+    # keyable path would pick its own colour from the layout's palette (which
+    # is mostly our backdrop) and land on a different one.
+    result = generate(prompt, str(sheet_png), provider=provider,
+                      task_kind="sheet", keyed=False, quality=quality,
+                      size=f"{SHEET_SIZE[0]}x{SHEET_SIZE[1]}",
+                      ref_paths=[str(ref), layout["png"]], root=root,
+                      logical_name=f"{name}.parts_sheet",
+                      work_item_id=work_item_id) or {}
+    cost = float(result.get("cost_usd") or 0.0)
+    if not result.get("ok") or not sheet_png.is_file():
+        err = str(result.get("error") or "no sheet written")
+        return {"made": {}, "failed": [{"slot": p["slot"], "error": err} for p in todo],
+                "flags": [], "calls": 1, "cost": cost,
+                "stopped": f"the sheet did not come back: {err}",
+                "sheet": str(sheet_png), "prompt": prompt}
+    cut = slice_sheet(sheet_png, layout, out_dir, chroma_rgb)
+    ref_hash = file_hash(ref)
+    fig_h = layout["figure_height_px"] * cut["scale"][1]
+    made: dict[str, dict] = {}
+    flags: list[dict] = []
+    for part in todo:
+        slot = part["slot"]
+        path = cut["parts"].get(slot)
+        if not path:
+            continue
+        size = trim_alpha(path)
+        flag = scale_flag(part, size, int(fig_h))
+        if flag:
+            flags.append(flag)
+        made[slot] = {"texture": path, "part_hash": cutout.part_hash(path),
+                      "anchor_hash": ref_hash, "prompt": prompt,
+                      "pivot_source": "default", "sheet": str(sheet_png)}
+    failed = [{"slot": s, "error": "the cell came back empty"} for s in cut["empty"]]
+    return {"made": made, "failed": failed, "flags": flags, "calls": 1,
+            "cost": cost, "stopped": "", "sheet": str(sheet_png), "prompt": prompt}
 
 
 def fill_reuse(skin: dict, template: str = "biped_v1") -> dict:
