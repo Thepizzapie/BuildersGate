@@ -1267,7 +1267,7 @@ def _do_fail_escalate(root, action: dict) -> dict:
     # AT THE RUN CAP THE ITEM IS CANCELLED, NOT SHELVED. A failed item wears
     # a reopen button; nine runs on one item came through that button and
     # the auto-retry. Past the cap the only honest next step is a split.
-    if _queue.over_attempt_cap(root, item):
+    if _queue.at_attempt_cap(root, item):
         try:
             _queue.cancel(root, item_id, _queue.attempt_cap_message(root, item))
         except Exception:                                         # noqa: BLE001

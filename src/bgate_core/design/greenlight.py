@@ -427,7 +427,51 @@ def graybox_submit(root: str | os.PathLike[str], *, scene: str,
                  seat="gameplay")
     _events.emit(root, "greenlight.graybox", ref=scene,
                  payload={"stage": stage(root), "evidence": len(shots)})
+    ask_for_verdict(root)
     return got
+
+
+VERDICT_QUESTION = ("GRAYBOX VERDICT NEEDED: the graybox is submitted and only "
+                    "you can rule on it (greenlight_graybox_verdict pass|fail). "
+                    "Until you do, art, audio and cinematic stay held and the "
+                    "board idles. Evidence: greenlight_status.")
+
+
+def verdict_pending(root: str | os.PathLike[str]) -> bool:
+    """A graybox is submitted and nobody has ruled on it."""
+    try:
+        got = _doc(root).get("graybox")
+    except Exception:
+        return False
+    return (isinstance(got, dict) and bool(got.get("scene"))
+            and not str(got.get("verdict") or "").strip()
+            and stage(root) == "graybox")
+
+
+def ask_for_verdict(root: str | os.PathLike[str]) -> bool:
+    """Put the graybox verdict in front of the human, once.
+
+    THE GATE IS HUMAN-ONLY BY DESIGN, so nothing on the board can clear it.
+    MEASURED (exit-67-r2, 2026-09-22): the gate passed, a director item was
+    filed to "call greenlight_graybox_verdict", ran three times into the
+    permission refusal, hit its run cap and the whole board sat behind a
+    decision the human was never asked. Returns True when a question was
+    recorded; False when one is already open or nothing is pending.
+    """
+    if not verdict_pending(root):
+        return False
+    try:
+        from ..board import steerbox as _steerbox
+        if any(VERDICT_QUESTION[:24] in str(q.get("question") or "")
+               for q in _steerbox.open_questions(root)):
+            return False
+        _steerbox.ask(root, VERDICT_QUESTION, refs=["greenlight_status"],
+                      seat=SEAT, by="greenlight")
+    except Exception:
+        return False
+    activity.log(root, "greenlight",
+                 "graybox verdict is the human's: asked", seat=SEAT)
+    return True
 
 
 def graybox_verdict(root: str | os.PathLike[str], *, verdict: str,

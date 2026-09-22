@@ -10,6 +10,21 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **A human-only gate is asked, not worked.** The graybox verdict and a
+  forward stage move belong to the human, so `greenlight_graybox_submit`
+  now records the question for the human at once (pending_decisions,
+  ask_human's inbox), autopilot names it in one `dispatch.blocked`
+  (`human_verdict`) when the board idles on it, and the director protocol
+  says never to file or take an item whose only action is one of those
+  tools. Measured: a director item ran three times into the permission
+  refusal and the whole board sat behind a decision nobody had asked for.
+
+### Fixed
+- **The run cap counts runs.** A queued item's pending run was counted as
+  had, so an item reopened for its third and last allowed run passed
+  `reopen` and was then invisible to `ready()` forever. `over_attempt_cap`
+  (dispatch) is now strictly past the cap; `at_attempt_cap` (reopen,
+  auto-retry, the failure escalation's cancel) is the "no more runs" test.
 - **A re-run behind a fix does not count against the run cap.** The graybox
   gate found a wall per run and was told "no more runs" on the fourth, and
   the QA agent that found the wall could not file the fix because two runs
