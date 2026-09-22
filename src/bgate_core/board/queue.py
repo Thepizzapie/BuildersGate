@@ -1018,6 +1018,55 @@ def file_unblock(root: str | os.PathLike[str], entry: dict) -> Optional[dict]:
     return row
 
 
+def release_dependents(root: str | os.PathLike[str], item_id: int,
+                       why: str) -> list[int]:
+    """A dead item holds NOTHING. Cut every queued successor loose, on the
+    record, with what the dead item left on disk written into its brief.
+
+    MEASURED (2026-09-22): one cancelled item held seventeen items behind it
+    for hours; a parked one held five. Waiting on something that will never
+    land is not caution, it is a stall - and the director's UNBLOCK item
+    (file_unblock) still runs to decide whether the RELEASED work should be
+    reshaped, but it decides while the board moves, not while it sits.
+    Returns the released item ids.
+    """
+    dead = get(root, item_id)
+    said = " ".join(str(why or "").split())[:300]
+    try:
+        from ..store import writelog
+        left = writelog.summary(root, f"item-{int(item_id)}") or ""
+    except Exception:
+        left = ""
+    released: list[int] = []
+    for succ in successors(root, int(item_id)):
+        if str(succ.get("status")) != "queued":
+            continue
+        try:
+            cut_dependency(root, int(succ["id"]), int(item_id), by="autopilot")
+        except LookupError:
+            continue
+        note = (f"\n\n--- RELEASED ---\nYou waited on #{item_id} [{dead['seat']}] "
+                f"({str(dead['title'])[:70]}), which is {str(dead['status']).upper()}"
+                + (f": {said}" if said else "") + ". Nothing waits for it any "
+                "more. Build on what it actually left"
+                + (": " + left[:1500] if left else " (nothing observed on disk)")
+                + ". If its output is truly required and missing, fail fast "
+                  "naming it; do not rebuild its job inside this item.")
+        with db.tx(root) as conn:
+            conn.execute("UPDATE work_item SET brief = brief || ? WHERE id = ?",
+                         (note, int(succ["id"])))
+        released.append(int(succ["id"]))
+    if released:
+        activity.log(root, "queue",
+                     f"item {item_id} is {dead['status']}; released "
+                     + ", ".join(f"#{i}" for i in released)
+                     + " to run without it", seat=dead["seat"], ref=str(item_id))
+        _emit(root, "queue.released", ref=str(item_id),
+              payload={"dead": int(item_id), "status": dead["status"],
+                       "released": released, "why": said})
+    return released
+
+
 def describe_blocked_chains(chains: list[dict]) -> str:
     """One sentence per dead link, with the three ways out."""
     lines = []
@@ -1642,6 +1691,7 @@ def mark_exhausted(root: str | os.PathLike[str], item_id: int,
                  f"item {item_id} is exhausted: {said[:120]}", ref=str(item_id))
     _emit(root, "item.failed", ref=str(item_id),
           payload={"id": int(item_id), "exhausted": True, "why": said})
+    release_dependents(root, item_id, f"exhausted: {said}")
     return get(root, item_id)
 
 
@@ -1697,6 +1747,7 @@ def park(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
     _emit(root, "item.parked", ref=str(item_id),
           payload={**_item_event_payload(item), "reason": reason,
                    "prior_status": prior_status})
+    release_dependents(root, item_id, f"parked: {reason}")
     return item
 
 
@@ -1725,7 +1776,9 @@ def cancel(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
         raise ValueError(f"item {item_id} is already {item['status']!r}")
     reason = (reason or "").strip()
     said = reason or f"cancelled by {activity.current_actor() or 'the dashboard'}"
-    return set_status(root, item_id, "cancelled", result=said)
+    out = set_status(root, item_id, "cancelled", result=said)
+    release_dependents(root, item_id, said)
+    return out
 
 
 def awaiting_review(root: str | os.PathLike[str]) -> list[dict]:
