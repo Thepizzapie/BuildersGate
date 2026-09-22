@@ -96,6 +96,8 @@
 }
 
 /* The refs an ask_human question attached — the files it is asking about. */
+.bgd-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px }
+.bgd-options .bgs-btn { text-align: left; white-space: normal; max-width: 100% }
 .bgd-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px }
 .bgd-refs span {
   font: 400 9px var(--mono); color: var(--text-3);

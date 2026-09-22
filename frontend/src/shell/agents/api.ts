@@ -64,6 +64,9 @@ export type Item = {
 export type Question = {
   id: number; event_seq?: number; item_id?: number; seat?: string;
   text?: string; question?: string; asked_at?: string; refs?: string[];
+  /** The asker's choices: each is a one-click answer, sent through the same
+   *  route as a typed one. Empty when the agent asked a free-form question. */
+  options?: string[];
 };
 /** `blocking` IS THE FIELD THAT DECIDES WHETHER A HUMAN IS NEEDED, and it was
  *  missing from this type while the route has always sent it: routes/console.py

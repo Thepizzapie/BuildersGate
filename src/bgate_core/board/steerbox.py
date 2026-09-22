@@ -271,6 +271,22 @@ MAX_QUESTION = 1200
 # goes; a longer answer would be accepted here and refused there.
 MAX_ANSWER = MAX_TEXT
 MAX_REFS = 12
+# A QUESTION CARRIES ITS CHOICES. USER DIRECTIVE (2026-09-22): "if they have
+# questions give them tools to ask it via multiple choice buttons, I am tired
+# of having to re-prompt everything". Up to six, eighty characters each: a
+# button, not a paragraph. The first is what the asker assumes meanwhile.
+MAX_OPTIONS = 6
+MAX_OPTION = 80
+
+
+def clean_options(options) -> list[str]:
+    """The option list as it is stored: trimmed, deduplicated, capped."""
+    out: list[str] = []
+    for o in (options or []):
+        text = " ".join(str(o or "").split())[:MAX_OPTION]
+        if text and text not in out:
+            out.append(text)
+    return out[:MAX_OPTIONS]
 OPEN_LIMIT = 20
 # How far back a scan for open questions goes. Bounded because the console polls
 # this every few seconds, and a project that has answered a thousand questions
@@ -327,6 +343,7 @@ def _shape(row) -> dict:
         "question": str(payload.get("question") or ""),
         "asked_at": str(row["created_at"] or ""),
         "refs": [str(r) for r in (payload.get("refs") or [])][:MAX_REFS],
+        "options": clean_options(payload.get("options")),
         "asked_by": str(payload.get("asked_by") or row["actor"] or ""),
         "answer": str(payload.get("answer") or ""),
         "answered_at": str(payload.get("answered_at") or ""),
@@ -446,7 +463,7 @@ def _director_session_live(root: str | os.PathLike[str]) -> dict:
 
 def ask_director(root: str | os.PathLike[str], question: str, *,
                  refs: Optional[list] = None, item_id: int = 0,
-                 by: str = "") -> dict:
+                 by: str = "", options: Optional[list] = None) -> dict:
     """Put a question to the DIRECTOR SESSION. Refuses if there is not one.
 
     GRIPE 39b. This used to be a fire-and-forget: the text went straight into
@@ -476,7 +493,8 @@ def ask_director(root: str | os.PathLike[str], question: str, *,
     from bgate_ui.agents import directorsession as _ds
 
     text = str(question or "").strip()
-    filed = ask(root, text, refs=refs, item_id=item_id, seat="director", by=by)
+    filed = ask(root, text, refs=refs, item_id=item_id, seat="director", by=by,
+                options=options)
     cited = "".join(f"\n  - {str(r)[:160]}" for r in (refs or [])[:MAX_REFS])
     _ds.send(root, (f"QUESTION from {by or 'an agent'}"
                     + (f" working item #{item_id}" if item_id else "")
@@ -523,7 +541,7 @@ def ask_seat(root: str | os.PathLike[str], seat: str, question: str, *,
 
 def ask(root: str | os.PathLike[str], question: str,
         refs: Optional[list] = None, *, item_id: int = 0, seat: str = "",
-        by: str = "") -> dict:
+        by: str = "", options: Optional[list] = None) -> dict:
     """Record one question for the human. Returns the event id to answer it by.
 
     Raises when the question is empty, over :data:`MAX_QUESTION`, or could not be
@@ -545,8 +563,10 @@ def ask(root: str | os.PathLike[str], question: str,
     # WHOLE payload with a truncation marker and the question text is gone.
     clean = [str(r)[:160] for r in (refs or []) if str(r).strip()][:MAX_REFS]
     item = max(0, int(item_id or 0))
+    choices = clean_options(options)
     payload = {"question": text, "refs": clean, "item_id": item,
-               "seat": str(seat or "")[:40], "asked_by": str(by or "")[:80]}
+               "seat": str(seat or "")[:40], "asked_by": str(by or "")[:80],
+               "options": choices}
     seq = events.emit(root, QUESTION_KIND, ref=str(item or ""), payload=payload)
     if not seq:
         # events.emit swallows its own failures by design (see its docstring), so
@@ -557,7 +577,7 @@ def ask(root: str | os.PathLike[str], question: str,
             "write) — nothing would ever show it to the human, so it was not "
             "asked. Retry, or say it in your result note instead.")
     return {"ok": True, "seq": int(seq), "question": text, "refs": clean,
-            "item_id": item, "seat": str(seat or "")}
+            "item_id": item, "seat": str(seat or ""), "options": choices}
 
 
 def question(root: str | os.PathLike[str], seq: int) -> Optional[dict]:
