@@ -394,26 +394,36 @@ def sheet_layout(parts: list[dict], reference_path: str | os.PathLike[str],
     fy = fig_box[3] - 10 - img.height
     canvas.alpha_composite(img, (fx, fy))
     figure_h = img.height
+    # THE FIGURE CELL IS TIGHT. Left tall and half empty, the model used the
+    # space above the figure for a part (a head landed there, and the HEAD
+    # cell came back empty). The box hugs the figure; the label sits on it.
+    fig_box = (fig_box[0], fy - L - 6, fig_box[2], fig_box[3])
     draw.rectangle(fig_box, outline=ink, width=2)
-    draw.text((fig_box[0] + 4, M + 4), "FULL FIGURE (do not change)", fill=ink)
+    draw.text((fig_box[0] + 4, fig_box[1] + 4), "FULL FIGURE (do not change)", fill=ink)
 
-    n = max(1, len(parts))
-    rows = 1 if n <= 4 else 2
-    cols = -(-n // rows)
+    # CELLS ARE SIZED TO THEIR PART. Equal tall cells invited the model to
+    # fill them: the ARM_NEAR cell came back with the whole arm in it and
+    # the rig got an 83 px upper arm on a 200 px figure. Each cell is the
+    # part's template height (against the figure drawn on this sheet) with
+    # a third of slack, no more, packed left to right in rows.
     x_start = fig_box[2] + M
     area_w = W - M - x_start
-    cell_w = (area_w - (cols - 1) * M) // cols
-    cell_h = (H - (rows + 1) * M - rows * L) // rows
     cells: dict[str, tuple[int, int, int, int]] = {}
-    for i, part in enumerate(parts):
-        r, c = divmod(i, cols)
-        x0 = x_start + c * (cell_w + M)
-        y_top = M + r * (cell_h + L + M)
+    x, y_top, row_h = x_start, M, 0
+    for part in parts:
+        ph = int(float(part.get("height") or 0.15) * figure_h * 1.35) + 8
+        ph = max(60, min(ph, H - 2 * M - L))
+        pw = max(int(ph * 0.75), int(figure_h * 0.16), 90)
+        if x + pw > x_start + area_w:               # next row
+            x, y_top = x_start, y_top + row_h + M
+            row_h = 0
         y0 = y_top + L
-        rect = (x0, y0, x0 + cell_w, y0 + cell_h)
+        rect = (x, y0, x + pw, y0 + ph)
         cells[part["slot"]] = rect
         draw.rectangle(rect, outline=ink, width=2)
-        draw.text((x0 + 4, y_top + 4), part["slot"].upper(), fill=ink)
+        draw.text((x + 4, y_top + 4), part["slot"].upper(), fill=ink)
+        x += pw + M
+        row_h = max(row_h, ph + L)
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -442,10 +452,14 @@ def sheet_prompt(parts: list[dict], *, view: str = "side",
         "body part named above it, cut from that same character: the same "
         "style, colours, line weight and SCALE as the figure on the left, "
         f"strict {view} view, the same projection as the figure.",
-        "Each part is cut clean at its joint seams with flat colour under the "
-        "seam so it can overlap its neighbour. One part per cell, nothing "
-        "else in the cell: no whole figures, no extra parts, no props, no "
-        "shadows, no text besides the existing labels.",
+        "EVERY PART ENDS IN A ROUNDED JOINT CAP: at each seam the part "
+        "continues past the joint as a round, fully painted knob (shoulder "
+        "ball, elbow, hip, knee, ankle) so that when the puppet bends the cap "
+        "tucks under its neighbour and no gap opens. Never a flat cut, never "
+        "a hard edge at a joint. The TORSO keeps its full shoulder mass and "
+        "the collar; the HIP keeps the belt and the top of both thighs. One "
+        "part per cell, nothing else in the cell: no whole figures, no extra "
+        "parts, no props, no shadows, no text besides the existing labels.",
         f"Cells: {cells}.",
         "Keep every cell where it is and leave the space around the parts "
         "flat backdrop colour.",
@@ -493,11 +507,16 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
                       if rig_height_px and fig_h > 0 else 1.0)
         parts: dict[str, str] = {}
         empty: list[str] = []
-        inset = 4
         for slot, (x0, y0, x1, y1) in layout["cells"].items():
-            rect = (int(x0 * sx) + inset, int(y0 * sy) + inset,
-                    int(x1 * sx) - inset, int(y1 * sy) - inset)
-            cell = sheet.crop(rect)
+            # The model redraws the cell borders, thicker and a little off;
+            # a 4 px inset let them ride into every part (an arm 162 px tall
+            # that was a 30 px arm plus two border lines). Inset by 3% of the
+            # cell, then keep the largest blob and anything near its size.
+            cw, ch = (x1 - x0) * sx, (y1 - y0) * sy
+            ix, iy = max(8, int(cw * 0.03)), max(8, int(ch * 0.03))
+            rect = (int(x0 * sx) + ix, int(y0 * sy) + iy,
+                    int(x1 * sx) - ix, int(y1 * sy) - iy)
+            cell = _main_blobs(sheet.crop(rect))
             box = cell.getbbox()
             if not box or (box[2] - box[0]) < 4 or (box[3] - box[1]) < 4:
                 empty.append(slot)
@@ -512,6 +531,49 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
             parts[slot] = str(target)
     return {"parts": parts, "empty": empty, "scale": (sx, sy),
             "part_scale": round(part_scale, 4)}
+
+
+def _main_blobs(cell, keep: float = 0.08):
+    """The cell with only its main connected blob(s) left opaque.
+
+    Anything smaller than ``keep`` of the largest blob is erased: a border
+    fragment, a stray dot, a label the model copied. A part is one blob, or
+    a few near-equal ones (a hand with a separate thumb).
+    """
+    from PIL import Image
+    w, h = cell.size
+    alpha = cell.getchannel("A").load()
+    seen = bytearray(w * h)
+    blobs: list[tuple[int, list[int]]] = []
+    for start in range(w * h):
+        if seen[start] or alpha[start % w, start // w] == 0:
+            continue
+        stack = [start]
+        seen[start] = 1
+        px: list[int] = []
+        while stack:
+            i = stack.pop()
+            px.append(i)
+            x, y = i % w, i // w
+            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if 0 <= nx < w and 0 <= ny < h:
+                    j = ny * w + nx
+                    if not seen[j] and alpha[nx, ny] != 0:
+                        seen[j] = 1
+                        stack.append(j)
+        blobs.append((len(px), px))
+    if not blobs:
+        return cell
+    biggest = max(n for n, _ in blobs)
+    mask = Image.new("L", (w, h), 0)
+    mp = mask.load()
+    for n, px in blobs:
+        if n >= biggest * keep:
+            for i in px:
+                mp[i % w, i // w] = 255
+    out = cell.copy()
+    out.putalpha(Image.composite(cell.getchannel("A"), Image.new("L", (w, h), 0), mask))
+    return out
 
 
 def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
