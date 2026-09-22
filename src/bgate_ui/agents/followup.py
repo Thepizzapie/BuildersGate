@@ -450,14 +450,16 @@ def _debrief_exists(root, guard_ref: str) -> bool:
 
 
 def fail_escalated(root, item_id: int) -> bool:
-    """Has this item already been escalated for FAILING, ever?
+    """Is there an OPEN escalation for this item's failure right now?
 
-    One per item for the life of the item, in any status — the same rule
-    ``qa_gate.escalated`` uses and for the same reason: without it, an item
-    sitting at its retry cap files a fresh escalation every time anything
-    re-emits its failure (at-least-once delivery, the backstop sweep, a
-    dashboard restart replaying the batch), and the director's queue fills with
-    copies of one argument.
+    It used to be "ever": one escalation per item for the life of the item.
+    That dedup was right for at-least-once delivery (a re-emitted failure,
+    the backstop sweep, a dashboard restart replaying the batch) and wrong
+    for the case that actually happened: the director closed the escalation,
+    the item was reopened and FAILED AGAIN with a new, real finding (a wall
+    in a section), and that second failure reached nobody - the board sat
+    idle for an hour. An open escalation still dedups; a closed one does not
+    silence the next failure.
 
     An unreadable board answers YES. The two wrong answers are not
     symmetrical: claiming "not escalated" files duplicates, claiming
@@ -465,7 +467,8 @@ def fail_escalated(root, item_id: int) -> bool:
     """
     try:
         row = db.connect(root).execute(
-            "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? LIMIT 1",
+            "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? "
+            "AND status IN ('queued', 'dispatched', 'review') LIMIT 1",
             (FAIL_ESCALATION_SOURCE, str(int(item_id)))).fetchone()
     except Exception:
         return True
@@ -1611,13 +1614,23 @@ def failure_escalation_brief(root: str | os.PathLike[str], item: dict,
 
     lines.append(_chain_block(root, item))
 
+    lines.append("DONE MEANS SOMETHING IS READY. You are dispatched so the board "
+                 "never stays stuck: when you close this item, either a fix is "
+                 "queued and #%d hangs behind it, #%d is reopened with a changed "
+                 "brief, it is split into a chain, or it is cancelled with what "
+                 "replaces it. Closing this with the board still idle is the one "
+                 "wrong answer. The human is asked one precise question only "
+                 "when the board cannot decide." % (item_id, item_id))
+    lines.append("")
     lines.append("YOUR MOVES — pick exactly one")
     lines.append(
-        "  1. FILE THE BLOCKER. If the cause is upstream, queue_add the work "
-        "that actually clears it (or queue_add_chain if clearing it and "
-        "redoing this have an order — they usually do), and say in your result "
-        "note that #%d waits on it. Do not reopen #%d until the blocker is "
-        "gone: that is the money pump." % (item_id, item_id))
+        "  1. FILE THE FIX, HANG THIS BEHIND IT. If the failure names a defect "
+        "in another seat's lane (a wall in a section, a missing scene, a dead "
+        "kit), queue_add that seat's fix with an acceptance line, then "
+        "queue_reopen(#%d, reason) and queue_add_dependency(#%d, <fix id>) so "
+        "it re-runs the moment the fix lands. That is what a QA verdict is "
+        "FOR. Do not reopen #%d without the dependency: that is the money "
+        "pump." % (item_id, item_id, item_id))
     lines.append(
         "  2. RE-SCOPE AND REOPEN ONCE. If the brief was the problem, rewrite "
         f"it so the next attempt cannot fail the same way (queue_update "
