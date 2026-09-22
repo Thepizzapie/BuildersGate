@@ -233,7 +233,11 @@ thesis      Write the ONE SENTENCE: what decision is the player repeatedly
             is refused. It is not a decision.
 
 graybox     Gameplay proves that loop in ONE UGLY ROOM.  No art, no audio, no
-            cinematic, those seats do not dispatch at this stage, at all.
+            cinematic, those seats do not dispatch at this stage, at all, and
+            no provider paints, models or scores anything for ANY caller
+            (greenlight.generation_hold, on by default; turn it off for a
+            game whose art is the mechanic). Primitives, blockouts and
+            placeholder sprites are what the room is built from.
             greenlight_graybox_submit with a scene and evidence somebody can
             look at; greenlight_graybox_verdict is the director playing it and
             saying whether the interaction is actually interesting.
