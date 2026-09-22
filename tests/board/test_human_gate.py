@@ -106,3 +106,33 @@ class TestASubmittedGrayboxLiftsTheHold:
                                    why="attack, dodge, hold interact - nothing to choose",
                                    by="human")
         assert "art" in greenlight.held_seats(fresh_root)
+
+
+class TestAQuestionCarriesItsChoices:
+    def test_options_are_stored_shaped_and_capped(self, root):
+        got = steerbox.ask(root, "flatten the riser or reroute the bot?",
+                           options=["Flatten it", "Reroute", "Reroute", " ",
+                                    "Cut the section", "x" * 200, "e", "f", "g"])
+        assert got["options"][:3] == ["Flatten it", "Reroute", "Cut the section"]
+        assert len(got["options"]) == steerbox.MAX_OPTIONS
+        assert all(len(o) <= steerbox.MAX_OPTION for o in got["options"])
+        q = steerbox.question(root, got["seq"])
+        assert q["options"] == got["options"]
+        assert [x for x in steerbox.open_questions(root)
+                if x["event_seq"] == got["seq"]][0]["options"] == got["options"]
+
+    def test_a_question_without_options_has_an_empty_list(self, root):
+        got = steerbox.ask(root, "anything?")
+        assert steerbox.question(root, got["seq"])["options"] == []
+
+    def test_clicking_an_option_is_an_ordinary_answer(self, root):
+        got = steerbox.ask(root, "A or B?", options=["A", "B"])
+        out = steerbox.answer(root, got["seq"], "B", by="human")
+        assert steerbox.question(root, got["seq"])["answer"] == "B"
+        assert out["ok"]
+
+    def test_the_verdict_question_offers_the_verdicts(self, fresh_root):
+        _submit(fresh_root)
+        q = [x for x in steerbox.open_questions(fresh_root)
+             if "GRAYBOX VERDICT NEEDED" in x["question"]][0]
+        assert q["options"][0].startswith("PASS") and q["options"][1].startswith("FAIL")

@@ -83,7 +83,7 @@ type Gate = {
 };
 type Question = {
   event_seq?: number; question?: string; seat?: string; asked_at?: string;
-  item_id?: number; refs?: string[]; asked_by?: string;
+  item_id?: number; refs?: string[]; asked_by?: string; options?: string[];
 };
 type ConsoleState = { gates?: Gate[]; questions?: Question[] };
 
@@ -343,11 +343,12 @@ export function Director(props: SeatBodyProps) {
      there is nothing to choose here beyond the words. 409 means somebody
      already answered it; mutate surfaces that sentence and the reload clears
      the card. */
-  const sendAnswer = async (q: Question) => {
-    if (!answer.trim()) return;
+  const sendAnswer = async (q: Question, choice?: string) => {
+    const text = (choice ?? answer).trim();
+    if (!text) return;
     setBusy(true);
     const r = await mutate("/api/console/answer",
-                           { method: "POST", body: { seq: q.event_seq, answer: answer.trim() },
+                           { method: "POST", body: { seq: q.event_seq, answer: text },
                              ok: "answer delivered" });
     setBusy(false);
     if (r.ok) { setAnswering(null); setAnswer(""); }
@@ -622,6 +623,16 @@ export function Director(props: SeatBodyProps) {
                 They came down the same payload and were dropped. */}
             {!!(q.refs || []).length && (
               <div className="bgd-refs">{(q.refs || []).map((r) => <span key={r}>{r}</span>)}</div>
+            )}
+            {/* ONE CLICK IS THE ANSWER: the choices the agent named, each sent
+                through the same route as typed text. */}
+            {!!(q.options || []).length && (
+              <div className="bgd-options">
+                {(q.options || []).map((o) => (
+                  <button key={o} className="bgs-btn" disabled={busy || !q.event_seq}
+                          onClick={() => sendAnswer(q, o)}>{o}</button>
+                ))}
+              </div>
             )}
             {answering === q.event_seq ? (
               <div className="bgd-answer">
