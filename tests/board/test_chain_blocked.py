@@ -179,3 +179,13 @@ class TestADeadItemHoldsNothing:
         got = [e for e in events.since(root, 0)["events"]
                if e.get("kind") == "queue.released"]
         assert got and got[0]["payload"]["released"] == [second["id"]]
+
+
+class TestACutDependencyCanBeRehung:
+    def test_re_adding_a_cut_dependency_blocks_again(self, root):
+        head, second, _ = _chain(root)
+        queue.cut_dependency(root, second["id"], head["id"], by="autopilot")
+        assert queue.blocker(root, second["id"]) is None
+        queue.add_dependency(root, second["id"], head["id"])
+        assert queue.blocker(root, second["id"])["id"] == head["id"]
+        assert second["id"] not in {r["id"] for r in queue.ready(root)}

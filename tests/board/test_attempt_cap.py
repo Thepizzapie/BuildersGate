@@ -130,3 +130,13 @@ class TestAGateRerunsBehindItsFix:
         queue.set_status(root, fix["id"], "done", result="ok")
         with pytest.raises(ValueError):
             queue.reopen(root, gate["id"], "again", after=fix["id"])
+
+
+class TestAReopenOfAnOpenItemIsANoOp:
+    def test_two_reopens_in_a_row_count_one_run(self, root):
+        item = queue.add(root, "art", "kit", brief="x")
+        queue.set_status(root, item["id"], "failed", result="killed")
+        queue.reopen(root, item["id"], "by the director")
+        got = queue.reopen(root, item["id"], "by the auto-retry, a second later")
+        assert got["status"] == "queued"
+        assert queue.runs_of(queue.get(root, item["id"])) == 2
