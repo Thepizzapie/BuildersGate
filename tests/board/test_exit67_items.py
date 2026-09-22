@@ -85,7 +85,7 @@ class TestItem23AdvisoryOnly:
 # --------------------------------------------------------------------------
 class TestItem24SeatCap:
     def test_a_second_art_item_is_refused_once_the_seat_cap_is_hit(self, root):
-        assert dispatch._seat_cap(root, "art") == 1  # the shipped default
+        assert dispatch._seat_cap(root, "art") == 2  # the shipped default
 
         class _FakeProc:
             def poll(self):
@@ -93,14 +93,16 @@ class TestItem24SeatCap:
 
         with dispatch._lock:
             dispatch._live[12345] = {"proc": _FakeProc(), "seat": "art"}
+            dispatch._live[12346] = {"proc": _FakeProc(), "seat": "art"}
         try:
-            item = queue.add(root, "art", "second art item", brief="x")
+            item = queue.add(root, "art", "third art item", brief="x")
             result = dispatch._spawn(root, item["id"])
             assert result["ok"] is False
             assert result.get("code") == "seat_cap"
         finally:
             with dispatch._lock:
                 dispatch._live.pop(12345, None)
+                dispatch._live.pop(12346, None)
 
     def test_seat_cap_is_not_a_floor_code(self):
         assert "seat_cap" not in autodeploy.FLOOR_CODES
