@@ -507,6 +507,7 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
                       if rig_height_px and fig_h > 0 else 1.0)
         parts: dict[str, str] = {}
         empty: list[str] = []
+        clipped: list[str] = []
         for slot, (x0, y0, x1, y1) in layout["cells"].items():
             # The model redraws the cell borders, thicker and a little off;
             # a 4 px inset let them ride into every part (an arm 162 px tall
@@ -521,6 +522,12 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
             if not box or (box[2] - box[0]) < 4 or (box[3] - box[1]) < 4:
                 empty.append(slot)
                 continue
+            # A part that runs to the edge of its cell was drawn bigger than
+            # the cell allows: the model drew more than the part (a whole arm
+            # in the upper-arm cell). The cell caps its height, so the scale
+            # band alone would never see it - this does.
+            if box[1] <= 1 or box[3] >= cell.height - 1:
+                clipped.append(slot)
             target = out / f"{slot}.png"
             part = cell.crop(box)
             if abs(part_scale - 1.0) > 0.01:
@@ -529,8 +536,8 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
                                    Image.LANCZOS)
             part.save(target)
             parts[slot] = str(target)
-    return {"parts": parts, "empty": empty, "scale": (sx, sy),
-            "part_scale": round(part_scale, 4)}
+    return {"parts": parts, "empty": empty, "clipped": clipped,
+            "scale": (sx, sy), "part_scale": round(part_scale, 4)}
 
 
 def _main_blobs(cell, keep: float = 0.08):
@@ -628,6 +635,13 @@ def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
         flag = scale_flag(part, size, int(fig_h))
         if flag:
             flags.append(flag)
+        elif slot in cut["clipped"]:
+            flags.append({"slot": slot, "expected_px": round(float(part.get("height") or 0) * fig_h),
+                          "got_px": int(size[1]), "ratio": 0.0,
+                          "note": (f"{slot} filled its cell to the edge - the model "
+                                   "drew more than the part (a whole limb in a "
+                                   "segment's cell). Look at it; cutout_part_rerun "
+                                   "redraws one slot")})
         made[slot] = {"texture": path, "part_hash": cutout.part_hash(path),
                       "anchor_hash": ref_hash, "prompt": prompt,
                       "pivot_source": "default", "sheet": str(sheet_png)}
