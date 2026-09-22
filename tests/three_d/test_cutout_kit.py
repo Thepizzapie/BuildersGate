@@ -385,8 +385,9 @@ class FakeSheetGenerator:
             cx = (x0 + x1) // 2
             # Clear of the cell's inset: a blob on the edge is the overflow
             # flag, which one test asks for on purpose.
+            margin = max(24, int((y1 - y0) * 0.06))
             img.paste(Image.new("RGBA", (pw, ph), (120, 80, 60, 255)),
-                      (cx - pw // 2, y1 - 16 - ph))
+                      (cx - pw // 2, y1 - margin - ph))
         img.save(out_path)
         return {"ok": True, "path": str(out_path), "cost_usd": 0.08}
 
@@ -422,14 +423,22 @@ def test_an_empty_cell_is_a_failed_slot_not_a_blank_texture(tmp_path, reference)
 
 
 def test_a_part_off_scale_on_the_sheet_is_flagged(tmp_path, reference):
-    # The cell caps the height, so an oversized drawing fills the cell to
-    # its edge: that is the flag now, and it names the whole-limb failure.
     gen = FakeSheetGenerator(heights={"head": 0.6})
     got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                  out_dir=tmp_path / "parts", provider="fake",
                                  generate=gen)
     assert [f["slot"] for f in got["flags"]] == ["head"]
-    assert "filled its cell" in got["flags"][0]["note"]
+
+
+def test_a_part_that_fills_its_cell_is_flagged_as_more_than_the_segment(tmp_path, reference):
+    # Taller than the cell itself: the blob runs off the crop's edge, which
+    # is the model drawing a whole limb where a segment was asked for.
+    gen = FakeSheetGenerator(heights={"hand_near": 6.0})
+    got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
+                                 out_dir=tmp_path / "parts", provider="fake",
+                                 generate=gen)
+    flag = [f for f in got["flags"] if f["slot"] == "hand_near"]
+    assert flag and "filled its cell" in flag[0]["note"]
 
 
 def test_a_failed_sheet_fails_every_slot_and_stops(tmp_path, reference):

@@ -732,6 +732,20 @@ def answer(root: str | os.PathLike[str], seq: int, text: str, *,
     # costs an accurate route/delivered flag and nothing more.
     payload.update({"route": route, "delivered": delivered})
     _rewrite(root, int(seq), payload)
+    # THE ANSWER RE-QUEUES A RUN THAT ENDED ON THE QUESTION. The follow-up
+    # router holds a failed item that has an open question of its own; once
+    # the human has spoken there is nothing to wait for. Best-effort: a cap
+    # refusal or an item that is not failed leaves the answer in place.
+    try:
+        from . import queue as _queue
+        asker = int(shaped.get("item_id") or 0)
+        if asker:
+            row = _queue.get(root, asker)
+            if str(row.get("status")) == "failed":
+                _queue.reopen(root, asker, "the human answered: " + body[:300])
+    except Exception:
+        pass
+
     return {"ok": True, "seq": int(seq), "route": route, "item_id": item_id,
             "delivered": delivered, "delivery": delivery,
             "delivery_error": failure, "question": shaped["question"],

@@ -53,3 +53,17 @@ class TestEveryFailureReachesTheDirector:
                                                   {"reason": "budget spent"})
         assert "DONE MEANS SOMETHING IS READY" in brief
         assert "queue_add_dependency" in brief and "FILE THE FIX" in brief
+
+
+class TestTheAnswerReQueuesTheAsker:
+    def test_answering_a_failed_items_question_reopens_it(self, root):
+        from bgate_core.board import steerbox
+        item = queue.add(root, "art", "player kit", brief="make it")
+        q = steerbox.ask(root, "sheet failed twice - retry, change prompt or park?",
+                         item_id=item["id"], seat="art",
+                         options=["retry", "change the prompt", "park"])
+        queue.set_status(root, item["id"], "failed", result="asked the human")
+        steerbox.answer(root, q["seq"], "change the prompt", by="human")
+        got = queue.get(root, item["id"])
+        assert got["status"] == "queued"
+        assert "the human answered: change the prompt" in (got.get("result") or "")

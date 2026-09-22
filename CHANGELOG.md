@@ -65,6 +65,11 @@ repository at first publication. There is no earlier release history to record.
   refusal and the whole board sat behind a decision nobody had asked for.
 
 ### Fixed
+- **A failed run that ended in a question is not retried.** The follow-up
+  router holds a failed item that has an open `ask_human` question of its
+  own, and the human's answer reopens it. Measured: the art agent asked
+  with four options, the auto-retry re-ran it twice into "still
+  unanswered", and the cap cancelled the item.
 - **A reopen of an open item is a no-op**, not a second run: the director's
   reopen and the auto-retry's, a second apart, counted two runs for one and
   the cap cancelled the item.
