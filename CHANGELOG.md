@@ -10,6 +10,15 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **The rig has eyes: a proof sheet after every write, in the response.**
+  Every cutout write (`cutout_kit_generate`, `cutout_assemble`,
+  `cutout_part_rerun`, `cutout_equip`) now writes a gym beside the
+  character, renders one rig per clip in the engine, and returns the sheet
+  as image content beside the JSON, with a checklist of what to look for.
+  `cutout_proof(name)` renders it again on demand. `queue_complete` refuses
+  a run that wrote a cutout document and rendered no proof. The art brief
+  says a rig is judged on its proof sheet. Measured: three rigs reported
+  done from byte counts; the human failed all three on sight.
 - **The cutout template ships twelve clips, each looked at in the engine.**
   idle (low ready, so the weapon reads as held instead of floating at the
   hip in front of a hidden arm), walk (the trailing knee no longer bends

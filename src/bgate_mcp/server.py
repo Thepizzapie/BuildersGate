@@ -9505,6 +9505,19 @@ def _evidence_gate(root: str, item_id: int, evidence: str) -> Optional[dict]:
         rendered = any("shots" in _Path(p).parts
                        and p.lower().endswith(_IMAGE_SUFFIXES)
                        for p in writes)
+        # A RIG IS JUDGED ON ITS PROOF SHEET. A run that wrote a cutout
+        # document has a proof rendered for it on every write; if none
+        # landed (no engine, a refused window) the rig was never seen.
+        rigs = [p for p in writes if p.lower().endswith(".cutout.json")]
+        proofs = [p for p in writes if _Path(p).name.startswith("rigproof-")]
+        if rigs and not proofs and not evidence:
+            names = sorted({_Path(p).name[:-len(".cutout.json")] for p in rigs})
+            return {"ok": False, "stage": "evidence_gate", "rigs": names,
+                    "error": ("this run wrote the cutout rig(s) "
+                              + ", ".join(names) + " and no proof sheet was "
+                              "rendered, so nobody has SEEN the rig. Run "
+                              f"cutout_proof({names[0]!r}), look at the image "
+                              "it returns, fix what it shows, then complete.")}
         if rendered:
             return None
         if evidence:
@@ -9846,10 +9859,29 @@ def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
                                  "reference": doc.get("reference") or "",
                                  "reference_hash": doc.get("reference_hash") or "",
                                  **(metadata or {})})
-    return {**emitted, "doc": str(doc_path), "status": status}
+    # THE EYES. Render the proof sheet now and hand it back with the JSON
+    # (the tool decorators put `proof.image` in the response as image
+    # content). The agent judges what the human will see, not a byte count.
+    from bgate_core.three_d import cutoutproof as _proof
+    shot = _proof.proof(root, name, emitted["scene"])
+    if shot.get("image"):
+        _note_tool_write(root, shot["image"])
+        _register_artifact(f"{name}.rig_proof", shot["image"], producer=producer,
+                           metadata={"poses": shot.get("poses") or []})
+        _log("cutout", f"{name}: proof sheet rendered", ref=shot["image"])
+    else:
+        _log("cutout", f"{name}: proof sheet NOT rendered - {shot.get('error')}",
+             ref=emitted["scene_res"])
+    return {**emitted, "doc": str(doc_path), "status": status, "proof": shot}
 
 
-@_tool
+def _rig_proof_image(result: dict) -> list[str]:
+    """The rendered proof sheet, for the image block beside the JSON."""
+    path = ((result or {}).get("proof") or {}).get("image")
+    return [path] if path else []
+
+
+@_tool(images=_rig_proof_image)
 def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
                     adjustments: Optional[dict] = None, notes: str = "",
                     force: bool = False) -> dict:
@@ -9905,7 +9937,7 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
         return _fail(exc)
 
 
-@_tool
+@_tool(images=_rig_proof_image)
 def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
                         parts: Optional[list] = None, provider: str = "",
                         quality: str = "medium", note: str = "",
@@ -10001,7 +10033,7 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
         return _fail(exc)
 
 
-@_tool
+@_tool(images=_rig_proof_image)
 def cutout_part_rerun(name: str, slot: str, note: str = "", provider: str = "",
                       quality: str = "medium", force: bool = False) -> dict:
     """Regenerate ONE part of an existing kit against the kit's own reference
@@ -10085,7 +10117,31 @@ def cutout_status(name: str) -> dict:
     return {"ok": True, **_cutout.status(doc, root=root)}
 
 
-@_tool
+@_tool(images=_rig_proof_image)
+def cutout_proof(name: str, poses: Optional[list] = None, at: float = 1.0) -> dict:
+    """Render the rig's proof sheet again and LOOK at it: one rig per clip,
+    paused at a telling time, in the engine. It comes back in this response
+    as an image. Every cutout write already renders one; call this after a
+    bone adjustment, a pivot change or a re-import, or when the last write
+    reported the proof was not rendered. `poses` = [[clip, seconds], ...]
+    overrides the default fourteen.
+    """
+    from bgate_core.three_d import cutout as _cutout, cutoutproof as _proof
+    root = _root()
+    home = _cutout_dir(root, name)
+    scene = home / f"{name}.tscn"
+    if not scene.is_file():
+        return _fail(FileNotFoundError(f"no emitted rig at {scene}"))
+    shot = _proof.proof(root, name, scene, poses=poses, at=at)
+    if shot.get("image"):
+        _note_tool_write(root, shot["image"])
+        _register_artifact(f"{name}.rig_proof", shot["image"], producer="cutout_proof",
+                           metadata={"poses": shot.get("poses") or []})
+    return {"ok": bool(shot.get("image")), "name": name, "proof": shot,
+            "look": _proof.LOOK}
+
+
+@_tool(images=_rig_proof_image)
 def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = None,
                  force: bool = False) -> dict:
     """Put a different part in one slot and re-emit - a hat, a sword, an arm.
