@@ -1164,12 +1164,15 @@ def _do_reopen_unverified(root, action: dict) -> dict:
         return {"why": "the item moved since this was decided"}
     if not _qa_gate.needs_per_frame_verdict(item):
         return {"why": "a per-frame verdict landed since this was decided"}
-    reopened = _queue.reopen(
-        root, item_id,
-        "ART RESULT HAS NO PER-FRAME VERDICT (ITEM 9b) - open the finished "
-        "sheet, compare frame to frame against the pinned anchor "
-        "(consistency_check / sprite_family_check), and paste that verdict "
-        "into the result before re-closing.")
+    try:
+        reopened = _queue.reopen(
+            root, item_id,
+            "ART RESULT HAS NO PER-FRAME VERDICT (ITEM 9b) - open the finished "
+            "sheet, compare frame to frame against the pinned anchor "
+            "(consistency_check / sprite_family_check), and paste that verdict "
+            "into the result before re-closing.")
+    except ValueError as exc:                 # the run cap
+        return {"why": str(exc)}
     return {"why": "", "item": item_id, "status": reopened.get("status")}
 
 
@@ -1214,7 +1217,15 @@ def _do_reopen(root, action: dict) -> dict:
             reason = already + "\n\n---\n\n" + reason
     except Exception:                                             # noqa: BLE001
         pass                       # a salvage read must never block the retry
-    _queue.reopen(root, item_id, reason)
+    try:
+        _queue.reopen(root, item_id, reason)
+    except ValueError as exc:
+        # THE RUN CAP WINS OVER THE RETRY BUDGET. An automatic retry that the
+        # cap refuses becomes the escalation that cancels and asks for a split.
+        activity.log(root, LEDGER_KIND, f"auto-retry of #{item_id} refused: {exc}",
+                     seat=item.get("seat") or "", ref=str(item_id))
+        return _do_fail_escalate(root, {"item": item_id,
+                                        "reason": str(action.get("reason") or reason)})
     activity.log(root, LEDGER_KIND,
                  f"auto-reopened #{item_id} after a failure — attempt "
                  f"{int(item.get('attempts') or 0) + 2}, automatic retry "
@@ -1250,6 +1261,19 @@ def _do_fail_escalate(root, action: dict) -> dict:
     if str(item.get("source") or "") in NEVER_ESCALATE_SOURCES:
         return {"why": "this item IS an escalation — it does not escalate itself"}
     brief = failure_escalation_brief(root, item, action)
+    # AT THE RUN CAP THE ITEM IS CANCELLED, NOT SHELVED. A failed item wears
+    # a reopen button; nine runs on one item came through that button and
+    # the auto-retry. Past the cap the only honest next step is a split.
+    if _queue.over_attempt_cap(root, item):
+        try:
+            _queue.cancel(root, item_id, _queue.attempt_cap_message(root, item))
+        except Exception:                                         # noqa: BLE001
+            pass
+        brief = ("CANCELLED AT THE RUN CAP. " + _queue.attempt_cap_message(root, item)
+                 + " Your job here is the SPLIT: read what is on disk, file "
+                   "one item per remaining deliverable with queue_add_chain, "
+                   "each with its own acceptance line. Do not reopen this one.\n\n"
+                 + brief)
     # WHAT THIS FAILURE IS HOLDING. A failed chain head blocks every link
     # behind it, silently; the escalation is the one place the director reads
     # about the failure, so it names the queue it has stalled and the three
