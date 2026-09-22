@@ -18,7 +18,10 @@ repository at first publication. There is no earlier release history to record.
   nine per-part generations came back in three styles at three scales with
   rig pieces mixed into one another ("most unusable"). `mode="parts"` keeps
   the old loop; an empty cell is a failed slot, never a blank texture; the
-  sheet is registered as `<name>.parts_sheet`.
+  sheet is registered as `<name>.parts_sheet`. Parts land at the template's
+  rig scale (a 2528 px sheet gave a 400 px torso for a 200 px rig), and a
+  single-part rerun writes its own `_sheet_<slot>` files instead of
+  overwriting the kit's sheet.
 - **Questions carry their choices.** `ask_human(options=[...])` (2-6
   answers, 80 characters each) become buttons on every question card in the
   dashboard (director rail, orchestration inbox); a click is the whole
