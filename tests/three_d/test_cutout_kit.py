@@ -383,8 +383,10 @@ class FakeSheetGenerator:
             ph = max(6, int(fig_h * frac))
             pw = max(6, ph // 2)
             cx = (x0 + x1) // 2
+            # Clear of the cell's inset: a blob on the edge is the overflow
+            # flag, which one test asks for on purpose.
             img.paste(Image.new("RGBA", (pw, ph), (120, 80, 60, 255)),
-                      (cx - pw // 2, y1 - 8 - ph))
+                      (cx - pw // 2, y1 - 16 - ph))
         img.save(out_path)
         return {"ok": True, "path": str(out_path), "cost_usd": 0.08}
 
