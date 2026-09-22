@@ -2979,6 +2979,18 @@ and record nothing, so an agent's runs were invisible to the QA seat.
 ## greenlight_advance
 
 ```text
+FUN, THEN FUNCTIONAL, THEN PRETTY. Only the HUMAN moves a project forward a
+stage; an agent asking for graybox -> production is refused (backward is
+open to anyone). And while the project is at thesis or graybox, every PAID
+generation refuses for everyone - the director included: image_generate,
+image_sprites, character_generate, blender_generate, cutout_kit_generate,
+music, video, speech all answer stage="greenlight" with the way through.
+Primitives, blockouts and placeholder sprites never touch a provider and are
+what a graybox is built from. greenlight_waive(seat, reason) is the one
+door for a thing that truly cannot wait, on the record.
+```
+
+```text
 Move the project to the next production stage, or learn why it cannot.
 
 thesis -> graybox -> production -> release. Moving BACKWARD is always

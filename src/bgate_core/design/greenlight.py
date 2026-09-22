@@ -216,6 +216,62 @@ def held_seats(root: str | os.PathLike[str]) -> tuple[str, ...]:
     return tuple(s for s in _seats.DEFAULT_SEATS if not allows(root, s)[0])
 
 
+# FUN, THEN FUNCTIONAL, THEN PRETTY. Holding the art seat kept art ITEMS off
+# the board; it did not stop the director, or a gameplay agent with a prompt
+# in hand, from calling image_sprites at the graybox stage. Every paid
+# generation passes one gate (the server's provider preflight), so the stage
+# is read there too: while the project has not proved its loop, the
+# capability's owning seat is held and the call is refused, whoever makes it.
+# Primitives, blockouts and placeholder sprites never touch a provider and
+# stay open by construction - that is what a graybox is made of. The human's
+# way through is the same as for a seat: greenlight_graybox_verdict then
+# greenlight_advance('production'), or greenlight_waive(seat) on the record.
+GENERATION_SEAT: dict[str, str] = {
+    "image": "art", "3d": "art", "animate": "art",
+    "video": "cinematic",
+    "music": "audio", "audio": "audio", "speech": "audio",
+}
+
+
+def generation_allows(root: str | os.PathLike[str], capability: str,
+                      what: str = "") -> tuple[bool, str]:
+    """May a paid ``capability`` be bought at this stage? ``(ok, reason)``."""
+    seat = GENERATION_SEAT.get(str(capability or "").strip().lower())
+    if not seat:
+        return True, ""
+    # The scratch project is not a game and has no loop to prove.
+    try:
+        from ..store import project as _project
+        if _project.is_scratch(root):
+            return True, ""
+    except Exception:
+        pass
+    # ONE ROUTE, NOT THE ONLY ONE. A game whose art is the mechanic turns the
+    # hold off (greenlight.generation_hold) and keeps the seat holds as they
+    # were; the setting is the human's and defaults on for a new project.
+    try:
+        from ..store import settings as _settings
+        if not _settings.get(root, "greenlight.generation_hold"):
+            return True, ""
+    except Exception:
+        pass
+    ok, _why = allows(root, seat)
+    if ok:
+        return True, ""
+    at = stage(root)
+    return False, (
+        f"held: {what or capability + ' generation'} is a {seat} deliverable "
+        f"and the project is at the {at!r} stage - fun, then functional, "
+        "then pretty. Nothing is painted, sung or modelled by a provider "
+        "until the human has played the graybox and said the loop is worth "
+        "it: build it from primitives, blockouts and placeholder sprites "
+        "(those never touch a provider and are open now). The way through: "
+        "greenlight_graybox_submit, the human rules with "
+        "greenlight_graybox_verdict and greenlight_advance('production'); "
+        f"or greenlight_waive('{seat}', reason) for the one thing that truly "
+        "cannot wait, on the record.")
+
+
 # ── the mechanical thesis ───────────────────────────────────────────────────
 
 def validate_thesis(raw: Any) -> dict:
