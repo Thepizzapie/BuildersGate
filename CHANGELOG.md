@@ -123,6 +123,21 @@ repository at first publication. There is no earlier release history to record.
 - **`bgate connect`, wiring your coding agent is a command, not a paragraph to retype**
 - …and 1 more, in the decisions file.
 
+### Fixed
+- **`traversal_prove` drove the player wrong, and three agents paid for it.**
+  The bot driver released every action and pressed the block's actions
+  again on every physics frame; Godot 4.4 buffers those a frame, so a
+  controller polling `is_action_just_pressed` saw a jump only when its block
+  ENDED, two frames late and from the wrong ground, and a six-block program
+  read as "only the first two applied". EXIT 67 r2's stage item failed three
+  attempts ($14) on it: one agent blamed the level, one the controller's
+  `is_in_scripted_move`, and the director's escalation blamed the driver,
+  correctly. A block now presses its actions once at its start and releases
+  them once at its end, mirrored through an `InputEventAction` so
+  event-driven controllers see it too; every trace sample carries the block
+  being held and the body's position; an in-engine test drives a
+  run-jump-run route over a gap and asserts the jump fires inside its block.
+
 ### Changed
 - **2D space and sheets, from one night's failures.** The benchmark game
   shipped complete with its towns graybox, its party four sizes of person
