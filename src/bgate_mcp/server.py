@@ -8560,6 +8560,23 @@ def _near_duplicate(_q, title: str, seat: str) -> Optional[dict]:
     return best if best_j >= 0.5 else None
 
 
+def _filed_this_run(row: dict, own_item: str) -> bool:
+    """Was `row` filed during the CURRENT run of the item that filed it?"""
+    try:
+        from bgate_core.board import agentreg as _agentreg
+        run = _agentreg.last_run(_root(), int(own_item))
+        started = float((run or {}).get("started_at") or 0.0)
+        if not started:
+            return True
+        import datetime as _dt
+        created = _dt.datetime.strptime(str(row.get("created_at") or ""),
+                                        "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=_dt.timezone.utc).timestamp()
+        return created >= started - 5
+    except Exception:
+        return True
+
+
 def _focus_warning(root, title: str, brief: str) -> str:
     """ITEM 36 — non-blocking nudge when a new brief names a different slice
     than board.focus. Never refuses: the human's ruling was ONE biome at a
@@ -8630,8 +8647,13 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     # work exists says so in its RESULT NOTE and the director files it.
     own_item = (os.environ.get("BGATE_WORK_ITEM") or "").strip()
     if own_item:
+        # PER RUN, NOT PER LIFE. The cap stopped a QA gate on its fourth run
+        # from filing the fix its verdict named, because two earlier runs had
+        # filed two items hours before. What the cap guards against is one
+        # run spraying items; a new run starts with a clean count.
         filed = [r for r in _q.list_items(_root())
-                 if str(r.get("source_ref") or "") == own_item]
+                 if str(r.get("source_ref") or "") == own_item
+                 and _filed_this_run(r, own_item)]
         if len(filed) >= 2:
             return {"ok": False, "refused": "filing_cap",
                     "error": f"item {own_item} has already filed {len(filed)} item(s) "
@@ -9459,7 +9481,8 @@ def _evidence_gate(root: str, item_id: int, evidence: str) -> Optional[dict]:
 
 @_tool
 def queue_reopen(item_id: int, reason: str,
-                 frame_verdicts: Annotated[Optional[dict], Field(description='A framegate.gate_sheet() result (image_sprites result["frame_gate"]) - appended as a per-frame breakdown (pose, which check fired, measured value) so the reopened agent knows WHICH frames, not just "something is wrong".')] = None) -> dict:
+                 frame_verdicts: Annotated[Optional[dict], Field(description='A framegate.gate_sheet() result (image_sprites result["frame_gate"]) - appended as a per-frame breakdown (pose, which check fired, measured value) so the reopened agent knows WHICH frames, not just "something is wrong".')] = None,
+                 after: Annotated[Optional[int], Field(description='The item this re-run hangs BEHIND. A gate that failed on a defect another seat must fix names the fix here: the reopen is queued with a dependency on it and does not count against the run cap (dispatch.max_attempts). Refused when that item is already done or cancelled.')] = None) -> dict:
     """Send a done/failed item back to 'queued' for another round.
 
     The QA gate's FAIL path: reason is the ranked nitpick list, APPENDED to the
@@ -9480,7 +9503,7 @@ def queue_reopen(item_id: int, reason: str,
             f"item {item_id} is {item['status']!r} - only done/failed "
             "items can be reopened")
     return _q.reopen(root, item_id, (reason or "").strip(),
-                     frame_verdicts=frame_verdicts)
+                     frame_verdicts=frame_verdicts, after=after)
 
 
 @_tool

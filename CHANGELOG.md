@@ -10,6 +10,13 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **A re-run behind a fix does not count against the run cap.** The graybox
+  gate found a wall per run and was told "no more runs" on the fourth, and
+  the QA agent that found the wall could not file the fix because two runs
+  hours earlier had spent its filing cap. `queue_reopen(after=<fix id>)`
+  hangs the reopened item behind the fix, resets its run count and refuses
+  when the fix is already done or cancelled. The per-agent filing cap of two
+  now counts items filed during the CURRENT run, not the item's whole life.
 - **A run cap per work item, for everyone.** One item ran nine times
   (~$33) through its auto-retry, a director reopen and two dashboard
   send-backs, and no run could land it because the brief was five

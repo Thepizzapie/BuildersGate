@@ -98,3 +98,25 @@ class TestTheEscalationSplits:
         _spent(root, item["id"], 2)
         followup._do_fail_escalate(str(root), {"item": item["id"], "reason": "no path"})
         assert queue.get(root, item["id"])["status"] == "failed"
+
+
+class TestAGateRerunsBehindItsFix:
+    def test_a_reopen_behind_a_fix_does_not_count_against_the_cap(self, root):
+        gate = queue.add(root, "qa", "graybox gate", brief="drive it")
+        _spent(root, gate["id"], 3)
+        fix = queue.add(root, "gameplay", "flatten the riser", brief="x")
+        got = queue.reopen(root, gate["id"], "re-run once the riser is gone",
+                           after=fix["id"])
+        assert got["status"] == "queued"
+        assert queue.blocker(root, gate["id"])["id"] == fix["id"]
+        assert gate["id"] not in {r["id"] for r in queue.ready(root)}
+        queue.set_status(root, fix["id"], "done", result="flat")
+        assert gate["id"] in {r["id"] for r in queue.ready(root)}
+
+    def test_a_reopen_behind_finished_work_is_refused(self, root):
+        gate = queue.add(root, "qa", "graybox gate", brief="drive it")
+        queue.set_status(root, gate["id"], "failed", result="no")
+        fix = queue.add(root, "gameplay", "already done", brief="x")
+        queue.set_status(root, fix["id"], "done", result="ok")
+        with pytest.raises(ValueError):
+            queue.reopen(root, gate["id"], "again", after=fix["id"])
