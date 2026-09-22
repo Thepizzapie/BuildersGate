@@ -39,7 +39,13 @@ repository at first publication. There is no earlier release history to record.
   nine per-part generations came back in three styles at three scales with
   rig pieces mixed into one another ("most unusable"). `mode="parts"` keeps
   the old loop; an empty cell is a failed slot, never a blank texture; the
-  sheet is registered as `<name>.parts_sheet`. Parts land at the template's
+  sheet is registered as `<name>.parts_sheet`. Every part is asked for with
+  a rounded, overlapping joint cap at each seam and the torso keeps its
+  shoulder mass, so the puppet does not open gaps when it bends; cells are
+  sized to their part so a cell cannot come back holding a whole arm; the
+  figure cell hugs the figure; slicing insets the redrawn borders and keeps
+  the main blob. The far arm draws over the torso (z 5) so its hand no
+  longer floats detached when the arm rises. Parts land at the template's
   rig scale (a 2528 px sheet gave a 400 px torso for a 200 px rig), and a
   single-part rerun writes its own `_sheet_<slot>` files instead of
   overwriting the kit's sheet.
