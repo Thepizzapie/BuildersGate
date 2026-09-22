@@ -15,7 +15,10 @@ repository at first publication. There is no earlier release history to record.
   hip in front of a hidden arm), walk (the trailing knee no longer bends
   backwards), run, jump, fall, crouch, slide, aim, fire, attack_melee, hurt
   and a death that collapses (recoil, knees buckle, sit back, lie flat)
-  instead of rotating the standing figure ninety degrees. The first set had
+  instead of rotating the standing figure ninety degrees. The weapon slot
+  rides at +90 degrees on the hand bone by default, so a barrel-forward
+  held sprite points along the forearm in every pose instead of hanging at
+  45 degrees in the aim. The first set had
   seven and no jump, fall, crouch, slide or fire at all; the rig gym
   reported them missing and the art agent hand-authored them. The sign
   convention is written down at the top of the set, measured in a probe gym.
