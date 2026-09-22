@@ -20,7 +20,13 @@ repository at first publication. There is no earlier release history to record.
   stop reopening, and the failure escalation cancels the item and asks the
   director for a chain of single-deliverable items. A parked or cancelled
   item stays that way when a killed run is banked as failed; that overwrite
-  is how a parked item grew a reopen button.
+  is how a parked item grew a reopen button. And the board never stays
+  stuck: when autopilot idles behind a dead link it files one UNBLOCK item
+  for the director (close it as superseded, reopen with a changed brief,
+  split it and re-hang the waiters, or cancel the waiters; ask the human
+  only when the board cannot decide), dispatched like any other and never
+  filed twice; the director protocol makes that job the director's, not
+  the human's.
 - **A chain behind a dead link says so.** A six-link chain's head failed,
   the director's escalation filed a replacement item that did the head's
   job, and the five links behind the head sat queued and silent for an hour
