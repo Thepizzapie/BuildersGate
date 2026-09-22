@@ -2205,6 +2205,16 @@ the kit. Far-side limbs are the near side's drawing, tinted.
 One bad part is one cutout_part_rerun, not another kit.
 ```
 
+## cutout_proof
+
+```text
+Render the rig's proof sheet and LOOK at it: one rig per clip, paused at a
+telling time, in the engine, returned in the response as an image. Every
+cutout write renders one already (it rides back with the JSON); call this
+after a bone adjustment, a pivot change or a re-import. queue_complete
+refuses a run that wrote a cutout document and rendered no proof.
+```
+
 ## cutout_part_rerun
 
 ```text
