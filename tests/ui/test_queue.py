@@ -415,8 +415,8 @@ class TestClaimNext:
         assert follow is not None and follow["title"] == "derive the poses"
 
     def test_holds_what_autodeploy_holds(self, root):
-        queue.add(root, "director", "two agents disagreed",
-                  source="qa-gate-escalation")
+        # A QA-loop escalation is DISPATCHED now (the director decides, not a
+        # human); chat turns are the one source still held for a person.
         queue.add(root, "director", "a chat turn", source="chat")
         placeholder = queue.add(root, "director", "coming", brief="x")
         with db.tx(root) as conn:

@@ -126,7 +126,11 @@ SATISFIED = ("done",)
 # agent whose brief is to DIAGNOSE AND ACT — read the failure, fix the brief,
 # queue_reopen or route the real blocker. Spend is bounded the same way it
 # always was: ONE escalation per item, ever (followup.fail_escalated).
-HELD_SOURCES = ("qa-gate-escalation", "chat")
+# "qa-gate-escalation" used to be held here too, on the theory that a QA loop
+# that failed N rounds needed a PERSON. It needed a decision; the director
+# seat is dispatched for exactly that, and holding it left "QA loop: #5
+# failed 6 rounds" queued for a human who was asleep while the board sat.
+HELD_SOURCES = ("chat",)
 
 # The source stamped on that escalation. Named here rather than in the router
 # that files them because the hold above and the filing must never drift apart:
