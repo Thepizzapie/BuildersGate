@@ -235,7 +235,7 @@ def generate_kit(root: str | os.PathLike[str], name: str, reference_path: str,
                  max_paid_calls: int = DEFAULT_MAX_PAID_CALLS,
                  work_item_id: Optional[int] = None,
                  generate: Optional[Callable] = None,
-                 mode: str = "sheet") -> dict:
+                 mode: str = "sheet", description: str = "") -> dict:
     """Generate every planned part against one reference. Never raises for a
     provider failure; refuses BEFORE spending for a plan it must not buy.
 
@@ -273,10 +273,47 @@ def generate_kit(root: str | os.PathLike[str], name: str, reference_path: str,
     ref_h = reference_height(ref)
 
     if mode == "sheet":
+        description = (description or (profile or {}).get("traits") or "").strip()
+        if not description:
+            raise KitError(
+                "a sheet kit paints the character from a WRITTEN description "
+                "(the reference image is never sent to the model - it pasted "
+                "the reference into the pieces). Pass description='...' - "
+                "look at the reference and write its outfit, colours, "
+                "materials and art style - or set the pin's traits with "
+                "profile_set")
         got = generate_sheet(root, name, str(ref), todo, out_dir=out,
                              provider=provider, spec=spec, quality=quality,
                              note=note, profile=profile,
-                             work_item_id=work_item_id, generate=generate)
+                             work_item_id=work_item_id, generate=generate,
+                             description=description)
+        # EVERY FLAGGED PIECE IS REPAINTED ALONE, once. MEASURED (exit-67-r2,
+        # 2026-09-22): on one nine-silhouette sheet the model painted the arm,
+        # forearm and boot exactly and left the head, hip, thigh and shin
+        # grey (it drew a whole bust in the torso cell). One silhouette per
+        # image is the task it does reliably; the checks decide which.
+        if len(todo) > 1 and not got["stopped"]:
+            bad = [p for p in todo
+                   if p["slot"] not in got["made"]
+                   or any(f.get("slot") == p["slot"] for f in got["flags"])]
+            for part in bad:
+                if got["calls"] >= int(max_paid_calls):
+                    break
+                one = generate_sheet(root, name, str(ref), [part], out_dir=out,
+                                     provider=provider, spec=spec,
+                                     quality=quality, note=note,
+                                     profile=profile, work_item_id=work_item_id,
+                                     generate=generate, description=description)
+                got["calls"] += one["calls"]
+                got["cost"] += one["cost"]
+                slot = part["slot"]
+                mine = [f for f in one["flags"] if f.get("slot") == slot]
+                old = [f for f in got["flags"] if f.get("slot") == slot]
+                if slot in one["made"] and (slot not in got["made"] or len(mine) < len(old)
+                                            or not mine):
+                    got["made"][slot] = one["made"][slot]
+                    got["flags"] = [f for f in got["flags"] if f.get("slot") != slot] + mine
+                    got["failed"] = [f for f in got["failed"] if f.get("slot") != slot]
         return {
             "ok": not got["failed"] and not got["flags"] and not got["stopped"],
             "parts": got["made"], "failed": got["failed"], "flags": got["flags"],
@@ -347,31 +384,44 @@ def generate_kit(root: str | os.PathLike[str], name: str, reference_path: str,
 # the model never sees the other eight. The human's verdict: "art generation
 # for the 2D rigging is impossible".
 #
-# A SHEET IS ONE CALL. The layout image below is drawn by us: the full figure
-# in a big left cell, and one outlined, labelled cell per part. The model is
-# asked to redraw the layout with each cell filled by the named part of that
-# same figure; style and scale hold because every part is painted in one
-# image beside the figure it is cut from. We key the flat backdrop ourselves
-# and crop each cell back out by its known rectangle. Nine paid calls become
-# one, and the result is judged as a whole.
+# A SHEET IS ONE CALL. The layout image below is drawn by us: one labelled
+# cell per piece holding that piece's SILHOUETTE (cutoutshape) in flat grey,
+# every one at the same scale, and nothing else. The pinned reference is a
+# separate image, the character's look. The model paints the character into
+# the silhouettes; the reference itself is never on the sheet or cut.
+#
+# THE SILHOUETTE IS THE CONTRACT (2026-09-22). Cells that only named a part
+# got back pieces of any size that did not meet at their joints - "the rig
+# is not even connected". Now the harness clips the paint to the silhouette,
+# so every piece has the template's size, the template's pivot, and a joint
+# disc that its neighbour's disc turns over. The reference is never cut.
 
 SHEET_SIZE = (1536, 1024)
 SHEET_MARGIN = 16
 SHEET_LABEL = 26
 SHEET_FIGURE_W = 400
 SHEET_LAYOUT = "_sheet_layout"
+#: Sheet pixels per template pixel for the silhouettes: at most this, less
+#: when the cells are too small for it.
+SHEET_SCALE = 5.0
+SHEET_SCALE_MAX = 10.0
+SILHOUETTE_GREY = (150, 150, 150)
+#: Template px the clip grows the silhouette by, so the painted outline on
+#: the silhouette's edge survives the clip.
+CLIP_GROW = 1.2
 
 
 def sheet_layout(parts: list[dict], reference_path: str | os.PathLike[str],
                  out_dir: str | os.PathLike[str],
                  chroma_rgb: tuple[int, int, int], suffix: str = "") -> dict:
-    """Draw the layout the model redraws. Returns ``{png, json, cells,
-    figure_height_px, size}`` and writes both files into ``out_dir``.
+    """Draw the layout the model paints. Returns ``{png, json, cells,
+    shapes, size, scale}`` and writes both files into ``out_dir``.
 
-    ``cells`` maps slot -> (x0, y0, x1, y1) in layout pixels, the rectangle
-    BELOW the label strip, which is all that is cropped back out.
+    ``shapes`` maps slot -> (x0, y0, x1, y1): where that slot's silhouette
+    bbox sits on the layout, in layout pixels.
     """
     from PIL import Image, ImageDraw
+    from . import cutoutshape as _shape
 
     W, H = SHEET_SIZE
     M, L = SHEET_MARGIN, SHEET_LABEL
@@ -379,99 +429,90 @@ def sheet_layout(parts: list[dict], reference_path: str | os.PathLike[str],
     draw = ImageDraw.Draw(canvas)
     ink = (40, 40, 40, 255)
 
-    # The figure, plated onto the key colour so a keyed reference and an
-    # opaque one land the same way, scaled to the cell.
-    fig_box = (M, M + L, M + SHEET_FIGURE_W, H - M)
-    fw, fh = fig_box[2] - fig_box[0], fig_box[3] - fig_box[1]
-    with Image.open(reference_path) as src:
-        img = src.convert("RGBA")
-        box = img.getbbox() or (0, 0, img.width, img.height)
-        img = img.crop(box)
-        scale = min((fw - 20) / max(1, img.width), (fh - 20) / max(1, img.height))
-        img = img.resize((max(1, int(img.width * scale)),
-                          max(1, int(img.height * scale))), Image.LANCZOS)
-    fx = fig_box[0] + (fw - img.width) // 2
-    fy = fig_box[1] + 10
-    canvas.alpha_composite(img, (fx, fy))
-    figure_h = img.height
-    # THE FIGURE CELL IS TIGHT AND AT THE TOP. Left tall and half empty, the
-    # model used the space above the figure for a part (a head landed there
-    # twice, and the HEAD cell came back empty). The box hugs the figure from
-    # the top; what is left below it is plain backdrop.
-    fig_box = (fig_box[0], fig_box[1], fig_box[2], fy + img.height + 10)
-    draw.rectangle(fig_box, outline=ink, width=2)
-    draw.text((fig_box[0] + 4, fig_box[1] + 4), "FULL FIGURE (do not change)", fill=ink)
-
-    # CELLS ARE BIG AND UNIFORM. Sized-to-part cells were tried (2026-09-22)
-    # and the model drew most parts BESIDE the small cells; eight of nine
-    # slots came back empty. Big cells it fills. What the part's size should
-    # be is said in the label and the prompt, and a part that fills its cell
-    # to the edge is flagged (slice_sheet) as "more than the segment".
-    n = max(1, len(parts))
+    # NO FIGURE ON THE LAYOUT. The reference goes to the model as its own
+    # image, for the look only. Plated onto the sheet, the model copied it:
+    # the torso cell came back as the reference's head and bust (2026-09-22).
+    shaped = [p for p in parts if _shape.has_shape(p["slot"])]
+    n = max(1, len(shaped))
     rows = 1 if n <= 4 else 2
     cols = -(-n // rows)
-    x_start = fig_box[2] + M
+    x_start = M
     area_w = W - M - x_start
     cell_w = (area_w - (cols - 1) * M) // cols
     cell_h = (H - (rows + 1) * M - rows * L) // rows
     cells: dict[str, tuple[int, int, int, int]] = {}
-    for i, part in enumerate(parts):
+    shapes: dict[str, tuple[int, int, int, int]] = {}
+    # One scale for the whole sheet, as big as the tightest cell allows: a
+    # lone silhouette on a rerun sheet is painted large, not as a speck.
+    scale_px = SHEET_SCALE_MAX
+    for part in shaped:
+        bx0, by0, bx1, by1 = _shape.bbox(part["slot"])
+        scale_px = min(scale_px, 0.8 * cell_w / (bx1 - bx0),
+                       0.8 * cell_h / (by1 - by0))
+    for i, part in enumerate(shaped):
+        slot = part["slot"]
         r, c = divmod(i, cols)
         x0 = x_start + c * (cell_w + M)
         y_top = M + r * (cell_h + L + M)
         y0 = y_top + L
-        rect = (x0, y0, x0 + cell_w, y0 + cell_h)
-        cells[part["slot"]] = rect
-        draw.rectangle(rect, outline=ink, width=2)
-        pct = int(round(float(part.get("height") or 0.15) * 100))
-        draw.text((x0 + 4, y_top + 4), f"{part['slot'].upper()}  ({pct}% of figure)",
-                  fill=ink)
+        cells[slot] = (x0, y0, x0 + cell_w, y0 + cell_h)
+        draw.text((x0 + 4, y_top + 6), slot.replace("_near", "").upper(), fill=ink)
+        m = _shape.mask(slot, scale_px)
+        sx = x0 + (cell_w - m.width) // 2
+        sy = y0 + (cell_h - m.height) // 2
+        grey = Image.new("RGBA", m.size, (*SILHOUETTE_GREY, 255))
+        canvas.paste(grey, (sx, sy), m)
+        shapes[slot] = (sx, sy, sx + m.width, sy + m.height)
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     png = out / f"{SHEET_LAYOUT}{suffix}.png"
     canvas.save(png)
     meta = {"size": [W, H], "cells": {k: list(v) for k, v in cells.items()},
-            "figure_height_px": figure_h, "chroma": list(chroma_rgb)}
+            "shapes": {k: list(v) for k, v in shapes.items()},
+            "scale": scale_px, "chroma": list(chroma_rgb)}
     js = out / f"{SHEET_LAYOUT}{suffix}.json"
     js.write_text(__import__("json").dumps(meta, indent=1), encoding="utf-8")
-    return {"png": str(png), "json": str(js), "cells": cells,
-            "figure_height_px": figure_h, "size": (W, H)}
+    return {"png": str(png), "json": str(js), "cells": cells, "shapes": shapes,
+            "size": (W, H), "scale": scale_px}
 
 
 def sheet_prompt(parts: list[dict], *, view: str = "side",
-                 profile: Optional[dict] = None, note: str = "") -> str:
-    """The whole kit in one prompt: redraw the layout, fill each cell."""
+                 profile: Optional[dict] = None, note: str = "",
+                 description: str = "") -> str:
+    """Paint the character, as DESCRIBED, into the silhouettes.
+
+    USER DIRECTIVE (2026-09-22): the reference is a reference, never cut.
+    Shown the reference image, the image model pasted the reference's own
+    head and bust into the torso silhouette. So the call carries no image
+    of the character at all - only this description of it - and the model
+    has nothing to copy.
+    """
+    from . import cutoutshape as _shape
+
     traits = (profile or {}).get("traits") or ""
     style = (profile or {}).get("style") or ""
     negative = (profile or {}).get("negative") or ""
-    cells = "; ".join(f"{p['slot'].upper()}: {p.get('what') or p['slot']}"
-                      for p in parts)
+    cells = "; ".join(
+        f"{p['slot'].replace('_near', '').upper()}: {_shape.WHAT.get(_shape.key(p['slot']), p['slot'])}"
+        for p in parts if _shape.has_shape(p["slot"]))
     lines = [
-        "A 2D CUTOUT PUPPET PARTS SHEET, an exact redraw of the layout image "
-        "(the second reference). Keep the full character in the large left "
-        "cell exactly as it is. In each outlined, labelled cell draw ONLY the "
-        "body part named above it, cut from that same character: the same "
-        "style, colours, line weight and SCALE as the figure on the left, "
-        f"strict {view} view, the same projection as the figure.",
-        "EVERY PART ENDS ROUNDED AT ITS SEAMS: at each joint the part "
-        "continues a little past the joint with a rounded end, painted in "
-        "the part's OWN cloth or skin colour as if the sleeve, trouser leg or "
-        "limb simply continued, so that when the puppet bends the rounded end "
-        "tucks under its neighbour and no gap opens. NOT a separate ball, "
-        "sphere, knob or mechanical joint - no doll joints, no visible "
-        "sockets. Never a flat cut. The TORSO keeps its full shoulder mass "
-        "and the collar; the HIP keeps the belt and the top of both thighs. "
-        "One part per cell, nothing else in the cell: no whole figures, no "
-        "extra parts, no props, no shadows, no text besides the existing "
-        "labels.",
-        f"Cells: {cells}.",
-        "Keep every cell where it is and leave the space around the parts "
-        "flat backdrop colour. Draw each part INSIDE its own labelled cell, "
-        "centred, at the size it has on the figure (the label says the "
-        "height as a percentage of the figure); a part is small in its cell "
-        "with backdrop around it, never enlarged to fill the cell, and never "
-        "drawn outside or beside a cell.",
+        "A 2D CUTOUT PUPPET PAINTING SHEET. Repaint this layout image "
+        "keeping every cell, label and grey shape exactly where it is. "
+        f"The character: {description.strip().rstrip('.')}. Never draw the "
+        "whole character anywhere; only its parts, each inside its grey "
+        "silhouette.",
+        "Each labelled cell holds one flat grey SILHOUETTE. Paint that body "
+        "part of the character INTO the silhouette, filling it completely "
+        "and exactly, edge to edge, with a clean dark outline on the "
+        "silhouette's own edge: nothing outside the grey shape, no grey left "
+        f"inside it. Strict {view} view, facing right.",
+        "The round ends of a shape are JOINTS: paint them as the same cloth "
+        "or skin continuing round the end, so when the puppet bends the ends "
+        "tuck under each other - never a ball, knob, socket or flat cut.",
+        f"Silhouettes: {cells}.",
+        "Flat backdrop colour everywhere outside the silhouettes. No extra "
+        "parts, no whole figures, no props, no shadows, no new text.",
     ]
     if traits:
         lines.append(f"Character: {traits}.")
@@ -484,70 +525,112 @@ def sheet_prompt(parts: list[dict], *, view: str = "side",
     return " ".join(lines)
 
 
+def clear_grey(piece, tol: int = 10):
+    """Make the silhouette's own flat grey transparent, feathering its edge.
+
+    Tight on purpose: at 30 it also ate the vest's buckle and the shirt's
+    highlights and left holes all over the torso (2026-09-22). Unpainted
+    silhouette is FLAT grey; painted grey is not."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    arr = np.asarray(piece.convert("RGBA")).copy()
+    d = np.abs(arr[:, :, :3].astype(int) - np.array(SILHOUETTE_GREY)).sum(axis=2)
+    grey = d < tol
+    near = (d < tol * 2) & ~grey
+    arr[grey, 3] = 0
+    arr[near, 3] = (arr[near, 3] * 0.5).astype("uint8")
+    return Image.fromarray(arr, "RGBA")
+
+
 def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
                 out_dir: str | os.PathLike[str],
                 chroma_rgb: tuple[int, int, int],
                 rig_height_px: int = 0) -> dict:
-    """Key the sheet and crop every cell back out to ``<slot>.png``.
+    """Key the painted sheet and clip every silhouette back out.
 
-    ``rig_height_px`` is the template's figure height: every part is resized
-    by rig_height / (the figure's height on the sheet) so it lands at the
-    scale the rig is authored in. MEASURED (exit-67-r2 #8): a 2528 px sheet
-    gave a 400 px torso for a 200 px rig and the agent wrote its own
-    downscaler. 0 leaves the sheet's pixels alone.
+    Each piece is found where its silhouette was drawn - registered to the
+    paint's own bounding box in the cell, because the model keeps the layout
+    but not always its exact scale - resized to cutoutshape.TEX px per
+    template px and clipped to the silhouette, grown by CLIP_GROW. The size
+    and pivot therefore come from the template, never from the paint.
 
-    Returns ``{parts: {slot: path}, empty: [slots], scale: (sx, sy),
-    part_scale}``. A cell with nothing but backdrop in it is EMPTY, not a
-    part: it is reported so the caller can re-run that slot, never written
-    as a blank texture.
+    Returns ``{parts: {slot: path}, empty, clipped, gaps, grey, scale}``:
+    `empty` slots had nothing painted; `grey` slots were left mostly
+    unpainted; `gaps` lists joint discs the paint does not cover.
+    `rig_height_px` is accepted for the old call shape and ignored.
     """
+    import numpy as np
     from PIL import Image
     from ..art import chroma as _chroma
+    from . import cutoutshape as _shape
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     lw, lh = layout["size"]
+    unit = float(layout.get("scale") or SHEET_SCALE)
     with Image.open(sheet_path) as src:
         sheet = src.convert("RGBA")
-        _chroma.key(sheet, chroma_rgb)
-        sx, sy = sheet.width / lw, sheet.height / lh
-        fig_h = float(layout.get("figure_height_px") or 0) * sy
-        part_scale = (float(rig_height_px) / fig_h
-                      if rig_height_px and fig_h > 0 else 1.0)
-        parts: dict[str, str] = {}
-        empty: list[str] = []
-        clipped: list[str] = []
-        for slot, (x0, y0, x1, y1) in layout["cells"].items():
-            # The model redraws the cell borders, thicker and a little off;
-            # a 4 px inset let them ride into every part (an arm 162 px tall
-            # that was a 30 px arm plus two border lines). Inset by 3% of the
-            # cell, then keep the largest blob and anything near its size.
-            cw, ch = (x1 - x0) * sx, (y1 - y0) * sy
-            ix, iy = max(8, int(cw * 0.03)), max(8, int(ch * 0.03))
-            rect = (int(x0 * sx) + ix, int(y0 * sy) + iy,
-                    int(x1 * sx) - ix, int(y1 * sy) - iy)
-            cell = _main_blobs(sheet.crop(rect))
-            box = cell.getbbox()
-            if not box or (box[2] - box[0]) < 4 or (box[3] - box[1]) < 4:
-                empty.append(slot)
-                continue
-            # A part that runs to the edge of its cell was drawn bigger than
-            # the cell allows: the model drew more than the part (a whole arm
-            # in the upper-arm cell). The cell caps its height, so the scale
-            # band alone would never see it - this does.
-            if box[1] <= 1 or box[3] >= cell.height - 1:
-                clipped.append(slot)
-            target = out / f"{slot}.png"
-            part = cell.crop(box)
-            if abs(part_scale - 1.0) > 0.01:
-                part = part.resize((max(1, round(part.width * part_scale)),
-                                    max(1, round(part.height * part_scale))),
-                                   Image.LANCZOS)
-            part = defringe(part, chroma_rgb)
-            part.save(target)
-            parts[slot] = str(target)
+    sx, sy = sheet.width / lw, sheet.height / lh
+    _chroma.key(sheet, chroma_rgb)
+    parts: dict[str, str] = {}
+    empty, grey_left, gaps, clipped = [], [], [], []
+    for slot, (x0, y0, x1, y1) in layout["cells"].items():
+        cw, ch = (x1 - x0) * sx, (y1 - y0) * sy
+        ix, iy = max(6, int(cw * 0.02)), max(6, int(ch * 0.02))
+        rect = (int(x0 * sx) + ix, int(y0 * sy) + iy,
+                int(x1 * sx) - ix, int(y1 * sy) - iy)
+        cell = _main_blobs(sheet.crop(rect))
+        box = cell.getbbox()
+        if not box or (box[2] - box[0]) < 4 or (box[3] - box[1]) < 4:
+            empty.append(slot)
+            continue
+        # Where the silhouette was drawn, in this cell crop's pixels.
+        want = layout["shapes"][slot]
+        ww, wh = (want[2] - want[0]) * sx, (want[3] - want[1]) * sy
+        wx0, wy0 = want[0] * sx - rect[0], want[1] * sy - rect[1]
+        drawn = (wx0, wy0, wx0 + ww, wy0 + wh)
+        # USE IT unless the paint is clearly somewhere else. Registering
+        # every piece to its paint's bbox stretched a piece whose paint
+        # stopped short, and hid the very hole joint_gaps looks for.
+        ix = max(0.0, min(drawn[2], box[2]) - max(drawn[0], box[0]))
+        iy = max(0.0, min(drawn[3], box[3]) - max(drawn[1], box[1]))
+        inter = ix * iy
+        union = ww * wh + (box[2] - box[0]) * (box[3] - box[1]) - inter
+        if union > 0 and inter / union >= 0.5:
+            src_box = drawn
+        else:
+            # The model moved or rescaled the piece: map the silhouette onto
+            # the paint, and say so.
+            bw, bh = box[2] - box[0], box[3] - box[1]
+            k = (bw / ww + bh / wh) / 2.0
+            clipped.append(slot)
+            cxp, cyp = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+            src_box = (cxp - ww * k / 2, cyp - wh * k / 2,
+                       cxp + ww * k / 2, cyp + wh * k / 2)
+        m = _shape.mask(slot, _shape.TEX)
+        piece = cell.crop(tuple(int(round(v)) for v in src_box)).resize(
+            m.size, Image.LANCZOS)
+        clip = _shape.mask(slot, _shape.TEX, grow=CLIP_GROW)
+        a = np.minimum(np.asarray(piece.getchannel("A")), np.asarray(clip))
+        piece.putalpha(Image.fromarray(a.astype("uint8"), "L"))
+        piece = defringe(piece, chroma_rgb, erode=0)
+        rgb = np.asarray(piece.convert("RGB")).astype(int)
+        opaque = np.asarray(piece.getchannel("A")) > 128
+        g = SILHOUETTE_GREY
+        greyish = (np.abs(rgb - np.array(g)).sum(axis=2) < 30) & opaque
+        if opaque.any() and greyish.sum() / opaque.sum() > 0.25:
+            grey_left.append(slot)
+        # UNPAINTED SILHOUETTE IS NOT ART. Left in, it drew a grey ghost
+        # round the torso and hips in every pose (2026-09-22). Cleared; a
+        # joint it leaves bare is then reported by joint_gaps.
+        piece = clear_grey(piece)
+        target = out / f"{slot}.png"
+        piece.save(target)
+        parts[slot] = str(target)
+        gaps += _shape.joint_gaps(slot, str(target))
     return {"parts": parts, "empty": empty, "clipped": clipped,
-            "scale": (sx, sy), "part_scale": round(part_scale, 4)}
+            "grey": grey_left, "gaps": gaps, "scale": (sx, sy),
+            "part_scale": round(1.0 / _shape.TEX, 4)}
 
 
 def defringe(part, chroma_rgb: tuple[int, int, int], erode: int = 1,
@@ -637,7 +720,7 @@ def _main_blobs(cell, keep: float = 0.08):
 def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
                    *, out_dir, provider: str, spec: dict, quality: str,
                    note: str, profile: Optional[dict], work_item_id,
-                   generate: Callable) -> dict:
+                   generate: Callable, description: str = "") -> dict:
     """One paid call for the whole kit. Same return shape as the per-part
     loop's inner bookkeeping: ``(made, failed, flags, calls, cost, stopped)``.
     """
@@ -651,7 +734,7 @@ def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
     suffix = "" if full else "_" + "-".join(p["slot"] for p in todo)[:48]
     layout = sheet_layout(todo, ref, out_dir, chroma_rgb, suffix=suffix)
     prompt = sheet_prompt(todo, view=spec.get("view", "side"),
-                          profile=profile, note=note)
+                          profile=profile, note=note, description=description)
     prompt = prompt + _chroma.clause((chroma_name, chroma_rgb))
     sheet_png = Path(out_dir) / f"_sheet{suffix}.png"
     # keyed=False: WE key it, against the colour WE drew the layout in. The
@@ -660,7 +743,9 @@ def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
     result = generate(prompt, str(sheet_png), provider=provider,
                       task_kind="sheet", keyed=False, quality=quality,
                       size=f"{SHEET_SIZE[0]}x{SHEET_SIZE[1]}",
-                      ref_paths=[str(ref), layout["png"]], root=root,
+                      # The LAYOUT only: the reference is never sent (see
+                      # sheet_prompt), so it cannot be pasted into a piece.
+                      ref_paths=[layout["png"]], root=root,
                       logical_name=f"{name}.parts_sheet",
                       work_item_id=work_item_id) or {}
     cost = float(result.get("cost_usd") or 0.0)
@@ -670,34 +755,31 @@ def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
                 "flags": [], "calls": 1, "cost": cost,
                 "stopped": f"the sheet did not come back: {err}",
                 "sheet": str(sheet_png), "prompt": prompt}
-    rig_h = int(spec.get("height_px") or 0)
-    cut = slice_sheet(sheet_png, layout, out_dir, chroma_rgb, rig_height_px=rig_h)
+    from . import cutoutshape as _shape
+    cut = slice_sheet(sheet_png, layout, out_dir, chroma_rgb)
     ref_hash = file_hash(ref)
-    # Parts are now at rig scale, so the ruler is the rig's figure height.
-    fig_h = rig_h or layout["figure_height_px"] * cut["scale"][1]
     made: dict[str, dict] = {}
     flags: list[dict] = []
+    for slot in cut["clipped"]:
+        flags.append({"slot": slot, "note": f"{slot} was painted away from its "
+                      "silhouette (moved or rescaled); it was mapped back and "
+                      "clipped - look at it; cutout_part_rerun redraws one slot"})
+    for slot in cut["grey"]:
+        flags.append({"slot": slot, "note": f"{slot} was left mostly grey - "
+                      "the model did not paint the silhouette"})
+    for gap in cut["gaps"]:
+        flags.append(gap)
     for part in todo:
         slot = part["slot"]
         path = cut["parts"].get(slot)
         if not path:
             continue
-        size = trim_alpha(path)
-        flag = scale_flag(part, size, int(fig_h))
-        if slot in cut["clipped"]:
-            # The more specific finding wins: a part running off its cell is
-            # the model drawing more than the segment, whatever its height.
-            flags.append({"slot": slot, "expected_px": round(float(part.get("height") or 0) * fig_h),
-                          "got_px": int(size[1]), "ratio": (flag or {}).get("ratio", 0.0),
-                          "note": (f"{slot} filled its cell to the edge - the model "
-                                   "drew more than the part (a whole limb in a "
-                                   "segment's cell). Look at it; cutout_part_rerun "
-                                   "redraws one slot")})
-        elif flag:
-            flags.append(flag)
+        # The TEMPLATE's pivot and size: the piece is the silhouette.
         made[slot] = {"texture": path, "part_hash": cutout.part_hash(path),
                       "anchor_hash": ref_hash, "prompt": prompt,
-                      "pivot_source": "default", "sheet": str(sheet_png)}
+                      "pivot": _shape.pivot(slot), "pivot_source": "default",
+                      "scale": round(1.0 / _shape.TEX, 5), "fit": False,
+                      "shape": _shape.key(slot), "sheet": str(sheet_png)}
     failed = [{"slot": s, "error": "the cell came back empty"} for s in cut["empty"]]
     return {"made": made, "failed": failed, "flags": flags, "calls": 1,
             "cost": cost, "stopped": "", "sheet": str(sheet_png), "prompt": prompt}

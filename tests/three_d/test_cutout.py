@@ -127,8 +127,10 @@ def test_adjustments_move_the_rest_pose_and_survive_baking():
     track = next(t for t in baked["tracks"]
                  if t["path"].endswith("arm_near:rotation"))
     first = track["keys"][0][1]
-    # walk's first arm_near delta is -24 degrees on top of the adjusted -4.
-    assert first == pytest.approx(cutoutwire.to_godot_rot(-4.0 - 24.0))
+    # walk's first arm_near delta is -24 degrees, authored facing left
+    # (CLIP_FORWARD), so on the right-facing template it lands mirrored:
+    # +24 on top of the adjusted -4.
+    assert first == pytest.approx(cutoutwire.to_godot_rot(-4.0 + 24.0))
 
 
 def test_status_lists_what_is_missing_rather_than_refusing(project, doc):
@@ -348,14 +350,84 @@ def test_the_template_ships_every_clip_a_side_scroller_needs(project, doc):
         assert cutoutwire.bake_clip(doc, name)["loop_mode"] == 1
 
 
-def test_a_weapon_rides_at_ninety_degrees_unless_the_author_says(project, doc):
+def test_a_weapon_rides_down_the_arm_unless_the_author_says(project, doc):
     d = dict(doc)
     d["skin"] = dict(doc["skin"])
     d["skin"]["weapon"] = {"texture": "assets/gun.png", "pivot": [0.3, 0.4],
                            "pivot_source": "authored"}
     d["skin"]["hat"] = {"texture": "assets/hat.png"}
     got = cutout.normalise(d)
-    assert got["skin"]["weapon"]["rot_offset"] == 90.0
+    assert got["skin"]["weapon"]["rot_offset"] == -90.0
     assert got["skin"]["hat"]["rot_offset"] == 0.0
+    # A document saved with the old +90 slot table still gets the
+    # template's current default: the slot table is the template's.
+    old = dict(d, slots=[dict(sl, rot_offset=90.0) if sl["name"] == "weapon" else sl
+                         for sl in got["slots"]])
+    assert cutout.normalise(old)["skin"]["weapon"]["rot_offset"] == -90.0
     d["skin"]["weapon"]["rot_offset"] = 0.0
     assert cutout.normalise(d)["skin"]["weapon"]["rot_offset"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Facing, floor, easing, silhouettes (2026-09-22)
+# ---------------------------------------------------------------------------
+
+def test_clips_authored_facing_left_are_mirrored_onto_the_right_facing_template():
+    assert cutout.CLIP_FORWARD == -1 and cutout.BIPED_V1["forward"] == 1
+    d = cutout.normalise(cutout.empty("hero"))
+    raw = cutout.CLIPS["aim"]["tracks"]["arm_near"]["rot"][0][1]
+    baked = cutoutwire.bake_clip(d, "aim")
+    track = next(t for t in baked["tracks"] if t["path"].endswith("arm_near:rotation"))
+    rest = cutout.rest_pose(d)["arm_near"]["rot"]
+    assert track["keys"][0][1] == pytest.approx(cutoutwire.to_godot_rot(rest - raw))
+
+
+def test_a_planted_clip_keeps_the_body_on_the_floor_at_every_key():
+    d = cutout.normalise(cutout.empty("hero"))
+    for name in ("crouch", "slide", "death", "idle"):
+        tracks = cutout.ground_clip(d, name, -1.0)
+        root = tracks["hips"]["pos"]
+        assert root, name
+        # the solver writes a root key at every key time of the clip
+        times = {float(k[0]) for c in cutout.CLIPS[name]["tracks"].values()
+                 for ch in ("rot", "pos") for k in (c.get(ch) or [])}
+        length = cutout.CLIPS[name]["length"]
+        assert {k[0] for k in root} >= {t for t in times
+                                        if abs(t - length) > 1e-6 or name in cutout.NO_LOOP}
+
+
+def test_keys_are_eased_not_linear():
+    d = cutout.normalise(cutout.empty("hero"))
+    text = cutoutwire.library_text(d, ["walk"])
+    assert f'"transitions": PackedFloat32Array({cutoutwire._f(cutoutwire.EASE)}' in text
+
+
+def test_a_silhouette_pivot_is_its_bone_origin_and_its_joints_are_checked(tmp_path):
+    from PIL import Image
+    from bgate_core.three_d import cutoutshape
+    m = cutoutshape.mask("thigh_near", cutoutshape.TEX)
+    x0, y0, x1, y1 = cutoutshape.bbox("thigh_near")
+    px, py = cutoutshape.pivot("thigh_near")
+    assert px * (x1 - x0) + x0 == pytest.approx(0.0, abs=1e-3)
+    assert py * (y1 - y0) + y0 == pytest.approx(0.0, abs=1e-3)
+    full = Image.new("RGBA", m.size, (120, 80, 60, 255))
+    full.putalpha(m)
+    good = tmp_path / "good.png"
+    full.save(good)
+    assert cutoutshape.joint_gaps("thigh_near", str(good)) == []
+    holed = full.copy()
+    holed.paste((0, 0, 0, 0), (0, 0, m.width, m.height // 5))
+    bad = tmp_path / "bad.png"
+    holed.save(bad)
+    assert cutoutshape.joint_gaps("thigh_near", str(bad))
+
+
+def test_clear_grey_removes_only_the_flat_silhouette_grey():
+    from PIL import Image
+    from bgate_core.three_d import cutoutkit
+    im = Image.new("RGBA", (4, 1), (0, 0, 0, 255))
+    im.putpixel((0, 0), (*cutoutkit.SILHOUETTE_GREY, 255))
+    im.putpixel((1, 0), (170, 168, 160, 255))           # a painted grey buckle
+    out = cutoutkit.clear_grey(im)
+    assert out.getpixel((0, 0))[3] == 0
+    assert out.getpixel((1, 0))[3] == 255
