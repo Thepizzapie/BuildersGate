@@ -10,6 +10,14 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **A chain is for order, not for lists.** Ten independent cutout rigs
+  filed as a ten-deep ladder ran one at a time on a two-slot board. A chain
+  link now waits on the one before it only when it is a seat handoff, its
+  brief names the predecessor, or it says `after: true`; same-seat links
+  that do not mention each other run beside each other, hanging off the
+  handoff above them. `mode="linear"` keeps the old ladder. The art seat's
+  default concurrency is two (the shared-upload collision that set it to one
+  is fixed and the frame gate is in front of it now).
 - **Every worker seat picks its own CLI and model.** Routing used to stop
   at the art seat on purpose. `dispatch.runner` (claude | codex) is the
   board default and each seat has `dispatch.runner_<seat>` and

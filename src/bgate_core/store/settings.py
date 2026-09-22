@@ -217,7 +217,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.auto_commit": "Commit only the files changed by each completed agent run.",
     "dispatch.isolation": "Run each agent in a separate git worktree. Chaos mode always does this.",
     "dispatch.max_concurrent": "Maximum number of agent processes that may run at once.",
-    "dispatch.max_per_seat": "Per-seat cap, e.g. {\"art\": 1}. Overrides nothing "
+    "dispatch.max_per_seat": "Per-seat cap, e.g. {\"art\": 2}. Overrides nothing "
         "globally; a seat named here may not exceed its number even when the "
         "global concurrent limit has room.",
     "dispatch.default_max_paid_calls": "Paid generation calls one work item may make before further spend is refused. A per-item override beats this.",
@@ -462,14 +462,15 @@ SETTINGS: tuple[Setting, ...] = (
              "the 4 a human set to 9 and then 11 inside one run."),
     Setting(
         key="dispatch.max_per_seat", group="Dispatch", kind=MAP,
-        default={"art": 1}, advanced=True,
+        default={"art": 2}, advanced=True,
         store=("registry", "dispatch.max_per_seat"), scope=MACHINE,
         help="Concurrency cap per SEAT, on top of dispatch.max_concurrent. "
              "MEASURED (EXIT 67, item 24): three art agents ran at once and "
-             "mixed characters into each other's reference sheets — art "
-             "generation shares provider-side state that a global cap does "
-             "not protect. A seat with no entry here is uncapped except by "
-             "the global concurrency limit."),
+             "mixed characters into each other's reference sheets. That was "
+             "a shared upload name (fixed, de59d3a) and no frame gate (built "
+             "since), so art now defaults to two side by side; one agent at "
+             "a time on a ten-rig board was the next complaint. A seat with "
+             "no entry here is uncapped except by the global limit."),
     Setting(
         key="dispatch.default_max_paid_calls", group="Dispatch", kind=INT,
         default=30, minimum=1, maximum=500,
