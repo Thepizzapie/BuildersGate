@@ -244,8 +244,9 @@ def test_status_flags_a_reference_that_moved_under_the_kit(tmp_path, reference):
 async def call(tool: str, /, **kwargs) -> dict:
     result = await server.mcp.call_tool(tool, kwargs)
     content = result[0] if isinstance(result, tuple) else result
-    block = content[0]
-    return json.loads(block.text) if hasattr(block, "text") else block
+    # The JSON payload is the LAST text block; image content may precede it.
+    block = [c for c in content if hasattr(c, "text")][-1]
+    return json.loads(block.text)
 
 
 @pytest.fixture()
@@ -258,6 +259,13 @@ def wired(root, monkeypatch, reference):
                      negative="gradients")
     gen = FakeGenerator(200)
     monkeypatch.setattr(chroma, "generate", gen)
+    from bgate_core.three_d import cutoutproof as _proof
+
+    def _shoot(project_dir, out_path, *, at, scene, timeout):
+        from PIL import Image
+        Image.new("RGBA", (64, 36), (200, 196, 188, 255)).save(out_path)
+        return {"ok": True, "path": str(out_path), "errors": []}
+    monkeypatch.setattr(_proof, "shooter", _shoot)
     monkeypatch.setattr(server, "_provider_gate", lambda *a, **k: None)
     monkeypatch.setattr(server._providers, "provider_for",
                         lambda *a, **k: "fake")
@@ -283,6 +291,9 @@ async def test_kit_generate_assembles_and_emits_with_provenance(wired):
     assert doc["skin"]["hand_far"]["reuse_of"] == "hand_near"
     assert got["sprites"] == 15
     assert "aim" in got["clips"]
+    # THE EYES: the proof sheet rendered and rides back with the result.
+    assert got["proof"]["ok"] and Path(got["proof"]["image"]).is_file()
+    assert Path(got["proof"]["image"]).name.startswith("rigproof-hero-")
     status = await call("cutout_status", name="hero")
     assert status["problems"] == [] and set(status["missing"]) == {"hat", "weapon"}
 
