@@ -1872,7 +1872,8 @@ def format_frame_verdicts(frame_gate: dict) -> str:
 
 
 def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
-          frame_verdicts: Optional[dict] = None) -> dict:
+          frame_verdicts: Optional[dict] = None,
+          after: Optional[int] = None) -> dict:
     """Send a done/failed item back to 'queued' for another round.
 
     Retrying failed work is the most common motion in an agent runner, and the
@@ -1888,7 +1889,13 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
     if item["status"] not in ("done", "failed", "cancelled"):
         raise ValueError(f"item {item_id} is {item['status']!r} — only "
                          "done/failed/cancelled items can be reopened")
-    if over_attempt_cap(root, item):
+    # A RE-RUN BEHIND A FIX IS NOT A RE-ROLL. The run cap stops the same brief
+    # being bought again and again; a gate that fails on a defect, gets the
+    # defect fixed by another item and re-runs behind it is the loop working
+    # (the graybox gate found a wall per run and was told "no more runs" on
+    # the fourth). `after` names the fix; the reopen hangs behind it and does
+    # not count against the cap.
+    if after is None and over_attempt_cap(root, item):
         raise ValueError(attempt_cap_message(root, item))
     reason = (reason or "").strip()
     if not reason:
@@ -1922,8 +1929,20 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
              + reason + verdict_text + already)
     update(root, item_id, brief=(item["brief"] or "") + stamp[:6000])
     with db.tx(root) as conn:
-        conn.execute("UPDATE work_item SET attempts = attempts + 1 WHERE id = ?",
-                     (item_id,))
+        if after is not None:
+            fix = get(root, int(after))
+            if fix["status"] in ("done", "cancelled"):
+                raise ValueError(f"#{after} is {fix['status']}; a reopen hangs "
+                                 "behind work that is still to land")
+        if after is not None:
+            # The count starts again behind a fix: the runs before it were
+            # spent finding the defect, not re-rolling the same brief. The run
+            # history itself is untouched (agentreg keeps every run).
+            conn.execute("UPDATE work_item SET attempts = 0 WHERE id = ?",
+                         (item_id,))
+        else:
+            conn.execute("UPDATE work_item SET attempts = attempts + 1 "
+                         "WHERE id = ?", (item_id,))
     # A REOPEN IS THE HUMAN ACTION THAT CLEARS EXHAUSTION. Whoever reopens has
     # decided this is worth another round; leaving the stamp on would mean the
     # dispatcher still refused it and the reopen did nothing visible.
@@ -1933,8 +1952,11 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
                          "exhausted_why = '' WHERE id = ?", (item_id,))
     except Exception:
         pass                              # pre-0043 database: nothing to clear
-    return set_status(root, item_id, "queued",
-                      result="reopened: " + clip_reason(reason))
+    out = set_status(root, item_id, "queued",
+                     result="reopened: " + clip_reason(reason))
+    if after is not None:
+        add_dependency(root, int(item_id), int(after))
+    return out
 
 
 # Columns dispatch owns: they describe the RUN, not the request, so they are
