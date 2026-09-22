@@ -134,6 +134,20 @@ LABELS: dict[str, str] = {
     "dispatch.default_max_paid_calls": "Paid-call budget per work item",
     "dispatch.model": "Default worker model",
     "dispatch.model_art": "Art worker model",
+    "dispatch.runner": "Default worker CLI",
+    "dispatch.codex_model": "Model for Codex-run seats",
+    "dispatch.model_narrative": "Narrative worker model",
+    "dispatch.model_gameplay": "Gameplay worker model",
+    "dispatch.model_tech": "Tech worker model",
+    "dispatch.model_audio": "Audio worker model",
+    "dispatch.model_cinematic": "Cinematic worker model",
+    "dispatch.model_qa": "QA worker model",
+    "dispatch.runner_narrative": "Narrative worker CLI",
+    "dispatch.runner_gameplay": "Gameplay worker CLI",
+    "dispatch.runner_tech": "Tech worker CLI",
+    "dispatch.runner_audio": "Audio worker CLI",
+    "dispatch.runner_cinematic": "Cinematic worker CLI",
+    "dispatch.runner_qa": "QA worker CLI",
     "dispatch.max_turns": "Turn limit per agent",
     # Gates
     "enforcement.profile": "Enforcement level",
@@ -209,6 +223,20 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.default_max_paid_calls": "Paid generation calls one work item may make before further spend is refused. A per-item override beats this.",
     "dispatch.model": "Model used by worker seats unless a seat-specific model is set.",
     "dispatch.model_art": "Model used by the art seat. Blank uses the default worker model.",
+    "dispatch.runner": "CLI every worker seat runs on unless a seat-specific CLI is set.",
+    "dispatch.codex_model": "Model handed to Codex runners when the seat's model is a Claude name. Blank uses Codex's own default.",
+    "dispatch.model_narrative": "Model for the narrative seat. Blank uses the default worker model.",
+    "dispatch.model_gameplay": "Model for the gameplay seat. Blank uses the default worker model.",
+    "dispatch.model_tech": "Model for the tech seat. Blank uses the default worker model.",
+    "dispatch.model_audio": "Model for the audio seat. Blank uses the default worker model.",
+    "dispatch.model_cinematic": "Model for the cinematic seat. Blank uses the default worker model.",
+    "dispatch.model_qa": "Model for the qa seat. Blank uses the default worker model.",
+    "dispatch.runner_narrative": "CLI for the narrative seat. Blank uses the default worker CLI.",
+    "dispatch.runner_gameplay": "CLI for the gameplay seat. Blank uses the default worker CLI.",
+    "dispatch.runner_tech": "CLI for the tech seat. Blank uses the default worker CLI.",
+    "dispatch.runner_audio": "CLI for the audio seat. Blank uses the default worker CLI.",
+    "dispatch.runner_cinematic": "CLI for the cinematic seat. Blank uses the default worker CLI.",
+    "dispatch.runner_qa": "CLI for the qa seat. Blank uses the default worker CLI.",
     "dispatch.max_turns": "Maximum assistant turns in one run. Set to 0 for no limit.",
     "enforcement.profile": "Sets the default strictness for lanes, project boundaries, and approvals.",
     "gate.mode": "Choose whether completion needs no review, QA review, or your approval.",
@@ -470,6 +498,25 @@ SETTINGS: tuple[Setting, ...] = (
         help="The art seat's model, because art is the one seat whose output "
              "is judged on taste rather than on whether it parses. Blank "
              "falls back to dispatch.model."),
+    Setting(
+        key="dispatch.runner", group="Dispatch", kind=ENUM, default="claude",
+        choices=("claude", "codex"),
+        store=("registry", "dispatch.runner"), scope=MACHINE,
+        env="BGATE_RUNNER", human_only=True,
+        help="Which CLI every worker seat runs on unless a seat names its "
+             "own below. Routing used to stop at the art seat, on purpose: "
+             "codex cannot be steered mid-run and reports tokens rather than "
+             "dollars, so its runs show as cost-not-tracked and the per-run "
+             "cost ceiling does not apply. That trade is now yours to make "
+             "per seat rather than the code's to refuse."),
+    Setting(
+        key="dispatch.codex_model", group="Dispatch", kind=STRING, default="",
+        advanced=True, store=("registry", "dispatch.codex_model"),
+        scope=MACHINE, env="BGATE_CODEX_MODEL", human_only=True,
+        help="The model a seat gets when it runs on codex and its own model "
+             "setting names a Claude alias (sonnet, opus, ...). Blank lets "
+             "codex pick its account default; a name codex's catalog does "
+             "not list is passed through as typed."),
     Setting(
         key="dispatch.max_turns", group="Dispatch", kind=INT, default=800, advanced=True,
         minimum=0, maximum=1000, store=("registry", "dispatch.max_turns"),
@@ -977,6 +1024,38 @@ SETTINGS: tuple[Setting, ...] = (
              "confirming a plan."),
 )
 
+
+# PER-SEAT RUNNER AND MODEL, one pair per worker seat. Art keeps its older
+# pair (art.runner, dispatch.model_art) so nothing already set moves; the
+# rest are generated so a seat added to the seat table needs one name here
+# and nowhere else. Blank means "inherit dispatch.runner / dispatch.model",
+# which is what every seat did before these existed.
+ROUTABLE_SEATS: tuple[str, ...] = (
+    "narrative", "gameplay", "tech", "audio", "cinematic", "qa")
+
+
+def _seat_settings() -> tuple:
+    out = []
+    for seat in ROUTABLE_SEATS:
+        out.append(Setting(
+            key=f"dispatch.runner_{seat}", group="Dispatch", kind=ENUM,
+            default="", choices=("", "claude", "codex"), advanced=True,
+            store=("registry", f"dispatch.runner_{seat}"), scope=MACHINE,
+            env=f"BGATE_RUNNER_{seat.upper()}", human_only=True,
+            help=f"Which CLI the {seat} seat's agents run on. Blank inherits "
+                 "dispatch.runner. See dispatch.runner for what moving a "
+                 "seat onto codex gives up."))
+        out.append(Setting(
+            key=f"dispatch.model_{seat}", group="Dispatch", kind=STRING,
+            default="", advanced=True,
+            store=("registry", f"dispatch.model_{seat}"), scope=MACHINE,
+            env=f"BGATE_MODEL_{seat.upper()}", human_only=True,
+            help=f"The {seat} seat's model. Blank inherits dispatch.model."))
+    return tuple(out)
+
+
+SETTINGS = SETTINGS + _seat_settings()
+
 BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}
 
 # The subset the browser needs. It rides in the index page's bootstrap next to
@@ -1448,6 +1527,12 @@ _DYNAMIC_CHOICES: dict[str, str] = {
     "text.model": "text-models",
     "dispatch.model": "agent-models",
     "dispatch.model_art": "agent-models",
+    "dispatch.model_narrative": "agent-models",
+    "dispatch.model_gameplay": "agent-models",
+    "dispatch.model_tech": "agent-models",
+    "dispatch.model_audio": "agent-models",
+    "dispatch.model_cinematic": "agent-models",
+    "dispatch.model_qa": "agent-models",
     "console.model": "agent-models",
     "brainstorm.model": "agent-models",
 }
