@@ -274,9 +274,43 @@ def library_text(doc: dict, clips: Optional[list] = None) -> str:
 # The scene
 # ---------------------------------------------------------------------------
 
+def game_fit(doc: dict, sizes: dict, player_height_px: int) -> dict:
+    """How Visual is scaled and lifted so the DRAWN figure stands on the
+    ground at its game height.
+
+    Game height is the document's `game_height_px`, else the project's
+    player height times `height_ratio`. The figure is measured from the
+    parts (cutout.rest_extent), never taken from the template's nominal
+    200 px. The lift puts the lowest drawn pixel on y = 0: a kit whose feet
+    hang below the ankle bone otherwise sinks into the floor.
+
+    Returns {scale, lift, figure_height_px, game_height_px, source}; scale 1
+    and lift 0 with `source` saying why when there is nothing to fit to.
+    """
+    doc = cutout.normalise(doc)
+    want = int(doc.get("game_height_px") or 0)
+    source = "game_height_px"
+    if not want and player_height_px:
+        want = int(round(int(player_height_px) * float(doc.get("height_ratio") or 1.0)))
+        source = "player_height_px x height_ratio"
+    extent = cutout.rest_extent(doc, sizes or {})
+    if not want or not extent or extent["height"] <= 0:
+        return {"scale": 1.0, "lift": 0.0,
+                "figure_height_px": round(extent["height"], 1) if extent else 0.0,
+                "game_height_px": want,
+                "source": ("no game height: scale_contract_set(player_height_px"
+                           "=...) or the rig's game_height_px"
+                           if not want else "no part sizes to measure")}
+    scale = want / extent["height"]
+    return {"scale": round(scale, 4), "lift": round(-extent["bottom"] * scale, 3),
+            "figure_height_px": round(extent["height"], 1),
+            "game_height_px": want, "source": source}
+
+
 def scene_text(doc: dict, *, project_dir: str | os.PathLike[str],
                library_res: str, script_res: str,
-               sizes: Optional[dict] = None) -> str:
+               sizes: Optional[dict] = None,
+               fit: Optional[dict] = None) -> str:
     """The .tscn: bones as Node2Ds, filled slots as Sprite2Ds, one player.
 
     `sizes` maps slot -> (width, height) in pixels. Without it a sprite gets
@@ -332,6 +366,14 @@ def scene_text(doc: dict, *, project_dir: str | os.PathLike[str],
             f"ExtResource(\"{key}\")" for _, key in sorted(ext.items())) + "]")
     body.append("")
     body.append("[node name=\"Visual\" type=\"Node2D\" parent=\".\"]")
+    # GAME SCALE LIVES HERE, not on the instance. exit-67-r2 instanced the
+    # rig at 0.64 (128 / the template's 200) over a figure that measured 212
+    # with its boots 44 px under the floor. cutout_rig.gd flips Visual by
+    # sign only, so this magnitude survives facing.
+    if fit and abs(float(fit.get("lift") or 0.0)) > 1e-6:
+        body.append(f"position = {_vec2([0.0, fit['lift']])}")
+    if fit and abs(float(fit.get("scale") or 1.0) - 1.0) > 1e-6:
+        body.append(f"scale = {_vec2([fit['scale'], fit['scale']])}")
     body.append("")
 
     # Bones, parents before children, so the .tscn's parent paths always exist.
@@ -431,7 +473,7 @@ def emit(doc: dict, *, project_dir: str | os.PathLike[str],
          scene_path: str | os.PathLike[str],
          script_res: str = "res://addons/bgate/cutout_rig.gd",
          clips: Optional[list] = None, sizes: Optional[dict] = None,
-         force: bool = False) -> dict:
+         player_height_px: int = 0, force: bool = False) -> dict:
     """Write the scene and the library. Returns what it wrote and what it refused.
 
     BYTE-IDENTICAL FOR AN UNCHANGED DOCUMENT — of the emitter's own output. Godot
@@ -444,9 +486,10 @@ def emit(doc: dict, *, project_dir: str | os.PathLike[str],
     library_res = _res_path(project_dir, library)
 
     text_lib = library_text(doc, clips)
+    fit = game_fit(doc, sizes or {}, player_height_px)
     text_scene = scene_text(doc, project_dir=project_dir,
                             library_res=library_res, script_res=script_res,
-                            sizes=sizes)
+                            sizes=sizes, fit=fit)
 
     # A HUMAN'S EDITS ARE NOT OURS TO DISCARD. The stamp records what we last
     # wrote; a file on disk that no longer matches it was changed by someone,
@@ -480,7 +523,8 @@ def emit(doc: dict, *, project_dir: str | os.PathLike[str],
     stamp.write_text(json.dumps({"scene": _digest(text_scene),
                                  "library": _digest(text_lib),
                                  "name": doc["name"],
-                                 "template": doc["template"]}, indent=2),
+                                 "template": doc["template"],
+                                 "game_fit": fit}, indent=2),
                      encoding="utf-8")
     return {
         "ok": True,
@@ -492,5 +536,46 @@ def emit(doc: dict, *, project_dir: str | os.PathLike[str],
         "bones": len(doc["bones"]),
         "sprites": len(doc["skin"]),
         "unfilled": [s["name"] for s in doc["slots"] if s["name"] not in doc["skin"]],
+        "game_fit": fit,
         "bytes": {"scene": len(text_scene), "library": len(text_lib)},
     }
+
+
+def instance_overrides(project_dir: str | os.PathLike[str],
+                       scene_path: str | os.PathLike[str]) -> list[dict]:
+    """Game scenes that instance this rig AND scale it themselves.
+
+    The emitter owns the rig's game size (Visual's scale); an instance with
+    its own `scale` multiplies it. exit-67-r2's player.tscn carried 0.64 -
+    an agent's guess at 128/200 - and would have shrunk a correctly sized
+    rig to 82 px. Reported, never rewritten: the scene is the game's.
+    """
+    import re
+    project = Path(project_dir)
+    res = _res_path(project, scene_path)
+    found = []
+    for tscn in project.rglob("*.tscn"):
+        parts = set(tscn.relative_to(project).parts)
+        # A gym or a proof scales rigs up to look at them; that is not the game.
+        if (".godot" in parts or "proof" in parts or "gym" in tscn.stem
+                or tscn.resolve() == Path(scene_path).resolve()):
+            continue
+        try:
+            text = tscn.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if res not in text:
+            continue
+        ids = re.findall(r'\[ext_resource[^\]]*path="' + re.escape(res)
+                         + r'"[^\]]*id="([^"]+)"', text)
+        for ident in ids:
+            for m in re.finditer(r'\[node name="([^"]+)"[^\]]*instance=ExtResource\("'
+                                 + re.escape(ident) + r'"\)\]([^\[]*)', text):
+                scale = re.search(r"^scale = (Vector2\([^)]*\))", m.group(2), re.M)
+                if scale:
+                    found.append({"scene": _res_path(project, tscn),
+                                  "node": m.group(1), "scale": scale.group(1),
+                                  "note": "this instance scales a rig that is "
+                                          "already game-sized; remove its "
+                                          "scale line"})
+    return found

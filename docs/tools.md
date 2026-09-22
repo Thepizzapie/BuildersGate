@@ -2126,6 +2126,12 @@ a tint unless you pass them explicitly, so a side-view kit is ten images.
 `adjustments` nudges the template per character - {"arm_near": {"rot": -8}} - and those survive every clip, because the animation is baked as deltas on
 top of them rather than as absolute poses.
 
+GAME SIZE IS THE EMITTER'S. The drawn figure is measured from its parts and
+`Visual` is scaled and lifted so it stands on y = 0 at the project's
+player_height_px times `height_ratio` (1.0 the player; an enemy its threat
+size). Instance the .tscn at scale 1: a scale on the instance multiplies a
+size that is already right, and cutout_status reports it as instance_scale.
+
 It REFUSES to overwrite a .tscn that has changed since it last wrote one
 (someone opened it in Godot, or edited it). `force=True` discards those
 changes deliberately.
@@ -2246,6 +2252,8 @@ while a character is being made. `missing` is slots with no part yet;
                    off the middle of the forearm and nothing says why.
   origin           the rig's feet are not on the ground line, so it hovers
                    or sinks in every scene it is placed in.
+  instance_scale   a game scene instances the rig with its own scale, on
+                   top of the game size the emitter already applied.
   stale_reference  a part generated against a different reference than the
                    document names - another run, or another character.
   reference_moved  the pinned reference has changed since the kit was drawn;

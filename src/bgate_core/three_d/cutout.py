@@ -583,6 +583,8 @@ def empty(name: str = "character", template_name: str = "biped_v1") -> dict:
         "slots": [dict(s) for s in spec["slots"]],
         "skin": {},
         "adjustments": {},
+        "height_ratio": 1.0,
+        "game_height_px": 0,
         "notes": "",
         # The identity reference the kit was generated against (a pin name or
         # a path) and its content hash at the time. Every part records the
@@ -777,6 +779,14 @@ def normalise(doc: dict) -> dict:
         if entry:
             clean_adj[bone] = entry
     out["adjustments"] = clean_adj
+    # GAME SIZE. The rig is authored at the template's nominal height; what
+    # the game wants is the character at the project's player height (times
+    # its own ratio: an enemy's size is a threat statement). The emitter
+    # scales Visual to it, so an instance of the rig is right at scale 1.
+    out["height_ratio"] = _num(doc.get("height_ratio") or 1.0, "height_ratio",
+                               lo=0.05, hi=20.0)
+    out["game_height_px"] = int(_num(doc.get("game_height_px") or 0,
+                                     "game_height_px", lo=0, hi=8192))
     out["notes"] = str(doc.get("notes") or "")
     out["reference"] = str(doc.get("reference") or "")
     out["reference_hash"] = str(doc.get("reference_hash") or "")
@@ -808,6 +818,64 @@ def rest_pose(doc: dict) -> dict:
         out[bone["name"]] = {"pos": pos,
                              "rot": bone["rot"] + float(adj.get("rot") or 0.0)}
     return out
+
+
+def rest_extent(doc: dict, sizes: dict) -> Optional[dict]:
+    """The drawn figure's bounding box at rest, in Godot pixels (+y down,
+    ground at 0), from the same transforms the emitter writes.
+
+    MEASURED, NOT ASSUMED (exit-67-r2): the template is 200 px, but a sheet
+    kit's shin came back 102 px on a 44 px bone, so the drawn figure was far
+    taller than 200 and a scale of player_height / 200 put a giant in the game.
+    Parts are alpha-trimmed, so the sprite rectangles are the opaque extent.
+    `sizes` maps slot -> (w, h). None when no filled slot has a size.
+    """
+    rest = rest_pose(doc)
+    parent = {b["name"]: b["parent"] for b in doc["bones"]}
+    world: dict[str, tuple] = {}
+
+    def bone_world(name: str) -> tuple:
+        # (a, b, c, d, tx, ty): x' = a*x + c*y + tx, y' = b*x + d*y + ty
+        if name in world:
+            return world[name]
+        pos = rest[name]["pos"]
+        ang = math.radians(-float(rest[name]["rot"]))
+        local = (math.cos(ang), math.sin(ang), -math.sin(ang), math.cos(ang),
+                 float(pos[0]), -float(pos[1]))
+        up = parent.get(name) or ""
+        world[name] = _compose(bone_world(up), local) if up else local
+        return world[name]
+
+    xs: list[float] = []
+    ys: list[float] = []
+    bone_of = {s["name"]: s["bone"] for s in doc["slots"]}
+    for slot, entry in (doc.get("skin") or {}).items():
+        size = sizes.get(slot)
+        if not size or slot not in bone_of:
+            continue
+        w, h = float(size[0]), float(size[1])
+        ox, oy = -entry["pivot"][0] * w, -(1.0 - entry["pivot"][1]) * h
+        s = float(entry.get("scale") or 1.0)
+        ang = math.radians(-float(entry.get("rot_offset") or 0.0))
+        sprite = (math.cos(ang) * s, math.sin(ang) * s, -math.sin(ang) * s,
+                  math.cos(ang) * s, 0.0, 0.0)
+        m = _compose(bone_world(bone_of[slot]), sprite)
+        for x, y in ((ox, oy), (ox + w, oy), (ox, oy + h), (ox + w, oy + h)):
+            xs.append(m[0] * x + m[2] * y + m[4])
+            ys.append(m[1] * x + m[3] * y + m[5])
+    if not ys:
+        return None
+    return {"left": min(xs), "right": max(xs), "top": min(ys),
+            "bottom": max(ys), "height": max(ys) - min(ys),
+            "width": max(xs) - min(xs)}
+
+
+def _compose(p: tuple, c: tuple) -> tuple:
+    a, b, cc, d, tx, ty = p
+    a2, b2, c2, d2, tx2, ty2 = c
+    return (a * a2 + cc * b2, b * a2 + d * b2,
+            a * c2 + cc * d2, b * c2 + d * d2,
+            a * tx2 + cc * ty2 + tx, b * tx2 + d * ty2 + ty)
 
 
 # ---------------------------------------------------------------------------
