@@ -158,8 +158,6 @@ repository at first publication. There is no earlier release history to record.
   helper was called with one argument against a two-argument signature, so
   every successful build raised inside its own `try`, and the scene write
   never reached the writelog the evidence gate and auto-commit read.
-
-### Fixed
 - **`traversal_prove` drove the player wrong, and three agents paid for it.**
   The bot driver released every action and pressed the block's actions
   again on every physics frame; Godot 4.4 buffers those a frame, so a
