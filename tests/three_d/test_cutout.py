@@ -127,8 +127,8 @@ def test_adjustments_move_the_rest_pose_and_survive_baking():
     track = next(t for t in baked["tracks"]
                  if t["path"].endswith("arm_near:rotation"))
     first = track["keys"][0][1]
-    # walk's first arm_near delta is -18 degrees on top of the adjusted -4.
-    assert first == pytest.approx(cutoutwire.to_godot_rot(-4.0 - 18.0))
+    # walk's first arm_near delta is -24 degrees on top of the adjusted -4.
+    assert first == pytest.approx(cutoutwire.to_godot_rot(-4.0 - 24.0))
 
 
 def test_status_lists_what_is_missing_rather_than_refusing(project, doc):
@@ -334,3 +334,15 @@ def test_emitted_rig_actually_animates_in_godot(project, doc):
     # Events fire, and a rewind does not fire them again.
     assert report["events"] == ["hit"], report
     assert report["events_after_quiet_seek"] == 1, report
+
+
+def test_the_template_ships_every_clip_a_side_scroller_needs(project, doc):
+    """MEASURED (exit-67-r2, 2026-09-22): the rig gym reported "rig has no clip
+    fire / jump / crouch / slide" and the art agent authored them by hand."""
+    assert cutout.clip_names() == sorted([
+        "idle", "walk", "run", "jump", "fall", "crouch", "slide", "aim", "fire",
+        "attack_melee", "hurt", "death"])
+    for name in ("jump", "fire"):
+        assert cutoutwire.bake_clip(doc, name)["loop_mode"] == 0
+    for name in ("fall", "crouch", "slide", "aim"):
+        assert cutoutwire.bake_clip(doc, name)["loop_mode"] == 1

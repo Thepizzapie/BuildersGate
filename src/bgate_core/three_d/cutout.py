@@ -184,7 +184,7 @@ BIPED_V1 = {
 TEMPLATES = {"biped_v1": BIPED_V1}
 
 # Clips that must NOT loop. A death that loops is a character standing back up.
-NO_LOOP = ("attack_melee", "hurt", "death")
+NO_LOOP = ("jump", "fire", "attack_melee", "hurt", "death")
 
 # ---------------------------------------------------------------------------
 # The shipped animation library — DELTAS, in degrees and pixels
@@ -197,66 +197,174 @@ NO_LOOP = ("attack_melee", "hurt", "death")
 # NO KEY AT EXACTLY t == length ON A LOOPING CLIP. Godot blends the last key
 # into the first, and a duplicate at both ends holds the pose for two frames —
 # the hitch every hand-authored loop has until someone explains this.
+#
+# SIGNS, MEASURED IN THE PROBE GYM (2026-09-22): a NEGATIVE rotation swings a
+# hanging bone (arm, thigh) FORWARD, toward the facing; a POSITIVE shin or
+# forearm delta bends the joint (heel back, hand up); a POSITIVE chest, head
+# or hips rotation leans BACK; hips pos is pixels, +x forward, +y up.
+#
+# THE SET. Twelve clips, every one a side-scroller needs: idle (low ready),
+# walk, run, jump, fall, crouch, slide, aim, fire, attack_melee, hurt, death.
+# The first set had seven, no jump/fall/crouch/slide/fire at all, an idle with
+# the arms hanging so the weapon floated at the hip in front of a hidden arm,
+# a walk whose trailing knee bent backwards, and a death that rotated the
+# standing figure ninety degrees. "These cutout rigs are not doing great."
+# Every pose below was looked at in the engine before it shipped.
 CLIPS: dict[str, dict] = {
     "idle": {
+        # Low ready: both elbows bent so the weapon on the near hand sits in
+    # front of the belly and the arm reads as HOLDING it. With the arms
+    # hanging (the old idle) the gun sat at the hip and covered the arm.
         "length": 2.0, "loop": True, "fps": 12,
         "tracks": {
             "chest": {"rot": [[0.0, 0.0], [1.0, 1.6]]},
             "head": {"rot": [[0.0, 0.0], [1.0, -1.2]]},
-            "arm_near": {"rot": [[0.0, 0.0], [1.0, 3.0]]},
-            "arm_far": {"rot": [[0.0, 0.0], [1.0, -2.4]]},
+            "arm_near": {"rot": [[0.0, -18.0], [1.0, -21.0]]},
+            "forearm_near": {"rot": [[0.0, -72.0], [1.0, -70.0]]},
+            "arm_far": {"rot": [[0.0, -30.0], [1.0, -27.0]]},
+            "forearm_far": {"rot": [[0.0, -62.0], [1.0, -64.0]]},
             "hips": {"pos": [[0.0, [0.0, 0.0]], [1.0, [0.0, -1.5]]]},
         },
     },
     "walk": {
+        # Trailing shin FLEXES (positive) - the old walk swung it forward and
+    # the knee bent backwards on every stride.
         "length": 0.8, "loop": True, "fps": 12,
         "tracks": {
-            "thigh_near": {"rot": [[0.0, 22.0], [0.2, 0.0], [0.4, -20.0], [0.6, 0.0]]},
-            "shin_near": {"rot": [[0.0, -10.0], [0.2, -4.0], [0.4, 26.0], [0.6, 2.0]]},
-            "thigh_far": {"rot": [[0.0, -20.0], [0.2, 0.0], [0.4, 22.0], [0.6, 0.0]]},
-            "shin_far": {"rot": [[0.0, 26.0], [0.2, 2.0], [0.4, -10.0], [0.6, -4.0]]},
-            "arm_near": {"rot": [[0.0, -18.0], [0.4, 18.0]]},
-            "forearm_near": {"rot": [[0.0, -8.0], [0.4, 6.0]]},
-            "arm_far": {"rot": [[0.0, 18.0], [0.4, -18.0]]},
-            "forearm_far": {"rot": [[0.0, 6.0], [0.4, -8.0]]},
-            "chest": {"rot": [[0.0, 2.0], [0.4, -2.0]]},
-            # Two bobs per stride: the body rises on each passing position.
-            "hips": {"pos": [[0.0, [0.0, 0.0]], [0.2, [0.0, 3.0]],
-                             [0.4, [0.0, 0.0]], [0.6, [0.0, 3.0]]]},
+            "thigh_near": {
+                "rot": [[0.0, 22.0], [0.2, 0.0], [0.4, -20.0], [0.6, 0.0]],
+            },
+            "shin_near": {
+                "rot": [[0.0, 18.0], [0.2, 30.0], [0.4, 8.0], [0.6, 4.0]],
+            },
+            "thigh_far": {
+                "rot": [[0.0, -20.0], [0.2, 0.0], [0.4, 22.0], [0.6, 0.0]],
+            },
+            "shin_far": {
+                "rot": [[0.0, 8.0], [0.2, 4.0], [0.4, 18.0], [0.6, 30.0]],
+            },
+            "arm_near": {"rot": [[0.0, -24.0], [0.4, -12.0]]},
+            "forearm_near": {"rot": [[0.0, -70.0], [0.4, -66.0]]},
+            "arm_far": {"rot": [[0.0, -22.0], [0.4, -36.0]]},
+            "forearm_far": {"rot": [[0.0, -60.0], [0.4, -66.0]]},
+            "chest": {"rot": [[0.0, -3.0], [0.4, -5.0]]},
+            "hips": {
+                "pos": [[0.0, [0.0, 0.0]], [0.2, [0.0, 3.0]], [0.4, [0.0, 0.0]], [0.6, [0.0, 3.0]]],
+            },
         },
     },
     "run": {
+        # Contact / down / passing / up, near leg first, far leg half a cycle
+    # behind; the heel kicks up behind on the passing pose.
         "length": 0.55, "loop": True, "fps": 12,
         "tracks": {
-            "thigh_near": {"rot": [[0.0, 40.0], [0.14, 6.0], [0.28, -34.0], [0.41, 4.0]]},
-            "shin_near": {"rot": [[0.0, -34.0], [0.14, -16.0], [0.28, 52.0], [0.41, 8.0]]},
-            "thigh_far": {"rot": [[0.0, -34.0], [0.14, 4.0], [0.28, 40.0], [0.41, 6.0]]},
-            "shin_far": {"rot": [[0.0, 52.0], [0.14, 8.0], [0.28, -34.0], [0.41, -16.0]]},
-            "arm_near": {"rot": [[0.0, -46.0], [0.28, 34.0]]},
-            "forearm_near": {"rot": [[0.0, -52.0], [0.28, -28.0]]},
-            "arm_far": {"rot": [[0.0, 34.0], [0.28, -46.0]]},
-            "forearm_far": {"rot": [[0.0, -28.0], [0.28, -52.0]]},
-            "chest": {"rot": [[0.0, 8.0], [0.28, 5.0]]},
-            "hips": {"pos": [[0.0, [0.0, -2.0]], [0.14, [0.0, 5.0]],
-                             [0.28, [0.0, -2.0]], [0.41, [0.0, 5.0]]]},
+            "thigh_near": {
+                "rot": [[0.0, -32.0], [0.14, -8.0], [0.28, 28.0], [0.41, 6.0]],
+            },
+            "shin_near": {
+                "rot": [[0.0, 14.0], [0.14, 34.0], [0.28, 74.0], [0.41, 60.0]],
+            },
+            "thigh_far": {
+                "rot": [[0.0, 28.0], [0.14, 6.0], [0.28, -32.0], [0.41, -8.0]],
+            },
+            "shin_far": {
+                "rot": [[0.0, 74.0], [0.14, 60.0], [0.28, 14.0], [0.41, 34.0]],
+            },
+            "arm_near": {"rot": [[0.0, -46.0], [0.28, 10.0]]},
+            "forearm_near": {"rot": [[0.0, -80.0], [0.28, -60.0]]},
+            "arm_far": {"rot": [[0.0, 10.0], [0.28, -46.0]]},
+            "forearm_far": {"rot": [[0.0, -60.0], [0.28, -80.0]]},
+            "chest": {"rot": [[0.0, -10.0], [0.28, -7.0]]},
+            "head": {"rot": [[0.0, 4.0], [0.28, 2.0]]},
+            "hips": {
+                "pos": [[0.0, [0.0, -2.0]], [0.14, [0.0, 5.0]], [0.28, [0.0, -2.0]], [0.41, [0.0, 5.0]]],
+            },
         },
     },
-    "attack_melee": {
+    "jump": {
+        # Launch crouch, then a tuck with the knees up. Not looped: the game
+    # holds the last pose until `fall` takes over.
         "length": 0.5, "loop": False, "fps": 24,
-        "events": [[0.22, "hit"]],
         "tracks": {
-            "arm_near": {"rot": [[0.0, 0.0], [0.14, -70.0], [0.24, 58.0],
-                                 [0.5, 0.0]]},
-            "forearm_near": {"rot": [[0.0, 0.0], [0.14, -40.0], [0.24, 20.0],
-                                     [0.5, 0.0]]},
-            "chest": {"rot": [[0.0, 0.0], [0.14, -10.0], [0.24, 12.0], [0.5, 0.0]]},
-            "head": {"rot": [[0.0, 0.0], [0.24, 6.0], [0.5, 0.0]]},
+            "hips": {
+                "pos": [[0.0, [0.0, -12.0]], [0.12, [0.0, 4.0]], [0.5, [0.0, 2.0]]],
+            },
+            "thigh_near": {
+                "rot": [[0.0, -30.0], [0.12, -20.0], [0.35, -55.0], [0.5, -50.0]],
+            },
+            "shin_near": {
+                "rot": [[0.0, 50.0], [0.12, 10.0], [0.35, 85.0], [0.5, 80.0]],
+            },
+            "thigh_far": {
+                "rot": [[0.0, -24.0], [0.12, 10.0], [0.35, -20.0], [0.5, -16.0]],
+            },
+            "shin_far": {
+                "rot": [[0.0, 45.0], [0.12, 6.0], [0.35, 60.0], [0.5, 55.0]],
+            },
+            "chest": {"rot": [[0.0, -14.0], [0.12, -4.0], [0.5, -8.0]]},
+            "head": {"rot": [[0.0, 6.0], [0.5, 2.0]]},
+            "arm_near": {"rot": [[0.0, -10.0], [0.12, -40.0], [0.5, -34.0]]},
+            "forearm_near": {"rot": [[0.0, -70.0], [0.5, -66.0]]},
+            "arm_far": {"rot": [[0.0, -20.0], [0.12, -60.0], [0.5, -50.0]]},
+            "forearm_far": {"rot": [[0.0, -60.0], [0.5, -50.0]]},
+        },
+    },
+    "fall": {
+        # Legs split, arms out, chest back a touch. Loops.
+        "length": 0.6, "loop": True, "fps": 12,
+        "tracks": {
+            "thigh_near": {"rot": [[0.0, -22.0], [0.3, -26.0]]},
+            "shin_near": {"rot": [[0.0, 24.0], [0.3, 30.0]]},
+            "thigh_far": {"rot": [[0.0, 14.0], [0.3, 10.0]]},
+            "shin_far": {"rot": [[0.0, 30.0], [0.3, 36.0]]},
+            "chest": {"rot": [[0.0, 6.0], [0.3, 8.0]]},
+            "head": {"rot": [[0.0, 10.0], [0.3, 12.0]]},
+            "arm_near": {"rot": [[0.0, -50.0], [0.3, -56.0]]},
+            "forearm_near": {"rot": [[0.0, -40.0], [0.3, -36.0]]},
+            "arm_far": {"rot": [[0.0, -70.0], [0.3, -76.0]]},
+            "forearm_far": {"rot": [[0.0, -30.0], [0.3, -26.0]]},
+        },
+    },
+    "crouch": {
+        # A squat: hips down, thighs forward-down, shins folded back under,
+    # chest over the knees. Verified in the probe gym - the first draft
+    # sat on air with its legs out.
+        "length": 1.0, "loop": True, "fps": 12,
+        "tracks": {
+            "hips": {"pos": [[0.0, [6.0, -48.0]], [0.5, [6.0, -49.0]]]},
+            "thigh_near": {"rot": [[0.0, -58.0], [0.5, -58.0]]},
+            "shin_near": {"rot": [[0.0, 112.0], [0.5, 112.0]]},
+            "thigh_far": {"rot": [[0.0, -50.0], [0.5, -50.0]]},
+            "shin_far": {"rot": [[0.0, 104.0], [0.5, 104.0]]},
+            "chest": {"rot": [[0.0, -26.0], [0.5, -25.0]]},
+            "head": {"rot": [[0.0, 14.0], [0.5, 14.0]]},
+            "arm_near": {"rot": [[0.0, -40.0], [0.5, -41.0]]},
+            "forearm_near": {"rot": [[0.0, -50.0], [0.5, -50.0]]},
+            "arm_far": {"rot": [[0.0, -50.0], [0.5, -50.0]]},
+            "forearm_far": {"rot": [[0.0, -40.0], [0.5, -40.0]]},
+        },
+    },
+    "slide": {
+        # Hips at the ground, lead leg out straight, chest back, head up.
+        "length": 0.5, "loop": True, "fps": 12,
+        "tracks": {
+            "hips": {"pos": [[0.0, [8.0, -62.0]], [0.25, [8.0, -63.0]]]},
+            "thigh_near": {"rot": [[0.0, -92.0], [0.25, -92.0]]},
+            "shin_near": {"rot": [[0.0, 12.0], [0.25, 12.0]]},
+            "thigh_far": {"rot": [[0.0, -60.0], [0.25, -60.0]]},
+            "shin_far": {"rot": [[0.0, 110.0], [0.25, 110.0]]},
+            "chest": {"rot": [[0.0, 28.0], [0.25, 28.0]]},
+            "head": {"rot": [[0.0, -22.0], [0.25, -22.0]]},
+            "arm_near": {"rot": [[0.0, -56.0], [0.25, -56.0]]},
+            "forearm_near": {"rot": [[0.0, -40.0], [0.25, -40.0]]},
+            "arm_far": {"rot": [[0.0, 30.0], [0.25, 30.0]]},
+            "forearm_far": {"rot": [[0.0, -20.0], [0.25, -20.0]]},
         },
     },
     "aim": {
         # A two-handed brace, held. Both forearms come forward so both hands
-        # land on the weapon hanging from the near hand; the far arm reaches
-        # further because its hand is on the fore-end.
+    # land on the weapon hanging from the near hand; the far arm reaches
+    # further because its hand is on the fore-end.
         "length": 1.0, "loop": True, "fps": 12,
         "tracks": {
             "arm_near": {"rot": [[0.0, -62.0], [0.5, -60.0]]},
@@ -267,31 +375,110 @@ CLIPS: dict[str, dict] = {
             "head": {"rot": [[0.0, 4.0], [0.5, 4.0]]},
         },
     },
+    "fire": {
+        # Recoil from the aim pose: muzzle up, chest back, a step back in the
+    # hips. Starts and ends on the aim pose so it cuts back cleanly.
+        "length": 0.2, "loop": False, "fps": 24,
+        "events": [[0.0, 'shot']],
+        "tracks": {
+            "arm_near": {"rot": [[0.0, -62.0], [0.04, -72.0], [0.2, -62.0]]},
+            "forearm_near": {
+                "rot": [[0.0, -30.0], [0.04, -18.0], [0.2, -30.0]],
+            },
+            "arm_far": {"rot": [[0.0, -78.0], [0.04, -84.0], [0.2, -78.0]]},
+            "forearm_far": {"rot": [[0.0, -12.0], [0.04, -6.0], [0.2, -12.0]]},
+            "chest": {"rot": [[0.0, -6.0], [0.04, 2.0], [0.2, -6.0]]},
+            "head": {"rot": [[0.0, 4.0], [0.04, 9.0], [0.2, 4.0]]},
+            "hips": {
+                "pos": [[0.0, [0.0, 0.0]], [0.04, [-3.0, 0.0]], [0.2, [0.0, 0.0]]],
+            },
+        },
+    },
+    "attack_melee": {
+        # Wind-up back, swing through, a step into it.
+        "length": 0.5, "loop": False, "fps": 24,
+        "events": [[0.22, 'hit']],
+        "tracks": {
+            "arm_near": {
+                "rot": [[0.0, -20.0], [0.14, 70.0], [0.24, -95.0], [0.5, -20.0]],
+            },
+            "forearm_near": {
+                "rot": [[0.0, -70.0], [0.14, -60.0], [0.24, -10.0], [0.5, -70.0]],
+            },
+            "arm_far": {
+                "rot": [[0.0, -30.0], [0.14, -10.0], [0.24, -50.0], [0.5, -30.0]],
+            },
+            "chest": {
+                "rot": [[0.0, 0.0], [0.14, 12.0], [0.24, -14.0], [0.5, 0.0]],
+            },
+            "head": {"rot": [[0.0, 0.0], [0.24, 6.0], [0.5, 0.0]]},
+            "hips": {
+                "pos": [[0.0, [0.0, 0.0]], [0.14, [-4.0, 0.0]], [0.24, [8.0, -3.0]], [0.5, [0.0, 0.0]]],
+            },
+            "thigh_near": {"rot": [[0.0, 0.0], [0.24, -18.0], [0.5, 0.0]]},
+            "shin_near": {"rot": [[0.0, 0.0], [0.24, 22.0], [0.5, 0.0]]},
+        },
+    },
     "hurt": {
+        # Recoil: chest and head back, near arm up, a step back and down.
         "length": 0.4, "loop": False, "fps": 24,
         "tracks": {
             "chest": {"rot": [[0.0, 0.0], [0.08, 16.0], [0.4, 0.0]]},
             "head": {"rot": [[0.0, 0.0], [0.08, 22.0], [0.4, 0.0]]},
-            "arm_near": {"rot": [[0.0, 0.0], [0.08, -24.0], [0.4, 0.0]]},
-            "arm_far": {"rot": [[0.0, 0.0], [0.08, -18.0], [0.4, 0.0]]},
-            "hips": {"pos": [[0.0, [0.0, 0.0]], [0.08, [-6.0, 0.0]],
-                             [0.4, [0.0, 0.0]]]},
+            "arm_near": {"rot": [[0.0, -18.0], [0.08, -44.0], [0.4, -18.0]]},
+            "forearm_near": {
+                "rot": [[0.0, -72.0], [0.08, -60.0], [0.4, -72.0]],
+            },
+            "arm_far": {"rot": [[0.0, -30.0], [0.08, -50.0], [0.4, -30.0]]},
+            "forearm_far": {"rot": [[0.0, -62.0], [0.4, -62.0]]},
+            "thigh_near": {"rot": [[0.0, 0.0], [0.08, -12.0], [0.4, 0.0]]},
+            "shin_near": {"rot": [[0.0, 0.0], [0.08, 16.0], [0.4, 0.0]]},
+            "hips": {
+                "pos": [[0.0, [0.0, 0.0]], [0.08, [-6.0, -3.0]], [0.4, [0.0, 0.0]]],
+            },
         },
     },
     "death": {
-        "length": 1.1, "loop": False, "fps": 24,
-        "events": [[0.9, "died"]],
+        # A real collapse, not a rotated standing figure: recoil, knees buckle,
+    # sit back, lie flat. The final key lies on the ground with the head
+    # lolled.
+        "length": 1.2, "loop": False, "fps": 24,
+        "events": [[1.0, 'died']],
         "tracks": {
-            "chest": {"rot": [[0.0, 0.0], [0.3, 28.0], [1.1, 74.0]]},
-            "head": {"rot": [[0.0, 0.0], [0.3, 18.0], [1.1, 40.0]]},
-            "hips": {"pos": [[0.0, [0.0, 0.0]], [0.3, [-8.0, -20.0]],
-                             [1.1, [-26.0, -92.0]]],
-                     "rot": [[0.0, 0.0], [1.1, 86.0]]},
-            "thigh_near": {"rot": [[0.0, 0.0], [1.1, -46.0]]},
-            "shin_near": {"rot": [[0.0, 0.0], [1.1, 38.0]]},
-            "thigh_far": {"rot": [[0.0, 0.0], [1.1, -28.0]]},
-            "arm_near": {"rot": [[0.0, 0.0], [1.1, 34.0]]},
-            "arm_far": {"rot": [[0.0, 0.0], [1.1, 20.0]]},
+            "chest": {
+                "rot": [[0.0, 0.0], [0.15, 20.0], [0.5, 8.0], [0.9, 2.0], [1.2, -4.0]],
+            },
+            "head": {
+                "rot": [[0.0, 0.0], [0.15, 26.0], [0.5, 14.0], [0.9, 8.0], [1.2, 20.0]],
+            },
+            "hips": {
+                "rot": [[0.0, 0.0], [0.5, 12.0], [0.9, 70.0], [1.2, 88.0]],
+                "pos": [[0.0, [0.0, 0.0]], [0.15, [-6.0, 0.0]], [0.5, [-12.0, -38.0]], [0.9, [-32.0, -82.0]], [1.2, [-42.0, -90.0]]],
+            },
+            "thigh_near": {
+                "rot": [[0.0, 0.0], [0.5, -28.0], [0.9, 8.0], [1.2, 18.0]],
+            },
+            "shin_near": {
+                "rot": [[0.0, 0.0], [0.5, 66.0], [0.9, 30.0], [1.2, 12.0]],
+            },
+            "thigh_far": {
+                "rot": [[0.0, 0.0], [0.5, -20.0], [0.9, -10.0], [1.2, 0.0]],
+            },
+            "shin_far": {
+                "rot": [[0.0, 0.0], [0.5, 58.0], [0.9, 40.0], [1.2, 26.0]],
+            },
+            "arm_near": {
+                "rot": [[0.0, -18.0], [0.15, -60.0], [0.5, -40.0], [0.9, -20.0], [1.2, -30.0]],
+            },
+            "forearm_near": {
+                "rot": [[0.0, -72.0], [0.15, -50.0], [0.5, -30.0], [1.2, -10.0]],
+            },
+            "arm_far": {
+                "rot": [[0.0, -30.0], [0.15, -50.0], [0.5, -20.0], [0.9, -6.0], [1.2, 10.0]],
+            },
+            "forearm_far": {
+                "rot": [[0.0, -62.0], [0.15, -40.0], [1.2, -10.0]],
+            },
         },
     },
 }
