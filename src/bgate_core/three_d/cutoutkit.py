@@ -619,7 +619,8 @@ def unarm_torso(root, name: str, texture: str, *, chroma_rgb, provider: str,
     clip = np.asarray(_shape.mask("torso", _shape.TEX, grow=CLIP_GROW).resize(piece.size))
     a = np.minimum(np.asarray(region.getchannel("A")), clip)
     region.putalpha(Image.fromarray(a.astype("uint8"), "L"))
-    region = clear_grey(defringe(region, chroma_rgb, erode=0))
+    region = defringe(clear_grey(defringe(region, chroma_rgb, erode=0)),
+                      chroma_rgb, erode=1)
     region.save(texture)
     return {"ok": True, "cost": cost, "error": ""}
 
@@ -720,9 +721,11 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
         if opaque.any() and greyish.sum() / opaque.sum() > 0.25:
             grey_left.append(slot)
         # UNPAINTED SILHOUETTE IS NOT ART. Left in, it drew a grey ghost
-        # round the torso and hips in every pose (2026-09-22). Cleared; a
-        # joint it leaves bare is then reported by joint_gaps.
-        piece = clear_grey(piece)
+        # round the torso and hips in every pose (2026-09-22). Cleared, and
+        # the 1 px antialiased ring between paint and grey eroded (a pale
+        # rim round every boot and leg); a joint it leaves bare is then
+        # reported by joint_gaps.
+        piece = defringe(clear_grey(piece), chroma_rgb, erode=1)
         target = out / f"{slot}.png"
         piece.save(target)
         parts[slot] = str(target)

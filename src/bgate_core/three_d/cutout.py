@@ -96,7 +96,10 @@ BIPED_V1 = {
         {"name": "hips",       "parent": "",           "pos": [0, 96],   "rot": 0.0},
         {"name": "chest",      "parent": "hips",       "pos": [0, 34],   "rot": 0.0},
         {"name": "head",       "parent": "chest",      "pos": [2, 30],   "rot": 0.0},
-        {"name": "arm_far",    "parent": "chest",      "pos": [-2, 22],  "rot": -8.0},
+        # THE SHOULDERS SIT BELOW THE SHOULDER LINE, an arm's half-width
+        # under the top of the torso. At chest + 22 they sat level with the
+        # collar and every raised arm came out of the neck (2026-09-22).
+        {"name": "arm_far",    "parent": "chest",      "pos": [-3, 14],  "rot": -8.0},
         {"name": "forearm_far", "parent": "arm_far",   "pos": [0, -26],  "rot": 6.0},
         # THE WRIST IS A BONE, NOT A SLOT. A slot hangs its part at its bone's
         # ORIGIN, so a hand on the forearm bone would sit at the elbow. The
@@ -105,7 +108,7 @@ BIPED_V1 = {
         # frame by construction - the failure EXIT 67 could not gate (#8:
         # stamped guns floating in front of one painted arm).
         {"name": "hand_far",   "parent": "forearm_far", "pos": [0, -24], "rot": 0.0},
-        {"name": "arm_near",   "parent": "chest",      "pos": [4, 22],   "rot": 8.0},
+        {"name": "arm_near",   "parent": "chest",      "pos": [3, 14],   "rot": 8.0},
         {"name": "forearm_near", "parent": "arm_near", "pos": [0, -26],  "rot": -6.0},
         {"name": "hand_near",  "parent": "forearm_near", "pos": [0, -24], "rot": 0.0},
         {"name": "thigh_far",  "parent": "hips",       "pos": [-4, -2],  "rot": 0.0},
