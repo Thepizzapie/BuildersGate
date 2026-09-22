@@ -492,6 +492,12 @@ func _physics_process(_delta: float) -> void:
 		"inside": inside,
 		"grounded": grounded,
 		"busy": busy,
+		# WHICH INPUT BLOCK WAS BEING HELD, AND WHERE THE BODY WAS. Without
+		# these a failed route's trace could not say whether the program
+		# advanced past its second block or the body ever moved - three
+		# agents read "busy false on every frame" as a controller bug.
+		"step": _step,
+		"pos": str(_player.global_position) if _player is Node2D or _player is Node3D else "",
 	})
 	if inside and grounded and not busy:
 		_settled_run += 1
@@ -508,24 +514,57 @@ func _physics_process(_delta: float) -> void:
 		_finish(true, "")
 
 
+# HOLD SEMANTICS, NOT A RE-PRESS EVERY FRAME. The first driver released every
+# action and pressed the block's actions again on each physics frame. Godot
+# 4.4 buffers Input.action_press/release a frame, so the controller saw a
+# jump press only when the block ENDED - measured on a five-block route: the
+# jump filed for frames 30-37 fired at frame 40, the one for 78-85 at 88, and
+# a program of six blocks read as "only the first two applied". A block now
+# presses its actions once when it starts and releases them once when it
+# ends; an action held across two consecutive blocks is never released
+# between them, which is what a human's thumb does. Both the polled state
+# (Input.is_action_*) and the event path (_unhandled_input) see it, because
+# the press goes through an InputEventAction as well.
+var _held: Array = []
+
+
 func _drive() -> void:
-	_release_all()
 	if _step >= SPEC["inputs"].size():
+		if not _held.is_empty():
+			_set_held([])
 		return
 	var step: Dictionary = SPEC["inputs"][_step]
-	for action in step["actions"]:
-		Input.action_press(action)
+	if _step_frame == 0:
+		_set_held(step["actions"])
 	_step_frame += 1
 	if _step_frame >= int(step["frames"]):
 		_step += 1
 		_step_frame = 0
 
 
+func _set_held(actions: Array) -> void:
+	for action in _held:
+		if not actions.has(action):
+			_send_action(String(action), false)
+	for action in actions:
+		if not _held.has(action):
+			_send_action(String(action), true)
+	_held = actions.duplicate()
+
+
+func _send_action(action: String, pressed: bool) -> void:
+	if pressed:
+		Input.action_press(action)
+	else:
+		Input.action_release(action)
+	var ev := InputEventAction.new()
+	ev.action = action
+	ev.pressed = pressed
+	Input.parse_input_event(ev)
+
+
 func _release_all() -> void:
-	for step in SPEC["inputs"]:
-		for action in step["actions"]:
-			if Input.is_action_pressed(action):
-				Input.action_release(action)
+	_set_held([])
 
 
 func _finish(ok: bool, error: String) -> void:

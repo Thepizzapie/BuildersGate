@@ -5367,6 +5367,12 @@ naively is the bug.
 
 `inputs` is the real input program through the real input map:
 [{"action": "move_forward", "frames": 20}, {"action": "jump", "frames": 1}]
+A block's actions are pressed once when it starts and released once when it
+ends, the way a thumb holds them; an action shared by two consecutive blocks
+is never released between them. (The first driver re-pressed every action
+on every frame, and Godot 4.4 buffers those a frame, so a jump landed two
+frames after its block - three agents read that as a controller bug.) Every
+sample in the trace carries `step`, the block being held, and `pos`.
 
 Bounded by construction: the run stops at a frame ceiling and prints a
 heartbeat, because an unbounded wait-until-condition loop is
