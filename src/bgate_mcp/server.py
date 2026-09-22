@@ -9691,8 +9691,13 @@ def agent_activity(item_id: int, limit: int = 30) -> dict:
 
 @_tool
 def ask_human(question: str, refs: Optional[list] = None,
-              to: str = "human") -> dict:
+              to: str = "human",
+              options: Annotated[Optional[list], Field(description='2-6 answers the human can pick with ONE CLICK, each under 80 characters; the first is what you assume meanwhile. REQUIRED IN SPIRIT: a question without options is a paragraph the human has to write back. "Flatten the riser" / "Reroute the bot" / "Cut the section" beats "what should I do about the riser?"')] = None) -> dict:
     """Ask ONE question of a NAMED recipient - and keep working.
+
+    GIVE CHOICES. `options` become buttons on the human's board; a click is
+    the whole answer. The human said it: "I am tired of having to re-prompt
+    everything". Ask A-or-B, name A and B.
 
     `to`: human (DEFAULT), director (FAILS if no live director session, never
     silently rerouted), seat:<name> (blackboard plus a steer to that seat's
@@ -9717,7 +9722,8 @@ def ask_human(question: str, refs: Optional[list] = None,
         return got
     if to == "director":
         got = _steerbox.ask_director(root, question, refs=refs,
-                                     item_id=item_id, by=_actor())
+                                     item_id=item_id, by=_actor(),
+                                     options=options)
         _log("question", f"asked the director: {str(question)[:100]}",
              ref=str(item_id))
         return got
@@ -9737,7 +9743,12 @@ def ask_human(question: str, refs: Optional[list] = None,
                          "wearing a success."}
 
     result = _steerbox.ask(root, question, refs=refs, item_id=item_id,
-                           seat=_seat() or "director", by=_actor())
+                           seat=_seat() or "director", by=_actor(),
+                           options=options)
+    if not result.get("options"):
+        result["warning"] = ("no options: the human has to write the answer "
+                             "out. Next time pass options=[...] so it is one "
+                             "click.")
     _log("question", f"asked the human: {str(question)[:120]}",
          ref=str(item_id or result["seq"]))
     if item_id:

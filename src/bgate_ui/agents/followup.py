@@ -1637,7 +1637,7 @@ def failure_escalation_brief(root: str | os.PathLike[str], item: dict,
         f"#{item_id}), then queue_reopen it. Name what you changed. A reopen "
         "that changes nothing buys the same failure at full price.")
     lines.append(
-        "  3. ASK THE HUMAN. ask_human(question, refs) when the call is not "
+        "  3. ASK THE HUMAN. ask_human(question, refs, options=[...]) when the call is not "
         "yours — spending more money, a key or account that needs paying for, "
         "a pillar. If that tool is not in your list, put the question in your "
         "result note and stop there; do not guess.")
@@ -1725,7 +1725,7 @@ def debrief_brief(root: str | os.PathLike[str], item: dict) -> str:
         "(they usually do — anything that needs the file, scene or schema "
         "another seat is about to make). Name the acceptance test in the brief.")
     lines.append(
-        "  2. ASK THE HUMAN ONE QUESTION. ask_human(question, refs) when the "
+        "  2. ASK THE HUMAN ONE QUESTION. ask_human(question, refs, options=[...]) when the "
         "next step is a judgement you do not own — a pillar, a priority call, or "
         "spending more money. If that tool is not in your list, put the question "
         "in your result note instead and stop there; do not guess.")

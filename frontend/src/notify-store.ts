@@ -16,7 +16,7 @@ import { useSyncExternalStore } from "react";
 
 export type Question = {
   seq: number; item_id: number; seat: string; question: string;
-  asked_at: string; asked_by: string; refs: string[];
+  asked_at: string; asked_by: string; refs: string[]; options: string[];
   answer: string; answered_at: string;
 };
 
@@ -33,6 +33,7 @@ export function normalizeQuestion(q: unknown): Question {
     asked_at: String(src.asked_at || ""),
     asked_by: String(src.asked_by || ""),
     refs: Array.isArray(src.refs) ? src.refs.map(String) : [],
+    options: Array.isArray(src.options) ? src.options.map(String) : [],
     answer: String(src.answer || ""),
     answered_at: String(src.answered_at || ""),
   };

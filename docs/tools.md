@@ -368,6 +368,11 @@ EXACT SpriteFrames .tres.
 ```text
 Ask ONE question of a NAMED recipient - and keep working.
 
+`options` (2-6 strings, under 80 characters each) become BUTTONS on the
+human's board; a click is the whole answer and lands exactly like a typed
+one. The first option is what you assume meanwhile. A question without
+options is a paragraph the human has to write back, and the tool says so.
+
 `to` says WHO, and it is never silently changed:
 
   human       DEFAULT. The person who owns this project.

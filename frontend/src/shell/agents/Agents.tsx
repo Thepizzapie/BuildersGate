@@ -435,8 +435,11 @@ function QuestionCard({ question, onAnswered, onDismiss }: {
 }) {
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
-  async function send() {
-    const text = answer.trim();
+  /* ONE CLICK IS THE ANSWER. The agent named its choices; a button sends the
+     choice through the same route as typed text, so nothing downstream can
+     tell the difference. The textarea stays for "none of these". */
+  async function send(choice?: string) {
+    const text = (choice ?? answer).trim();
     if (!text) return;
     setBusy(true);
     const r = await mutate<{ delivery?: string }>("/api/console/answer",
@@ -451,8 +454,16 @@ function QuestionCard({ question, onAnswered, onDismiss }: {
       <Text size="xs" c="dimmed" style={{ flex: 1 }}>{ago(question.asked_at)}</Text>
       <Button size="compact-xs" variant="subtle" color="gray" onClick={onDismiss}>dismiss</Button></Group>
     <Text size="xs" mt={5}>{question.text}</Text>
+    {!!(question.options || []).length && (
+      <Group gap={6} mt="xs" wrap="wrap" className="bg4-question-options">
+        {(question.options || []).map((o) => (
+          <Button key={o} size="compact-xs" variant="light" loading={busy}
+                  onClick={() => void send(o)}>{o}</Button>
+        ))}
+      </Group>
+    )}
     <Textarea value={answer} onChange={(e) => setAnswer(e.currentTarget.value)} autosize minRows={2} maxRows={5}
-              mt="xs" size="xs" placeholder="Answer this question"
+              mt="xs" size="xs" placeholder={(question.options || []).length ? "or answer in your own words" : "Answer this question"}
               onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send(); }} />
     <Group justify="flex-end" mt="xs"><Button size="compact-xs" loading={busy} disabled={!answer.trim()} onClick={() => void send()}>Send answer</Button></Group>
   </Paper>;

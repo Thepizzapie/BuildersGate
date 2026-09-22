@@ -10,6 +10,12 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **Questions carry their choices.** `ask_human(options=[...])` (2-6
+  answers, 80 characters each) become buttons on every question card in the
+  dashboard (director rail, orchestration inbox); a click is the whole
+  answer and lands exactly like a typed one. The tool warns when a question
+  has no options, and every seat brief and escalation brief asks for them.
+  The graybox-verdict question offers PASS / FAIL / "I will play it first".
 - **A human-only gate is asked, not worked.** The graybox verdict and a
   forward stage move belong to the human, so `greenlight_graybox_submit`
   now records the question for the human at once (pending_decisions,

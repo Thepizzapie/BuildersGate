@@ -478,7 +478,10 @@ def ask_for_verdict(root: str | os.PathLike[str]) -> bool:
                for q in _steerbox.open_questions(root)):
             return False
         _steerbox.ask(root, VERDICT_QUESTION, refs=["greenlight_status"],
-                      seat=SEAT, by="greenlight")
+                      seat=SEAT, by="greenlight",
+                      options=["PASS: the loop is interesting, open production",
+                               "FAIL: attack + dodge + hold interact, send gameplay back",
+                               "I will play it first"])
     except Exception:
         return False
     activity.log(root, "greenlight",
