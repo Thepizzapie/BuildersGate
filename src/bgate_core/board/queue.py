@@ -801,9 +801,22 @@ def runs_of(item: dict) -> int:
     return int((item or {}).get("attempts") or 0) + 1
 
 
+def at_attempt_cap(root: str | os.PathLike[str], item: dict) -> bool:
+    """Has this item had every run the cap allows? True means no reopen, no
+    auto-retry, and a failure at this point is cancelled, not shelved."""
+    return runs_of(item) >= attempt_cap(root)
+
+
 def over_attempt_cap(root: str | os.PathLike[str], item: dict) -> bool:
-    """Would ONE MORE run put this item past the cap?"""
-    return runs_of(item) >= attempt_cap(root) and str(
+    """Would running this item NOW exceed the cap?
+
+    For a queued item runs_of() already counts the pending run, so the test is
+    strictly greater. MEASURED (exit-67-r2 #68, 2026-09-22): with ">=" a
+    director item reopened for its third and last allowed run sat queued and
+    invisible - reopen() let it through, ready() never listed it, and the
+    board idled behind it with nothing filed.
+    """
+    return runs_of(item) > attempt_cap(root) and str(
         (item or {}).get("status") or "") != "dispatched"
 
 
@@ -1895,7 +1908,7 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
     # (the graybox gate found a wall per run and was told "no more runs" on
     # the fourth). `after` names the fix; the reopen hangs behind it and does
     # not count against the cap.
-    if after is None and over_attempt_cap(root, item):
+    if after is None and at_attempt_cap(root, item):
         raise ValueError(attempt_cap_message(root, item))
     reason = (reason or "").strip()
     if not reason:

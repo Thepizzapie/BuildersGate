@@ -19,6 +19,17 @@ from bgate_core.store import settings
 from bgate_ui.agents import dispatch, followup
 
 
+def _forced(root, item_id: int, runs: int) -> dict:
+    """An item whose row says it has had `runs` runs, written raw: reopen()
+    refuses past the cap, so an over-cap row can only come from a raw write
+    or a cap lowered after the fact."""
+    from bgate_core.store import db
+    with db.tx(root) as conn:
+        conn.execute("UPDATE work_item SET attempts = ?, status = 'queued' "
+                     "WHERE id = ?", (runs - 1, item_id))
+    return queue.get(root, item_id)
+
+
 def _spent(root, item_id: int, runs: int) -> dict:
     """An item that has had `runs` runs and just failed the last one."""
     queue.set_status(root, item_id, "failed", result="no")
@@ -52,19 +63,18 @@ class TestTheCap:
 
     def test_readiness_never_lists_an_over_cap_item(self, root):
         item = queue.add(root, "tech", "x", brief="x")
-        _spent(root, item["id"], 3)
-        # Force it queued behind the guard, the way a raw status write would.
-        queue.set_status(root, item["id"], "queued")
+        # Four runs, not three: a queued item at three has had two and its
+        # third is pending - that one MUST list (test_human_gate).
+        _forced(root, item["id"], 4)
         assert item["id"] not in {r["id"] for r in queue.ready(root)}
 
     def test_dispatch_refuses_with_the_cap_named(self, root, monkeypatch):
         monkeypatch.setattr(dispatch, "find_claude", lambda: "claude")
         item = queue.add(root, "tech", "x", brief="x")
-        _spent(root, item["id"], 3)
-        queue.set_status(root, item["id"], "queued")
+        _forced(root, item["id"], 4)
         got = dispatch._spawn(str(root), item["id"])
         assert got["ok"] is False and got["code"] == "attempt_cap"
-        assert got["detail"]["runs"] == 3 and got["detail"]["cap"] == 3
+        assert got["detail"]["runs"] == 4 and got["detail"]["cap"] == 3
 
 
 class TestDeadItemsStayDead:

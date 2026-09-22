@@ -366,6 +366,7 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
     candidates = _candidates(root)
     if not candidates:
         _note_dead_links(root, mem)
+        _note_human_gate(root, mem)
     for item in candidates:
         item_id = int(item["id"])
         if mem["cool"].get(item_id, 0) > now:
@@ -498,6 +499,41 @@ def _pending_integrations(root: str | os.PathLike[str]) -> int:
         return len(_gitwork.integrations(root, pending=True))
     except Exception:
         return 0
+
+
+def _note_human_gate(root, mem: dict) -> None:
+    """The board is idle and a graybox waits on the human's verdict: ask, on
+    the record, and say so in one dispatch.blocked event - never file a
+    director item for a tool the director cannot hold.
+    """
+    try:
+        from bgate_core.design import greenlight as _gl
+        if not _gl.verdict_pending(root):
+            with _lock:
+                mem.pop("human_gate_noted", None)
+            return
+        asked = _gl.ask_for_verdict(root)
+    except Exception:
+        return
+    with _lock:
+        seen = bool(mem.get("human_gate_noted"))
+        mem["human_gate_noted"] = True
+    if seen and not asked:
+        return
+    try:
+        from bgate_core.store import events as _events
+
+        _events.emit(root, "dispatch.blocked", ref="graybox",
+                     payload={"code": "human_verdict", "whole_board": True,
+                              "reason": _gl.VERDICT_QUESTION})
+    except Exception:
+        pass
+    try:
+        activity.log(root, "autodeploy",
+                     "board idle: the graybox verdict is the human's call",
+                     seat="director")
+    except Exception:
+        pass
 
 
 def _note_dead_links(root, mem: dict) -> None:
