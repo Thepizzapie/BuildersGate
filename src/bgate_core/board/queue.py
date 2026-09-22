@@ -126,7 +126,11 @@ SATISFIED = ("done",)
 # agent whose brief is to DIAGNOSE AND ACT — read the failure, fix the brief,
 # queue_reopen or route the real blocker. Spend is bounded the same way it
 # always was: ONE escalation per item, ever (followup.fail_escalated).
-HELD_SOURCES = ("qa-gate-escalation", "chat")
+# "qa-gate-escalation" used to be held here too, on the theory that a QA loop
+# that failed N rounds needed a PERSON. It needed a decision; the director
+# seat is dispatched for exactly that, and holding it left "QA loop: #5
+# failed 6 rounds" queued for a human who was asleep while the board sat.
+HELD_SOURCES = ("chat",)
 
 # The source stamped on that escalation. Named here rather than in the router
 # that files them because the hold above and the filing must never drift apart:
@@ -322,9 +326,37 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
     return get(root, item_id)
 
 
+# WORDS THAT MEAN "THIS LINK BUILDS ON THE ONE BEFORE IT". A chain used to be
+# a strict line, and directors filed everything as a chain - ten independent
+# cutout rigs became a ten-deep ladder that one art agent climbed alone while
+# the concurrency cap sat at two. A same-seat link whose brief does not name
+# its predecessor's output is a SIBLING, not a successor.
+_BUILDS_ON = re.compile(
+    r"\b(after|once|previous|preceding|prior|earlier|from the last|"
+    r"builds? on|depends? on|needs? the|using the|takes? the|when #?\d+)\b",
+    re.I)
+
+
+def link_builds_on(link: dict, previous: Optional[dict]) -> bool:
+    """Does this link have to WAIT for the previous one? Explicit first
+    (`after`: True/False), then the seat handoff (a different seat is a
+    handoff: the file, scene or schema crosses lanes), then the brief's own
+    words. Same seat and nothing said: it runs beside the previous link."""
+    if previous is None:
+        return False
+    if "after" in link and link["after"] is not None:
+        return bool(link["after"])
+    if str(link.get("seat")) != str(previous.get("seat")):
+        return True
+    text = f"{link.get('title') or ''} {link.get('brief') or ''}"
+    if f"#{previous.get('id')}" in text:
+        return True
+    return bool(_BUILDS_ON.search(text))
+
+
 def add_chain(root: str | os.PathLike[str], links: list[dict],
               chain_id: str = "", source: str = "manual",
-              source_ref: str = "") -> list[dict]:
+              source_ref: str = "", mode: str = "auto") -> list[dict]:
     """File dependent work as ONE ordered group, each link waiting on the last.
 
     THE GAP THIS CLOSES. Splitting an ask across seats produced N independent
@@ -342,6 +374,11 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
 
     Returns the created items in order. Raises before writing anything if a link
     is malformed, so a bad chain does not half-land.
+
+    ``mode`` is "auto" (the default): a link waits on the previous one only
+    when it is a seat handoff, its brief names the predecessor, or it says
+    ``after: true``; otherwise it runs BESIDE the previous link, hanging off
+    whatever that link hangs off. "linear" is the old strict line.
     """
     if not links:
         raise ValueError("a chain needs at least one link")
@@ -359,22 +396,37 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
 
     chain_id = (chain_id or "").strip()
     made: list[dict] = []
-    previous: Optional[int] = None
+    previous: Optional[dict] = None
+    parallel = 0
     for pos, link in enumerate(links, start=1):
+        if mode == "linear" or previous is None:
+            waits_on = int(previous["id"]) if previous else None
+        elif link_builds_on(link, previous):
+            waits_on = int(previous["id"])
+        else:
+            # A sibling: hangs off what the previous link hangs off, so a
+            # handoff further up still gates it, and nothing else does.
+            waits_on = previous.get("depends_on")
+            waits_on = int(waits_on) if waits_on else None
+            parallel += 1
         item = add(root, str(link["seat"]), str(link["title"]),
                    brief=str(link.get("brief") or ""),
                    priority=int(link.get("priority") or 0),
                    source=str(link.get("source") or source),
                    source_ref=str(link.get("source_ref") or source_ref),
-                   chain_id=chain_id, chain_pos=pos, depends_on=previous,
+                   chain_id=chain_id, chain_pos=pos, depends_on=waits_on,
                    chain_self=not chain_id and pos == 1)
         if not chain_id:
             chain_id = str(item["chain_id"])
-        previous = int(item["id"])
+        previous = item
         made.append(item)
     activity.log(root, "queue",
-                 f"chain {chain_id}: {len(made)} linked items — "
-                 + " -> ".join(f"#{m['id']}[{m['seat']}]" for m in made),
+                 f"chain {chain_id}: {len(made)} linked items"
+                 + (f", {parallel} of them running beside a sibling" if parallel else "")
+                 + " — " + " -> ".join(
+                     f"#{m['id']}[{m['seat']}]"
+                     + (f"(after #{m['depends_on']})" if m.get("depends_on") else "")
+                     for m in made),
                  ref=chain_id)
     # ref is the chain id, not an item id: everything downstream that reasons
     # about a chain (one debrief per chain, the stall reminder, "what is blocked
@@ -726,11 +778,58 @@ def _release_leases(root: str | os.PathLike[str], item_id: int) -> None:
         pass
 
 
+# HOW MANY RUNS ONE ITEM MAY HAVE, EVER. attempts counts reopens, so an
+# item on its Nth run has attempts == N - 1; the cap is on runs. MEASURED:
+# nine runs on one item (~$33) through auto-retries, a director reopen and
+# two dashboard send-backs, none of which could land it because the brief
+# was five deliverables wide. Past the cap the answer to "run it again" is
+# no, for every caller; the item is split, or the human raises the cap on
+# purpose in Settings.
+DEFAULT_MAX_ATTEMPTS = 3
+
+
+def attempt_cap(root: str | os.PathLike[str]) -> int:
+    try:
+        from ..store import settings as _settings
+        return max(1, int(_settings.get(root, "dispatch.max_attempts") or DEFAULT_MAX_ATTEMPTS))
+    except Exception:
+        return DEFAULT_MAX_ATTEMPTS
+
+
+def runs_of(item: dict) -> int:
+    """How many runs this item has had: attempts (reopens) + the first."""
+    return int((item or {}).get("attempts") or 0) + 1
+
+
+def over_attempt_cap(root: str | os.PathLike[str], item: dict) -> bool:
+    """Would ONE MORE run put this item past the cap?"""
+    return runs_of(item) >= attempt_cap(root) and str(
+        (item or {}).get("status") or "") != "dispatched"
+
+
+def attempt_cap_message(root: str | os.PathLike[str], item: dict) -> str:
+    cap = attempt_cap(root)
+    return (f"item {item['id']} has had {runs_of(item)} run(s); the cap is {cap} "
+            "(dispatch.max_attempts). No agent needs that many runs on one "
+            "item - a brief that does is the wrong shape. Split it into "
+            "single-deliverable items with queue_add_chain (what is already on "
+            "disk stays), or raise the cap on purpose in Settings.")
+
+
 def set_status(root: str | os.PathLike[str], item_id: int, status: str,
                result: str = "") -> dict:
     if status not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
-    get(root, item_id)
+    current = get(root, item_id)
+    # A PARKED OR CANCELLED ITEM STAYS THAT WAY. The reaper banks a killed
+    # run as "failed" - and that overwrote a park, put the item back on the
+    # failed shelf with a reopen button, and the next click bought a run.
+    if current["status"] in ("parked", "cancelled") and status == "failed":
+        activity.log(root, "queue",
+                     f"item {item_id} stays {current['status']}: a run ended "
+                     f"failed but the item was {current['status']} on purpose",
+                     seat=current["seat"], ref=str(item_id))
+        return current
     result = _with_observed_writes(root, item_id, status, result)
     with db.tx(root) as conn:
         conn.execute(
@@ -882,6 +981,158 @@ def blocker(root: str | os.PathLike[str], item_id: int) -> Optional[dict]:
     if len(unsatisfied) > 1:
         out["also_waiting_on"] = [int(d["id"]) for d in unsatisfied[1:]]
     return out
+
+
+# A predecessor in one of these states is not "still running", it is a DEAD
+# LINK: nothing the board does on its own will ever satisfy it. Everything
+# queued behind it is invisible work until a human reopens it, closes it as
+# superseded, or cuts the dependency. MEASURED (EXIT 67 r2, 2026-09-22): a
+# six-link chain's head failed, the director's escalation filed a fresh item
+# that did the head's job, and the five links behind the head sat queued and
+# silent for an hour while the board read as idle.
+DEAD_LINK = ("failed", "parked", "cancelled")
+
+
+def blocked_chains(root: str | os.PathLike[str]) -> list[dict]:
+    """Queued items whose predecessor is a dead link, grouped by that link.
+
+    ``[{"blocker": {id, seat, title, status}, "waiting": [{id, seat, title}]}]``
+    — the shape a banner, a digest and an escalation brief can all print.
+    """
+    conn = db.connect(root)
+    queued = rows(conn.execute(
+        "SELECT id, seat, title FROM work_item WHERE status = 'queued' "
+        "ORDER BY id"))
+    by_blocker: dict[int, dict] = {}
+    for item in queued:
+        held = blocker(root, int(item["id"]))
+        if not held or held.get("status") not in DEAD_LINK:
+            continue
+        entry = by_blocker.setdefault(int(held["id"]), {
+            "blocker": {k: held[k] for k in ("id", "seat", "title", "status")},
+            "waiting": []})
+        entry["waiting"].append({k: item[k] for k in ("id", "seat", "title")})
+    return list(by_blocker.values())
+
+
+# The source stamped on the director item that releases a dead link. Its
+# own dispatch is what makes "the board never stays stuck" true: the item is
+# filed by autopilot the moment it idles behind a dead link, the director
+# agent runs it, and the human is asked only when the director cannot decide.
+UNBLOCK_SOURCE = "unblock"
+
+
+def unblock_item_open(root: str | os.PathLike[str], blocker_id: int) -> bool:
+    row = db.connect(root).execute(
+        "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? "
+        "AND status IN ('queued', 'dispatched', 'review') LIMIT 1",
+        (UNBLOCK_SOURCE, str(int(blocker_id)))).fetchone()
+    return row is not None
+
+
+def file_unblock(root: str | os.PathLike[str], entry: dict) -> Optional[dict]:
+    """File ONE director item to release a dead link, unless one is open."""
+    b = entry["blocker"]
+    if unblock_item_open(root, int(b["id"])):
+        return None
+    ids = ", ".join(f"#{w['id']}" for w in entry["waiting"])
+    brief = (
+        f"THE BOARD IS IDLE BEHIND #{b['id']} [{b['seat']}], which is "
+        f"{str(b['status']).upper()}: {str(b['title'])[:90]}. Waiting on it: "
+        f"{ids}. This item exists so the board never stays stuck; it is done "
+        "when something is READY again or the human has been asked one "
+        "precise question.\n\n"
+        f"1. queue_get({b['id']}) and read its result, its attempts and what is "
+        "on disk (the FILES WRITTEN list). If another item already did its job, "
+        f"close it as superseded: queue_update(item_id={b['id']}, "
+        "status='done', result='superseded by #N: ...').\n"
+        "2. If it failed on something a changed brief fixes, and it is under the "
+        f"run cap, queue_reopen({b['id']}, reason) with the CHANGE named - never "
+        "the same brief again.\n"
+        "3. If it was too wide (several deliverables), split it: "
+        "queue_add_chain of single-deliverable items, each with an acceptance "
+        "line, then queue_cut_dependency on the waiting items so they hang off "
+        "the new chain or run free.\n"
+        "4. If the waiting items no longer make sense, queue_cancel them with "
+        "the reason.\n"
+        "5. Only if none of the above can be decided from the board: ask_human "
+        "with the one question, and say in your result that you did.\n"
+        "Finish with one line naming what is now READY.")
+    row = add(root, "director",
+              f"UNBLOCK: #{b['id']} [{b['seat']}] is {b['status']} and holds "
+              f"{len(entry['waiting'])} item(s)",
+              brief=brief, priority=96, source=UNBLOCK_SOURCE,
+              source_ref=str(b["id"]))
+    activity.log(root, "autodeploy",
+                 f"filed #{row['id']} for the director: release #{b['id']} "
+                 f"({b['status']}), {len(entry['waiting'])} item(s) wait on it",
+                 seat="director", ref=str(row["id"]))
+    return row
+
+
+def release_dependents(root: str | os.PathLike[str], item_id: int,
+                       why: str) -> list[int]:
+    """A dead item holds NOTHING. Cut every queued successor loose, on the
+    record, with what the dead item left on disk written into its brief.
+
+    MEASURED (2026-09-22): one cancelled item held seventeen items behind it
+    for hours; a parked one held five. Waiting on something that will never
+    land is not caution, it is a stall - and the director's UNBLOCK item
+    (file_unblock) still runs to decide whether the RELEASED work should be
+    reshaped, but it decides while the board moves, not while it sits.
+    Returns the released item ids.
+    """
+    dead = get(root, item_id)
+    said = " ".join(str(why or "").split())[:300]
+    try:
+        from ..store import writelog
+        left = writelog.summary(root, f"item-{int(item_id)}") or ""
+    except Exception:
+        left = ""
+    released: list[int] = []
+    for succ in successors(root, int(item_id)):
+        if str(succ.get("status")) != "queued":
+            continue
+        try:
+            cut_dependency(root, int(succ["id"]), int(item_id), by="autopilot")
+        except LookupError:
+            continue
+        note = (f"\n\n--- RELEASED ---\nYou waited on #{item_id} [{dead['seat']}] "
+                f"({str(dead['title'])[:70]}), which is {str(dead['status']).upper()}"
+                + (f": {said}" if said else "") + ". Nothing waits for it any "
+                "more. Build on what it actually left"
+                + (": " + left[:1500] if left else " (nothing observed on disk)")
+                + ". If its output is truly required and missing, fail fast "
+                  "naming it; do not rebuild its job inside this item.")
+        with db.tx(root) as conn:
+            conn.execute("UPDATE work_item SET brief = brief || ? WHERE id = ?",
+                         (note, int(succ["id"])))
+        released.append(int(succ["id"]))
+    if released:
+        activity.log(root, "queue",
+                     f"item {item_id} is {dead['status']}; released "
+                     + ", ".join(f"#{i}" for i in released)
+                     + " to run without it", seat=dead["seat"], ref=str(item_id))
+        _emit(root, "queue.released", ref=str(item_id),
+              payload={"dead": int(item_id), "status": dead["status"],
+                       "released": released, "why": said})
+    return released
+
+
+def describe_blocked_chains(chains: list[dict]) -> str:
+    """One sentence per dead link, with the three ways out."""
+    lines = []
+    for entry in chains:
+        b = entry["blocker"]
+        ids = ", ".join(f"#{w['id']}" for w in entry["waiting"])
+        lines.append(
+            f"{len(entry['waiting'])} queued item(s) ({ids}) wait on #{b['id']} "
+            f"[{b['seat']}] which is {b['status'].upper()}: "
+            f"{str(b['title'])[:60]}. Nothing dispatches behind it until you "
+            f"queue_reopen(#{b['id']}), close it as superseded "
+            f"(queue_update status done with what did its job), or "
+            f"queue_cut_dependency on the waiting items.")
+    return "\n".join(lines)
 
 
 def chain(root: str | os.PathLike[str], chain_id: str) -> list[dict]:
@@ -1492,6 +1743,7 @@ def mark_exhausted(root: str | os.PathLike[str], item_id: int,
                  f"item {item_id} is exhausted: {said[:120]}", ref=str(item_id))
     _emit(root, "item.failed", ref=str(item_id),
           payload={"id": int(item_id), "exhausted": True, "why": said})
+    release_dependents(root, item_id, f"exhausted: {said}")
     return get(root, item_id)
 
 
@@ -1547,6 +1799,7 @@ def park(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
     _emit(root, "item.parked", ref=str(item_id),
           payload={**_item_event_payload(item), "reason": reason,
                    "prior_status": prior_status})
+    release_dependents(root, item_id, f"parked: {reason}")
     return item
 
 
@@ -1575,7 +1828,9 @@ def cancel(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
         raise ValueError(f"item {item_id} is already {item['status']!r}")
     reason = (reason or "").strip()
     said = reason or f"cancelled by {activity.current_actor() or 'the dashboard'}"
-    return set_status(root, item_id, "cancelled", result=said)
+    out = set_status(root, item_id, "cancelled", result=said)
+    release_dependents(root, item_id, said)
+    return out
 
 
 def awaiting_review(root: str | os.PathLike[str]) -> list[dict]:
@@ -1633,6 +1888,8 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
     if item["status"] not in ("done", "failed", "cancelled"):
         raise ValueError(f"item {item_id} is {item['status']!r} — only "
                          "done/failed/cancelled items can be reopened")
+    if over_attempt_cap(root, item):
+        raise ValueError(attempt_cap_message(root, item))
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("reason is required — say exactly what to fix")
@@ -1894,6 +2151,7 @@ def ready(root: str | os.PathLike[str], seat: str = "",
     return [c for c in candidates
             if c["seat"] not in held
             and not c.get("exhausted_at")
+            and not over_attempt_cap(root, c)
             and blocker(root, int(c["id"])) is None]
 
 

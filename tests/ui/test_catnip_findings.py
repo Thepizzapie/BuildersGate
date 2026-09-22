@@ -710,9 +710,9 @@ class TestLiveChannelsAndExhaustion:
         """THE TWO COPIES OF THE READINESS RULE. next_for carried its own SQL
         and did not filter human-held sources, so queue_next offered a
         qa-gate escalation — a row no auto-dispatcher will ever take."""
-        queue.add(root, "director", "QA loop: #1 failed three rounds",
+        queue.add(root, "director", "a chat turn for a person",
                   brief="a brief that is long enough",
-                  source="qa-gate-escalation", source_ref="1")
+                  source="chat", source_ref="1")
         assert queue.ready(root, seat="director") == []
         assert queue.next_for(root, "director") is None
 

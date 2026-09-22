@@ -450,14 +450,16 @@ def _debrief_exists(root, guard_ref: str) -> bool:
 
 
 def fail_escalated(root, item_id: int) -> bool:
-    """Has this item already been escalated for FAILING, ever?
+    """Is there an OPEN escalation for this item's failure right now?
 
-    One per item for the life of the item, in any status — the same rule
-    ``qa_gate.escalated`` uses and for the same reason: without it, an item
-    sitting at its retry cap files a fresh escalation every time anything
-    re-emits its failure (at-least-once delivery, the backstop sweep, a
-    dashboard restart replaying the batch), and the director's queue fills with
-    copies of one argument.
+    It used to be "ever": one escalation per item for the life of the item.
+    That dedup was right for at-least-once delivery (a re-emitted failure,
+    the backstop sweep, a dashboard restart replaying the batch) and wrong
+    for the case that actually happened: the director closed the escalation,
+    the item was reopened and FAILED AGAIN with a new, real finding (a wall
+    in a section), and that second failure reached nobody - the board sat
+    idle for an hour. An open escalation still dedups; a closed one does not
+    silence the next failure.
 
     An unreadable board answers YES. The two wrong answers are not
     symmetrical: claiming "not escalated" files duplicates, claiming
@@ -465,7 +467,8 @@ def fail_escalated(root, item_id: int) -> bool:
     """
     try:
         row = db.connect(root).execute(
-            "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? LIMIT 1",
+            "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? "
+            "AND status IN ('queued', 'dispatched', 'review') LIMIT 1",
             (FAIL_ESCALATION_SOURCE, str(int(item_id)))).fetchone()
     except Exception:
         return True
@@ -1164,12 +1167,15 @@ def _do_reopen_unverified(root, action: dict) -> dict:
         return {"why": "the item moved since this was decided"}
     if not _qa_gate.needs_per_frame_verdict(item):
         return {"why": "a per-frame verdict landed since this was decided"}
-    reopened = _queue.reopen(
-        root, item_id,
-        "ART RESULT HAS NO PER-FRAME VERDICT (ITEM 9b) - open the finished "
-        "sheet, compare frame to frame against the pinned anchor "
-        "(consistency_check / sprite_family_check), and paste that verdict "
-        "into the result before re-closing.")
+    try:
+        reopened = _queue.reopen(
+            root, item_id,
+            "ART RESULT HAS NO PER-FRAME VERDICT (ITEM 9b) - open the finished "
+            "sheet, compare frame to frame against the pinned anchor "
+            "(consistency_check / sprite_family_check), and paste that verdict "
+            "into the result before re-closing.")
+    except ValueError as exc:                 # the run cap
+        return {"why": str(exc)}
     return {"why": "", "item": item_id, "status": reopened.get("status")}
 
 
@@ -1214,7 +1220,15 @@ def _do_reopen(root, action: dict) -> dict:
             reason = already + "\n\n---\n\n" + reason
     except Exception:                                             # noqa: BLE001
         pass                       # a salvage read must never block the retry
-    _queue.reopen(root, item_id, reason)
+    try:
+        _queue.reopen(root, item_id, reason)
+    except ValueError as exc:
+        # THE RUN CAP WINS OVER THE RETRY BUDGET. An automatic retry that the
+        # cap refuses becomes the escalation that cancels and asks for a split.
+        activity.log(root, LEDGER_KIND, f"auto-retry of #{item_id} refused: {exc}",
+                     seat=item.get("seat") or "", ref=str(item_id))
+        return _do_fail_escalate(root, {"item": item_id,
+                                        "reason": str(action.get("reason") or reason)})
     activity.log(root, LEDGER_KIND,
                  f"auto-reopened #{item_id} after a failure — attempt "
                  f"{int(item.get('attempts') or 0) + 2}, automatic retry "
@@ -1249,11 +1263,40 @@ def _do_fail_escalate(root, action: dict) -> dict:
         return {"why": "already escalated once, which is the whole cap"}
     if str(item.get("source") or "") in NEVER_ESCALATE_SOURCES:
         return {"why": "this item IS an escalation — it does not escalate itself"}
+    brief = failure_escalation_brief(root, item, action)
+    # AT THE RUN CAP THE ITEM IS CANCELLED, NOT SHELVED. A failed item wears
+    # a reopen button; nine runs on one item came through that button and
+    # the auto-retry. Past the cap the only honest next step is a split.
+    if _queue.over_attempt_cap(root, item):
+        try:
+            _queue.cancel(root, item_id, _queue.attempt_cap_message(root, item))
+        except Exception:                                         # noqa: BLE001
+            pass
+        brief = ("CANCELLED AT THE RUN CAP. " + _queue.attempt_cap_message(root, item)
+                 + " Your job here is the SPLIT: read what is on disk, file "
+                   "one item per remaining deliverable with queue_add_chain, "
+                   "each with its own acceptance line. Do not reopen this one.\n\n"
+                 + brief)
+    # WHAT THIS FAILURE IS HOLDING. A failed chain head blocks every link
+    # behind it, silently; the escalation is the one place the director reads
+    # about the failure, so it names the queue it has stalled and the three
+    # ways to release it. Filing a replacement item does NOT release it.
+    try:
+        waiting = [c for c in _queue.blocked_chains(root)
+                   if int(c["blocker"]["id"]) == item_id]
+        if waiting:
+            brief += ("\n\nTHIS FAILURE BLOCKS THE BOARD: "
+                      + _queue.describe_blocked_chains(waiting)
+                      + " Whatever you decide, RELEASE THEM: a replacement item "
+                        "filed beside this one leaves every link behind it "
+                        "queued and silent.")
+    except Exception:
+        pass
     row = _queue.add(
         root, "director",
         f"FAILED: #{item_id} [{item.get('seat') or ''}] "
         f"{str(item.get('title') or '')[:60]} — decide what happens to it",
-        brief=failure_escalation_brief(root, item, action),
+        brief=brief,
         priority=FAIL_ESCALATION_PRIORITY,
         source=FAIL_ESCALATION_SOURCE, source_ref=str(item_id))
     activity.log(root, LEDGER_KIND,
@@ -1571,13 +1614,23 @@ def failure_escalation_brief(root: str | os.PathLike[str], item: dict,
 
     lines.append(_chain_block(root, item))
 
+    lines.append("DONE MEANS SOMETHING IS READY. You are dispatched so the board "
+                 "never stays stuck: when you close this item, either a fix is "
+                 "queued and #%d hangs behind it, #%d is reopened with a changed "
+                 "brief, it is split into a chain, or it is cancelled with what "
+                 "replaces it. Closing this with the board still idle is the one "
+                 "wrong answer. The human is asked one precise question only "
+                 "when the board cannot decide." % (item_id, item_id))
+    lines.append("")
     lines.append("YOUR MOVES — pick exactly one")
     lines.append(
-        "  1. FILE THE BLOCKER. If the cause is upstream, queue_add the work "
-        "that actually clears it (or queue_add_chain if clearing it and "
-        "redoing this have an order — they usually do), and say in your result "
-        "note that #%d waits on it. Do not reopen #%d until the blocker is "
-        "gone: that is the money pump." % (item_id, item_id))
+        "  1. FILE THE FIX, HANG THIS BEHIND IT. If the failure names a defect "
+        "in another seat's lane (a wall in a section, a missing scene, a dead "
+        "kit), queue_add that seat's fix with an acceptance line, then "
+        "queue_reopen(#%d, reason) and queue_add_dependency(#%d, <fix id>) so "
+        "it re-runs the moment the fix lands. That is what a QA verdict is "
+        "FOR. Do not reopen #%d without the dependency: that is the money "
+        "pump." % (item_id, item_id, item_id))
     lines.append(
         "  2. RE-SCOPE AND REOPEN ONCE. If the brief was the problem, rewrite "
         f"it so the next attempt cannot fail the same way (queue_update "
