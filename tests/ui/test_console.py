@@ -164,8 +164,8 @@ class TestChainStateTellsTheWholeTruth:
         assert got["stuck"] is True
 
     def test_a_held_row_says_so(self, client, root):
-        held = _queue.add(root, "director", "two agents disagreed",
-                          source="qa-gate-escalation", source_ref="1")
+        held = _queue.add(root, "director", "a chat turn for a person",
+                          source="chat", source_ref="1")
         plain = _queue.add(root, "art", "ordinary work")
         items = self._items(client)
         assert items[int(held["id"])]["held"] is True
@@ -315,12 +315,14 @@ class TestAutoDeploy:
         autodeploy.tick(root)
         assert spawned[0] == high["id"] and low["id"] in spawned
 
-    def test_an_escalation_is_never_auto_dispatched(self, client, root, spawned):
-        _queue.add(root, "director", "QA loop broken — you decide",
-                   source="qa-gate-escalation", source_ref="7")
+    def test_a_chat_turn_is_never_auto_dispatched(self, client, root, spawned):
+        # The QA-loop escalation used to sit here too; it is the director's
+        # decision and the director seat is dispatched to make it.
+        _queue.add(root, "director", "a chat turn for a person",
+                   source="chat", source_ref="7")
         autodeploy.set_enabled(root, True)
         autodeploy.tick(root)
-        assert spawned == [], "autopilot spent an agent on a human decision"
+        assert spawned == [], "autopilot spent an agent on a human turn"
 
     def test_a_refusal_is_not_retried_on_the_next_tick(self, root, monkeypatch):
         item = _queue.add(root, "art", "will refuse")

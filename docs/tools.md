@@ -4364,6 +4364,17 @@ ready, and it would dispatch immediately - the exact failure being prevented.
 ## queue_add_chain
 
 ```text
+A CHAIN IS FOR ORDER, NOT FOR LISTS. A link waits on the one before it only
+when it is a seat handoff, its brief names the predecessor (#id, "after",
+"once", "from the previous", ...), or it says `after: true`. Same-seat links
+that do not mention each other run BESIDE each other, hanging off whatever
+the previous link hangs off, as wide as dispatch.max_concurrent and
+dispatch.max_per_seat allow. `after: false` forces a sibling; mode="linear"
+is the old strict ladder. Measured: ten independent rigs filed as a ten-deep
+ladder ran one at a time on a two-slot board.
+```
+
+```text
 File DEPENDENT work as one ordered chain instead of N loose items.
 
 USE THIS WHENEVER THE SPLIT YOU JUST MADE HAS AN ORDER. The tell is a brief
@@ -4552,6 +4563,15 @@ once, and keep the limit small when you do.
 ```
 
 ## queue_reopen
+
+```text
+THE RUN CAP. An item may have dispatch.max_attempts runs in its life (3 by
+default); dispatches, auto-retries and reopens all count. Past the cap
+queue_reopen refuses, dispatch refuses, autopilot never lists it, and the
+failure escalation cancels it and asks the director for a SPLIT. Measured:
+nine runs (~$33) on one item that was five deliverables wide. Raise the
+cap in Settings only on purpose; the fix is almost always the brief.
+```
 
 ```text
 Send a done/failed item back to 'queued' for another round.

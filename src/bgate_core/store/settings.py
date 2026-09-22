@@ -149,6 +149,7 @@ LABELS: dict[str, str] = {
     "dispatch.runner_cinematic": "Cinematic worker CLI",
     "dispatch.runner_qa": "QA worker CLI",
     "dispatch.max_turns": "Turn limit per agent",
+    "dispatch.max_attempts": "Run cap per work item",
     # Gates
     "enforcement.profile": "Enforcement level",
     "gate.mode": "Completion approval",
@@ -218,7 +219,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.auto_commit": "Commit only the files changed by each completed agent run.",
     "dispatch.isolation": "Run each agent in a separate git worktree. Chaos mode always does this.",
     "dispatch.max_concurrent": "Maximum number of agent processes that may run at once.",
-    "dispatch.max_per_seat": "Per-seat cap, e.g. {\"art\": 1}. Overrides nothing "
+    "dispatch.max_per_seat": "Per-seat cap, e.g. {\"art\": 2}. Overrides nothing "
         "globally; a seat named here may not exceed its number even when the "
         "global concurrent limit has room.",
     "dispatch.default_max_paid_calls": "Paid generation calls one work item may make before further spend is refused. A per-item override beats this.",
@@ -239,6 +240,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.runner_cinematic": "CLI for the cinematic seat. Blank uses the default worker CLI.",
     "dispatch.runner_qa": "CLI for the qa seat. Blank uses the default worker CLI.",
     "dispatch.max_turns": "Maximum assistant turns in one run. Set to 0 for no limit.",
+    "dispatch.max_attempts": "How many runs one work item may have, ever. Past it nothing dispatches or reopens it: split the item instead.",
     "enforcement.profile": "Sets the default strictness for lanes, project boundaries, and approvals.",
     "gate.mode": "Choose whether completion needs no review, QA review, or your approval.",
     "greenlight.generation_hold": "No paid art, 3D, music or video until you have played the graybox and advanced the stage. Off for a game whose art is the loop.",
@@ -464,14 +466,15 @@ SETTINGS: tuple[Setting, ...] = (
              "the 4 a human set to 9 and then 11 inside one run."),
     Setting(
         key="dispatch.max_per_seat", group="Dispatch", kind=MAP,
-        default={"art": 1}, advanced=True,
+        default={"art": 2}, advanced=True,
         store=("registry", "dispatch.max_per_seat"), scope=MACHINE,
         help="Concurrency cap per SEAT, on top of dispatch.max_concurrent. "
              "MEASURED (EXIT 67, item 24): three art agents ran at once and "
-             "mixed characters into each other's reference sheets — art "
-             "generation shares provider-side state that a global cap does "
-             "not protect. A seat with no entry here is uncapped except by "
-             "the global concurrency limit."),
+             "mixed characters into each other's reference sheets. That was "
+             "a shared upload name (fixed, de59d3a) and no frame gate (built "
+             "since), so art now defaults to two side by side; one agent at "
+             "a time on a ten-rig board was the next complaint. A seat with "
+             "no entry here is uncapped except by the global limit."),
     Setting(
         key="dispatch.default_max_paid_calls", group="Dispatch", kind=INT,
         default=30, minimum=1, maximum=500,
@@ -519,6 +522,18 @@ SETTINGS: tuple[Setting, ...] = (
              "setting names a Claude alias (sonnet, opus, ...). Blank lets "
              "codex pick its account default; a name codex's catalog does "
              "not list is passed through as typed."),
+    Setting(
+        key="dispatch.max_attempts", group="Dispatch", kind=INT, default=3,
+        minimum=1, maximum=20, store=("registry", "dispatch.max_attempts"),
+        scope=MACHINE, env="BGATE_MAX_ATTEMPTS", human_only=True,
+        help="How many RUNS one work item may have in its life - dispatches, "
+             "auto-retries and reopens all count. Past the cap nothing "
+             "dispatches it and nothing reopens it, whoever asks; the item is "
+             "cancelled and the escalation says to split it. MEASURED: one "
+             "item ran nine times (~$33) across auto-retries, a director "
+             "reopen and two dashboard send-backs, and no run could land it "
+             "because it was five deliverables wide. No agent needs that "
+             "many runs on one item; a brief that does is the wrong shape."),
     Setting(
         key="dispatch.max_turns", group="Dispatch", kind=INT, default=800, advanced=True,
         minimum=0, maximum=1000, store=("registry", "dispatch.max_turns"),

@@ -369,12 +369,17 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
         if needs_per_frame_verdict(item):
             # Reopen rather than spend a QA round reviewing a claim nobody
             # can check yet - see the module docstring on needs_per_frame_verdict.
-            _queue.reopen(root, int(item["id"]),
-                         "ART RESULT HAS NO PER-FRAME VERDICT (ITEM 9b) - open "
-                         "the finished sheet, compare frame to frame against "
-                         "the pinned anchor (consistency_check / "
-                         "sprite_family_check), and paste that verdict into "
-                         "the result before re-closing.")
+            try:
+                _queue.reopen(root, int(item["id"]),
+                             "ART RESULT HAS NO PER-FRAME VERDICT (ITEM 9b) - open "
+                             "the finished sheet, compare frame to frame against "
+                             "the pinned anchor (consistency_check / "
+                             "sprite_family_check), and paste that verdict into "
+                             "the result before re-closing.")
+            except ValueError as exc:
+                # The run cap: a reopen it cannot buy is logged, not crashed on.
+                activity.log(root, "qa-gate", f"#{item['id']}: {exc}",
+                             seat="qa", ref=str(item["id"]))
             continue
         opened = open_round(root, item)
         if opened.get("ok"):

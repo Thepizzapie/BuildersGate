@@ -10,6 +10,44 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **A run cap per work item, for everyone.** One item ran nine times
+  (~$33) through its auto-retry, a director reopen and two dashboard
+  send-backs, and no run could land it because the brief was five
+  deliverables wide. `dispatch.max_attempts` (3 by default, human-only)
+  counts every run in an item's life: past it autopilot never lists the
+  item, the dispatch button refuses (`attempt_cap`), `queue_reopen` refuses
+  with the split it wants instead, the QA gate and the follow-up router
+  stop reopening, and the failure escalation cancels the item and asks the
+  director for a chain of single-deliverable items. A parked or cancelled
+  item stays that way when a killed run is banked as failed; that overwrite
+  is how a parked item grew a reopen button. And the board never stays
+  stuck: when autopilot idles behind a dead link it files one UNBLOCK item
+  for the director (close it as superseded, reopen with a changed brief,
+  split it and re-hang the waiters, or cancel the waiters; ask the human
+  only when the board cannot decide), dispatched like any other and never
+  filed twice; the director protocol makes that job the director's, not
+  the human's.
+  Above all, a dead item holds nothing: cancelling, parking or exhausting
+  an item cuts every queued successor loose at once, with what the dead
+  item left on disk written into the successor's brief, so a chain never
+  waits on something that will not land.
+  Every failure reaches the director: a closed escalation no longer
+  silences the next failure of the same item (one OPEN escalation dedups, a
+  closed one does not), the escalation brief says done means something is
+  ready and leads with file-the-fix-and-hang-this-behind-it, and the
+  QA-loop escalation is dispatched to the director seat instead of held for
+  a person.
+- **A chain behind a dead link says so.** A six-link chain's head failed,
+  the director's escalation filed a replacement item that did the head's
+  job, and the five links behind the head sat queued and silent for an hour
+  while the board read as stuck, because it was. `queue.blocked_chains`
+  names every queued item waiting on a FAILED, PARKED or CANCELLED link;
+  autopilot, when it has nothing to dispatch, announces that once as a
+  `dispatch.blocked` event and an activity line with the three ways out
+  (reopen the link, close it as superseded, cut the dependency);
+  `board_digest` reports the dead link instead of blaming the dashboard or
+  autopilot; and a failure escalation names what the failure is holding and
+  tells the director that a replacement item does not release it.
 - **Fun, then functional, then pretty.** Holding the art seat kept art items
   off the board; it never stopped the director, or a gameplay agent with a
   prompt in hand, from calling `image_sprites` at the graybox stage. While a
@@ -21,6 +59,14 @@ repository at first publication. There is no earlier release history to record.
   (backward stays open to any seat). It is one route, not the only one:
   `greenlight.generation_hold` is a per-project switch, on for new projects,
   off for a game whose art is the mechanic. A scratch project is never held.
+- **A chain is for order, not for lists.** Ten independent cutout rigs
+  filed as a ten-deep ladder ran one at a time on a two-slot board. A chain
+  link now waits on the one before it only when it is a seat handoff, its
+  brief names the predecessor, or it says `after: true`; same-seat links
+  that do not mention each other run beside each other, hanging off the
+  handoff above them. `mode="linear"` keeps the old ladder. The art seat's
+  default concurrency is two (the shared-upload collision that set it to one
+  is fixed and the frame gate is in front of it now).
 - **Every worker seat picks its own CLI and model.** Routing used to stop
   at the art seat on purpose. `dispatch.runner` (claude | codex) is the
   board default and each seat has `dispatch.runner_<seat>` and
@@ -147,8 +193,6 @@ repository at first publication. There is no earlier release history to record.
   helper was called with one argument against a two-argument signature, so
   every successful build raised inside its own `try`, and the scene write
   never reached the writelog the evidence gate and auto-commit read.
-
-### Fixed
 - **`traversal_prove` drove the player wrong, and three agents paid for it.**
   The bot driver released every action and pressed the block's actions
   again on every physics frame; Godot 4.4 buffers those a frame, so a
