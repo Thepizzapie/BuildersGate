@@ -963,6 +963,61 @@ def blocked_chains(root: str | os.PathLike[str]) -> list[dict]:
     return list(by_blocker.values())
 
 
+# The source stamped on the director item that releases a dead link. Its
+# own dispatch is what makes "the board never stays stuck" true: the item is
+# filed by autopilot the moment it idles behind a dead link, the director
+# agent runs it, and the human is asked only when the director cannot decide.
+UNBLOCK_SOURCE = "unblock"
+
+
+def unblock_item_open(root: str | os.PathLike[str], blocker_id: int) -> bool:
+    row = db.connect(root).execute(
+        "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? "
+        "AND status IN ('queued', 'dispatched', 'review') LIMIT 1",
+        (UNBLOCK_SOURCE, str(int(blocker_id)))).fetchone()
+    return row is not None
+
+
+def file_unblock(root: str | os.PathLike[str], entry: dict) -> Optional[dict]:
+    """File ONE director item to release a dead link, unless one is open."""
+    b = entry["blocker"]
+    if unblock_item_open(root, int(b["id"])):
+        return None
+    ids = ", ".join(f"#{w['id']}" for w in entry["waiting"])
+    brief = (
+        f"THE BOARD IS IDLE BEHIND #{b['id']} [{b['seat']}], which is "
+        f"{str(b['status']).upper()}: {str(b['title'])[:90]}. Waiting on it: "
+        f"{ids}. This item exists so the board never stays stuck; it is done "
+        "when something is READY again or the human has been asked one "
+        "precise question.\n\n"
+        f"1. queue_get({b['id']}) and read its result, its attempts and what is "
+        "on disk (the FILES WRITTEN list). If another item already did its job, "
+        f"close it as superseded: queue_update(item_id={b['id']}, "
+        "status='done', result='superseded by #N: ...').\n"
+        "2. If it failed on something a changed brief fixes, and it is under the "
+        f"run cap, queue_reopen({b['id']}, reason) with the CHANGE named - never "
+        "the same brief again.\n"
+        "3. If it was too wide (several deliverables), split it: "
+        "queue_add_chain of single-deliverable items, each with an acceptance "
+        "line, then queue_cut_dependency on the waiting items so they hang off "
+        "the new chain or run free.\n"
+        "4. If the waiting items no longer make sense, queue_cancel them with "
+        "the reason.\n"
+        "5. Only if none of the above can be decided from the board: ask_human "
+        "with the one question, and say in your result that you did.\n"
+        "Finish with one line naming what is now READY.")
+    row = add(root, "director",
+              f"UNBLOCK: #{b['id']} [{b['seat']}] is {b['status']} and holds "
+              f"{len(entry['waiting'])} item(s)",
+              brief=brief, priority=96, source=UNBLOCK_SOURCE,
+              source_ref=str(b["id"]))
+    activity.log(root, "autodeploy",
+                 f"filed #{row['id']} for the director: release #{b['id']} "
+                 f"({b['status']}), {len(entry['waiting'])} item(s) wait on it",
+                 seat="director", ref=str(row["id"]))
+    return row
+
+
 def describe_blocked_chains(chains: list[dict]) -> str:
     """One sentence per dead link, with the three ways out."""
     lines = []

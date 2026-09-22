@@ -100,3 +100,46 @@ class TestTheBoardSpeaks:
         brief = rows[-1]["brief"]
         assert "THIS FAILURE BLOCKS THE BOARD" in brief
         assert f"#{second['id']}" in brief and "RELEASE THEM" in brief
+
+
+class TestTheDirectorReleasesIt:
+    def test_autopilot_files_one_unblock_item_per_dead_link(self, root, monkeypatch):
+        monkeypatch.setattr(dispatch, "find_claude", lambda: "claude")
+        monkeypatch.setattr(dispatch, "dispatch",
+                            lambda r, i, **k: {"ok": False, "code": "concurrency_limit",
+                                               "error": "cap"})
+        head, second, _ = _chain(root)
+        queue.set_status(root, head["id"], "failed", result="no path")
+        autodeploy.reset(root)
+        autodeploy.tick(str(root), force=True)
+        autodeploy.tick(str(root), force=True)
+        filed = [r for r in queue.list_items(root)
+                 if r["source"] == queue.UNBLOCK_SOURCE]
+        assert len(filed) == 1, [r["title"] for r in filed]
+        item = filed[0]
+        assert item["seat"] == "director"
+        assert item["source_ref"] == str(head["id"])
+        assert f"#{second['id']}" in item["brief"]
+        for way in ("superseded", "queue_reopen", "queue_add_chain",
+                    "queue_cut_dependency", "queue_cancel", "ask_human"):
+            assert way in item["brief"], way
+
+    def test_the_unblock_item_itself_is_ready_so_the_board_is_not_idle(self, root):
+        head, _, _ = _chain(root)
+        queue.set_status(root, head["id"], "failed", result="no path")
+        queue.file_unblock(root, queue.blocked_chains(root)[0])
+        assert any(r["source"] == queue.UNBLOCK_SOURCE for r in queue.ready(root))
+
+    def test_a_released_link_files_no_second_item(self, root):
+        head, _, _ = _chain(root)
+        queue.set_status(root, head["id"], "failed", result="no path")
+        first = queue.file_unblock(root, queue.blocked_chains(root)[0])
+        assert first is not None
+        assert queue.file_unblock(root, queue.blocked_chains(root)[0]) is None
+        queue.set_status(root, first["id"], "done", result="closed as superseded")
+        queue.set_status(root, head["id"], "done", result="superseded")
+        assert queue.blocked_chains(root) == []
+
+    def test_the_director_protocol_owns_the_stuck_board(self):
+        from bgate_core.board import seats
+        assert "THE BOARD NEVER STAYS STUCK" in seats.DIRECTOR_PROTOCOL

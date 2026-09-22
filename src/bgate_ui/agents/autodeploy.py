@@ -513,6 +513,15 @@ def _note_dead_links(root, mem: dict) -> None:
     except Exception:
         return
     key = ",".join(str(c["blocker"]["id"]) for c in chains) if chains else ""
+    # THE DIRECTOR RELEASES IT. A banner tells the human; the item makes the
+    # board fix itself: one director item per dead link, dispatched like any
+    # other, never re-filed while one is open. The human is asked only when
+    # the director cannot decide from the board (step 5 of its brief).
+    for entry in chains:
+        try:
+            _queue.file_unblock(root, entry)
+        except Exception:
+            pass
     with _lock:
         seen = mem.get("dead_links_noted") or ""
         mem["dead_links_noted"] = key
