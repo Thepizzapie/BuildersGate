@@ -10,6 +10,17 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **A run cap per work item, for everyone.** One item ran nine times
+  (~$33) through its auto-retry, a director reopen and two dashboard
+  send-backs, and no run could land it because the brief was five
+  deliverables wide. `dispatch.max_attempts` (3 by default, human-only)
+  counts every run in an item's life: past it autopilot never lists the
+  item, the dispatch button refuses (`attempt_cap`), `queue_reopen` refuses
+  with the split it wants instead, the QA gate and the follow-up router
+  stop reopening, and the failure escalation cancels the item and asks the
+  director for a chain of single-deliverable items. A parked or cancelled
+  item stays that way when a killed run is banked as failed; that overwrite
+  is how a parked item grew a reopen button.
 - **A chain behind a dead link says so.** A six-link chain's head failed,
   the director's escalation filed a replacement item that did the head's
   job, and the five links behind the head sat queued and silent for an hour

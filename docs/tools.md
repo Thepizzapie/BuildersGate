@@ -4542,6 +4542,15 @@ once, and keep the limit small when you do.
 ## queue_reopen
 
 ```text
+THE RUN CAP. An item may have dispatch.max_attempts runs in its life (3 by
+default); dispatches, auto-retries and reopens all count. Past the cap
+queue_reopen refuses, dispatch refuses, autopilot never lists it, and the
+failure escalation cancels it and asks the director for a SPLIT. Measured:
+nine runs (~$33) on one item that was five deliverables wide. Raise the
+cap in Settings only on purpose; the fix is almost always the brief.
+```
+
+```text
 Send a done/failed item back to 'queued' for another round.
 
 The QA gate's FAIL path: reason is the ranked nitpick list (specific

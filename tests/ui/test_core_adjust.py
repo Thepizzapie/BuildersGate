@@ -267,6 +267,11 @@ class TestQaGateCap:
         # reopened rather than reviewed, which is not the loop under test.
         item = queue.add(root, "gameplay", "HUD meter")
         queue.set_status(root, item["id"], "done", result="v1")
+        # This test drives six QA rounds to prove the QA loop's own cap; the
+        # run cap (dispatch.max_attempts, 3 by default) would stop it at
+        # three, which is a different rule with its own tests.
+        from bgate_core.store import settings as _settings
+        _settings.set(root, "dispatch.max_attempts", 20)
 
         gates = 0
         for n in range(6):

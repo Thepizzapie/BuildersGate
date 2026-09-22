@@ -149,6 +149,7 @@ LABELS: dict[str, str] = {
     "dispatch.runner_cinematic": "Cinematic worker CLI",
     "dispatch.runner_qa": "QA worker CLI",
     "dispatch.max_turns": "Turn limit per agent",
+    "dispatch.max_attempts": "Run cap per work item",
     # Gates
     "enforcement.profile": "Enforcement level",
     "gate.mode": "Completion approval",
@@ -238,6 +239,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.runner_cinematic": "CLI for the cinematic seat. Blank uses the default worker CLI.",
     "dispatch.runner_qa": "CLI for the qa seat. Blank uses the default worker CLI.",
     "dispatch.max_turns": "Maximum assistant turns in one run. Set to 0 for no limit.",
+    "dispatch.max_attempts": "How many runs one work item may have, ever. Past it nothing dispatches or reopens it: split the item instead.",
     "enforcement.profile": "Sets the default strictness for lanes, project boundaries, and approvals.",
     "gate.mode": "Choose whether completion needs no review, QA review, or your approval.",
     "qa.require_evidence": "Require a screenshot or render before scene changes can finish.",
@@ -517,6 +519,18 @@ SETTINGS: tuple[Setting, ...] = (
              "setting names a Claude alias (sonnet, opus, ...). Blank lets "
              "codex pick its account default; a name codex's catalog does "
              "not list is passed through as typed."),
+    Setting(
+        key="dispatch.max_attempts", group="Dispatch", kind=INT, default=3,
+        minimum=1, maximum=20, store=("registry", "dispatch.max_attempts"),
+        scope=MACHINE, env="BGATE_MAX_ATTEMPTS", human_only=True,
+        help="How many RUNS one work item may have in its life - dispatches, "
+             "auto-retries and reopens all count. Past the cap nothing "
+             "dispatches it and nothing reopens it, whoever asks; the item is "
+             "cancelled and the escalation says to split it. MEASURED: one "
+             "item ran nine times (~$33) across auto-retries, a director "
+             "reopen and two dashboard send-backs, and no run could land it "
+             "because it was five deliverables wide. No agent needs that "
+             "many runs on one item; a brief that does is the wrong shape."),
     Setting(
         key="dispatch.max_turns", group="Dispatch", kind=INT, default=800, advanced=True,
         minimum=0, maximum=1000, store=("registry", "dispatch.max_turns"),

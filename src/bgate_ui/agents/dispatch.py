@@ -1009,6 +1009,13 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
             item_id=item_id, tools=sorted({v["tool"] for v in violations}),
             rulings=[v["section_id"] for v in violations])
 
+    # THE RUN CAP. ready() already keeps an over-cap item out of autopilot's
+    # candidates; this is the button, "dispatch all" and any hand path.
+    if _queue.over_attempt_cap(root, item):
+        return _refuse("attempt_cap", _queue.attempt_cap_message(root, item),
+                       item_id=item_id, runs=_queue.runs_of(item),
+                       cap=_queue.attempt_cap(root))
+
     # A cut-line re-check used to sit here, refusing to spend an agent on an
     # item whose scope tier had fallen below the line since it was queued. The
     # tier system is gone (nothing was ever filed under a tier, so this check

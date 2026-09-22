@@ -726,11 +726,58 @@ def _release_leases(root: str | os.PathLike[str], item_id: int) -> None:
         pass
 
 
+# HOW MANY RUNS ONE ITEM MAY HAVE, EVER. attempts counts reopens, so an
+# item on its Nth run has attempts == N - 1; the cap is on runs. MEASURED:
+# nine runs on one item (~$33) through auto-retries, a director reopen and
+# two dashboard send-backs, none of which could land it because the brief
+# was five deliverables wide. Past the cap the answer to "run it again" is
+# no, for every caller; the item is split, or the human raises the cap on
+# purpose in Settings.
+DEFAULT_MAX_ATTEMPTS = 3
+
+
+def attempt_cap(root: str | os.PathLike[str]) -> int:
+    try:
+        from ..store import settings as _settings
+        return max(1, int(_settings.get(root, "dispatch.max_attempts") or DEFAULT_MAX_ATTEMPTS))
+    except Exception:
+        return DEFAULT_MAX_ATTEMPTS
+
+
+def runs_of(item: dict) -> int:
+    """How many runs this item has had: attempts (reopens) + the first."""
+    return int((item or {}).get("attempts") or 0) + 1
+
+
+def over_attempt_cap(root: str | os.PathLike[str], item: dict) -> bool:
+    """Would ONE MORE run put this item past the cap?"""
+    return runs_of(item) >= attempt_cap(root) and str(
+        (item or {}).get("status") or "") != "dispatched"
+
+
+def attempt_cap_message(root: str | os.PathLike[str], item: dict) -> str:
+    cap = attempt_cap(root)
+    return (f"item {item['id']} has had {runs_of(item)} run(s); the cap is {cap} "
+            "(dispatch.max_attempts). No agent needs that many runs on one "
+            "item - a brief that does is the wrong shape. Split it into "
+            "single-deliverable items with queue_add_chain (what is already on "
+            "disk stays), or raise the cap on purpose in Settings.")
+
+
 def set_status(root: str | os.PathLike[str], item_id: int, status: str,
                result: str = "") -> dict:
     if status not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
-    get(root, item_id)
+    current = get(root, item_id)
+    # A PARKED OR CANCELLED ITEM STAYS THAT WAY. The reaper banks a killed
+    # run as "failed" - and that overwrote a park, put the item back on the
+    # failed shelf with a reopen button, and the next click bought a run.
+    if current["status"] in ("parked", "cancelled") and status == "failed":
+        activity.log(root, "queue",
+                     f"item {item_id} stays {current['status']}: a run ended "
+                     f"failed but the item was {current['status']} on purpose",
+                     seat=current["seat"], ref=str(item_id))
+        return current
     result = _with_observed_writes(root, item_id, status, result)
     with db.tx(root) as conn:
         conn.execute(
@@ -1681,6 +1728,8 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
     if item["status"] not in ("done", "failed", "cancelled"):
         raise ValueError(f"item {item_id} is {item['status']!r} — only "
                          "done/failed/cancelled items can be reopened")
+    if over_attempt_cap(root, item):
+        raise ValueError(attempt_cap_message(root, item))
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("reason is required — say exactly what to fix")
@@ -1942,6 +1991,7 @@ def ready(root: str | os.PathLike[str], seat: str = "",
     return [c for c in candidates
             if c["seat"] not in held
             and not c.get("exhausted_at")
+            and not over_attempt_cap(root, c)
             and blocker(root, int(c["id"])) is None]
 
 
