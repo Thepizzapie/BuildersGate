@@ -42,7 +42,7 @@ class FakeGenerator:
     def __call__(self, prompt, out_path, **kw):
         slot = Path(out_path).stem
         self.calls.append({"slot": slot, "prompt": prompt, **kw})
-        if slot == "_sheet":                      # default mode: one sheet
+        if slot.startswith("_sheet"):             # default mode: one sheet
             return FakeSheetGenerator(fail=bool(self.fail), heights=self.heights)(
                 prompt, out_path, **kw)
         if slot in self.fail:
@@ -298,7 +298,7 @@ async def test_part_rerun_redraws_one_part_and_keeps_the_rest(wired):
                      note="bare skin, not sleeved")
     assert got["ok"] is True, got
     # One sheet with one cell, and the note rode into it.
-    assert [c["slot"] for c in gen.calls] == ["_sheet"]
+    assert [c["slot"] for c in gen.calls] == ["_sheet_forearm_near"]
     assert "bare skin" in gen.calls[0]["prompt"]
     assert "FOREARM_NEAR" in gen.calls[0]["prompt"]
     after = cutout.load(root / "game" / "assets" / "characters" / "hero" /
@@ -431,3 +431,22 @@ def test_the_old_per_part_loop_is_still_there_by_name(tmp_path, reference):
                                  out_dir=tmp_path / "parts", provider="fake",
                                  generate=gen, mode="parts")
     assert got["mode"] == "parts" and got["calls"] == len(cutoutkit.plan())
+
+
+def test_sheet_parts_land_at_rig_scale_and_a_rerun_keeps_the_kit_sheet(tmp_path, reference):
+    from PIL import Image
+    gen = FakeSheetGenerator()
+    got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
+                                 out_dir=tmp_path / "parts", provider="fake",
+                                 generate=gen)
+    rig_h = cutout.BIPED_V1["height_px"]
+    with Image.open(got["parts"]["torso"]["texture"]) as im:
+        expected = cutout.BIPED_V1["parts"]["torso"]["height"] * rig_h
+        assert abs(im.height - expected) <= 3
+    full_sheet = Path(got["sheet"])
+    stamp = full_sheet.stat().st_mtime_ns
+    again = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
+                                   out_dir=tmp_path / "parts", provider="fake",
+                                   parts=["torso"], generate=gen)
+    assert Path(again["sheet"]).name == "_sheet_torso.png"
+    assert full_sheet.stat().st_mtime_ns == stamp
