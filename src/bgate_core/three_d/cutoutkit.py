@@ -314,6 +314,29 @@ def generate_kit(root: str | os.PathLike[str], name: str, reference_path: str,
                     got["made"][slot] = one["made"][slot]
                     got["flags"] = [f for f in got["flags"] if f.get("slot") != slot] + mine
                     got["failed"] = [f for f in got["failed"] if f.get("slot") != slot]
+        # THE TORSO LOSES ITS ARM: one edit of our own piece (unarm_torso).
+        if "torso" in got["made"] and got["calls"] >= int(max_paid_calls):
+            got["flags"].append({"slot": "torso", "note": "no paid call left "
+                                 "for the edit that takes the arm off the "
+                                 "torso (max_paid_calls) - it may carry a "
+                                 "stub sleeve; a torso costs 2 calls"})
+        elif "torso" in got["made"]:
+            from ..art import chroma as _chroma
+            _, crgb = _chroma.pick(str(ref))
+            un = unarm_torso(root, name, got["made"]["torso"]["texture"],
+                             chroma_rgb=crgb, provider=provider,
+                             quality=quality, work_item_id=work_item_id,
+                             generate=generate)
+            got["calls"] += 1
+            got["cost"] += un["cost"]
+            if un["ok"]:
+                got["made"]["torso"]["part_hash"] = cutout.part_hash(
+                    got["made"]["torso"]["texture"])
+            else:
+                got["flags"].append({"slot": "torso", "note": "the arm could "
+                                     "not be taken off the torso (" + un["error"]
+                                     + "); it may show a stub sleeve when the "
+                                     "arm swings - cutout_part_rerun torso"})
         return {
             "ok": not got["failed"] and not got["flags"] and not got["stopped"],
             "parts": got["made"], "failed": got["failed"], "flags": got["flags"],
@@ -523,6 +546,82 @@ def sheet_prompt(parts: list[dict], *, view: str = "side",
     if note:
         lines.append(note.strip())
     return " ".join(lines)
+
+
+#: A provider TIMEOUT is retried this many times. MEASURED (kie, 2026-09-22):
+#: about half the calls of an evening came back 524 "generate task timeout"
+#: and the same request went through on the next try.
+TIMEOUT_RETRIES = 2
+
+
+def _call(generate: Callable, *args, **kw) -> dict:
+    """generate(), retried on a provider timeout only - never on a refusal
+    or a bad request, which would fail the same way again."""
+    res: dict = {}
+    for _ in range(TIMEOUT_RETRIES + 1):
+        res = generate(*args, **kw) or {}
+        err = str(res.get("error") or "").lower()
+        if res.get("ok") or not ("timeout" in err or "524" in err or "timed out" in err):
+            return res
+    return res
+
+
+UNARM_PROMPT = (
+    "Edit this image: it is the torso piece of a 2D cutout puppet, seen "
+    "from the side. REMOVE the arm and the shirt sleeve completely - the "
+    "upper arm, the forearm, the skin, everything of the arm. Where the arm "
+    "was, paint the side of the vest and shirt continuing naturally - solid "
+    "fabric, NO armhole, no sleeve opening, no oval, no patch - same "
+    "colours, pattern, outline and style. Keep everything else exactly as "
+    "it is: the same outline shape, anything worn on the back, pockets, "
+    "collar, the size and position. Keep the flat backdrop colour.")
+
+
+def unarm_torso(root, name: str, texture: str, *, chroma_rgb, provider: str,
+                quality: str, work_item_id, generate: Callable) -> dict:
+    """One EDIT of our own torso piece: take the arm off it.
+
+    MEASURED (exit-67-r2, 2026-09-22): asked for a torso, the image model
+    paints the near arm on it every time - four prompts, four arms - and a
+    torso with an arm on it leaves a stub sleeve behind whenever the real
+    arm piece swings. Removing a thing is what these models do reliably, so
+    the torso is painted, then edited. The reference is not involved.
+
+    Returns {ok, cost, error}; the texture is replaced only on success.
+    """
+    import numpy as np
+    from PIL import Image
+    from ..art import chroma as _chroma
+    from . import cutoutshape as _shape
+
+    piece = Image.open(texture).convert("RGBA")
+    W, H = 1024, 1536
+    k = min((W - 120) / piece.width, (H - 120) / piece.height)
+    big = piece.resize((round(piece.width * k), round(piece.height * k)), Image.NEAREST)
+    canvas = Image.new("RGBA", (W, H), (*chroma_rgb, 255))
+    off = ((W - big.width) // 2, (H - big.height) // 2)
+    canvas.alpha_composite(big, off)
+    src = Path(texture).with_name("_unarm_in.png")
+    canvas.convert("RGB").save(src)
+    out = Path(texture).with_name("_unarm_out.png")
+    res = _call(generate, UNARM_PROMPT, str(out), provider=provider, task_kind="sheet",
+                   keyed=False, quality=quality, size=f"{W}x{H}",
+                   ref_paths=[str(src)], root=root,
+                   logical_name=f"{name}.torso_unarm",
+                   work_item_id=work_item_id) or {}
+    cost = float(res.get("cost_usd") or 0.0)
+    if not res.get("ok") or not out.is_file():
+        return {"ok": False, "cost": cost, "error": str(res.get("error") or "no edit")}
+    edited = Image.open(out).convert("RGBA").resize((W, H), Image.LANCZOS)
+    _chroma.key(edited, chroma_rgb)
+    region = edited.crop((off[0], off[1], off[0] + big.width, off[1] + big.height))
+    region = region.resize(piece.size, Image.LANCZOS)
+    clip = np.asarray(_shape.mask("torso", _shape.TEX, grow=CLIP_GROW).resize(piece.size))
+    a = np.minimum(np.asarray(region.getchannel("A")), clip)
+    region.putalpha(Image.fromarray(a.astype("uint8"), "L"))
+    region = clear_grey(defringe(region, chroma_rgb, erode=0))
+    region.save(texture)
+    return {"ok": True, "cost": cost, "error": ""}
 
 
 def clear_grey(piece, tol: int = 10):
@@ -740,7 +839,7 @@ def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
     # keyed=False: WE key it, against the colour WE drew the layout in. The
     # keyable path would pick its own colour from the layout's palette (which
     # is mostly our backdrop) and land on a different one.
-    result = generate(prompt, str(sheet_png), provider=provider,
+    result = _call(generate, prompt, str(sheet_png), provider=provider,
                       task_kind="sheet", keyed=False, quality=quality,
                       size=f"{SHEET_SIZE[0]}x{SHEET_SIZE[1]}",
                       # The LAYOUT only: the reference is never sent (see

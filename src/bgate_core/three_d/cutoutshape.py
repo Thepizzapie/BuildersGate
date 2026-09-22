@@ -32,27 +32,28 @@ TEX = 2.0
 #: slot -> primitives. ("cap", ax, ay, bx, by, r) is a capsule, ("disc", x,
 #: y, r) a disc, ("ell", x, y, rx, ry) an ellipse.
 SHAPES: dict[str, list[tuple]] = {
+    # WIDTHS (2026-09-22): the first table drew a thin generic figure - stick
+    # arms, a narrow torso, no shoulders - and a stocky character painted
+    # into it read as a different body. Widened to a sturdy build.
     # Bone at the neck (160 up). Neck, then the skull; crown at ~200.
-    "head": [("cap", 0, -5, 1, 8, 7.0), ("ell", 3, 22, 19, 19)],
-    # Bone at the waist (130 up). Down into the hips, up to the collar,
-    # with the shoulder disc where both arms hang (chest + (4, 22)).
-    # MEASURED: a tall rounded top read as HEAD space - three paints left
-    # the top third grey. The top is the shoulder line, with only a
-    # neck-wide bump above it.
-    "torso": [("cap", 0, -28, 1, 10, 16.0), ("disc", 4, 20, 8.0),
-              ("disc", -3, 18, 8.0), ("cap", 1, 20, 2, 27, 6.5)],
+    "head": [("cap", 0, -5, 1, 8, 7.5), ("ell", 3, 22, 19, 19)],
+    # Bone at the waist (130 up). Down into the hips, up to the shoulder
+    # line, with only a neck-wide bump above it. MEASURED: a tall rounded
+    # top read as HEAD space - three paints left the top third grey.
+    "torso": [("cap", 0, -28, 1, 10, 19.5), ("disc", 4, 20, 10.0),
+              ("disc", -4, 18, 10.0), ("cap", 1, 20, 2, 27, 7.0)],
     # Bone at the pelvis (96 up). Tall on purpose: it sits under the torso
     # (z 3 < 4) and fills the waist when the chest leans.
-    "hip": [("cap", 0, -6, 0, 26, 15.0), ("disc", 4, -2, 8.5),
-            ("disc", -4, -2, 8.5)],
-    "arm": [("cap", 0, 0, 0, -26, 6.0)],
-    "forearm": [("cap", 0, 0, 0, -24, 5.5)],
-    "hand": [("disc", 0, 0, 5.5), ("ell", 0.5, -7, 6.5, 8)],
-    "thigh": [("cap", 0, 0, 0, -44, 8.5)],
-    "shin": [("cap", 0, 0, 0, -42, 7.5)],
+    "hip": [("cap", 0, -6, 0, 26, 17.0), ("disc", 4, -2, 10.5),
+            ("disc", -4, -2, 10.5)],
+    "arm": [("cap", 0, 0, 0, -26, 7.5)],
+    "forearm": [("cap", 0, 0, 0, -24, 7.0)],
+    "hand": [("disc", 0, 0, 7.0), ("ell", 0.5, -7, 7.5, 9)],
+    "thigh": [("cap", 0, 0, 0, -44, 10.5)],
+    "shin": [("cap", 0, 0, 0, -42, 9.0)],
     # Bone at the ankle (8 up). The ankle disc, and the boot forward to the
     # toe with its sole on the ground (-8).
-    "foot": [("disc", 0, 0, 7.0), ("cap", -2, -3, 16, -3, 5.5)],
+    "foot": [("disc", 0, 0, 8.5), ("cap", -3, -2, 17, -2, 6.5)],
 }
 
 #: Joint discs per shape: (x, y, r) the paint must cover. The piece's own
@@ -63,13 +64,13 @@ JOINTS: dict[str, list[tuple]] = {
     # (the head's neck disc, both arms' shoulder discs, all drawn over it),
     # so the torso owes none of its own.
     "torso": [],
-    "hip": [(4, -2, 8.0)],
-    "arm": [(0, 0, 6.0), (0, -26, 6.0)],
-    "forearm": [(0, 0, 5.5), (0, -24, 5.5)],
-    "hand": [(0, 0, 5.5)],
-    "thigh": [(0, 0, 8.5), (0, -44, 8.5)],
-    "shin": [(0, 0, 7.5), (0, -42, 7.5)],
-    "foot": [(0, 0, 7.0)],
+    "hip": [(4, -2, 9.5)],
+    "arm": [(0, 0, 7.0), (0, -26, 7.0)],
+    "forearm": [(0, 0, 6.5), (0, -24, 6.5)],
+    "hand": [(0, 0, 6.5)],
+    "thigh": [(0, 0, 10.0), (0, -44, 10.0)],
+    "shin": [(0, 0, 8.5), (0, -42, 8.5)],
+    "foot": [(0, 0, 8.0)],
 }
 
 #: What each silhouette IS, for the paint prompt.
