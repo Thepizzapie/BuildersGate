@@ -35,6 +35,12 @@ repository at first publication. There is no earlier release history to record.
   refusal and the whole board sat behind a decision nobody had asked for.
 
 ### Fixed
+- **A reopen of an open item is a no-op**, not a second run: the director's
+  reopen and the auto-retry's, a second apart, counted two runs for one and
+  the cap cancelled the item.
+- **A cut dependency can be re-hung.** `queue_add_dependency` on a link that
+  release_dependents had cut was silently ignored (the cut row already
+  existed); it now un-cuts it.
 - **A submitted graybox lifts the seat hold.** Art, audio and cinematic
   were held until the human ruled on the graybox; fourteen items sat behind
   an unruled verdict for an hour. The hold exists so nothing is made for a

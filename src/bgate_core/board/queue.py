@@ -921,9 +921,14 @@ def add_dependency(root: str | os.PathLike[str], item_id: int,
     if int(depends_on) == int(item_id):
         raise ValueError(f"item {item_id} cannot wait for itself")
     with db.tx(root) as conn:
+        # A CUT DEPENDENCY CAN BE RE-HUNG. The row stays for the record when
+        # a link is cut (cut_by/cut_at), and INSERT OR IGNORE hit that row and
+        # did nothing: MEASURED (exit-67-r2 #9, 2026-09-22) "re-hung 9 behind
+        # 8" printed and #9 ran without its kit. Re-adding un-cuts it.
         conn.execute(
-            "INSERT OR IGNORE INTO work_item_dep (item_id, depends_on) "
-            "VALUES (?, ?)", (int(item_id), int(depends_on)))
+            "INSERT INTO work_item_dep (item_id, depends_on) VALUES (?, ?) "
+            "ON CONFLICT(item_id, depends_on) DO UPDATE SET cut_at = NULL, "
+            "cut_by = ''", (int(item_id), int(depends_on)))
     activity.log(root, "queue",
                  f"item {item_id} now also waits for #{int(depends_on)}",
                  ref=str(item_id))
@@ -1899,6 +1904,13 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
     a reopened art item names WHICH frames and WHICH check, not just "wrong".
     """
     item = get(root, item_id)
+    # A REOPEN OF AN OPEN ITEM IS A NO-OP, NOT A SECOND RUN. MEASURED
+    # (exit-67-r2 #8, 2026-09-22): the director reopened a killed item and the
+    # follow-up router's auto-retry reopened it again a second later; the
+    # queued row's run count went 1 -> 2 without a run in between, and the
+    # failure escalation then cancelled it at the cap.
+    if str(item.get("status") or "") in ("queued", "dispatched"):
+        return item
     if item["status"] not in ("done", "failed", "cancelled"):
         raise ValueError(f"item {item_id} is {item['status']!r} — only "
                          "done/failed/cancelled items can be reopened")
