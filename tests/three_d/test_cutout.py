@@ -121,7 +121,7 @@ def test_adjustments_move_the_rest_pose_and_survive_baking():
     d = cutout.normalise(d)
     rest = cutout.rest_pose(d)
     assert rest["arm_near"]["rot"] == pytest.approx(8.0 - 12.0)
-    assert rest["arm_near"]["pos"][1] == 22 - 3
+    assert rest["arm_near"]["pos"][1] == 14 - 3
     # THE CLAIM THAT MATTERS: frame one of a clip does not erase it.
     baked = cutoutwire.bake_clip(d, "walk")
     track = next(t for t in baked["tracks"]
