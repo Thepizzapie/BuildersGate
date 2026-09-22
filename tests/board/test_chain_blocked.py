@@ -17,11 +17,13 @@ from bgate_ui.agents import autodeploy, dispatch, followup
 
 
 def _chain(root):
+    # A strict ladder on purpose: these tests are about what a DEAD link
+    # holds, not about how links are inferred (test_chain_auto covers that).
     return queue.add_chain(root, [
         {"seat": "gameplay", "title": "prove the climb", "priority": 9},
         {"seat": "gameplay", "title": "prove the collapse", "priority": 9},
         {"seat": "tech", "title": "export it", "priority": 9},
-    ])
+    ], mode="linear")
 
 
 class TestTheQueueNamesDeadLinks:
