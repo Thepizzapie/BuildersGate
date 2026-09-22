@@ -346,3 +346,16 @@ def test_the_template_ships_every_clip_a_side_scroller_needs(project, doc):
         assert cutoutwire.bake_clip(doc, name)["loop_mode"] == 0
     for name in ("fall", "crouch", "slide", "aim"):
         assert cutoutwire.bake_clip(doc, name)["loop_mode"] == 1
+
+
+def test_a_weapon_rides_at_ninety_degrees_unless_the_author_says(project, doc):
+    d = dict(doc)
+    d["skin"] = dict(doc["skin"])
+    d["skin"]["weapon"] = {"texture": "assets/gun.png", "pivot": [0.3, 0.4],
+                           "pivot_source": "authored"}
+    d["skin"]["hat"] = {"texture": "assets/hat.png"}
+    got = cutout.normalise(d)
+    assert got["skin"]["weapon"]["rot_offset"] == 90.0
+    assert got["skin"]["hat"]["rot_offset"] == 0.0
+    d["skin"]["weapon"]["rot_offset"] = 0.0
+    assert cutout.normalise(d)["skin"]["weapon"]["rot_offset"] == 0.0

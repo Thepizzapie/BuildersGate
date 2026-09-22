@@ -129,7 +129,14 @@ BIPED_V1 = {
         {"name": "shin_near",    "bone": "shin_near",    "z": 7},
         {"name": "foot_near",    "bone": "foot_near",    "z": 7},
         {"name": "hat",          "bone": "head",         "z": 9},
-        {"name": "weapon",       "bone": "hand_near",    "z": 9},
+        # A HELD WEAPON POINTS ALONG THE FOREARM. Held sprites are drawn
+        # barrel-forward; the hand bone hangs down at rest and swings forward
+        # (clockwise on screen) to aim, which would swing a barrel-forward
+        # sprite to point at the ground. +90 here means: at rest the barrel
+        # points up along the arm, and in every raised pose (idle low ready,
+        # aim, fire, run) it points forward. MEASURED in the probe gym,
+        # 2026-09-22: with 0 the gun hung at 45 degrees in the aim pose.
+        {"name": "weapon",       "bone": "hand_near",    "z": 9, "rot_offset": 90.0},
     ],
     # What each part IS, for the kit generator, and how tall it should be as a
     # fraction of the figure - read off the bone lengths above, so a part that
@@ -624,6 +631,8 @@ def normalise(doc: dict) -> dict:
     out["name"] = _name(doc.get("name") or "character", "name")
     out["template"] = str(doc.get("template") or "biped_v1")
     spec = template(out["template"])
+    slot_rot = {sl["name"]: float(sl.get("rot_offset") or 0.0)
+                for sl in (doc.get("slots") or spec["slots"])}
     out["view"] = str(doc.get("view") or spec["view"])
 
     bones = doc.get("bones") or [dict(b) for b in spec["bones"]]
@@ -675,9 +684,13 @@ def normalise(doc: dict) -> dict:
         if bone not in names:
             raise CutoutError(
                 f"slot {name!r} hangs off bone {bone!r}, which does not exist")
-        clean_slots.append({"name": name, "bone": bone,
-                            "z": int(_num(raw.get("z") or 0, f"slots[{i}].z",
-                                          lo=-4096, hi=4096))})
+        clean = {"name": name, "bone": bone,
+                 "z": int(_num(raw.get("z") or 0, f"slots[{i}].z",
+                               lo=-4096, hi=4096))}
+        if raw.get("rot_offset") is not None:
+            clean["rot_offset"] = _num(raw["rot_offset"], f"slots[{i}].rot_offset",
+                                       lo=-360.0, hi=360.0)
+        clean_slots.append(clean)
     out["slots"] = clean_slots
 
     skin = doc.get("skin") or {}
@@ -705,7 +718,11 @@ def normalise(doc: dict) -> dict:
                            f"skin[{slot}].pivot", lo=-4.0, hi=4.0),
             "pivot_source": source,
             "part_hash": str(raw.get("part_hash") or ""),
-            "rot_offset": _num(raw.get("rot_offset") or 0.0,
+            # The slot's own default when the entry does not say (a weapon
+            # rides at +90 so it points along the forearm); an explicit value,
+            # including 0, is the author's.
+            "rot_offset": _num(raw["rot_offset"] if raw.get("rot_offset") is not None
+                               else slot_rot.get(slot, 0.0),
                                f"skin[{slot}].rot_offset", lo=-360.0, hi=360.0),
             "scale": _num(raw.get("scale") or 1.0, f"skin[{slot}].scale",
                           lo=0.01, hi=100.0),
