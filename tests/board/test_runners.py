@@ -450,3 +450,41 @@ class TestCodexFeed:
         ])
         assert state["final"]["text"] == "shipped"
         assert state["final"]["cost"] == 0.42
+
+
+class TestEverySeatIsRoutable:
+    """Routing used to stop at the art seat by design. The human asked for
+    the runner and the model to be a per-seat choice everywhere, with the
+    trade (codex: no live steer, no cost ceiling) stated in the setting's
+    help rather than enforced by a refusal."""
+
+    def test_a_seat_runner_beats_the_board_default(self, root):
+        settings.set(root, "dispatch.runner_tech", "codex")
+        assert dispatch._runner_for(root, "tech").name == "codex"
+        assert dispatch._runner_for(root, "gameplay").name == "claude"
+
+    def test_the_board_runner_reaches_every_seat_left_blank(self, root):
+        settings.set(root, "dispatch.runner", "codex")
+        for seat in ("tech", "qa", "audio"):
+            assert dispatch._runner_for(root, seat).name == "codex", seat
+        # Art keeps its own older key and does not move with the board.
+        assert dispatch._runner_for(root, "art").name == "claude"
+
+    def test_a_seat_model_beats_the_board_default(self, root):
+        settings.set(root, "dispatch.model_qa", "haiku")
+        assert dispatch._model_for(root, "qa") == "haiku"
+        assert dispatch._model_for(root, "tech") == "sonnet"
+
+    def test_codex_takes_the_pinned_codex_model_over_its_catalog(self, root, monkeypatch):
+        from bgate_ui.agents import codexmeta
+
+        settings.set(root, "dispatch.runner_tech", "codex")
+        settings.set(root, "dispatch.codex_model", "gpt-pinned")
+        monkeypatch.setattr(codexmeta, "snapshot", lambda: {
+            "models": [{"value": "gpt-account-default", "default": True}]})
+        assert dispatch._model_for(root, "tech") == "gpt-pinned"
+
+    def test_every_worker_seat_has_both_settings(self):
+        for seat in settings.ROUTABLE_SEATS:
+            assert f"dispatch.runner_{seat}" in settings.BY_KEY
+            assert f"dispatch.model_{seat}" in settings.BY_KEY

@@ -18,6 +18,7 @@ anybody has a browser tab open.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -179,18 +180,30 @@ def _executable(runner: "_runners.Runner") -> Optional[str]:
 def _runner_for(root: str, seat: str) -> "_runners.Runner":
     """Which CLI this seat's agent runs on.
 
-    ONLY THE ART SEAT IS ROUTABLE, and that is a deliberate ceiling rather than
-    an unfinished generalisation. The alternative runner is here because it
-    generates images; no other seat gains anything from it, and every seat that
-    moves onto it loses live steering and the cost ceiling. A single global
-    switch would put the whole board one wrong click away from that.
+    Per seat, then the board default. Routing used to stop at the art seat
+    on purpose (codex loses live steering and the cost ceiling); the human
+    asked for the choice on every seat, so the trade is stated in the
+    settings' help and made per seat rather than refused here. Art keeps its
+    older key, art.runner, so an existing choice does not move.
     """
-    if (seat or "").strip().lower() != "art":
-        return _runners.get(_runners.DEFAULT_RUNNER)
-    try:
-        return _runners.get(str(_settings.get(root, "art.runner")))
-    except Exception:
-        return _runners.get(_runners.DEFAULT_RUNNER)
+    name = (seat or "").strip().lower()
+    keys = ["art.runner"] if name == "art" else (
+        [f"dispatch.runner_{name}"] if name else [])
+    keys.append("dispatch.runner")
+    for key in keys:
+        try:
+            chosen = str(_settings.get(root, key) or "").strip()
+        except Exception:
+            chosen = ""
+        if chosen:
+            return _runners.get(chosen)
+    return _runners.get(_runners.DEFAULT_RUNNER)
+
+
+# The project root _compatible_model reads dispatch.codex_model from; bound
+# for the duration of _model_for so the signature every caller uses stays.
+_CODEX_MODEL_ROOT: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "bgate_codex_model_root", default="")
 
 
 def _compatible_model(runner: "_runners.Runner",
@@ -213,6 +226,15 @@ def _compatible_model(runner: "_runners.Runner",
     offered = {str(row.get("value") or "") for row in rows}
     if value in offered:
         return value
+    # The human's own answer for "what does codex run when the seat names a
+    # Claude alias", before codex's catalog default.
+    try:
+        pinned = str(_settings.get(_CODEX_MODEL_ROOT.get() or "",
+                                   "dispatch.codex_model") or "").strip()
+    except Exception:
+        pinned = ""
+    if pinned:
+        return pinned
     preferred = next((row for row in rows if row.get("default")), None)
     fallback = str((preferred or (rows[0] if rows else {})).get("value") or "")
     if fallback:
@@ -243,13 +265,22 @@ def _model_for(root: str, seat: str,
     old inherit-the-default behaviour instead of silently pinning a model this
     machine might not have.
     """
-    key = ("dispatch.model_art"
-           if (seat or "").strip().lower() == "art" else "dispatch.model")
+    name = (seat or "").strip().lower()
+    key = f"dispatch.model_{name}" if name else "dispatch.model"
     try:
-        chosen = str(_settings.get(root, key) or "").strip()
-        if not chosen and key == "dispatch.model_art":
+        chosen = ""
+        if key != "dispatch.model":
+            try:
+                chosen = str(_settings.get(root, key) or "").strip()
+            except Exception:
+                chosen = ""     # a seat with no setting of its own (director)
+        if not chosen:
             chosen = str(_settings.get(root, "dispatch.model") or "").strip()
-        return _compatible_model(runner or _runner_for(root, seat), chosen)
+        token = _CODEX_MODEL_ROOT.set(str(root))
+        try:
+            return _compatible_model(runner or _runner_for(root, seat), chosen)
+        finally:
+            _CODEX_MODEL_ROOT.reset(token)
     except Exception:
         return None
 

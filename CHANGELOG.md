@@ -10,6 +10,14 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **Every worker seat picks its own CLI and model.** Routing used to stop
+  at the art seat on purpose. `dispatch.runner` (claude | codex) is the
+  board default and each seat has `dispatch.runner_<seat>` and
+  `dispatch.model_<seat>` (blank inherits); art keeps `art.runner` and
+  `dispatch.model_art`. `dispatch.codex_model` names what a Codex-run seat
+  gets when its model setting is a Claude alias, before Codex's own catalog
+  default. The trade a seat makes on codex (no live steering, no cost
+  ceiling) is stated in the settings' help rather than refused by the code.
 - **A constraint the human stated is a ruling, and the harness enforces it.**
   On the EXIT 67 build the human said on night one that a run-and-gun needs
   a 2D rig and that generated frame sheets would not carry it; the director
