@@ -364,7 +364,7 @@ SHEET_LAYOUT = "_sheet_layout"
 
 def sheet_layout(parts: list[dict], reference_path: str | os.PathLike[str],
                  out_dir: str | os.PathLike[str],
-                 chroma_rgb: tuple[int, int, int]) -> dict:
+                 chroma_rgb: tuple[int, int, int], suffix: str = "") -> dict:
     """Draw the layout the model redraws. Returns ``{png, json, cells,
     figure_height_px, size}`` and writes both files into ``out_dir``.
 
@@ -417,11 +417,11 @@ def sheet_layout(parts: list[dict], reference_path: str | os.PathLike[str],
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    png = out / f"{SHEET_LAYOUT}.png"
+    png = out / f"{SHEET_LAYOUT}{suffix}.png"
     canvas.save(png)
     meta = {"size": [W, H], "cells": {k: list(v) for k, v in cells.items()},
             "figure_height_px": figure_h, "chroma": list(chroma_rgb)}
-    js = out / f"{SHEET_LAYOUT}.json"
+    js = out / f"{SHEET_LAYOUT}{suffix}.json"
     js.write_text(__import__("json").dumps(meta, indent=1), encoding="utf-8")
     return {"png": str(png), "json": str(js), "cells": cells,
             "figure_height_px": figure_h, "size": (W, H)}
@@ -463,12 +463,20 @@ def sheet_prompt(parts: list[dict], *, view: str = "side",
 
 def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
                 out_dir: str | os.PathLike[str],
-                chroma_rgb: tuple[int, int, int]) -> dict:
+                chroma_rgb: tuple[int, int, int],
+                rig_height_px: int = 0) -> dict:
     """Key the sheet and crop every cell back out to ``<slot>.png``.
 
-    Returns ``{parts: {slot: path}, empty: [slots], scale: (sx, sy)}``. A
-    cell with nothing but backdrop in it is EMPTY, not a part: it is reported
-    so the caller can re-run that slot, never written as a blank texture.
+    ``rig_height_px`` is the template's figure height: every part is resized
+    by rig_height / (the figure's height on the sheet) so it lands at the
+    scale the rig is authored in. MEASURED (exit-67-r2 #8): a 2528 px sheet
+    gave a 400 px torso for a 200 px rig and the agent wrote its own
+    downscaler. 0 leaves the sheet's pixels alone.
+
+    Returns ``{parts: {slot: path}, empty: [slots], scale: (sx, sy),
+    part_scale}``. A cell with nothing but backdrop in it is EMPTY, not a
+    part: it is reported so the caller can re-run that slot, never written
+    as a blank texture.
     """
     from PIL import Image
     from ..art import chroma as _chroma
@@ -480,6 +488,9 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
         sheet = src.convert("RGBA")
         _chroma.key(sheet, chroma_rgb)
         sx, sy = sheet.width / lw, sheet.height / lh
+        fig_h = float(layout.get("figure_height_px") or 0) * sy
+        part_scale = (float(rig_height_px) / fig_h
+                      if rig_height_px and fig_h > 0 else 1.0)
         parts: dict[str, str] = {}
         empty: list[str] = []
         inset = 4
@@ -492,9 +503,15 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
                 empty.append(slot)
                 continue
             target = out / f"{slot}.png"
-            cell.crop(box).save(target)
+            part = cell.crop(box)
+            if abs(part_scale - 1.0) > 0.01:
+                part = part.resize((max(1, round(part.width * part_scale)),
+                                    max(1, round(part.height * part_scale))),
+                                   Image.LANCZOS)
+            part.save(target)
             parts[slot] = str(target)
-    return {"parts": parts, "empty": empty, "scale": (sx, sy)}
+    return {"parts": parts, "empty": empty, "scale": (sx, sy),
+            "part_scale": round(part_scale, 4)}
 
 
 def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
@@ -508,11 +525,15 @@ def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
 
     ref = Path(reference_path)
     chroma_name, chroma_rgb = _chroma.pick(str(ref))
-    layout = sheet_layout(todo, ref, out_dir, chroma_rgb)
+    # A subset (cutout_part_rerun) gets its own sheet files; the full kit's
+    # sheet and layout stay on disk for the human to judge the kit whole.
+    full = {p["slot"] for p in plan(spec.get("name") or "biped_v1")} <= {p["slot"] for p in todo}
+    suffix = "" if full else "_" + "-".join(p["slot"] for p in todo)[:48]
+    layout = sheet_layout(todo, ref, out_dir, chroma_rgb, suffix=suffix)
     prompt = sheet_prompt(todo, view=spec.get("view", "side"),
                           profile=profile, note=note)
     prompt = prompt + _chroma.clause((chroma_name, chroma_rgb))
-    sheet_png = Path(out_dir) / "_sheet.png"
+    sheet_png = Path(out_dir) / f"_sheet{suffix}.png"
     # keyed=False: WE key it, against the colour WE drew the layout in. The
     # keyable path would pick its own colour from the layout's palette (which
     # is mostly our backdrop) and land on a different one.
@@ -529,9 +550,11 @@ def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
                 "flags": [], "calls": 1, "cost": cost,
                 "stopped": f"the sheet did not come back: {err}",
                 "sheet": str(sheet_png), "prompt": prompt}
-    cut = slice_sheet(sheet_png, layout, out_dir, chroma_rgb)
+    rig_h = int(spec.get("height_px") or 0)
+    cut = slice_sheet(sheet_png, layout, out_dir, chroma_rgb, rig_height_px=rig_h)
     ref_hash = file_hash(ref)
-    fig_h = layout["figure_height_px"] * cut["scale"][1]
+    # Parts are now at rig scale, so the ruler is the rig's figure height.
+    fig_h = rig_h or layout["figure_height_px"] * cut["scale"][1]
     made: dict[str, dict] = {}
     flags: list[dict] = []
     for part in todo:
