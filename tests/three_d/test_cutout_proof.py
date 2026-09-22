@@ -109,3 +109,98 @@ def test_a_proof_that_cannot_render_is_reported_not_raised(project, doc, monkeyp
     cutoutwire.emit(doc, project_dir=project, scene_path=scene)
     got = cutoutproof.proof(project, "hero", scene)
     assert got["ok"] is False and got["image"] == "" and "no display" in got["error"]
+
+
+# ---------------------------------------------------------------------------
+# Game scale: the emitter sizes the rig, the proof shows it beside the player
+# ---------------------------------------------------------------------------
+
+def test_the_extent_is_measured_from_the_parts_not_the_template(doc):
+    got = cutout.rest_extent(doc, SIZES)
+    assert got is not None and got["height"] > 0
+    tall = {k: (w, h * 2) for k, (w, h) in SIZES.items()}
+    assert cutout.rest_extent(doc, tall)["height"] > got["height"]
+
+
+def test_the_emitter_scales_and_lifts_visual_to_the_player_height(project, doc):
+    scene = project / "game" / "hero.tscn"
+    got = cutoutwire.emit(doc, project_dir=project, scene_path=scene,
+                          sizes=SIZES, player_height_px=128)
+    fit = got["game_fit"]
+    extent = cutout.rest_extent(doc, SIZES)
+    assert fit["game_height_px"] == 128
+    assert abs(fit["scale"] * extent["height"] - 128) < 0.5
+    assert abs(fit["lift"] + extent["bottom"] * fit["scale"]) < 0.01
+    text = scene.read_text(encoding="utf-8")
+    visual = text.split('[node name="Visual"')[1].split("[node")[0]
+    assert f"scale = Vector2({fit['scale']:.6g}" in visual
+    stamp = json.loads(cutoutwire.stamp_path(scene).read_text(encoding="utf-8"))
+    assert stamp["game_fit"]["game_height_px"] == 128
+
+
+def test_height_ratio_and_an_explicit_height_win(doc):
+    d = dict(doc, height_ratio=2.0)
+    assert cutoutwire.game_fit(d, SIZES, 128)["game_height_px"] == 256
+    d = dict(doc, game_height_px=300)
+    assert cutoutwire.game_fit(d, SIZES, 128)["game_height_px"] == 300
+
+
+def test_no_player_height_leaves_the_rig_alone_and_says_why(doc):
+    fit = cutoutwire.game_fit(doc, SIZES, 0)
+    assert fit["scale"] == 1.0 and "scale_contract_set" in fit["source"]
+
+
+def test_a_game_scene_that_rescales_the_rig_is_reported(project, doc):
+    scene = project / "game" / "hero.tscn"
+    cutoutwire.emit(doc, project_dir=project, scene_path=scene, sizes=SIZES,
+                    player_height_px=128)
+    player = project / "scenes" / "player.tscn"
+    player.parent.mkdir(parents=True)
+    player.write_text(
+        '[gd_scene load_steps=2 format=3]\n\n'
+        '[ext_resource type="PackedScene" path="res://game/hero.tscn" id="6_rig"]\n\n'
+        '[node name="Player" type="Node2D"]\n\n'
+        '[node name="Rig" parent="." instance=ExtResource("6_rig")]\n'
+        'scale = Vector2(0.64, 0.64)\n', encoding="utf-8")
+    gym = project / "scenes" / "hero_gym.tscn"
+    gym.write_text(player.read_text(encoding="utf-8"), encoding="utf-8")
+    found = cutoutwire.instance_overrides(project, scene)
+    assert [(f["scene"], f["node"]) for f in found] == [
+        ("res://scenes/player.tscn", "Rig")]
+
+
+def test_the_proof_is_at_game_scale_beside_a_player_height_bar(project, doc):
+    scene = project / "game" / "hero.tscn"
+    cutoutwire.emit(doc, project_dir=project, scene_path=scene, sizes=SIZES,
+                    player_height_px=128)
+    gym = cutoutproof.write_gym(project, "hero", scene, reference_px=128,
+                                game_height_px=128)
+    text = Path(gym["gym"]).read_text(encoding="utf-8")
+    assert gym["view_scale"] == 1.0
+    assert "scale = Vector2(1.0, 1.0)" in text
+    assert text.count('[node name="Ref') == len(cutoutproof.PROOF_POSES)
+    assert "player height 128 px" in text
+
+
+def test_a_boss_shrinks_rig_and_bar_together(project, doc):
+    scene = project / "game" / "hero.tscn"
+    cutoutwire.emit(doc, project_dir=project, scene_path=scene)
+    gym = cutoutproof.write_gym(project, "hero", scene, reference_px=128,
+                                game_height_px=600)
+    assert gym["view_scale"] < 1.0
+
+
+def test_defringe_strips_the_key_rim_and_keeps_the_inside():
+    from PIL import Image
+    from bgate_core.three_d.cutoutkit import defringe
+    part = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
+    for x in range(8, 32):
+        for y in range(8, 32):
+            edge = x in (8, 31) or y in (8, 31) or x in (9, 30) or y in (9, 30)
+            part.putpixel((x, y), (60, 200, 210, 255) if edge else (180, 90, 60, 255))
+    out = defringe(part, (0, 255, 255))
+    rim = [out.getpixel((9, y)) for y in range(10, 30)]
+    assert all(p[3] for p in rim)
+    assert all(p[1] - p[0] < 20 and p[2] - p[0] < 20 for p in rim)
+    assert out.getpixel((20, 20)) == (180, 90, 60, 255)
+    assert out.getpixel((8, 20))[3] == 0                 # eroded one px

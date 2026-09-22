@@ -97,6 +97,11 @@ def holder(project_dir: str | os.PathLike[str]) -> dict:
     return {**got, "expired": expires and expires < time.time()}
 
 
+def _pid_alive(pid: int) -> bool:
+    from ..board.inflight import _alive
+    return _alive(pid)
+
+
 def _claim(path: Path, what: str, ttl: float) -> bool:
     """Atomically create the lock. False if somebody else already has it."""
     payload = json.dumps({
@@ -151,6 +156,16 @@ def hold(project_dir: str | os.PathLike[str], what: str = "",
         current = _read(path)
         waited_on = current or waited_on
         expires = float((current or {}).get("expires_at") or 0)
+        # A DEAD HOLDER IS A STALE LOCK NOW, not at its deadline. A driver
+        # killed mid-shot (a board stop, a tool timeout) left exit-67-r2's
+        # lock standing for its full 15 minutes and every screenshot behind
+        # it waited that long for a process that no longer existed.
+        try:
+            holder_pid = int((current or {}).get("pid") or 0)
+        except (TypeError, ValueError):
+            holder_pid = 0
+        if holder_pid and holder_pid != os.getpid() and not _pid_alive(holder_pid):
+            expires = time.time() - 1
         if expires and expires < time.time():
             # The holder is dead or hung past its own deadline. Break it, and
             # say so — a broken lock is evidence about a previous run, not

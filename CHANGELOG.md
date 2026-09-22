@@ -37,6 +37,17 @@ repository at first publication. There is no earlier release history to record.
   confidence whatever it claimed. `kickoff.prompt(research=True)` puts the
   whole pass in front of the director's thesis. Migration 0054 adds
   `research_comp` and `research_finding`.
+- **A cutout rig is emitted at its game size, standing on the ground.** The
+  emitter measures the drawn figure from its parts (not the template's
+  nominal 200 px) and scales and lifts `Visual` so it is the project's
+  `player_height_px` times the rig's `height_ratio` (or its own
+  `game_height_px`), soles on y = 0; instance it at scale 1. `cutout_status`
+  and every write report a game scene that re-scales a rig as
+  `instance_scale`. The proof sheet is drawn at game scale beside a bar the
+  player's height on a ground line. Sheet parts are despilled on the rim and
+  eroded 1 px, which takes off the key-coloured halo. Measured on
+  exit-67-r2: the player rig drew 212 px with its boots 44 px under the
+  floor, instanced at an agent's guess of 0.64.
 - **The rig has eyes: a proof sheet after every write, in the response.**
   Every cutout write (`cutout_kit_generate`, `cutout_assemble`,
   `cutout_part_rerun`, `cutout_equip`) now writes a gym beside the

@@ -543,10 +543,52 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
                 part = part.resize((max(1, round(part.width * part_scale)),
                                     max(1, round(part.height * part_scale))),
                                    Image.LANCZOS)
+            part = defringe(part, chroma_rgb)
             part.save(target)
             parts[slot] = str(target)
     return {"parts": parts, "empty": empty, "clipped": clipped,
             "scale": (sx, sy), "part_scale": round(part_scale, 4)}
+
+
+def defringe(part, chroma_rgb: tuple[int, int, int], erode: int = 1,
+             band: int = 3):
+    """Strip the key colour off a part's edge: despill, then erode alpha.
+
+    MEASURED (exit-67-r2 player kit): chroma.key's distance despill leaves a
+    cyan rim on every part - the model antialiases the part into the
+    backdrop, and a pixel half part, half cyan is too far from pure cyan to
+    key and too close to look like the part. Rigged, every joint shows it.
+
+    Despill works on the key's DOMINANT channels (the ones the chroma has
+    high: G and B for cyan, R and B for magenta): within `band` px of
+    transparency, any excess of those over the others is removed. Only the
+    rim is touched, so a part that is legitimately that colour keeps it
+    inside. Then alpha is eroded `erode` px at the part's final size, which
+    takes the last antialiased ring off rather than despilling it grey.
+    """
+    from PIL import Image, ImageChops, ImageFilter
+    part = part.convert("RGBA")
+    r, g, b, a = part.split()
+    hard = a.point(lambda v: 255 if v >= 128 else 0)
+    rim = ImageChops.subtract(
+        hard, hard.filter(ImageFilter.MinFilter(2 * band + 1)))
+    chans = {"r": r, "g": g, "b": b}
+    hi = [k for k, v in zip("rgb", chroma_rgb) if v >= 128]
+    lo = [k for k in "rgb" if k not in hi]
+    if hi and lo:
+        other = chans[lo[0]]
+        for k in lo[1:]:
+            other = ImageChops.lighter(other, chans[k])
+        dom = chans[hi[0]]
+        for k in hi[1:]:
+            dom = ImageChops.darker(dom, chans[k])
+        spill = ImageChops.subtract(dom, other)
+        for k in hi:
+            fixed = ImageChops.subtract(chans[k], spill)
+            chans[k] = Image.composite(fixed, chans[k], rim)
+    if erode:
+        a = a.filter(ImageFilter.MinFilter(2 * erode + 1))
+    return Image.merge("RGBA", (chans["r"], chans["g"], chans["b"], a))
 
 
 def _main_blobs(cell, keep: float = 0.08):

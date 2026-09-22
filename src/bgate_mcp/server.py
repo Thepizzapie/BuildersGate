@@ -9842,12 +9842,18 @@ def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
         # its pivot: visibly wrong, and better than a guessed offset.
         pass
     doc_path = _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
+    from bgate_core.three_d import scalecontract as _scale
+    try:
+        player_h = int(_scale.contract(root).get("player_height_px") or 0)
+    except Exception:
+        player_h = 0
     emitted = _wire.emit(doc, project_dir=root,
                          scene_path=home / f"{name}.tscn",
-                         sizes=sizes, force=force)
+                         sizes=sizes, player_height_px=player_h, force=force)
     if not emitted.get("ok"):
         return {**emitted, "doc": str(doc_path)}
     status = _cutout.status(doc, root=root)
+    _instance_scale_problems(root, home / f"{name}.tscn", status)
     _log("cutout",
          f"{producer}: {name} - {emitted['sprites']} sprites, "
          f"{len(emitted['clips'])} clips",
@@ -9863,7 +9869,7 @@ def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
     # (the tool decorators put `proof.image` in the response as image
     # content). The agent judges what the human will see, not a byte count.
     from bgate_core.three_d import cutoutproof as _proof
-    shot = _proof.proof(root, name, emitted["scene"])
+    shot = _proof.proof(root, name, emitted["scene"], reference_px=player_h)
     if shot.get("image"):
         _note_tool_write(root, shot["image"])
         _register_artifact(f"{name}.rig_proof", shot["image"], producer=producer,
@@ -9875,6 +9881,19 @@ def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
     return {**emitted, "doc": str(doc_path), "status": status, "proof": shot}
 
 
+def _instance_scale_problems(root, scene, status: dict) -> None:
+    """Add every game scene that re-scales this rig to `status.problems`."""
+    from bgate_core.three_d import cutoutwire as _wire
+    try:
+        found = _wire.instance_overrides(root, scene)
+    except Exception:
+        return
+    for hit in found:
+        status.setdefault("problems", []).append({
+            "slot": "", "kind": "instance_scale", "value": hit["scale"],
+            "note": f"{hit['scene']} node {hit['node']}: {hit['note']}"})
+
+
 def _rig_proof_image(result: dict) -> list[str]:
     """The rendered proof sheet, for the image block beside the JSON."""
     path = ((result or {}).get("proof") or {}).get("image")
@@ -9884,7 +9903,7 @@ def _rig_proof_image(result: dict) -> list[str]:
 @_tool(images=_rig_proof_image)
 def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
                     adjustments: Optional[dict] = None, notes: str = "",
-                    force: bool = False) -> dict:
+                    height_ratio: float = 1.0, force: bool = False) -> dict:
     """Build a cutout character from its parts and emit a scene that moves.
 
     `parts` maps SLOT -> image path (cutout_templates lists slots); missing
@@ -9892,7 +9911,9 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
     `<name>.tscn` and `<name>.anims.tres` (six clips baked on THIS rest pose).
     Slots ending _far reuse the matching _near image with a tint.
     `adjustments` nudges the template per character ({"arm_near": {"rot":
-    -8}}). REFUSES to overwrite a .tscn that changed since it last wrote one;
+    -8}}). `height_ratio` is its game height in player heights (1.0 the
+    player, an enemy its threat size): the emitter scales the rig to it, so
+    instance it at scale 1. REFUSES to overwrite a .tscn that changed since it last wrote one;
     `force=True` discards those changes.
     Full notes: docs/tools.md#cutout_assemble
     """
@@ -9925,12 +9946,14 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
         doc["skin"] = skin
         doc["adjustments"] = adjustments or {}
         doc["notes"] = notes
+        doc["height_ratio"] = float(height_ratio or 1.0)
         written = _cutout_write(root, name, doc, force=force,
                                 producer="cutout_assemble")
         if not written.get("ok"):
             return written
         return {**written,
-                "how": [f"instance {written['scene_res']} in a scene",
+                "how": [f"instance {written['scene_res']} in a scene at scale 1 "
+                        "- it is already game-sized (game_fit)",
                         'call play("walk") on it - the rig script is on the root',
                         "connect its anim_event signal for hit frames"]}
     except Exception as exc:
@@ -9943,7 +9966,7 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
                         quality: str = "medium", note: str = "",
                         adjustments: Optional[dict] = None,
                         max_paid_calls: int = 20, force: bool = False,
-                        mode: str = "sheet") -> dict:
+                        mode: str = "sheet", height_ratio: float = 0.0) -> dict:
     """Generate every part of a cutout character from ONE pinned reference,
     then assemble and emit it. ONE paid image by default (`mode="sheet"`):
     the whole kit is drawn beside the figure on a layout Builders Gate
@@ -9963,6 +9986,8 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
     cutout_part_rerun redraws one. Refuses over max_paid_calls before buying
     anything; stops after two consecutive provider failures rather than
     re-rolling. `parts=[...]` regenerates a subset into an existing kit.
+    `height_ratio` = game height in player heights (0 keeps the rig's own);
+    the emitter sizes the rig to it, so instance it at scale 1.
     Full notes: docs/tools.md#cutout_kit_generate
     """
     try:
@@ -9984,6 +10009,13 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
         existing = home / f"{name}{_cutout.SUFFIX}"
         doc = (_cutout.load(existing) if parts and existing.is_file()
                else _cutout.empty(name, template))
+        if existing.is_file() and not parts:
+            # A fresh kit keeps the character's game size.
+            old = _cutout.load(existing)
+            doc["height_ratio"] = old.get("height_ratio") or 1.0
+            doc["game_height_px"] = old.get("game_height_px") or 0
+        if height_ratio:
+            doc["height_ratio"] = float(height_ratio)
         made = _kit.generate_kit(
             root, name, ref_path, out_dir=home / "parts", provider=provider,
             template=doc["template"], parts=parts, quality=quality, note=note,
@@ -10108,13 +10140,17 @@ def cutout_status(name: str) -> dict:
     Reports rather than refuses. `missing` is slots with no part yet;
     `problems` needs action: missing_texture (the file is not there),
     stale_pivot (a hand-placed pivot on a drawing since regenerated), origin
-    (the rig's feet are not on the ground line).
+    (the rig's feet are not on the ground line), instance_scale (a game scene
+    scales a rig the emitter already sized).
     Full notes: docs/tools.md#cutout_status
     """
     from bgate_core.three_d import cutout as _cutout
     root = _root()
-    doc = _cutout.load(_cutout_dir(root, name) / f"{name}{_cutout.SUFFIX}")
-    return {"ok": True, **_cutout.status(doc, root=root)}
+    home = _cutout_dir(root, name)
+    doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
+    status = _cutout.status(doc, root=root)
+    _instance_scale_problems(root, home / f"{name}.tscn", status)
+    return {"ok": True, **status}
 
 
 @_tool(images=_rig_proof_image)
@@ -10132,7 +10168,13 @@ def cutout_proof(name: str, poses: Optional[list] = None, at: float = 1.0) -> di
     scene = home / f"{name}.tscn"
     if not scene.is_file():
         return _fail(FileNotFoundError(f"no emitted rig at {scene}"))
-    shot = _proof.proof(root, name, scene, poses=poses, at=at)
+    from bgate_core.three_d import scalecontract as _scale
+    try:
+        player_h = int(_scale.contract(root).get("player_height_px") or 0)
+    except Exception:
+        player_h = 0
+    shot = _proof.proof(root, name, scene, poses=poses, at=at,
+                        reference_px=player_h)
     if shot.get("image"):
         _note_tool_write(root, shot["image"])
         _register_artifact(f"{name}.rig_proof", shot["image"], producer="cutout_proof",
