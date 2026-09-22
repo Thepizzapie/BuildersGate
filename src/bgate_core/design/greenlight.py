@@ -193,6 +193,18 @@ def allows(root: str | os.PathLike[str], seat: str) -> tuple[bool, str]:
     held = waivers(root).get(seat)
     if isinstance(held, dict) and held.get("reason"):
         return True, ""
+    # A SUBMITTED GRAYBOX LIFTS THE HOLD. The hold exists so no asset is made
+    # for a loop nobody has played; once gameplay has submitted a graybox with
+    # evidence, the loop has been played. The human's verdict is a REVIEW of
+    # that loop, and a fail puts the hold back - it is not a padlock the board
+    # waits on. USER DIRECTIVE (2026-09-22): "if there is work to be done the
+    # work should be worked on, not hard stopped" - fourteen items sat held
+    # behind an unruled verdict for an hour.
+    if at == GRAYBOX:
+        got = _doc(root).get("graybox")
+        if (isinstance(got, dict) and got.get("scene")
+                and str(got.get("verdict") or "").strip().lower() != "fail"):
+            return True, ""
     if at == THESIS:
         return False, (
             f"held: the project is at the {at!r} stage — no mechanical thesis "

@@ -20,6 +20,12 @@ repository at first publication. There is no earlier release history to record.
   refusal and the whole board sat behind a decision nobody had asked for.
 
 ### Fixed
+- **A submitted graybox lifts the seat hold.** Art, audio and cinematic
+  were held until the human ruled on the graybox; fourteen items sat behind
+  an unruled verdict for an hour. The hold exists so nothing is made for a
+  loop nobody has played, and a submitted graybox is a played loop: the
+  verdict is a review, a fail puts the hold back, a pending verdict holds
+  nothing.
 - **The run cap counts runs.** A queued item's pending run was counted as
   had, so an item reopened for its third and last allowed run passed
   `reopen` and was then invisible to `ready()` forever. `over_attempt_cap`
