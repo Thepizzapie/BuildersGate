@@ -21,6 +21,17 @@ repository at first publication. There is no earlier release history to record.
   `board_digest` reports the dead link instead of blaming the dashboard or
   autopilot; and a failure escalation names what the failure is holding and
   tells the director that a replacement item does not release it.
+- **Fun, then functional, then pretty.** Holding the art seat kept art items
+  off the board; it never stopped the director, or a gameplay agent with a
+  prompt in hand, from calling `image_sprites` at the graybox stage. While a
+  project is at thesis or graybox, every paid generation (image, 3D,
+  animation, music, video, speech) now refuses for every caller at the
+  provider preflight, with the way through in the message; primitives,
+  blockouts and placeholder sprites never touch a provider and stay open.
+  Only the human rules on the graybox or moves a project forward a stage
+  (backward stays open to any seat). It is one route, not the only one:
+  `greenlight.generation_hold` is a per-project switch, on for new projects,
+  off for a game whose art is the mechanic. A scratch project is never held.
 - **Every worker seat picks its own CLI and model.** Routing used to stop
   at the art seat on purpose. `dispatch.runner` (claude | codex) is the
   board default and each seat has `dispatch.runner_<seat>` and

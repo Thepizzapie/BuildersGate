@@ -26,6 +26,10 @@ def root(tmp_path, monkeypatch):
     home = tmp_path / "game"
     home.mkdir()
     project.init(str(home), "AnchorProbe", dimension="2d")
+    # This file tests sheet generation, not the stage: a new project is at
+    # thesis and holds every paid generation (greenlight.generation_hold).
+    from bgate_core.store import settings as _settings
+    _settings.set(str(home), "greenlight.generation_hold", False)
     monkeypatch.setenv("BGATE_ROOT", str(home))
     for var in ("BGATE_SEAT", "BGATE_WORK_ITEM", "BGATE_ACTOR"):
         monkeypatch.delenv(var, raising=False)
