@@ -88,6 +88,9 @@ class CutoutError(ValueError):
 BIPED_V1 = {
     "name": "biped_v1",
     "view": "side",
+    # The way the ART faces: +1 = the viewer's right. The kit prompt asks for
+    # right-facing parts and the bones sit forward at +x (head +2, near arm +4).
+    "forward": 1,
     "height_px": 200,
     "bones": [
         {"name": "hips",       "parent": "",           "pos": [0, 96],   "rot": 0.0},
@@ -136,13 +139,13 @@ BIPED_V1 = {
         {"name": "foot_near",    "bone": "foot_near",    "z": 7},
         {"name": "hat",          "bone": "head",         "z": 9},
         # A HELD WEAPON POINTS ALONG THE FOREARM. Held sprites are drawn
-        # barrel-forward; the hand bone hangs down at rest and swings forward
-        # (clockwise on screen) to aim, which would swing a barrel-forward
-        # sprite to point at the ground. +90 here means: at rest the barrel
-        # points up along the arm, and in every raised pose (idle low ready,
-        # aim, fire, run) it points forward. MEASURED in the probe gym,
-        # 2026-09-22: with 0 the gun hung at 45 degrees in the aim pose.
-        {"name": "weapon",       "bone": "hand_near",    "z": 9, "rot_offset": 90.0},
+        # barrel-forward (+x, the way the template faces). The hand bone
+        # hangs down at rest and swings forward to +90 in aim; -90 here puts
+        # the barrel down the arm at rest and dead forward in every raised
+        # pose. (It was +90 while the clips were baked facing left; since
+        # CLIP_FORWARD mirrors them onto the right-facing art, +90 pointed
+        # the gun backwards over the shoulder.)
+        {"name": "weapon",       "bone": "hand_near",    "z": 9, "rot_offset": -90.0},
     ],
     # What each part IS, for the kit generator, and how tall it should be as a
     # fraction of the figure - read off the bone lengths above, so a part that
@@ -185,6 +188,26 @@ BIPED_V1 = {
         "foot_near": [0.35, 0.8],
         "hat": [0.5, 0.2], "weapon": [0.4, 0.85],
     },
+    # WHERE EACH PART SPANS, relative to its own bone origin, in doc px (+y
+    # up): [top, bottom]. The fit (fit_skin) scales every generated part so
+    # it covers exactly this span and puts its pivot where the bone origin
+    # falls inside it. MEASURED (exit-67-r2 player kit): the model draws each
+    # part to fill its sheet cell whatever the label says, so a shin came
+    # back 102 px for a 42 px bone, and the template's hanging pivots put
+    # the head BELOW the neck bone - the shoulders sat at ear height and
+    # every pose read as hands at the face. Spans include a few px of
+    # overlap at each joint, so a bent knee or elbow shows no gap.
+    "fit": {
+        "head":    [42.0, -6.0],     # neck base up to the crown (figure top 200)
+        "torso":   [33.0, -40.0],    # shoulders' top down into the belt
+        "hip":     [9.0, -17.0],     # waist down to the crotch
+        "arm":     [5.0, -30.0],     # shoulder to just past the elbow (26)
+        "forearm": [4.0, -27.0],     # elbow to just past the wrist (24)
+        "hand":    [3.0, -15.0],
+        "thigh":   [6.0, -48.0],     # hip joint to past the knee (44)
+        "shin":    [4.0, -45.0],     # knee to past the ankle (42)
+        "foot":    [5.0, -8.5],      # ankle (8 up) to the sole, on the ground
+    },
     # The far side is the near side's drawing, tinted back. Stated in the
     # template so a kit knows it is generating ten parts and not sixteen.
     "reuse": {"arm_far": "arm_near", "forearm_far": "forearm_near",
@@ -198,6 +221,19 @@ TEMPLATES = {"biped_v1": BIPED_V1}
 
 # Clips that must NOT loop. A death that loops is a character standing back up.
 NO_LOOP = ("jump", "fire", "attack_melee", "hurt", "death")
+
+# WHERE EACH CLIP MEETS THE FLOOR, solved at bake time (ground_clip), never
+# hand-tuned: "planted" puts the lowest point of the body on y = 0 at every
+# key (idle, crouch, a death that ends lying down); "above" only lifts a pose
+# that would go through the floor (run has a flight phase); a clip not listed
+# is airborne and left alone. MEASURED (exit-67-r2): once parts spanned
+# their real joints, crouch, slide and death pushed the boots 10-20 px
+# through the floor, because the hip drops were tuned by eye on parts of
+# another size.
+GROUND = {"idle": "planted", "walk": "planted", "run": "above",
+          "crouch": "planted", "slide": "planted", "aim": "planted",
+          "fire": "planted", "attack_melee": "planted", "hurt": "planted",
+          "death": "planted"}
 
 # ---------------------------------------------------------------------------
 # The shipped animation library — DELTAS, in degrees and pixels
@@ -223,6 +259,14 @@ NO_LOOP = ("jump", "fire", "attack_melee", "hurt", "death")
 # a walk whose trailing knee bent backwards, and a death that rotated the
 # standing figure ninety degrees. "These cutout rigs are not doing great."
 # Every pose below was looked at in the engine before it shipped.
+#: The way the clip library was AUTHORED facing: -1 = the viewer's left
+#: (the probe gym it was measured in). The emitter mirrors every rotation
+#: delta and every x delta when a template faces the other way. MEASURED
+#: (exit-67-r2, 2026-09-22): baked unmirrored onto right-facing art, every
+#: clip swung the limbs behind the character - a run with the lead leg
+#: kicking backwards, an aim pointing away from the face.
+CLIP_FORWARD = -1
+
 CLIPS: dict[str, dict] = {
     "idle": {
         # Low ready: both elbows bent so the weapon on the near hand sits in
@@ -339,38 +383,43 @@ CLIPS: dict[str, dict] = {
         },
     },
     "crouch": {
-        # A squat: hips down, thighs forward-down, shins folded back under,
-    # chest over the knees. Verified in the probe gym - the first draft
-    # sat on air with its legs out.
+        # A deep crouch: heels under the hips, knees up, chest forward over
+        # the knees, weapon held out front. Reauthored 2026-09-22 in the pose
+        # preview - the first two sat on an invisible stool.
         "length": 1.0, "loop": True, "fps": 12,
         "tracks": {
-            "hips": {"pos": [[0.0, [6.0, -48.0]], [0.5, [6.0, -49.0]]]},
-            "thigh_near": {"rot": [[0.0, -58.0], [0.5, -58.0]]},
-            "shin_near": {"rot": [[0.0, 112.0], [0.5, 112.0]]},
-            "thigh_far": {"rot": [[0.0, -50.0], [0.5, -50.0]]},
-            "shin_far": {"rot": [[0.0, 104.0], [0.5, 104.0]]},
-            "chest": {"rot": [[0.0, -26.0], [0.5, -25.0]]},
-            "head": {"rot": [[0.0, 14.0], [0.5, 14.0]]},
-            "arm_near": {"rot": [[0.0, -40.0], [0.5, -41.0]]},
-            "forearm_near": {"rot": [[0.0, -50.0], [0.5, -50.0]]},
-            "arm_far": {"rot": [[0.0, -50.0], [0.5, -50.0]]},
-            "forearm_far": {"rot": [[0.0, -40.0], [0.5, -40.0]]},
+            "hips": {"pos": [[0.0, [2.0, -70.0]], [0.5, [2.0, -71.0]]]},
+            "thigh_near": {"rot": [[0.0, -118.0], [0.5, -118.0]]},
+            "shin_near": {"rot": [[0.0, 150.0], [0.5, 150.0]]},
+            "foot_near": {"rot": [[0.0, -32.0], [0.5, -32.0]]},
+            "thigh_far": {"rot": [[0.0, -100.0], [0.5, -100.0]]},
+            "shin_far": {"rot": [[0.0, 140.0], [0.5, 140.0]]},
+            "foot_far": {"rot": [[0.0, -40.0], [0.5, -40.0]]},
+            "chest": {"rot": [[0.0, 34.0], [0.5, 35.0]]},
+            "head": {"rot": [[0.0, -28.0], [0.5, -28.0]]},
+            "arm_near": {"rot": [[0.0, -70.0], [0.5, -70.0]]},
+            "forearm_near": {"rot": [[0.0, -55.0], [0.5, -55.0]]},
+            "arm_far": {"rot": [[0.0, -77.0], [0.5, -77.0]]},
+            "forearm_far": {"rot": [[0.0, -60.0], [0.5, -60.0]]},
         },
     },
     "slide": {
-        # Hips at the ground, lead leg out straight, chest back, head up.
+        # Feet first: the lead leg straight out, the other tucked under, the
+        # body leaning back on the far arm, the gun hand pointed forward. Reauthored 2026-09-22.
         "length": 0.5, "loop": True, "fps": 12,
         "tracks": {
-            "hips": {"pos": [[0.0, [8.0, -62.0]], [0.25, [8.0, -63.0]]]},
-            "thigh_near": {"rot": [[0.0, -92.0], [0.25, -92.0]]},
-            "shin_near": {"rot": [[0.0, 12.0], [0.25, 12.0]]},
-            "thigh_far": {"rot": [[0.0, -60.0], [0.25, -60.0]]},
-            "shin_far": {"rot": [[0.0, 110.0], [0.25, 110.0]]},
-            "chest": {"rot": [[0.0, 28.0], [0.25, 28.0]]},
-            "head": {"rot": [[0.0, -22.0], [0.25, -22.0]]},
-            "arm_near": {"rot": [[0.0, -56.0], [0.25, -56.0]]},
-            "forearm_near": {"rot": [[0.0, -40.0], [0.25, -40.0]]},
-            "arm_far": {"rot": [[0.0, 30.0], [0.25, 30.0]]},
+            "hips": {"pos": [[0.0, [-6.0, -60.0]], [0.25, [-6.0, -61.0]]]},
+            "chest": {"rot": [[0.0, -35.0], [0.25, -35.0]]},
+            "head": {"rot": [[0.0, 28.0], [0.25, 28.0]]},
+            "thigh_near": {"rot": [[0.0, -84.0], [0.25, -84.0]]},
+            "shin_near": {"rot": [[0.0, 4.0], [0.25, 4.0]]},
+            "foot_near": {"rot": [[0.0, 58.0], [0.25, 58.0]]},
+            "thigh_far": {"rot": [[0.0, -40.0], [0.25, -40.0]]},
+            "shin_far": {"rot": [[0.0, 112.0], [0.25, 112.0]]},
+            "foot_far": {"rot": [[0.0, -40.0], [0.25, -40.0]]},
+            "arm_near": {"rot": [[0.0, -17.0], [0.25, -17.0]]},
+            "forearm_near": {"rot": [[0.0, -30.0], [0.25, -30.0]]},
+            "arm_far": {"rot": [[0.0, 67.0], [0.25, 67.0]]},
             "forearm_far": {"rot": [[0.0, -20.0], [0.25, -20.0]]},
         },
     },
@@ -419,28 +468,23 @@ CLIPS: dict[str, dict] = {
         },
     },
     "attack_melee": {
-        # Wind-up back, swing through, a step into it.
+        # Guard, wind back, then a lunging strike forward on the hit frame, and
+        # back to guard. Reauthored 2026-09-22 - the old swing read as flailing.
         "length": 0.5, "loop": False, "fps": 24,
-        "events": [[0.22, 'hit']],
+        "events": [[0.22, "hit"]],
         "tracks": {
-            "arm_near": {
-                "rot": [[0.0, -20.0], [0.14, 70.0], [0.24, -95.0], [0.5, -20.0]],
-            },
-            "forearm_near": {
-                "rot": [[0.0, -70.0], [0.14, -60.0], [0.24, -10.0], [0.5, -70.0]],
-            },
-            "arm_far": {
-                "rot": [[0.0, -30.0], [0.14, -10.0], [0.24, -50.0], [0.5, -30.0]],
-            },
-            "chest": {
-                "rot": [[0.0, 0.0], [0.14, 12.0], [0.24, -14.0], [0.5, 0.0]],
-            },
-            "head": {"rot": [[0.0, 0.0], [0.24, 6.0], [0.5, 0.0]]},
-            "hips": {
-                "pos": [[0.0, [0.0, 0.0]], [0.14, [-4.0, 0.0]], [0.24, [8.0, -3.0]], [0.5, [0.0, 0.0]]],
-            },
-            "thigh_near": {"rot": [[0.0, 0.0], [0.24, -18.0], [0.5, 0.0]]},
-            "shin_near": {"rot": [[0.0, 0.0], [0.24, 22.0], [0.5, 0.0]]},
+            "chest": {"rot": [[0.0, -0.0], [0.12, -12.0], [0.22, 18.0], [0.5, -0.0]]},
+            "head": {"rot": [[0.0, -0.0], [0.12, 6.0], [0.22, -12.0], [0.5, -0.0]]},
+            "hips": {"pos": [[0.0, [-0.0, 0.0]], [0.12, [4.0, 0.0]], [0.22, [-10.0, -6.0]], [0.5, [-0.0, 0.0]]]},
+            "arm_near": {"rot": [[0.0, -32.0], [0.12, 50.0], [0.22, -110.0], [0.5, -32.0]]},
+            "forearm_near": {"rot": [[0.0, -80.0], [0.12, -100.0], [0.22, -5.0], [0.5, -80.0]]},
+            "arm_far": {"rot": [[0.0, -48.0], [0.12, -60.0], [0.22, 20.0], [0.5, -48.0]]},
+            "forearm_far": {"rot": [[0.0, -80.0], [0.12, -70.0], [0.22, -60.0], [0.5, -80.0]]},
+            "thigh_near": {"rot": [[0.0, -0.0], [0.12, 5.0], [0.22, -38.0], [0.5, -0.0]]},
+            "shin_near": {"rot": [[0.0, -0.0], [0.12, -0.0], [0.22, 38.0], [0.5, -0.0]]},
+            "thigh_far": {"rot": [[0.0, -0.0], [0.12, -5.0], [0.22, 22.0], [0.5, -0.0]]},
+            "shin_far": {"rot": [[0.0, -0.0], [0.12, -0.0], [0.22, 12.0], [0.5, -0.0]]},
+            "foot_far": {"rot": [[0.0, -0.0], [0.22, -30.0], [0.5, -0.0]]},
         },
     },
     "hurt": {
@@ -463,46 +507,23 @@ CLIPS: dict[str, dict] = {
         },
     },
     "death": {
-        # A real collapse, not a rotated standing figure: recoil, knees buckle,
-    # sit back, lie flat. The final key lies on the ground with the head
-    # lolled.
+        # Recoil, knees buckle, pitch forward, land prone with the arms thrown
+        # ahead. Reauthored 2026-09-22.
         "length": 1.2, "loop": False, "fps": 24,
-        "events": [[1.0, 'died']],
         "tracks": {
-            "chest": {
-                "rot": [[0.0, 0.0], [0.15, 20.0], [0.5, 8.0], [0.9, 2.0], [1.2, -4.0]],
-            },
-            "head": {
-                "rot": [[0.0, 0.0], [0.15, 26.0], [0.5, 14.0], [0.9, 8.0], [1.2, 20.0]],
-            },
-            "hips": {
-                "rot": [[0.0, 0.0], [0.5, 12.0], [0.9, 70.0], [1.2, 88.0]],
-                "pos": [[0.0, [0.0, 0.0]], [0.15, [-6.0, 0.0]], [0.5, [-12.0, -38.0]], [0.9, [-32.0, -82.0]], [1.2, [-42.0, -90.0]]],
-            },
-            "thigh_near": {
-                "rot": [[0.0, 0.0], [0.5, -28.0], [0.9, 8.0], [1.2, 18.0]],
-            },
-            "shin_near": {
-                "rot": [[0.0, 0.0], [0.5, 66.0], [0.9, 30.0], [1.2, 12.0]],
-            },
-            "thigh_far": {
-                "rot": [[0.0, 0.0], [0.5, -20.0], [0.9, -10.0], [1.2, 0.0]],
-            },
-            "shin_far": {
-                "rot": [[0.0, 0.0], [0.5, 58.0], [0.9, 40.0], [1.2, 26.0]],
-            },
-            "arm_near": {
-                "rot": [[0.0, -18.0], [0.15, -60.0], [0.5, -40.0], [0.9, -20.0], [1.2, -30.0]],
-            },
-            "forearm_near": {
-                "rot": [[0.0, -72.0], [0.15, -50.0], [0.5, -30.0], [1.2, -10.0]],
-            },
-            "arm_far": {
-                "rot": [[0.0, -30.0], [0.15, -50.0], [0.5, -20.0], [0.9, -6.0], [1.2, 10.0]],
-            },
-            "forearm_far": {
-                "rot": [[0.0, -62.0], [0.15, -40.0], [1.2, -10.0]],
-            },
+            "chest": {"rot": [[0.0, -0.0], [0.15, -15.0], [0.5, 15.0], [0.9, 10.0], [1.2, 2.0]]},
+            "head": {"rot": [[0.0, -0.0], [0.15, -20.0], [0.5, -10.0], [0.9, -15.0], [1.2, -30.0]]},
+            "hips": {"rot": [[0.0, -0.0], [0.5, 8.0], [0.9, 60.0], [1.2, 88.0]], "pos": [[0.0, [-0.0, 0.0]], [0.15, [4.0, 0.0]], [0.5, [-2.0, -30.0]], [0.9, [-18.0, -60.0]], [1.2, [-28.0, -80.0]]]},
+            "thigh_near": {"rot": [[0.0, -0.0], [0.5, -40.0], [0.9, -12.0], [1.2, -2.0]]},
+            "shin_near": {"rot": [[0.0, -0.0], [0.5, 70.0], [0.9, 25.0], [1.2, 8.0]]},
+            "foot_near": {"rot": [[0.0, -0.0], [0.5, -30.0], [0.9, -10.0], [1.2, -60.0]]},
+            "thigh_far": {"rot": [[0.0, -0.0], [0.5, -30.0], [0.9, -4.0], [1.2, 4.0]]},
+            "shin_far": {"rot": [[0.0, -0.0], [0.5, 60.0], [0.9, 30.0], [1.2, 15.0]]},
+            "foot_far": {"rot": [[0.0, -0.0], [0.5, -30.0], [1.2, -60.0]]},
+            "arm_near": {"rot": [[0.0, -0.0], [0.15, 30.0], [0.5, -40.0], [0.9, -100.0], [1.2, -150.0]]},
+            "forearm_near": {"rot": [[0.0, -0.0], [0.15, -20.0], [0.5, -30.0], [1.2, -5.0]]},
+            "arm_far": {"rot": [[0.0, -0.0], [0.15, 20.0], [0.5, -50.0], [0.9, -95.0], [1.2, -140.0]]},
+            "forearm_far": {"rot": [[0.0, -0.0], [0.5, -25.0], [1.2, -10.0]]},
         },
     },
 }
@@ -591,6 +612,7 @@ def empty(name: str = "character", template_name: str = "biped_v1") -> dict:
         # anchor hash it was drawn from; status() compares.
         "reference": "",
         "reference_hash": "",
+        "description": "",
     }
 
 
@@ -650,8 +672,14 @@ def normalise(doc: dict) -> dict:
     out["name"] = _name(doc.get("name") or "character", "name")
     out["template"] = str(doc.get("template") or "biped_v1")
     spec = template(out["template"])
+    # A slot's default rotation is the TEMPLATE's for every slot the
+    # template has: a saved document carries a copy of the slot table, and a
+    # copy made before a template fix (the weapon's +90 -> -90) would
+    # otherwise keep the bug forever. Author a part's own rot_offset instead.
     slot_rot = {sl["name"]: float(sl.get("rot_offset") or 0.0)
-                for sl in (doc.get("slots") or spec["slots"])}
+                for sl in (doc.get("slots") or [])}
+    slot_rot.update({sl["name"]: float(sl.get("rot_offset") or 0.0)
+                     for sl in spec["slots"]})
     out["view"] = str(doc.get("view") or spec["view"])
 
     bones = doc.get("bones") or [dict(b) for b in spec["bones"]]
@@ -746,6 +774,12 @@ def normalise(doc: dict) -> dict:
             "scale": _num(raw.get("scale") or 1.0, f"skin[{slot}].scale",
                           lo=0.01, hi=100.0),
             "reuse_of": str(raw.get("reuse_of") or ""),
+            # False = this part's scale and pivot are the author's; the fit
+            # (fit_skin) leaves it alone.
+            "fit": raw.get("fit", True) is not False,
+            # The cutoutshape silhouette this piece was painted into, if any:
+            # its size and pivot are the template's.
+            "shape": str(raw.get("shape") or ""),
             "far_tint": (list(raw["far_tint"]) if raw.get("far_tint") else None),
             # PROVENANCE. Which reference this part was generated against, and
             # the prompt that made it. EXIT 67 stitched frames from a
@@ -789,6 +823,8 @@ def normalise(doc: dict) -> dict:
                                      "game_height_px", lo=0, hi=8192))
     out["notes"] = str(doc.get("notes") or "")
     out["reference"] = str(doc.get("reference") or "")
+    # The character in words: what the kit's pieces are painted from.
+    out["description"] = str(doc.get("description") or "")
     out["reference_hash"] = str(doc.get("reference_hash") or "")
     return out
 
@@ -817,6 +853,145 @@ def rest_pose(doc: dict) -> dict:
             pos = [pos[0] + adj["pos"][0], pos[1] + adj["pos"][1]]
         out[bone["name"]] = {"pos": pos,
                              "rot": bone["rot"] + float(adj.get("rot") or 0.0)}
+    return out
+
+
+def _interp(keys: list, t: float, zero):
+    """A linear track's value at t, held past either end."""
+    if not keys:
+        return zero
+    if t <= keys[0][0]:
+        return keys[0][1]
+    for (t0, v0), (t1, v1) in zip(keys, keys[1:]):
+        if t0 <= t <= t1:
+            f = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
+            if isinstance(v0, (list, tuple)):
+                return [a + (b - a) * f for a, b in zip(v0, v1)]
+            return v0 + (v1 - v0) * f
+    return keys[-1][1]
+
+
+def ground_clip(doc: dict, name: str, mirror: float = 1.0,
+                sizes: Optional[dict] = None) -> dict:
+    """The clip's tracks with the ROOT bone's y solved against the floor.
+
+    Forward kinematics at every key time of the clip, over each part's span
+    from the fit table (a foot counts heel and toe), gives the body's lowest
+    point; the root is moved so that point sits on y = 0 ("planted") or is
+    lifted only if it went below ("above"). Returns the clip's `tracks`
+    dict (deltas, doc space) with the root's `pos` replaced by keys at
+    every key time. `mirror` is the emitter's facing flip. With `sizes`
+    (slot -> (w, h)) the probes are the corners of the rig's REAL sprites,
+    not the fit table's spans: a cut kit's boot is its own size, and the
+    spans put exit-67-r2's boots 15 px through the floor in crouch.
+    """
+    spec = clip(name)
+    tracks = {b: dict(c) for b, c in (spec.get("tracks") or {}).items()}
+    mode = GROUND.get(name)
+    tmpl = template(doc["template"])
+    table = tmpl.get("fit") or {}
+    root = next((b["name"] for b in doc["bones"] if not b["parent"]), "")
+    if not mode or not root or not (table or sizes):
+        return tracks
+    rest = rest_pose(doc)
+    parent = {b["name"]: b["parent"] for b in doc["bones"]}
+    forward = float(tmpl.get("forward") or 1)
+    probes: dict[str, list] = {}
+    for slot in doc["slots"]:
+        entry = (doc.get("skin") or {}).get(slot["name"])
+        size = (sizes or {}).get(slot["name"])
+        if entry and size:
+            w, h = float(size[0]), float(size[1])
+            px, py = entry["pivot"]
+            sc = float(entry.get("scale") or 1.0)
+            a = math.radians(float(entry.get("rot_offset") or 0.0))
+            for cx, cy in ((-px * w, -py * h), ((1 - px) * w, -py * h),
+                           (-px * w, (1 - py) * h), ((1 - px) * w, (1 - py) * h)):
+                cx, cy = cx * sc, cy * sc
+                probes.setdefault(slot["bone"], []).append(
+                    (cx * math.cos(a) - cy * math.sin(a),
+                     cx * math.sin(a) + cy * math.cos(a)))
+            continue
+        if sizes:
+            continue
+        span = table.get(fit_key(slot["name"]))
+        if not span:
+            continue
+        pts = probes.setdefault(slot["bone"], [])
+        top, bottom = float(span[0]), float(span[1])
+        if fit_key(slot["name"]) == "foot":
+            pts += [(-6.0 * forward, bottom), (16.0 * forward, bottom)]
+        else:
+            pts += [(0.0, top), (0.0, bottom)]
+    times = sorted({0.0} | {float(k[0]) for c in tracks.values()
+                            for ch in ("rot", "pos") for k in (c.get(ch) or [])})
+    root_pos = list((tracks.get(root) or {}).get("pos") or [])
+    solved = []
+    for t in times:
+        world: dict[str, tuple] = {}
+
+        def bone_world(b: str) -> tuple:
+            if b in world:
+                return world[b]
+            ch = tracks.get(b) or {}
+            rot = rest[b]["rot"] + mirror * float(_interp(ch.get("rot") or [], t, 0.0))
+            d = _interp(ch.get("pos") or [], t, [0.0, 0.0])
+            pos = (rest[b]["pos"][0] + mirror * float(d[0]),
+                   rest[b]["pos"][1] + float(d[1]))
+            a = math.radians(rot)
+            local = (math.cos(a), math.sin(a), -math.sin(a), math.cos(a),
+                     pos[0], pos[1])
+            up = parent.get(b) or ""
+            world[b] = _compose(bone_world(up), local) if up else local
+            return world[b]
+
+        low = min(bone_world(b)[1] * x + bone_world(b)[3] * y + bone_world(b)[5]
+                  for b, pts in probes.items() for x, y in pts)
+        d = _interp(root_pos, t, [0.0, 0.0])
+        shift = -low if (mode == "planted" or low < 0) else 0.0
+        solved.append([t, [round(float(d[0]), 3), round(float(d[1]) + shift, 3)]])
+    length = float(spec["length"])
+    looping = bool(spec.get("loop")) and name not in NO_LOOP
+    if looping:
+        solved = [k for k in solved if abs(k[0] - length) > 1e-6]
+    tracks[root] = {**(tracks.get(root) or {}), "pos": solved}
+    return tracks
+
+
+def fit_key(slot: str) -> str:
+    """The fit-table row for a slot: `arm_far` and `arm_near` share `arm`."""
+    for side in ("_near", "_far"):
+        if slot.endswith(side):
+            return slot[: -len(side)]
+    return slot
+
+
+def fit_skin(doc: dict, sizes: dict) -> dict:
+    """Scale and pivot every generated part so it spans its joints.
+
+    Only entries whose pivot is the template DEFAULT are fitted; a pivot a
+    human authored is theirs, and so is a part with `fit: false`. Equipment
+    slots (weapon, hat) are not in the fit table and are left alone.
+    Returns the document with `scale` and `pivot` written onto each fitted
+    entry and `fitted: true`, so the numbers are visible in the .cutout.json.
+    """
+    spec = template(doc["template"])
+    table = spec.get("fit") or {}
+    out = dict(doc)
+    skin = {}
+    for slot, entry in (doc.get("skin") or {}).items():
+        entry = dict(entry)
+        span = table.get(fit_key(slot))
+        size = sizes.get(slot)
+        if (span and size and size[1] > 0 and entry.get("fit", True) is not False
+                and entry.get("pivot_source", "default") == "default"):
+            top, bottom = float(span[0]), float(span[1])
+            entry["scale"] = round((top - bottom) / float(size[1]), 5)
+            px = float((spec.get("pivots") or {}).get(slot, [0.5, 0.5])[0])
+            entry["pivot"] = [px, round(-bottom / (top - bottom), 5)]
+            entry["fitted"] = True
+        skin[slot] = entry
+    out["skin"] = skin
     return out
 
 

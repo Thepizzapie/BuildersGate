@@ -69,11 +69,27 @@ def _fake_shooter(calls):
     return shoot
 
 
+@pytest.fixture(autouse=True)
+def _no_engine_import(monkeypatch):
+    # Fresh test PNGs have no .import sidecar, so a proof would run a real
+    # `godot --import`; tests never touch the engine.
+    monkeypatch.setattr(cutoutproof, "importer",
+                        lambda project_dir, timeout=0: {"ok": True, "fake": True})
+
+
 @pytest.fixture
 def shooter(monkeypatch):
     calls: list = []
     monkeypatch.setattr(cutoutproof, "shooter", _fake_shooter(calls))
     return calls
+
+
+def test_a_rig_with_unimported_parts_is_imported_before_the_shot(project, doc, shooter):
+    scene = project / "game" / "hero.tscn"
+    cutoutwire.emit(doc, project_dir=project, scene_path=scene, sizes=SIZES)
+    assert cutoutproof.stale_textures(project, scene)
+    got = cutoutproof.proof(project, "hero", scene)
+    assert got["imported"].get("fake") is True
 
 
 def test_the_gym_places_one_rig_per_pose_with_a_label(project, doc):

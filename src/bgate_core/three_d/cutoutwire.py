@@ -138,7 +138,16 @@ def _res_path(project_dir: str | os.PathLike[str],
 # The animation library
 # ---------------------------------------------------------------------------
 
-def bake_clip(doc: dict, name: str) -> dict:
+#: Seconds a bone trails the body in a looping clip.
+FOLLOW = {"head": 0.06, "forearm_near": 0.04, "forearm_far": 0.04}
+
+#: Godot's per-key transition: an EASE, not a line. -2 eases in and out,
+#: so a limb decelerates into each pose instead of hitting it at full speed
+#: and reversing - the robot look of the linear library.
+EASE = -2.0
+
+
+def bake_clip(doc: dict, name: str, sizes: Optional[dict] = None) -> dict:
     """One clip's tracks, as ABSOLUTE Godot values for this character.
 
     Returns {name, length, loop_mode, tracks: [{path, property, keys}],
@@ -146,8 +155,13 @@ def bake_clip(doc: dict, name: str) -> dict:
     """
     spec = cutout.clip(name)
     rest = cutout.rest_pose(doc)
+    # Mirror the library onto a template that faces the other way than the
+    # clips were authored (cutout.CLIP_FORWARD).
+    facing = int(cutout.template(doc["template"]).get("forward") or 1)
+    m = 1.0 if facing == cutout.CLIP_FORWARD else -1.0
     tracks = []
-    for bone, channels in (spec.get("tracks") or {}).items():
+    # The root's height is SOLVED against the floor per key (cutout.GROUND).
+    for bone, channels in cutout.ground_clip(doc, name, m, sizes).items():
         if bone not in rest:
             # A clip authored for a template this character does not use. Say
             # so loudly: quietly dropping the track produces a walk cycle with
@@ -158,7 +172,7 @@ def bake_clip(doc: dict, name: str) -> dict:
         path = cutout.bone_node_path(doc, bone)
         base = rest[bone]
         if channels.get("rot") is not None:
-            keys = [(float(t), to_godot_rot(base["rot"] + float(d)))
+            keys = [(float(t), to_godot_rot(base["rot"] + m * float(d)))
                     for t, d in channels["rot"]]
             tracks.append({"path": f"{path}:rotation", "keys": keys,
                            "kind": "float"})
@@ -166,13 +180,25 @@ def bake_clip(doc: dict, name: str) -> dict:
             keys = []
             for t, delta in channels["pos"]:
                 keys.append((float(t),
-                             to_godot_pos([base["pos"][0] + float(delta[0]),
+                             to_godot_pos([base["pos"][0] + m * float(delta[0]),
                                            base["pos"][1] + float(delta[1])])))
             tracks.append({"path": f"{path}:position", "keys": keys,
                            "kind": "vector2"})
 
     length = float(spec["length"])
     looping = bool(spec.get("loop")) and name not in cutout.NO_LOOP
+    # FOLLOW-THROUGH. The head and the forearms trail the body by a few
+    # frames in a looping clip, so a walk reads as weight moving through
+    # the figure instead of every bone snapping on the same frame.
+    if looping:
+        for track in tracks:
+            bone = track["path"].split("/")[-1].split(":")[0]
+            lag = FOLLOW.get(bone, 0.0)
+            if lag and len(track["keys"]) > 1:
+                moved = sorted(((round((t + lag) % length, 4), v)
+                                for t, v in track["keys"]), key=lambda k: k[0])
+                track["keys"] = [k for i, k in enumerate(moved)
+                                 if i == 0 or k[0] != moved[i - 1][0]]
     for track in tracks:
         if len(track["keys"]) > cutout.MAX_CLIP_KEYS:
             raise CutoutError(
@@ -199,10 +225,11 @@ def bake_clip(doc: dict, name: str) -> dict:
             "fps": int(spec.get("fps") or 12)}
 
 
-def library_text(doc: dict, clips: Optional[list] = None) -> str:
+def library_text(doc: dict, clips: Optional[list] = None,
+                 sizes: Optional[dict] = None) -> str:
     """The AnimationLibrary .tres, with every clip baked for this character."""
     wanted = list(clips or cutout.clip_names())
-    baked = [bake_clip(doc, name) for name in wanted]
+    baked = [bake_clip(doc, name, sizes) for name in wanted]
     steps = len(baked) + 1
     out = [f"[gd_resource type=\"AnimationLibrary\" load_steps={steps} format=3]",
            "", HEADER % f"{doc['name']}{cutout.SUFFIX}"]
@@ -226,14 +253,14 @@ def library_text(doc: dict, clips: Optional[list] = None) -> str:
                 f"tracks/{index}/imported = false",
                 f"tracks/{index}/enabled = true",
                 f"tracks/{index}/path = NodePath(\"{track['path']}\")",
-                # 1 = linear. The browser scrubber implements the same formula,
-                # so preview and engine cannot disagree — which is the entire
-                # reason an editor is worth having.
+                # 1 = linear between keys, shaped by each key's EASE
+                # transition below. A preview that scrubs these clips must
+                # apply Godot's ease(t, -2) too, or it and the engine disagree.
                 f"tracks/{index}/interp = 1",
                 f"tracks/{index}/loop_wrap = true",
                 f"tracks/{index}/keys = {{",
                 f"\"times\": {_floats(times)},",
-                f"\"transitions\": {_floats([1.0] * len(times))},",
+                f"\"transitions\": {_floats([EASE] * len(times))},",
                 "\"update\": 0,",
                 f"\"values\": {values}",
                 "}",
@@ -485,7 +512,7 @@ def emit(doc: dict, *, project_dir: str | os.PathLike[str],
     library = scene.with_suffix("").with_suffix(".anims.tres")
     library_res = _res_path(project_dir, library)
 
-    text_lib = library_text(doc, clips)
+    text_lib = library_text(doc, clips, sizes)
     fit = game_fit(doc, sizes or {}, player_height_px)
     text_scene = scene_text(doc, project_dir=project_dir,
                             library_res=library_res, script_res=script_res,

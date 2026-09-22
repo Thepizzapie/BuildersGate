@@ -9841,6 +9841,9 @@ def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
         # A missing size means a part hangs from its top-left instead of
         # its pivot: visibly wrong, and better than a guessed offset.
         pass
+    # Every generated part spans its joints: scale and pivot from the
+    # template's fit table, never the size the model happened to draw.
+    doc = _cutout.normalise(_cutout.fit_skin(doc, sizes))
     doc_path = _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
     from bgate_core.three_d import scalecontract as _scale
     try:
@@ -9854,6 +9857,7 @@ def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
         return {**emitted, "doc": str(doc_path)}
     status = _cutout.status(doc, root=root)
     _instance_scale_problems(root, home / f"{name}.tscn", status)
+    _joint_gap_problems(doc, status)
     _log("cutout",
          f"{producer}: {name} - {emitted['sprites']} sprites, "
          f"{len(emitted['clips'])} clips",
@@ -9879,6 +9883,23 @@ def _cutout_write(root: str, name: str, doc: dict, *, force: bool,
         _log("cutout", f"{name}: proof sheet NOT rendered - {shot.get('error')}",
              ref=emitted["scene_res"])
     return {**emitted, "doc": str(doc_path), "status": status, "proof": shot}
+
+
+def _joint_gap_problems(doc: dict, status: dict) -> None:
+    """Joint discs a silhouette piece's paint does not cover: a hole the rig
+    shows at that joint when it bends."""
+    from bgate_core.three_d import cutoutshape as _shape
+    for slot, entry in (doc.get("skin") or {}).items():
+        if not entry.get("shape") or entry.get("reuse_of"):
+            continue
+        try:
+            gaps = _shape.joint_gaps(slot, entry["texture"])
+        except Exception:
+            continue
+        for gap in gaps:
+            status.setdefault("problems", []).append({
+                "slot": slot, "kind": "joint_gap", "value": gap["cover"],
+                "note": gap["note"]})
 
 
 def _instance_scale_problems(root, scene, status: dict) -> None:
@@ -9966,7 +9987,8 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
                         quality: str = "medium", note: str = "",
                         adjustments: Optional[dict] = None,
                         max_paid_calls: int = 20, force: bool = False,
-                        mode: str = "sheet", height_ratio: float = 0.0) -> dict:
+                        mode: str = "sheet", height_ratio: float = 0.0,
+                        description: str = "") -> dict:
     """Generate every part of a cutout character from ONE pinned reference,
     then assemble and emit it. ONE paid image by default (`mode="sheet"`):
     the whole kit is drawn beside the figure on a layout Builders Gate
@@ -9986,6 +10008,9 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
     cutout_part_rerun redraws one. Refuses over max_paid_calls before buying
     anything; stops after two consecutive provider failures rather than
     re-rolling. `parts=[...]` regenerates a subset into an existing kit.
+    `description` is the character in words (outfit, colours, materials,
+    art style): the model paints the pieces from it and NEVER sees the
+    reference image; the pin's profile traits are used when it is empty.
     `height_ratio` = game height in player heights (0 keeps the rig's own);
     the emitter sizes the rig to it, so instance it at scale 1.
     Full notes: docs/tools.md#cutout_kit_generate
@@ -10020,7 +10045,7 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
             root, name, ref_path, out_dir=home / "parts", provider=provider,
             template=doc["template"], parts=parts, quality=quality, note=note,
             profile=profile, max_paid_calls=max_paid_calls,
-            work_item_id=_work_item_id(), mode=mode)
+            work_item_id=_work_item_id(), mode=mode, description=description)
         if made.get("sheet") and os.path.isfile(made["sheet"]):
             _register_artifact(f"{name}.parts_sheet", made["sheet"],
                                producer="cutout_kit_generate", refs=[reference],
@@ -10034,6 +10059,7 @@ def cutout_kit_generate(name: str, reference: str, template: str = "biped_v1",
         doc["skin"] = _kit.fill_reuse(skin, doc["template"])
         doc["reference"] = reference
         doc["reference_hash"] = made["reference_hash"]
+        doc["description"] = description or (profile or {}).get("traits") or ""
         if adjustments:
             doc["adjustments"] = adjustments
         if made["flags"]:
@@ -10100,7 +10126,8 @@ def cutout_part_rerun(name: str, slot: str, note: str = "", provider: str = "",
         made = _kit.generate_kit(
             root, name, ref_path, out_dir=home / "parts", provider=provider,
             template=doc["template"], parts=[slot], quality=quality, note=note,
-            profile=profile, max_paid_calls=1, work_item_id=_work_item_id())
+            profile=profile, max_paid_calls=1, work_item_id=_work_item_id(),
+            description=doc.get("description") or "")
         if slot not in made["parts"]:
             return {"ok": False, "generation": made,
                     "error": f"{slot} did not come back: "
@@ -10150,6 +10177,7 @@ def cutout_status(name: str) -> dict:
     doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
     status = _cutout.status(doc, root=root)
     _instance_scale_problems(root, home / f"{name}.tscn", status)
+    _joint_gap_problems(doc, status)
     return {"ok": True, **status}
 
 

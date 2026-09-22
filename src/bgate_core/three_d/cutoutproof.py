@@ -68,6 +68,52 @@ LOOK = (
 
 # Injectable for tests: (project_dir, out_path, at=, scene=, timeout=) -> dict
 shooter: Optional[Callable] = None
+# Injectable for tests: (project_dir, timeout=) -> dict
+importer: Optional[Callable] = None
+
+
+def stale_textures(project_dir: str | os.PathLike[str],
+                   scene_path: str | os.PathLike[str]) -> list[str]:
+    """Texture files the rig uses that Godot has not imported (no .import
+    sidecar, or one older than the PNG).
+
+    MEASURED: a freshly cut kit rendered a blank proof - fourteen empty
+    cells - because a game run does not import; only the editor or
+    `--import` does. The proof then showed nothing and said nothing.
+    """
+    import re
+    project = Path(project_dir)
+    try:
+        text = Path(scene_path).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    stale = []
+    for res in re.findall(r'type="Texture2D" path="res://([^"]+)"', text):
+        png = project / res
+        side = Path(str(png) + ".import")
+        if png.is_file() and (not side.is_file()
+                              or side.stat().st_mtime < png.stat().st_mtime):
+            stale.append(res)
+    return stale
+
+
+def _import(project_dir, timeout: int = 240) -> dict:
+    fn = importer
+    if fn is not None:
+        return fn(str(project_dir), timeout=timeout)
+    import subprocess
+    from bgate_adapters import godot as _godot
+    from ..runtime import enginelock as _lock
+    try:
+        with _lock.hold(project_dir, what="cutout_proof import"):
+            proc = subprocess.run(
+                [_godot.find_godot(), "--headless", "--path", str(project_dir),
+                 "--import"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=timeout,
+                stdin=subprocess.DEVNULL)
+        return {"ok": proc.returncode == 0}
+    except Exception as exc:                                   # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
 
 
 def _shoot(project_dir, out_path, *, at: float, scene: str, timeout: int) -> dict:
@@ -201,6 +247,9 @@ def proof(project_dir: str | os.PathLike[str], name: str,
     except Exception as exc:                                   # noqa: BLE001
         return {"ok": False, "image": "", "error": f"gym not written: {exc}",
                 "look": LOOK}
+    imported = {}
+    if stale_textures(project, scene_path):
+        imported = _import(project)
     shots = project / ".bgate_out" / "shots"
     shots.mkdir(parents=True, exist_ok=True)
     out = shots / f"rigproof-{name}-{time.strftime('%Y%m%d-%H%M%S')}.png"
@@ -212,6 +261,7 @@ def proof(project_dir: str | os.PathLike[str], name: str,
     return {"ok": bool(image), "image": image, "gym_res": gym["gym_res"],
             "poses": gym["poses"], "errors": list(got.get("errors") or []),
             "view_scale": gym["view_scale"], "reference_px": gym["reference_px"],
+            "imported": imported,
             "error": "" if image else str(got.get("error") or "no frame captured"),
             "look": LOOK}
 

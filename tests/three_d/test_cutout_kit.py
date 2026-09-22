@@ -43,7 +43,7 @@ class FakeGenerator:
         slot = Path(out_path).stem
         self.calls.append({"slot": slot, "prompt": prompt, **kw})
         if slot.startswith("_sheet"):             # default mode: one sheet
-            return FakeSheetGenerator(fail=bool(self.fail), heights=self.heights)(
+            return FakeSheetGenerator(fail=bool(self.fail))(
                 prompt, out_path, **kw)
         if slot in self.fail:
             return {"ok": False, "error": f"provider said no to {slot}"}
@@ -266,6 +266,7 @@ def wired(root, monkeypatch, reference):
         Image.new("RGBA", (64, 36), (200, 196, 188, 255)).save(out_path)
         return {"ok": True, "path": str(out_path), "errors": []}
     monkeypatch.setattr(_proof, "shooter", _shoot)
+    monkeypatch.setattr(_proof, "importer", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(server, "_provider_gate", lambda *a, **k: None)
     monkeypatch.setattr(server._providers, "provider_for",
                         lambda *a, **k: "fake")
@@ -311,7 +312,7 @@ async def test_part_rerun_redraws_one_part_and_keeps_the_rest(wired):
     # One sheet with one cell, and the note rode into it.
     assert [c["slot"] for c in gen.calls] == ["_sheet_forearm_near"]
     assert "bare skin" in gen.calls[0]["prompt"]
-    assert "FOREARM_NEAR" in gen.calls[0]["prompt"]
+    assert "FOREARM:" in gen.calls[0]["prompt"]
     after = cutout.load(root / "game" / "assets" / "characters" / "hero" /
                         "hero.cutout.json")
     assert after["skin"]["head"] == before["skin"]["head"]
@@ -354,98 +355,129 @@ async def test_templates_advertise_the_generator(wired):
 # ---------------------------------------------------------------------------
 
 class FakeSheetGenerator:
-    """Redraws the layout the way a well-behaved model would: reads the
-    layout json from ref_paths, paints one blob per cell at the template's
-    height against the figure, on the key colour. Records the call."""
+    """Paints the layout the way a well-behaved model would: reads the
+    layout json beside the one image it is sent, fills every silhouette with
+    paint on the key colour. `blank` slots get nothing, `grey` slots are left
+    unpainted, `hole` slots get a bite taken out of a joint. `once` makes a
+    misbehaving slot behave on its second, single-silhouette sheet."""
 
     def __init__(self, blank: set | None = None, fail: bool = False,
-                 heights: dict | None = None):
+                 grey: set | None = None, hole: set | None = None,
+                 once: bool = False):
         self.blank = blank or set()
+        self.grey = grey or set()
+        self.hole = hole or set()
         self.fail = fail
-        self.heights = heights or {}
+        self.once = once
         self.calls: list[dict] = []
 
     def __call__(self, prompt, out_path, **kw):
-        from PIL import Image
+        from PIL import Image, ImageDraw
         self.calls.append({"prompt": prompt, "out": out_path, **kw})
         if self.fail:
             return {"ok": False, "error": "provider said no"}
-        layout = json.loads(Path(kw["ref_paths"][1]).with_suffix(".json")
-                            .read_text(encoding="utf-8"))
-        rgb = tuple(layout["chroma"])
-        w, h = layout["size"]
-        img = Image.new("RGBA", (w, h), (*rgb, 255))
-        fig_h = layout["figure_height_px"]
-        for slot, (x0, y0, x1, y1) in layout["cells"].items():
-            if slot in self.blank:
+        layout_png = Path(kw["ref_paths"][-1])
+        layout = json.loads(layout_png.with_suffix(".json").read_text(encoding="utf-8"))
+        img = Image.open(layout_png).convert("RGBA")
+        alone = len(layout["shapes"]) == 1
+        for slot, (x0, y0, x1, y1) in layout["shapes"].items():
+            behave = self.once and alone
+            if slot in self.blank and not behave:
+                img.paste((*layout["chroma"], 255), (x0, y0, x1, y1))
                 continue
-            frac = self.heights.get(slot, cutout.BIPED_V1["parts"][slot]["height"])
-            ph = max(6, int(fig_h * frac))
-            pw = max(6, ph // 2)
-            cx = (x0 + x1) // 2
-            # Clear of the cell's inset: a blob on the edge is the overflow
-            # flag, which one test asks for on purpose.
-            margin = max(24, int((y1 - y0) * 0.06))
-            img.paste(Image.new("RGBA", (pw, ph), (120, 80, 60, 255)),
-                      (cx - pw // 2, y1 - margin - ph))
-        img.save(out_path)
+            if slot in self.grey and not behave:
+                continue
+            region = img.crop((x0, y0, x1, y1))
+            px = region.load()
+            for yy in range(region.height):
+                for xx in range(region.width):
+                    if px[xx, yy][:3] == cutoutkit.SILHOUETTE_GREY:
+                        px[xx, yy] = (120, 80, 60, 255)
+            if slot in self.hole and not behave:
+                ImageDraw.Draw(region).rectangle(
+                    (0, 0, region.width, region.height // 5),
+                    fill=(*layout["chroma"], 255))
+            img.paste(region, (x0, y0))
+        img.convert("RGB").save(out_path)
         return {"ok": True, "path": str(out_path), "cost_usd": 0.08}
 
 
-def test_the_sheet_is_one_call_and_every_part_lands(tmp_path, reference):
+DESC = "a green gnome in a red waistcoat, ink style"
+
+
+def test_the_sheet_is_one_call_and_every_piece_is_its_silhouette(tmp_path, reference):
+    from PIL import Image
+    from bgate_core.three_d import cutoutshape
     gen = FakeSheetGenerator()
     got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                  out_dir=tmp_path / "parts", provider="fake",
-                                 generate=gen)
-    assert got["mode"] == "sheet" and got["calls"] == 1
-    assert len(gen.calls) == 1
+                                 generate=gen, description=DESC)
+    assert got["mode"] == "sheet" and got["calls"] == 1 and len(gen.calls) == 1
     assert sorted(got["parts"]) == sorted(p["slot"] for p in cutoutkit.plan())
-    assert got["flags"] == [] and got["failed"] == [] and got["ok"]
-    assert Path(got["sheet"]).is_file()
-    # the layout the model was shown, and the figure inside it
-    assert gen.calls[0]["keyed"] is False
-    assert Path(gen.calls[0]["ref_paths"][1]).name == "_sheet_layout.png"
-    assert "PARTS SHEET" in gen.calls[0]["prompt"]
-    for entry in got["parts"].values():
-        assert Path(entry["texture"]).is_file()
-        assert entry["anchor_hash"] == got["reference_hash"]
+    assert got["flags"] == [] and got["failed"] == [] and got["ok"], got["flags"]
+    # THE REFERENCE IS NEVER SENT: the model sees the layout and the words.
+    assert [Path(p).name for p in gen.calls[0]["ref_paths"]] == ["_sheet_layout.png"]
+    assert DESC in gen.calls[0]["prompt"]
+    for slot, entry in got["parts"].items():
+        assert entry["pivot"] == cutoutshape.pivot(slot)
+        assert entry["fit"] is False
+        assert entry["scale"] == pytest.approx(1 / cutoutshape.TEX)
+        with Image.open(entry["texture"]) as im:
+            assert im.size == cutoutshape.mask(slot, cutoutshape.TEX).size
+
+
+def test_no_description_is_refused_before_any_call(tmp_path, reference):
+    gen = FakeSheetGenerator()
+    with pytest.raises(KitError, match="WRITTEN description"):
+        cutoutkit.generate_kit(tmp_path, "hero", str(reference),
+                               out_dir=tmp_path / "parts", provider="fake",
+                               generate=gen)
+    assert gen.calls == []
+
+
+def test_a_bad_piece_is_repainted_alone_and_the_better_one_kept(tmp_path, reference):
+    gen = FakeSheetGenerator(grey={"torso"}, once=True)
+    got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
+                                 out_dir=tmp_path / "parts", provider="fake",
+                                 generate=gen, description=DESC)
+    assert got["calls"] == 2
+    assert Path(gen.calls[1]["out"]).name == "_sheet_torso.png"
+    assert got["ok"] and got["flags"] == []
+
+
+def test_a_piece_that_stays_grey_is_flagged(tmp_path, reference):
+    gen = FakeSheetGenerator(grey={"hip"})
+    got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
+                                 out_dir=tmp_path / "parts", provider="fake",
+                                 generate=gen, description=DESC)
+    assert any(f.get("slot") == "hip" for f in got["flags"])
+    assert got["ok"] is False
+
+
+def test_a_joint_the_paint_does_not_cover_is_a_gap(tmp_path, reference):
+    gen = FakeSheetGenerator(hole={"thigh_near"})
+    got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
+                                 out_dir=tmp_path / "parts", provider="fake",
+                                 generate=gen, description=DESC)
+    gaps = [f for f in got["flags"] if f.get("slot") == "thigh_near"]
+    assert gaps and "joint disc" in gaps[0]["note"]
 
 
 def test_an_empty_cell_is_a_failed_slot_not_a_blank_texture(tmp_path, reference):
     gen = FakeSheetGenerator(blank={"hand_near"})
     got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                  out_dir=tmp_path / "parts", provider="fake",
-                                 generate=gen)
+                                 generate=gen, description=DESC)
     assert [f["slot"] for f in got["failed"]] == ["hand_near"]
     assert "hand_near" not in got["parts"]
-    assert not (tmp_path / "parts" / "hand_near.png").exists()
     assert got["ok"] is False
-
-
-def test_a_part_off_scale_on_the_sheet_is_flagged(tmp_path, reference):
-    gen = FakeSheetGenerator(heights={"head": 0.6})
-    got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
-                                 out_dir=tmp_path / "parts", provider="fake",
-                                 generate=gen)
-    assert [f["slot"] for f in got["flags"]] == ["head"]
-
-
-def test_a_part_that_fills_its_cell_is_flagged_as_more_than_the_segment(tmp_path, reference):
-    # Taller than the cell itself: the blob runs off the crop's edge, which
-    # is the model drawing a whole limb where a segment was asked for.
-    gen = FakeSheetGenerator(heights={"hand_near": 6.0})
-    got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
-                                 out_dir=tmp_path / "parts", provider="fake",
-                                 generate=gen)
-    flag = [f for f in got["flags"] if f["slot"] == "hand_near"]
-    assert flag and "filled its cell" in flag[0]["note"]
 
 
 def test_a_failed_sheet_fails_every_slot_and_stops(tmp_path, reference):
     gen = FakeSheetGenerator(fail=True)
     got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                  out_dir=tmp_path / "parts", provider="fake",
-                                 generate=gen)
+                                 generate=gen, description=DESC)
     assert got["stopped"] and len(got["failed"]) == len(cutoutkit.plan())
     assert got["parts"] == {} and got["calls"] == 1
 
@@ -458,20 +490,15 @@ def test_the_old_per_part_loop_is_still_there_by_name(tmp_path, reference):
     assert got["mode"] == "parts" and got["calls"] == len(cutoutkit.plan())
 
 
-def test_sheet_parts_land_at_rig_scale_and_a_rerun_keeps_the_kit_sheet(tmp_path, reference):
-    from PIL import Image
+def test_a_rerun_keeps_the_kit_sheet(tmp_path, reference):
     gen = FakeSheetGenerator()
     got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                  out_dir=tmp_path / "parts", provider="fake",
-                                 generate=gen)
-    rig_h = cutout.BIPED_V1["height_px"]
-    with Image.open(got["parts"]["torso"]["texture"]) as im:
-        expected = cutout.BIPED_V1["parts"]["torso"]["height"] * rig_h
-        assert abs(im.height - expected) <= 3
+                                 generate=gen, description=DESC)
     full_sheet = Path(got["sheet"])
     stamp = full_sheet.stat().st_mtime_ns
     again = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                    out_dir=tmp_path / "parts", provider="fake",
-                                   parts=["torso"], generate=gen)
+                                   parts=["torso"], generate=gen, description=DESC)
     assert Path(again["sheet"]).name == "_sheet_torso.png"
     assert full_sheet.stat().st_mtime_ns == stamp
