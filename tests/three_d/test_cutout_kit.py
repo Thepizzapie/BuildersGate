@@ -42,7 +42,7 @@ class FakeGenerator:
     def __call__(self, prompt, out_path, **kw):
         slot = Path(out_path).stem
         self.calls.append({"slot": slot, "prompt": prompt, **kw})
-        if slot.startswith("_sheet"):             # default mode: one sheet
+        if slot.startswith("_sheet") or slot == "_unarm_out":
             return FakeSheetGenerator(fail=bool(self.fail))(
                 prompt, out_path, **kw)
         if slot in self.fail:
@@ -278,11 +278,12 @@ async def test_kit_generate_assembles_and_emits_with_provenance(wired):
     root, gen = wired
     got = await call("cutout_kit_generate", name="hero", reference="hero_ref")
     assert got["ok"] is True, got
-    assert got["generation"]["calls"] == 1              # one sheet, nine parts
+    assert got["generation"]["calls"] == 2    # one sheet, one torso edit
     assert sorted(got["generation"]["generated"]) == sorted(
         p["slot"] for p in cutoutkit.plan())
-    # The profile rode into every prompt.
-    assert all("a green gnome" in c["prompt"] for c in gen.calls)
+    # The profile's traits are the description every sheet is painted from.
+    assert all("a green gnome" in c["prompt"] for c in gen.calls
+               if c["slot"].startswith("_sheet"))
     scene = Path(got["scene"])
     assert scene.is_file() and (root / "game" / "assets" / "characters" /
                                 "hero" / "hero.cutout.json").is_file()
@@ -376,6 +377,9 @@ class FakeSheetGenerator:
         self.calls.append({"prompt": prompt, "out": out_path, **kw})
         if self.fail:
             return {"ok": False, "error": "provider said no"}
+        if Path(out_path).stem == "_unarm_out":     # the torso edit: as is
+            Image.open(kw["ref_paths"][0]).save(out_path)
+            return {"ok": True, "path": str(out_path), "cost_usd": 0.08}
         layout_png = Path(kw["ref_paths"][-1])
         layout = json.loads(layout_png.with_suffix(".json").read_text(encoding="utf-8"))
         img = Image.open(layout_png).convert("RGBA")
@@ -412,7 +416,9 @@ def test_the_sheet_is_one_call_and_every_piece_is_its_silhouette(tmp_path, refer
     got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                  out_dir=tmp_path / "parts", provider="fake",
                                  generate=gen, description=DESC)
-    assert got["mode"] == "sheet" and got["calls"] == 1 and len(gen.calls) == 1
+    # one sheet, and one edit that takes the arm off the torso
+    assert got["mode"] == "sheet" and got["calls"] == 2 and len(gen.calls) == 2
+    assert Path(gen.calls[1]["out"]).name == "_unarm_out.png"
     assert sorted(got["parts"]) == sorted(p["slot"] for p in cutoutkit.plan())
     assert got["flags"] == [] and got["failed"] == [] and got["ok"], got["flags"]
     # THE REFERENCE IS NEVER SENT: the model sees the layout and the words.
@@ -440,7 +446,7 @@ def test_a_bad_piece_is_repainted_alone_and_the_better_one_kept(tmp_path, refere
     got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                  out_dir=tmp_path / "parts", provider="fake",
                                  generate=gen, description=DESC)
-    assert got["calls"] == 2
+    assert got["calls"] == 3                  # sheet, torso alone, torso edit
     assert Path(gen.calls[1]["out"]).name == "_sheet_torso.png"
     assert got["ok"] and got["flags"] == []
 
@@ -502,3 +508,27 @@ def test_a_rerun_keeps_the_kit_sheet(tmp_path, reference):
                                    parts=["torso"], generate=gen, description=DESC)
     assert Path(again["sheet"]).name == "_sheet_torso.png"
     assert full_sheet.stat().st_mtime_ns == stamp
+
+
+def test_a_provider_timeout_is_retried_and_a_refusal_is_not(tmp_path, reference):
+    inner = FakeSheetGenerator()
+    seen = {"n": 0}
+
+    def flaky(prompt, out_path, **kw):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return {"ok": False, "error": "kie job failed (524): generate task timeout."}
+        return inner(prompt, out_path, **kw)
+    got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
+                                 out_dir=tmp_path / "parts", provider="fake",
+                                 generate=flaky, description=DESC)
+    assert got["ok"] and seen["n"] == 3          # timeout, sheet, torso edit
+    refused = {"n": 0}
+
+    def no(prompt, out_path, **kw):
+        refused["n"] += 1
+        return {"ok": False, "error": "content policy"}
+    cutoutkit.generate_kit(tmp_path, "hero2", str(reference),
+                           out_dir=tmp_path / "parts2", provider="fake",
+                           generate=no, description=DESC)
+    assert refused["n"] == 1

@@ -10126,7 +10126,9 @@ def cutout_part_rerun(name: str, slot: str, note: str = "", provider: str = "",
         made = _kit.generate_kit(
             root, name, ref_path, out_dir=home / "parts", provider=provider,
             template=doc["template"], parts=[slot], quality=quality, note=note,
-            profile=profile, max_paid_calls=1, work_item_id=_work_item_id(),
+            # A torso is a paint AND the edit that takes its arm off.
+            profile=profile, max_paid_calls=2 if slot == "torso" else 1,
+            work_item_id=_work_item_id(),
             description=doc.get("description") or "")
         if slot not in made["parts"]:
             return {"ok": False, "generation": made,
