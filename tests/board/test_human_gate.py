@@ -89,3 +89,20 @@ class TestTheVerdictIsAsked:
                if e.get("kind") == "dispatch.blocked"
                and (e.get("payload") or {}).get("code") == "human_verdict"]
         assert len(got) == 1
+
+
+class TestASubmittedGrayboxLiftsTheHold:
+    def test_held_seats_open_once_the_graybox_is_submitted(self, fresh_root):
+        greenlight.set_thesis(fresh_root, _thesis())
+        greenlight.advance(fresh_root, greenlight.GRAYBOX)
+        assert "art" in greenlight.held_seats(fresh_root)
+        _submit(fresh_root)
+        assert greenlight.held_seats(fresh_root) == ()
+        assert greenlight.generation_allows(fresh_root, "image")[0]
+
+    def test_a_failed_verdict_puts_the_hold_back(self, fresh_root):
+        _submit(fresh_root)
+        greenlight.graybox_verdict(fresh_root, verdict="fail", interesting=False,
+                                   why="attack, dodge, hold interact - nothing to choose",
+                                   by="human")
+        assert "art" in greenlight.held_seats(fresh_root)
