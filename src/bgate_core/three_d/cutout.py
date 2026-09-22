@@ -116,9 +116,15 @@ BIPED_V1 = {
         {"name": "head",         "bone": "head",         "z": 6},
         {"name": "torso",        "bone": "chest",        "z": 4},
         {"name": "hip",          "bone": "hips",         "z": 3},
-        {"name": "arm_far",      "bone": "arm_far",      "z": 1},
-        {"name": "forearm_far",  "bone": "forearm_far",  "z": 1},
-        {"name": "hand_far",     "bone": "hand_far",     "z": 1},
+        # THE FAR ARM DRAWS OVER THE TORSO. Behind it (z 1) the far upper
+        # arm vanished whenever the arm rose, and the far hand floated above
+        # the shoulder on its own in run, jump and aim - a detached glove.
+        # In front of the torso, below the near side, the arm reads as the
+        # far arm crossing in front, which is what a side-view puppet does;
+        # far_tint keeps it read as the far one. MEASURED in the probe gym.
+        {"name": "arm_far",      "bone": "arm_far",      "z": 5},
+        {"name": "forearm_far",  "bone": "forearm_far",  "z": 5},
+        {"name": "hand_far",     "bone": "hand_far",     "z": 5},
         {"name": "arm_near",     "bone": "arm_near",     "z": 8},
         {"name": "forearm_near", "bone": "forearm_near", "z": 8},
         {"name": "hand_near",    "bone": "hand_near",    "z": 10},
@@ -224,12 +230,12 @@ CLIPS: dict[str, dict] = {
     # hanging (the old idle) the gun sat at the hip and covered the arm.
         "length": 2.0, "loop": True, "fps": 12,
         "tracks": {
-            "chest": {"rot": [[0.0, 0.0], [1.0, 1.6]]},
-            "head": {"rot": [[0.0, 0.0], [1.0, -1.2]]},
-            "arm_near": {"rot": [[0.0, -18.0], [1.0, -21.0]]},
-            "forearm_near": {"rot": [[0.0, -72.0], [1.0, -70.0]]},
-            "arm_far": {"rot": [[0.0, -30.0], [1.0, -27.0]]},
-            "forearm_far": {"rot": [[0.0, -62.0], [1.0, -64.0]]},
+            "chest": {"rot": [[0.0, -6.0], [1.0, -4.4]]},
+            "head": {"rot": [[0.0, 4.0], [1.0, 2.8]]},
+            "arm_near": {"rot": [[0.0, -10.0], [1.0, -13.0]]},
+            "forearm_near": {"rot": [[0.0, -60.0], [1.0, -58.0]]},
+            "arm_far": {"rot": [[0.0, -34.0], [1.0, -31.0]]},
+            "forearm_far": {"rot": [[0.0, -38.0], [1.0, -40.0]]},
             "hips": {"pos": [[0.0, [0.0, 0.0]], [1.0, [0.0, -1.5]]]},
         },
     },
@@ -277,12 +283,12 @@ CLIPS: dict[str, dict] = {
             "shin_far": {
                 "rot": [[0.0, 74.0], [0.14, 60.0], [0.28, 14.0], [0.41, 34.0]],
             },
-            "arm_near": {"rot": [[0.0, -46.0], [0.28, 10.0]]},
-            "forearm_near": {"rot": [[0.0, -80.0], [0.28, -60.0]]},
-            "arm_far": {"rot": [[0.0, 10.0], [0.28, -46.0]]},
-            "forearm_far": {"rot": [[0.0, -60.0], [0.28, -80.0]]},
-            "chest": {"rot": [[0.0, -10.0], [0.28, -7.0]]},
-            "head": {"rot": [[0.0, 4.0], [0.28, 2.0]]},
+            "arm_near": {"rot": [[0.0, -30.0], [0.28, 14.0]]},
+            "forearm_near": {"rot": [[0.0, -70.0], [0.28, -50.0]]},
+            "arm_far": {"rot": [[0.0, 24.0], [0.28, -30.0]]},
+            "forearm_far": {"rot": [[0.0, -30.0], [0.28, -50.0]]},
+            "chest": {"rot": [[0.0, -16.0], [0.28, -13.0]]},
+            "head": {"rot": [[0.0, 10.0], [0.28, 8.0]]},
             "hips": {
                 "pos": [[0.0, [0.0, -2.0]], [0.14, [0.0, 5.0]], [0.28, [0.0, -2.0]], [0.41, [0.0, 5.0]]],
             },
@@ -312,8 +318,8 @@ CLIPS: dict[str, dict] = {
             "head": {"rot": [[0.0, 6.0], [0.5, 2.0]]},
             "arm_near": {"rot": [[0.0, -10.0], [0.12, -40.0], [0.5, -34.0]]},
             "forearm_near": {"rot": [[0.0, -70.0], [0.5, -66.0]]},
-            "arm_far": {"rot": [[0.0, -20.0], [0.12, -60.0], [0.5, -50.0]]},
-            "forearm_far": {"rot": [[0.0, -60.0], [0.5, -50.0]]},
+            "arm_far": {"rot": [[0.0, 10.0], [0.12, -30.0], [0.5, -24.0]]},
+            "forearm_far": {"rot": [[0.0, -30.0], [0.5, -40.0]]},
         },
     },
     "fall": {
@@ -328,7 +334,7 @@ CLIPS: dict[str, dict] = {
             "head": {"rot": [[0.0, 10.0], [0.3, 12.0]]},
             "arm_near": {"rot": [[0.0, -50.0], [0.3, -56.0]]},
             "forearm_near": {"rot": [[0.0, -40.0], [0.3, -36.0]]},
-            "arm_far": {"rot": [[0.0, -70.0], [0.3, -76.0]]},
+            "arm_far": {"rot": [[0.0, -36.0], [0.3, -40.0]]},
             "forearm_far": {"rot": [[0.0, -30.0], [0.3, -26.0]]},
         },
     },
@@ -374,12 +380,17 @@ CLIPS: dict[str, dict] = {
     # further because its hand is on the fore-end.
         "length": 1.0, "loop": True, "fps": 12,
         "tracks": {
-            "arm_near": {"rot": [[0.0, -62.0], [0.5, -60.0]]},
-            "forearm_near": {"rot": [[0.0, -30.0], [0.5, -31.0]]},
-            "arm_far": {"rot": [[0.0, -78.0], [0.5, -76.0]]},
-            "forearm_far": {"rot": [[0.0, -12.0], [0.5, -13.0]]},
-            "chest": {"rot": [[0.0, -6.0], [0.5, -5.0]]},
-            "head": {"rot": [[0.0, 4.0], [0.5, 4.0]]},
+            "arm_near": {"rot": [[0.0, -70.0], [0.5, -68.0]]},
+            "forearm_near": {"rot": [[0.0, -20.0], [0.5, -21.0]]},
+            "arm_far": {"rot": [[0.0, -58.0], [0.5, -56.0]]},
+            "forearm_far": {"rot": [[0.0, -36.0], [0.5, -37.0]]},
+            "chest": {"rot": [[0.0, -12.0], [0.5, -11.0]]},
+            "head": {"rot": [[0.0, 10.0], [0.5, 10.0]]},
+            "hips": {"pos": [[0.0, [0.0, -4.0]], [0.5, [0.0, -4.0]]]},
+            "thigh_near": {"rot": [[0.0, -14.0], [0.5, -14.0]]},
+            "shin_near": {"rot": [[0.0, 16.0], [0.5, 16.0]]},
+            "thigh_far": {"rot": [[0.0, 12.0], [0.5, 12.0]]},
+            "shin_far": {"rot": [[0.0, 6.0], [0.5, 6.0]]},
         },
     },
     "fire": {
@@ -388,17 +399,23 @@ CLIPS: dict[str, dict] = {
         "length": 0.2, "loop": False, "fps": 24,
         "events": [[0.0, 'shot']],
         "tracks": {
-            "arm_near": {"rot": [[0.0, -62.0], [0.04, -72.0], [0.2, -62.0]]},
+            "arm_near": {"rot": [[0.0, -70.0], [0.04, -80.0], [0.2, -70.0]]},
             "forearm_near": {
-                "rot": [[0.0, -30.0], [0.04, -18.0], [0.2, -30.0]],
+                "rot": [[0.0, -20.0], [0.04, -8.0], [0.2, -20.0]],
             },
-            "arm_far": {"rot": [[0.0, -78.0], [0.04, -84.0], [0.2, -78.0]]},
-            "forearm_far": {"rot": [[0.0, -12.0], [0.04, -6.0], [0.2, -12.0]]},
-            "chest": {"rot": [[0.0, -6.0], [0.04, 2.0], [0.2, -6.0]]},
-            "head": {"rot": [[0.0, 4.0], [0.04, 9.0], [0.2, 4.0]]},
+            "arm_far": {"rot": [[0.0, -58.0], [0.04, -64.0], [0.2, -58.0]]},
+            "forearm_far": {
+                "rot": [[0.0, -36.0], [0.04, -30.0], [0.2, -36.0]],
+            },
+            "chest": {"rot": [[0.0, -12.0], [0.04, -4.0], [0.2, -12.0]]},
+            "head": {"rot": [[0.0, 10.0], [0.04, 14.0], [0.2, 10.0]]},
             "hips": {
-                "pos": [[0.0, [0.0, 0.0]], [0.04, [-3.0, 0.0]], [0.2, [0.0, 0.0]]],
+                "pos": [[0.0, [0.0, -4.0]], [0.04, [-3.0, -4.0]], [0.2, [0.0, -4.0]]],
             },
+            "thigh_near": {"rot": [[0.0, -14.0], [0.2, -14.0]]},
+            "thigh_far": {"rot": [[0.0, 12.0], [0.2, 12.0]]},
+            "shin_near": {"rot": [[0.0, 16.0], [0.2, 16.0]]},
+            "shin_far": {"rot": [[0.0, 6.0], [0.2, 6.0]]},
         },
     },
     "attack_melee": {
@@ -436,7 +453,7 @@ CLIPS: dict[str, dict] = {
             "forearm_near": {
                 "rot": [[0.0, -72.0], [0.08, -60.0], [0.4, -72.0]],
             },
-            "arm_far": {"rot": [[0.0, -30.0], [0.08, -50.0], [0.4, -30.0]]},
+            "arm_far": {"rot": [[0.0, -30.0], [0.08, -10.0], [0.4, -30.0]]},
             "forearm_far": {"rot": [[0.0, -62.0], [0.4, -62.0]]},
             "thigh_near": {"rot": [[0.0, 0.0], [0.08, -12.0], [0.4, 0.0]]},
             "shin_near": {"rot": [[0.0, 0.0], [0.08, 16.0], [0.4, 0.0]]},
