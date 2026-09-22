@@ -2158,8 +2158,20 @@ rather than letting the pivot quietly point somewhere else.
 
 ```text
 Generate every part of a cutout character from ONE pinned reference, then
-assemble and emit it. About nine paid images; the animation is the template's
-and costs nothing more.
+assemble and emit it. ONE paid image by default (mode="sheet"); the
+animation is the template's and costs nothing more.
+
+THE SHEET. Builders Gate draws a layout: the full figure in a big left cell
+and one outlined, labelled cell per part. The model redraws the layout with
+each cell filled by the named part of that same figure, the backdrop is
+keyed, and each cell is cropped back out by its known rectangle. Style and
+scale hold because every part is painted in one image beside the figure it
+is cut from, and a cell can hold only its own part. MEASURED (exit-67-r2,
+2026-09-22): nine parts bought one at a time came back in three styles at
+three scales, with a "hip" that was both legs and a boot - "most unusable".
+mode="parts" is that old loop, kept for a provider that cannot follow a
+layout. The sheet itself is registered as <name>.parts_sheet so a human can
+judge the kit whole.
 
 THIS IS HOW A CHARACTER WITH MORE THAN AN IDLE GETS MADE IN 2D. A frame
 sheet re-rolls identity, proportions and the weapon in the hand on every
