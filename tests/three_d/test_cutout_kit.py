@@ -420,11 +420,14 @@ def test_an_empty_cell_is_a_failed_slot_not_a_blank_texture(tmp_path, reference)
 
 
 def test_a_part_off_scale_on_the_sheet_is_flagged(tmp_path, reference):
-    gen = FakeSheetGenerator(heights={"head": 0.4})
+    # The cell caps the height, so an oversized drawing fills the cell to
+    # its edge: that is the flag now, and it names the whole-limb failure.
+    gen = FakeSheetGenerator(heights={"head": 0.6})
     got = cutoutkit.generate_kit(tmp_path, "hero", str(reference),
                                  out_dir=tmp_path / "parts", provider="fake",
                                  generate=gen)
     assert [f["slot"] for f in got["flags"]] == ["head"]
+    assert "filled its cell" in got["flags"][0]["note"]
 
 
 def test_a_failed_sheet_fails_every_slot_and_stops(tmp_path, reference):
