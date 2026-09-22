@@ -1335,7 +1335,20 @@ def _provider_gate(root: str, capability: str, what: str) -> Optional[dict]:
 
     Fail-open on its own faults, like every explanatory gate here: the
     machinery for explaining money must never be the thing that blocks work.
+
+    THE STAGE IS READ HERE TOO. This is the one door every paid generation
+    walks through, so it is where "no art before the loop is proven" becomes
+    true for the director and every seat, not only for art items on the
+    board (bgate_core.design.greenlight.generation_allows).
     """
+    try:
+        from bgate_core.design import greenlight as _gl
+        ok, why = _gl.generation_allows(root, capability, what)
+        if not ok:
+            return {"ok": False, "stage": "greenlight", "capability": capability,
+                    "error": why}
+    except Exception:
+        pass
     try:
         from bgate_core.runtime import gateway as _gateway
         routed = _gateway.pick(root, capability)
@@ -9036,6 +9049,11 @@ def greenlight_graybox_verdict(verdict: str, interesting: bool,
     """
     from bgate_core.design import greenlight as _gl
 
+    if _caller_is_agent():
+        return _fail(PermissionError(
+            "only the human rules on the graybox. An agent that passes its own "
+            "loop opens production for itself; submit it with "
+            "greenlight_graybox_submit and ask_human to play it."))
     return _gl.graybox_verdict(_root(), verdict=verdict,
                                interesting=bool(interesting), why=why,
                                by=_actor())
@@ -9056,6 +9074,17 @@ def greenlight_advance(stage: str) -> dict:
     """
     from bgate_core.design import greenlight as _gl
 
+    if _caller_is_agent():
+        try:
+            forward = (_gl.STAGES.index(str(stage or "").strip().lower())
+                       > _gl.STAGES.index(_gl.stage(_root())))
+        except ValueError:
+            forward = True
+        if forward:
+            return _fail(PermissionError(
+                "only the human moves a project forward a stage - fun, then "
+                "functional, then pretty is the human's call to make. Moving "
+                "backward is open to any seat."))
     return _gl.advance(_root(), stage, by=_actor())
 
 
