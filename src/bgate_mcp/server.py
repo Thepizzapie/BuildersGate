@@ -276,6 +276,11 @@ def _run_with_ceiling(fn, args, kwargs):
 _CALL_TOOL: contextvars.ContextVar[str] = contextvars.ContextVar(
     "bgate_call_tool", default="")
 
+# The event loop a tool call came in on, for a body that has to talk back to
+# the client from its worker thread (tool_unlock's list_changed).
+_LOOP_TOKEN: contextvars.ContextVar = contextvars.ContextVar(
+    "bgate_loop_token", default=None)
+
 
 class ContainmentRefused(Exception):
     """This seated session named a project that is not the one it is pinned to.
@@ -920,6 +925,12 @@ def _tool(fn: Optional[Callable] = None, *,
             result: dict = {}
 
             async def _body():
+                # The body runs two threads away from the loop (to_thread, then
+                # _run_with_ceiling's plain Thread), where anyio.from_thread
+                # cannot find the loop on its own - tool_unlock's list_changed
+                # notification failed on every call. The token rides the
+                # copied context instead.
+                _LOOP_TOKEN.set(anyio.lowlevel.current_token())
                 try:
                     result["value"] = await anyio.to_thread.run_sync(
                         contextvars.copy_context().run, _call)
@@ -1134,7 +1145,51 @@ def _module_registers(tool_name: str) -> bool:
     # that genuinely needs everything (say so in the dispatch env).
     if (os.environ.get("BGATE_SEAT_TOOLS", "").strip().lower()) == "all":
         return True
-    return _modules.seat_tool_enabled(tool_name, _seat())
+    if _modules.seat_tool_enabled(tool_name, _seat()):
+        return True
+    # A CRAFT THE HUMAN UNLOCKED SURVIVES A RECONNECT. A client that ignores
+    # tools/list_changed (the Claude desktop app, measured) only sees the tool
+    # list a server boots with, so tool_unlock alone never reached it. Scoped
+    # to hand-started sessions: a dispatched seat's toolset stays its own.
+    if not os.environ.get("BGATE_SEAT", "").strip():
+        held = _unlocked_crafts()
+        return any(c in held for c in _modules.crafts_owning(tool_name))
+    return False
+
+
+#: Where tool_unlock remembers a craft for the next server this machine boots.
+_UNLOCK_FILE = _Path.home() / ".bgate" / "unlocked_crafts.json"
+_UNLOCK_TTL_S = 24 * 3600
+
+
+def _unlocked_crafts() -> set:
+    import json as _jsonlib
+    import time as _time
+
+    try:
+        rows = _jsonlib.loads(_UNLOCK_FILE.read_text(encoding="utf-8"))
+    except Exception:                                             # noqa: BLE001
+        return set()
+    now = _time.time()
+    return {c for c, at in (rows or {}).items()
+            if isinstance(at, (int, float)) and now - at < _UNLOCK_TTL_S}
+
+
+def _remember_unlock(craft: str) -> None:
+    import json as _jsonlib
+    import time as _time
+
+    try:
+        rows = _jsonlib.loads(_UNLOCK_FILE.read_text(encoding="utf-8"))
+    except Exception:                                             # noqa: BLE001
+        rows = {}
+    rows[craft] = _time.time()
+    try:
+        _UNLOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _UNLOCK_FILE.write_text(_jsonlib.dumps(rows), encoding="utf-8")
+    except Exception:                                             # noqa: BLE001
+        logging.getLogger(__name__).info("tool_unlock: not remembered",
+                                         exc_info=True)
 
 
 def _fail(exc: Exception) -> dict:
@@ -10398,6 +10453,8 @@ def tool_unlock(craft: str) -> dict:
     if craft not in _modules.CRAFTS:
         return _fail(ValueError(
             f"unknown craft {craft!r}; one of {', '.join(sorted(_modules.CRAFTS))}"))
+    if not os.environ.get("BGATE_SEAT", "").strip():
+        _remember_unlock(craft)
     names = _parked_by_craft().get(craft, [])
     added = []
     for name in names:
@@ -10406,11 +10463,18 @@ def tool_unlock(craft: str) -> dict:
             continue
         mcp.tool()(wrapper)
         added.append(name)
+    # RE-SEND WHEN ALREADY HELD. A client that missed the first notification
+    # (or a server that failed to send it) otherwise has no way to recover
+    # short of a restart: the second unlock found nothing parked and stayed
+    # silent, and the tools stayed invisible.
+    held = [t.name for t in mcp._tool_manager.list_tools()
+            if craft in _modules.crafts_owning(t.name)]
     notified = False
-    if added:
+    if added or held:
         try:
             session = mcp.get_context().session
-            anyio.from_thread.run(session.send_tool_list_changed)
+            anyio.from_thread.run(session.send_tool_list_changed,
+                                  token=_LOOP_TOKEN.get())
             notified = True
         except Exception:
             logging.getLogger(__name__).info(
@@ -10418,8 +10482,9 @@ def tool_unlock(craft: str) -> dict:
         _reinstall_tool_index()
     return {"ok": True, "craft": craft, "added": added, "notified": notified,
             "note": ("" if added else
-                     "nothing to add: already held, or switched off by the "
-                     "project's modules")}
+                     f"already held ({len(held)} tools); the client was "
+                     "re-notified" if held else
+                     "nothing to add: switched off by the project's modules")}
 
 
 @_tool
