@@ -342,6 +342,17 @@ def digest(root: str | os.PathLike[str], hours: int = 12) -> dict:
         except Exception:
             pass
         if not blocked:
+            # A DEAD LINK IS THE COMMON CASE, and it used to be described as
+            # "the dashboard is down or autopilot is off" - both wrong, both
+            # sending the human to check the wrong thing.
+            try:
+                from ..board import queue as _queue
+                chains = _queue.blocked_chains(root)
+            except Exception:
+                chains = []
+            if chains:
+                blocked = _queue.describe_blocked_chains(chains)
+        if not blocked:
             blocked = ("work is queued and nothing is running — either the "
                        "dashboard is down (`bgate serve`), autopilot is off, "
                        "or the concurrency cap is holding every dispatch.")

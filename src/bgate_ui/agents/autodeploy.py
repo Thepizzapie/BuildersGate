@@ -363,7 +363,10 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
 
     sent: list[int] = []
     refused: list[dict] = []
-    for item in _candidates(root):
+    candidates = _candidates(root)
+    if not candidates:
+        _note_dead_links(root, mem)
+    for item in candidates:
         item_id = int(item["id"])
         if mem["cool"].get(item_id, 0) > now:
             continue
@@ -495,6 +498,42 @@ def _pending_integrations(root: str | os.PathLike[str]) -> int:
         return len(_gitwork.integrations(root, pending=True))
     except Exception:
         return 0
+
+
+def _note_dead_links(root, mem: dict) -> None:
+    """The board is idle. If that is because queued work waits on a FAILED,
+    PARKED or CANCELLED link, say so once - one dispatch.blocked event and one
+    activity line per distinct set of dead links - instead of ticking in
+    silence. MEASURED: five chain links sat behind a failed head for an hour
+    and the human read the board as stuck, because it was, quietly.
+    """
+    try:
+        from bgate_core.board import queue as _queue
+        chains = _queue.blocked_chains(root)
+    except Exception:
+        return
+    key = ",".join(str(c["blocker"]["id"]) for c in chains) if chains else ""
+    with _lock:
+        seen = mem.get("dead_links_noted") or ""
+        mem["dead_links_noted"] = key
+    if not key or key == seen:
+        return
+    reason = _queue.describe_blocked_chains(chains)
+    try:
+        from bgate_core.store import events as _events
+
+        _events.emit(root, "dispatch.blocked", ref=key,
+                     payload={"code": "chain_blocked", "whole_board": True,
+                              "blockers": [c["blocker"] for c in chains],
+                              "waiting": sum(len(c["waiting"]) for c in chains),
+                              "reason": reason})
+    except Exception:
+        pass
+    try:
+        activity.log(root, "autodeploy", "board idle: " + reason.split("\n")[0],
+                     seat="director")
+    except Exception:
+        pass
 
 
 def _leased_path_in_brief(root, item) -> str:
