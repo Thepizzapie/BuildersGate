@@ -153,6 +153,7 @@ LABELS: dict[str, str] = {
     # Gates
     "enforcement.profile": "Enforcement level",
     "gate.mode": "Completion approval",
+    "greenlight.generation_hold": "Hold generation until the graybox passes",
     "qa.require_evidence": "Require render evidence for scenes",
     "qa.max_rounds": "Automatic QA round limit",
     "qa.gated_seats": "Seats reviewed by QA",
@@ -242,6 +243,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.max_attempts": "How many runs one work item may have, ever. Past it nothing dispatches or reopens it: split the item instead.",
     "enforcement.profile": "Sets the default strictness for lanes, project boundaries, and approvals.",
     "gate.mode": "Choose whether completion needs no review, QA review, or your approval.",
+    "greenlight.generation_hold": "No paid art, 3D, music or video until you have played the graybox and advanced the stage. Off for a game whose art is the loop.",
     "qa.require_evidence": "Require a screenshot or render before scene changes can finish.",
     "qa.max_rounds": "Maximum automatic review and revision rounds before asking you.",
     "qa.gated_seats": "Worker seats whose completed items are sent to QA.",
@@ -556,6 +558,19 @@ SETTINGS: tuple[Setting, ...] = (
              "today's defaults. strict: block/block/block/builders. A ladder "
              "set explicitly (BGATE_DIRECTOR_MODE, BGATE_LANES, BGATE_AEGIS, "
              "gate.mode / BGATE_QA_GATE) still wins over the profile."),
+    Setting(
+        key="greenlight.generation_hold", group="Gates", kind=BOOL, default=True,
+        store=("workspace", "director", "greenlight_hold", "on"),
+        human_only=True,
+        help="On (the default for a new project): while the project is at "
+             "thesis or graybox, every paid generation - image, 3D, animation, "
+             "music, video, speech - refuses for EVERY caller, the director "
+             "included, and the loop is built from primitives, blockouts and "
+             "placeholder sprites until you have played it and advanced the "
+             "stage. It is one route, not the only one: a game whose art is "
+             "the mechanic (a drawing game, a photo game, a look-first jam) "
+             "turns this off and keeps the seat holds and waivers as they "
+             "were."),
     Setting(
         key="gate.mode", group="Gates", kind=ENUM, default="agent",
         choices=("none", "agent", "builders"),
