@@ -10,6 +10,15 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **The cutout template ships twelve clips, each looked at in the engine.**
+  idle (low ready, so the weapon reads as held instead of floating at the
+  hip in front of a hidden arm), walk (the trailing knee no longer bends
+  backwards), run, jump, fall, crouch, slide, aim, fire, attack_melee, hurt
+  and a death that collapses (recoil, knees buckle, sit back, lie flat)
+  instead of rotating the standing figure ninety degrees. The first set had
+  seven and no jump, fall, crouch, slide or fire at all; the rig gym
+  reported them missing and the art agent hand-authored them. The sign
+  convention is written down at the top of the set, measured in a probe gym.
 - **A cutout kit is one parts sheet, not nine generations.**
   `cutout_kit_generate` now draws a layout (the full figure beside one
   labelled cell per part), buys ONE image of the model redrawing it, keys
