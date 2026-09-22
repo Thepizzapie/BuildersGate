@@ -391,39 +391,41 @@ def sheet_layout(parts: list[dict], reference_path: str | os.PathLike[str],
         img = img.resize((max(1, int(img.width * scale)),
                           max(1, int(img.height * scale))), Image.LANCZOS)
     fx = fig_box[0] + (fw - img.width) // 2
-    fy = fig_box[3] - 10 - img.height
+    fy = fig_box[1] + 10
     canvas.alpha_composite(img, (fx, fy))
     figure_h = img.height
-    # THE FIGURE CELL IS TIGHT. Left tall and half empty, the model used the
-    # space above the figure for a part (a head landed there, and the HEAD
-    # cell came back empty). The box hugs the figure; the label sits on it.
-    fig_box = (fig_box[0], fy - L - 6, fig_box[2], fig_box[3])
+    # THE FIGURE CELL IS TIGHT AND AT THE TOP. Left tall and half empty, the
+    # model used the space above the figure for a part (a head landed there
+    # twice, and the HEAD cell came back empty). The box hugs the figure from
+    # the top; what is left below it is plain backdrop.
+    fig_box = (fig_box[0], fig_box[1], fig_box[2], fy + img.height + 10)
     draw.rectangle(fig_box, outline=ink, width=2)
     draw.text((fig_box[0] + 4, fig_box[1] + 4), "FULL FIGURE (do not change)", fill=ink)
 
-    # CELLS ARE SIZED TO THEIR PART. Equal tall cells invited the model to
-    # fill them: the ARM_NEAR cell came back with the whole arm in it and
-    # the rig got an 83 px upper arm on a 200 px figure. Each cell is the
-    # part's template height (against the figure drawn on this sheet) with
-    # a third of slack, no more, packed left to right in rows.
+    # CELLS ARE BIG AND UNIFORM. Sized-to-part cells were tried (2026-09-22)
+    # and the model drew most parts BESIDE the small cells; eight of nine
+    # slots came back empty. Big cells it fills. What the part's size should
+    # be is said in the label and the prompt, and a part that fills its cell
+    # to the edge is flagged (slice_sheet) as "more than the segment".
+    n = max(1, len(parts))
+    rows = 1 if n <= 4 else 2
+    cols = -(-n // rows)
     x_start = fig_box[2] + M
     area_w = W - M - x_start
+    cell_w = (area_w - (cols - 1) * M) // cols
+    cell_h = (H - (rows + 1) * M - rows * L) // rows
     cells: dict[str, tuple[int, int, int, int]] = {}
-    x, y_top, row_h = x_start, M, 0
-    for part in parts:
-        ph = int(float(part.get("height") or 0.15) * figure_h * 1.35) + 8
-        ph = max(60, min(ph, H - 2 * M - L))
-        pw = max(int(ph * 0.75), int(figure_h * 0.16), 90)
-        if x + pw > x_start + area_w:               # next row
-            x, y_top = x_start, y_top + row_h + M
-            row_h = 0
+    for i, part in enumerate(parts):
+        r, c = divmod(i, cols)
+        x0 = x_start + c * (cell_w + M)
+        y_top = M + r * (cell_h + L + M)
         y0 = y_top + L
-        rect = (x, y0, x + pw, y0 + ph)
+        rect = (x0, y0, x0 + cell_w, y0 + cell_h)
         cells[part["slot"]] = rect
         draw.rectangle(rect, outline=ink, width=2)
-        draw.text((x + 4, y_top + 4), part["slot"].upper(), fill=ink)
-        x += pw + M
-        row_h = max(row_h, ph + L)
+        pct = int(round(float(part.get("height") or 0.15) * 100))
+        draw.text((x0 + 4, y_top + 4), f"{part['slot'].upper()}  ({pct}% of figure)",
+                  fill=ink)
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -452,17 +454,24 @@ def sheet_prompt(parts: list[dict], *, view: str = "side",
         "body part named above it, cut from that same character: the same "
         "style, colours, line weight and SCALE as the figure on the left, "
         f"strict {view} view, the same projection as the figure.",
-        "EVERY PART ENDS IN A ROUNDED JOINT CAP: at each seam the part "
-        "continues past the joint as a round, fully painted knob (shoulder "
-        "ball, elbow, hip, knee, ankle) so that when the puppet bends the cap "
-        "tucks under its neighbour and no gap opens. Never a flat cut, never "
-        "a hard edge at a joint. The TORSO keeps its full shoulder mass and "
-        "the collar; the HIP keeps the belt and the top of both thighs. One "
-        "part per cell, nothing else in the cell: no whole figures, no extra "
-        "parts, no props, no shadows, no text besides the existing labels.",
+        "EVERY PART ENDS ROUNDED AT ITS SEAMS: at each joint the part "
+        "continues a little past the joint with a rounded end, painted in "
+        "the part's OWN cloth or skin colour as if the sleeve, trouser leg or "
+        "limb simply continued, so that when the puppet bends the rounded end "
+        "tucks under its neighbour and no gap opens. NOT a separate ball, "
+        "sphere, knob or mechanical joint - no doll joints, no visible "
+        "sockets. Never a flat cut. The TORSO keeps its full shoulder mass "
+        "and the collar; the HIP keeps the belt and the top of both thighs. "
+        "One part per cell, nothing else in the cell: no whole figures, no "
+        "extra parts, no props, no shadows, no text besides the existing "
+        "labels.",
         f"Cells: {cells}.",
         "Keep every cell where it is and leave the space around the parts "
-        "flat backdrop colour.",
+        "flat backdrop colour. Draw each part INSIDE its own labelled cell, "
+        "centred, at the size it has on the figure (the label says the "
+        "height as a percentage of the figure); a part is small in its cell "
+        "with backdrop around it, never enlarged to fill the cell, and never "
+        "drawn outside or beside a cell.",
     ]
     if traits:
         lines.append(f"Character: {traits}.")
@@ -633,15 +642,17 @@ def generate_sheet(root, name: str, reference_path: str, todo: list[dict],
             continue
         size = trim_alpha(path)
         flag = scale_flag(part, size, int(fig_h))
-        if flag:
-            flags.append(flag)
-        elif slot in cut["clipped"]:
+        if slot in cut["clipped"]:
+            # The more specific finding wins: a part running off its cell is
+            # the model drawing more than the segment, whatever its height.
             flags.append({"slot": slot, "expected_px": round(float(part.get("height") or 0) * fig_h),
-                          "got_px": int(size[1]), "ratio": 0.0,
+                          "got_px": int(size[1]), "ratio": (flag or {}).get("ratio", 0.0),
                           "note": (f"{slot} filled its cell to the edge - the model "
                                    "drew more than the part (a whole limb in a "
                                    "segment's cell). Look at it; cutout_part_rerun "
                                    "redraws one slot")})
+        elif flag:
+            flags.append(flag)
         made[slot] = {"texture": path, "part_hash": cutout.part_hash(path),
                       "anchor_hash": ref_hash, "prompt": prompt,
                       "pivot_source": "default", "sheet": str(sheet_png)}

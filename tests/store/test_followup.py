@@ -100,6 +100,16 @@ class TestBranchTable:
                              _board([item]))
         assert "reopen" in _kinds(on)
 
+    def test_a_failure_waiting_on_its_own_question_is_not_retried(self):
+        """MEASURED (exit-67-r2 #100, 2026-09-22): the art agent asked the
+        human with four options and failed; the auto-retry re-ran it twice
+        into "still unanswered" and the cap cancelled it."""
+        ev, item = _ev(1, "item.failed", 41), _item(41, status="failed")
+        got = followup.decide([ev], _settings(auto_reopen_failures=True),
+                              _board([item], asking={41}))
+        assert "reopen" not in _kinds(got)
+        assert any("waiting on the human" in a["why"] for a in got)
+
     def test_a_failure_past_the_round_cap_is_not_reopened_forever(self):
         got = followup.decide([_ev(1, "item.failed", 41)],
                               _settings(auto_reopen_failures=True, max_rounds=3),

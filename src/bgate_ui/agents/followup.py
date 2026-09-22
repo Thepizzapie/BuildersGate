@@ -358,6 +358,9 @@ def snapshot(root: str | os.PathLike[str], batch: Iterable[dict], *,
         "debriefs_last_hour": _debriefs_since(root, minutes=60),
         "advanced": {},
         "age_min": {},
+        # Items with an OPEN ask_human question of their own: a failure that
+        # ends in a question is waiting on the human, not on another run.
+        "asking": _asking(root),
     }
     wanted: set[int] = set()
     for ev in events:
@@ -635,6 +638,17 @@ def decide(events: Iterable[dict], settings: dict, board: dict) -> list[dict]:
     return actions
 
 
+def _asking(root) -> set[int]:
+    """Item ids with an unanswered ask_human question. Never raises."""
+    try:
+        from bgate_core.board import steerbox as _steerbox
+        return {int(q.get("item_id") or 0)
+                for q in _steerbox.open_questions(root)
+                if int(q.get("item_id") or 0) > 0}
+    except Exception:
+        return set()
+
+
 def _branch_failed(ev: dict, item: dict, settings: dict,
                    board: Optional[dict] = None) -> list[dict]:
     """Branch 1. Retry the failure ONCE, then hand it to the director.
@@ -699,6 +713,16 @@ def _branch_failed(ev: dict, item: dict, settings: dict,
                         "to the director — its own failure is not a new "
                         "subject, and escalating it would be the loop this "
                         "branch exists to break")]
+
+    # 4b. IT ASKED THE HUMAN AND IS WAITING. A run that ends in ask_human and
+    # fails has said what it needs; re-running it buys the same question
+    # again. MEASURED (exit-67-r2 #100, 2026-09-22): the art agent asked with
+    # four options, the auto-retry re-ran it twice into "still unanswered",
+    # and the cap cancelled the item. The answer reopens it (steerbox.answer).
+    if int(item.get("id") or item_id) in set((board or {}).get("asking") or ()):
+        return [_action("skip", 1, ev, f"item:{item_id}:asking",
+                        f"#{item_id} is waiting on the human's answer to its "
+                        "own question - not retried; the answer re-queues it")]
 
     retry_off = not settings.get("auto_reopen_failures")
     budget_gone = auto >= auto_cap + bonus or rounds >= cap
