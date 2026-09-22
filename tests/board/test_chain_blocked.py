@@ -36,10 +36,13 @@ class TestTheQueueNamesDeadLinks:
         # the second, which is merely queued, not dead.
         assert [w["id"] for w in got[0]["waiting"]] == [second["id"]]
 
-    def test_a_parked_link_is_a_dead_link_too(self, root):
+    def test_a_parked_link_releases_its_chain_at_once(self, root):
+        # park() releases dependents itself (release_dependents), so a parked
+        # head is never a dead link the board has to discover later.
         head, second, _ = _chain(root)
         queue.park(root, head["id"], "not now")
-        assert queue.blocked_chains(root)[0]["blocker"]["status"] == "parked"
+        assert queue.blocked_chains(root) == []
+        assert second["id"] in {r["id"] for r in queue.ready(root)}
 
     def test_a_running_predecessor_is_not_dead(self, root):
         head, _, _ = _chain(root)
@@ -143,3 +146,34 @@ class TestTheDirectorReleasesIt:
     def test_the_director_protocol_owns_the_stuck_board(self):
         from bgate_core.board import seats
         assert "THE BOARD NEVER STAYS STUCK" in seats.DIRECTOR_PROTOCOL
+
+
+class TestADeadItemHoldsNothing:
+    def test_cancelling_a_head_releases_the_next_link_with_a_note(self, root):
+        head, second, third = _chain(root)
+        queue.cancel(root, head["id"], "five deliverables wide; split elsewhere")
+        assert second["id"] in {r["id"] for r in queue.ready(root)}
+        brief = queue.get(root, second["id"])["brief"]
+        assert "--- RELEASED ---" in brief and f"#{head['id']}" in brief
+        assert "CANCELLED" in brief and "fail fast" in brief
+        # The third still waits on the second, which is alive and queued.
+        assert third["id"] not in {r["id"] for r in queue.ready(root)}
+        assert queue.blocked_chains(root) == []
+
+    def test_parking_releases_too(self, root):
+        head, second, _ = _chain(root)
+        queue.park(root, head["id"], "not tonight")
+        assert second["id"] in {r["id"] for r in queue.ready(root)}
+
+    def test_exhausting_releases_too(self, root):
+        head, second, _ = _chain(root)
+        queue.set_status(root, head["id"], "failed", result="no")
+        queue.mark_exhausted(root, head["id"], "retry budget spent")
+        assert second["id"] in {r["id"] for r in queue.ready(root)}
+
+    def test_a_release_is_on_the_record(self, root):
+        head, second, _ = _chain(root)
+        queue.cancel(root, head["id"], "gone")
+        got = [e for e in events.since(root, 0)["events"]
+               if e.get("kind") == "queue.released"]
+        assert got and got[0]["payload"]["released"] == [second["id"]]

@@ -27,6 +27,10 @@ repository at first publication. There is no earlier release history to record.
   only when the board cannot decide), dispatched like any other and never
   filed twice; the director protocol makes that job the director's, not
   the human's.
+  Above all, a dead item holds nothing: cancelling, parking or exhausting
+  an item cuts every queued successor loose at once, with what the dead
+  item left on disk written into the successor's brief, so a chain never
+  waits on something that will not land.
 - **A chain behind a dead link says so.** A six-link chain's head failed,
   the director's escalation filed a replacement item that did the head's
   job, and the five links behind the head sat queued and silent for an hour
