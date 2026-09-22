@@ -322,9 +322,37 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
     return get(root, item_id)
 
 
+# WORDS THAT MEAN "THIS LINK BUILDS ON THE ONE BEFORE IT". A chain used to be
+# a strict line, and directors filed everything as a chain - ten independent
+# cutout rigs became a ten-deep ladder that one art agent climbed alone while
+# the concurrency cap sat at two. A same-seat link whose brief does not name
+# its predecessor's output is a SIBLING, not a successor.
+_BUILDS_ON = re.compile(
+    r"\b(after|once|previous|preceding|prior|earlier|from the last|"
+    r"builds? on|depends? on|needs? the|using the|takes? the|when #?\d+)\b",
+    re.I)
+
+
+def link_builds_on(link: dict, previous: Optional[dict]) -> bool:
+    """Does this link have to WAIT for the previous one? Explicit first
+    (`after`: True/False), then the seat handoff (a different seat is a
+    handoff: the file, scene or schema crosses lanes), then the brief's own
+    words. Same seat and nothing said: it runs beside the previous link."""
+    if previous is None:
+        return False
+    if "after" in link and link["after"] is not None:
+        return bool(link["after"])
+    if str(link.get("seat")) != str(previous.get("seat")):
+        return True
+    text = f"{link.get('title') or ''} {link.get('brief') or ''}"
+    if f"#{previous.get('id')}" in text:
+        return True
+    return bool(_BUILDS_ON.search(text))
+
+
 def add_chain(root: str | os.PathLike[str], links: list[dict],
               chain_id: str = "", source: str = "manual",
-              source_ref: str = "") -> list[dict]:
+              source_ref: str = "", mode: str = "auto") -> list[dict]:
     """File dependent work as ONE ordered group, each link waiting on the last.
 
     THE GAP THIS CLOSES. Splitting an ask across seats produced N independent
@@ -342,6 +370,11 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
 
     Returns the created items in order. Raises before writing anything if a link
     is malformed, so a bad chain does not half-land.
+
+    ``mode`` is "auto" (the default): a link waits on the previous one only
+    when it is a seat handoff, its brief names the predecessor, or it says
+    ``after: true``; otherwise it runs BESIDE the previous link, hanging off
+    whatever that link hangs off. "linear" is the old strict line.
     """
     if not links:
         raise ValueError("a chain needs at least one link")
@@ -359,22 +392,37 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
 
     chain_id = (chain_id or "").strip()
     made: list[dict] = []
-    previous: Optional[int] = None
+    previous: Optional[dict] = None
+    parallel = 0
     for pos, link in enumerate(links, start=1):
+        if mode == "linear" or previous is None:
+            waits_on = int(previous["id"]) if previous else None
+        elif link_builds_on(link, previous):
+            waits_on = int(previous["id"])
+        else:
+            # A sibling: hangs off what the previous link hangs off, so a
+            # handoff further up still gates it, and nothing else does.
+            waits_on = previous.get("depends_on")
+            waits_on = int(waits_on) if waits_on else None
+            parallel += 1
         item = add(root, str(link["seat"]), str(link["title"]),
                    brief=str(link.get("brief") or ""),
                    priority=int(link.get("priority") or 0),
                    source=str(link.get("source") or source),
                    source_ref=str(link.get("source_ref") or source_ref),
-                   chain_id=chain_id, chain_pos=pos, depends_on=previous,
+                   chain_id=chain_id, chain_pos=pos, depends_on=waits_on,
                    chain_self=not chain_id and pos == 1)
         if not chain_id:
             chain_id = str(item["chain_id"])
-        previous = int(item["id"])
+        previous = item
         made.append(item)
     activity.log(root, "queue",
-                 f"chain {chain_id}: {len(made)} linked items — "
-                 + " -> ".join(f"#{m['id']}[{m['seat']}]" for m in made),
+                 f"chain {chain_id}: {len(made)} linked items"
+                 + (f", {parallel} of them running beside a sibling" if parallel else "")
+                 + " — " + " -> ".join(
+                     f"#{m['id']}[{m['seat']}]"
+                     + (f"(after #{m['depends_on']})" if m.get("depends_on") else "")
+                     for m in made),
                  ref=chain_id)
     # ref is the chain id, not an item id: everything downstream that reasons
     # about a chain (one debrief per chain, the stall reminder, "what is blocked

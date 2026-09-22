@@ -8667,22 +8667,30 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
 
 
 @_tool
-def queue_add_chain(links: list, chain_id: str = "") -> dict:
-    """File DEPENDENT work as one ordered chain instead of N loose items.
+def queue_add_chain(links: list, chain_id: str = "",
+                    mode: str = "auto") -> dict:
+    """File a split as one chain, and let independent links run BESIDE each
+    other.
 
-    USE THIS WHENEVER THE SPLIT YOU JUST MADE HAS AN ORDER. ``links`` is an
-    ORDERED list of dicts taking queue_add's fields {seat, title, brief,
-    priority}; link N waits for link N-1 to reach 'done'. Chains are strictly
-    linear and CANNOT BE APPENDED TO - hang a later follow-up off the board
-    with queue_add(depends_on=...). Write each brief as if its predecessor
-    already landed. Returns {chain_id, items} in running order.
+    ``links`` is an ORDERED list of dicts taking queue_add's fields {seat,
+    title, brief, priority, size, acceptance} plus an optional `after`
+    (true: wait for the previous link; false: run beside it). Without
+    `after`, a link waits on the previous one only when it is a seat handoff
+    or its brief names the predecessor (#id, "after", "once", "from the
+    previous", ...); ten same-seat links that do not mention each other are
+    ten siblings, dispatched as wide as the caps allow. MEASURED: ten
+    independent cutout rigs filed as a ten-deep ladder ran one at a time.
+    mode="linear" is the old strict line. Chains cannot be appended to; hang
+    a follow-up off the board with queue_add(depends_on=...). Returns
+    {chain_id, items} with each item's depends_on.
     Full notes: docs/tools.md#queue_add_chain
     """
     from bgate_core.board import queue as _q
     rows = _q.add_chain(
         _root(),
         [dict(link) for link in (links or [])],
-        chain_id=chain_id, source=f"seat:{_seat() or 'unknown'}")
+        chain_id=chain_id, source=f"seat:{_seat() or 'unknown'}",
+        mode=mode)
     return {"chain_id": rows[0]["chain_id"], "count": len(rows),
             "items": [{"id": r["id"], "seat": r["seat"], "title": r["title"],
                        "chain_pos": r["chain_pos"],
