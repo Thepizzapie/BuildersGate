@@ -31,6 +31,12 @@ repository at first publication. There is no earlier release history to record.
   an item cuts every queued successor loose at once, with what the dead
   item left on disk written into the successor's brief, so a chain never
   waits on something that will not land.
+  Every failure reaches the director: a closed escalation no longer
+  silences the next failure of the same item (one OPEN escalation dedups, a
+  closed one does not), the escalation brief says done means something is
+  ready and leads with file-the-fix-and-hang-this-behind-it, and the
+  QA-loop escalation is dispatched to the director seat instead of held for
+  a person.
 - **A chain behind a dead link says so.** A six-link chain's head failed,
   the director's escalation filed a replacement item that did the head's
   job, and the five links behind the head sat queued and silent for an hour
