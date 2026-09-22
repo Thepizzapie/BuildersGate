@@ -884,6 +884,54 @@ def blocker(root: str | os.PathLike[str], item_id: int) -> Optional[dict]:
     return out
 
 
+# A predecessor in one of these states is not "still running", it is a DEAD
+# LINK: nothing the board does on its own will ever satisfy it. Everything
+# queued behind it is invisible work until a human reopens it, closes it as
+# superseded, or cuts the dependency. MEASURED (EXIT 67 r2, 2026-09-22): a
+# six-link chain's head failed, the director's escalation filed a fresh item
+# that did the head's job, and the five links behind the head sat queued and
+# silent for an hour while the board read as idle.
+DEAD_LINK = ("failed", "parked", "cancelled")
+
+
+def blocked_chains(root: str | os.PathLike[str]) -> list[dict]:
+    """Queued items whose predecessor is a dead link, grouped by that link.
+
+    ``[{"blocker": {id, seat, title, status}, "waiting": [{id, seat, title}]}]``
+    — the shape a banner, a digest and an escalation brief can all print.
+    """
+    conn = db.connect(root)
+    queued = rows(conn.execute(
+        "SELECT id, seat, title FROM work_item WHERE status = 'queued' "
+        "ORDER BY id"))
+    by_blocker: dict[int, dict] = {}
+    for item in queued:
+        held = blocker(root, int(item["id"]))
+        if not held or held.get("status") not in DEAD_LINK:
+            continue
+        entry = by_blocker.setdefault(int(held["id"]), {
+            "blocker": {k: held[k] for k in ("id", "seat", "title", "status")},
+            "waiting": []})
+        entry["waiting"].append({k: item[k] for k in ("id", "seat", "title")})
+    return list(by_blocker.values())
+
+
+def describe_blocked_chains(chains: list[dict]) -> str:
+    """One sentence per dead link, with the three ways out."""
+    lines = []
+    for entry in chains:
+        b = entry["blocker"]
+        ids = ", ".join(f"#{w['id']}" for w in entry["waiting"])
+        lines.append(
+            f"{len(entry['waiting'])} queued item(s) ({ids}) wait on #{b['id']} "
+            f"[{b['seat']}] which is {b['status'].upper()}: "
+            f"{str(b['title'])[:60]}. Nothing dispatches behind it until you "
+            f"queue_reopen(#{b['id']}), close it as superseded "
+            f"(queue_update status done with what did its job), or "
+            f"queue_cut_dependency on the waiting items.")
+    return "\n".join(lines)
+
+
 def chain(root: str | os.PathLike[str], chain_id: str) -> list[dict]:
     """Every link of one chain, in running order."""
     return rows(db.connect(root).execute(

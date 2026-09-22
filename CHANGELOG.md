@@ -10,6 +10,17 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **A chain behind a dead link says so.** A six-link chain's head failed,
+  the director's escalation filed a replacement item that did the head's
+  job, and the five links behind the head sat queued and silent for an hour
+  while the board read as stuck, because it was. `queue.blocked_chains`
+  names every queued item waiting on a FAILED, PARKED or CANCELLED link;
+  autopilot, when it has nothing to dispatch, announces that once as a
+  `dispatch.blocked` event and an activity line with the three ways out
+  (reopen the link, close it as superseded, cut the dependency);
+  `board_digest` reports the dead link instead of blaming the dashboard or
+  autopilot; and a failure escalation names what the failure is holding and
+  tells the director that a replacement item does not release it.
 - **Every worker seat picks its own CLI and model.** Routing used to stop
   at the art seat on purpose. `dispatch.runner` (claude | codex) is the
   board default and each seat has `dispatch.runner_<seat>` and

@@ -1249,11 +1249,27 @@ def _do_fail_escalate(root, action: dict) -> dict:
         return {"why": "already escalated once, which is the whole cap"}
     if str(item.get("source") or "") in NEVER_ESCALATE_SOURCES:
         return {"why": "this item IS an escalation — it does not escalate itself"}
+    brief = failure_escalation_brief(root, item, action)
+    # WHAT THIS FAILURE IS HOLDING. A failed chain head blocks every link
+    # behind it, silently; the escalation is the one place the director reads
+    # about the failure, so it names the queue it has stalled and the three
+    # ways to release it. Filing a replacement item does NOT release it.
+    try:
+        waiting = [c for c in _queue.blocked_chains(root)
+                   if int(c["blocker"]["id"]) == item_id]
+        if waiting:
+            brief += ("\n\nTHIS FAILURE BLOCKS THE BOARD: "
+                      + _queue.describe_blocked_chains(waiting)
+                      + " Whatever you decide, RELEASE THEM: a replacement item "
+                        "filed beside this one leaves every link behind it "
+                        "queued and silent.")
+    except Exception:
+        pass
     row = _queue.add(
         root, "director",
         f"FAILED: #{item_id} [{item.get('seat') or ''}] "
         f"{str(item.get('title') or '')[:60]} — decide what happens to it",
-        brief=failure_escalation_brief(root, item, action),
+        brief=brief,
         priority=FAIL_ESCALATION_PRIORITY,
         source=FAIL_ESCALATION_SOURCE, source_ref=str(item_id))
     activity.log(root, LEDGER_KIND,
