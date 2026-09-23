@@ -40,8 +40,8 @@ SHAPES: dict[str, list[tuple]] = {
     # Bone at the waist (130 up). Down into the hips, up to the shoulder
     # line, with only a neck-wide bump above it. MEASURED: a tall rounded
     # top read as HEAD space - three paints left the top third grey.
-    "torso": [("cap", 0, -28, 1, 10, 19.5), ("disc", 3, 16, 10.0),
-              ("disc", -3, 16, 10.0), ("cap", 1, 20, 2, 27, 7.0)],
+    "torso": [("cap", 0, -28, 1, 10, 19.5), ("disc", 4, 20, 10.0),
+              ("disc", -4, 18, 10.0), ("cap", 1, 20, 2, 27, 7.0)],
     # Bone at the pelvis (96 up). Tall on purpose: it sits under the torso
     # (z 3 < 4) and fills the waist when the chest leans.
     "hip": [("cap", 0, -6, 0, 26, 17.0), ("disc", 4, -2, 10.5),
