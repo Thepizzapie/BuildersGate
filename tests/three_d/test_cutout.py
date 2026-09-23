@@ -425,9 +425,13 @@ def test_a_silhouette_pivot_is_its_bone_origin_and_its_joints_are_checked(tmp_pa
 def test_clear_grey_removes_only_the_flat_silhouette_grey():
     from PIL import Image
     from bgate_core.three_d import cutoutkit
-    im = Image.new("RGBA", (4, 1), (0, 0, 0, 255))
-    im.putpixel((0, 0), (*cutoutkit.SILHOUETTE_GREY, 255))
-    im.putpixel((1, 0), (170, 168, 160, 255))           # a painted grey buckle
+    im = Image.new("RGBA", (12, 12), (0, 0, 0, 0))
+    im.paste((120, 80, 60, 255), (2, 2, 10, 10))           # the painted piece
+    im.putpixel((5, 5), (*cutoutkit.SILHOUETTE_GREY, 255))  # unpainted, inside
+    im.putpixel((6, 6), (170, 168, 160, 255))               # a painted grey buckle
+    im.putpixel((2, 7), (160, 158, 150, 255))               # off-shade grey on the rim
     out = cutoutkit.clear_grey(im)
-    assert out.getpixel((0, 0))[3] == 0
-    assert out.getpixel((1, 0))[3] == 255
+    assert out.getpixel((5, 5))[3] == 0
+    assert out.getpixel((6, 6))[3] == 255                   # inside: paint, kept
+    assert out.getpixel((2, 7))[3] == 0                     # on the edge: peeled
+    assert out.getpixel((3, 3))[3] == 255
