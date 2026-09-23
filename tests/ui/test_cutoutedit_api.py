@@ -79,3 +79,30 @@ def test_a_save_writes_the_rig_and_re_emits_it(client, rig):
 def test_a_path_outside_the_project_is_refused(client, rig):
     r = client.get("/api/cutout/rig", params={"rel": "../../etc/x.cutout.json"})
     assert r.status_code in (403, 404)
+
+
+def test_a_posed_key_round_trips_through_the_rig_into_the_bake(client, rig):
+    before = client.get("/api/cutout/rig", params={"rel": REL}).json()
+    # Key the head at t=0.5 in idle to 0.4 rad (Godot, clockwise).
+    body = {"rel": REL, "clips": {"idle": {"head": {"rot": [[0.0, 0.0], [0.5, 0.4]]}}}}
+    got = client.post("/api/cutout/save", json=body).json()
+    assert got["ok"] and got["overrides"] == {"idle": ["head"]}
+    keys = got["clips"]["idle"]["tracks"]["head"]["rot"]
+    # Played exactly as keyed: no follow-through lag on a hand-keyed bone.
+    assert [k[0] for k in keys] == [0.0, 0.5]
+    assert keys[1][1] == pytest.approx(0.4, abs=1e-4)
+    doc = cutout.load(rig / "hero.cutout.json")
+    assert doc["clip_overrides"]["idle"]["head"]["rot"][1][0] == 0.5
+    # Other clips and other bones still play the library.
+    assert got["clips"]["walk"] == before["clips"]["walk"]
+    # Reset puts the library back.
+    got = client.post("/api/cutout/save", json={"rel": REL, "clip_reset": {"idle": ["head"]}}).json()
+    assert got["overrides"] == {}
+    assert got["clips"]["idle"] == before["clips"]["idle"]
+
+
+def test_a_layer_edit_reorders_the_slot(client, rig):
+    got = client.post("/api/cutout/save", json={"rel": REL, "pieces": {"head": {"z": 1}}}).json()
+    assert got["parts"]["head"]["z"] == 1
+    doc = cutout.load(rig / "hero.cutout.json")
+    assert next(s for s in doc["slots"] if s["name"] == "head")["z"] == 1

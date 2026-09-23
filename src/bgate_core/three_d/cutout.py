@@ -613,6 +613,7 @@ def empty(name: str = "character", template_name: str = "biped_v1") -> dict:
         "reference": "",
         "reference_hash": "",
         "description": "",
+        "clip_overrides": {},
     }
 
 
@@ -825,7 +826,55 @@ def normalise(doc: dict) -> dict:
     out["reference"] = str(doc.get("reference") or "")
     # The character in words: what the kit's pieces are painted from.
     out["description"] = str(doc.get("description") or "")
+    out["clip_overrides"] = _clean_overrides(doc.get("clip_overrides"), names)
     out["reference_hash"] = str(doc.get("reference_hash") or "")
+    return out
+
+
+def _clean_overrides(raw, bone_names: set) -> dict:
+    """{clip: {bone: {"rot": [[t, deg], ...]}}} - THIS character's own keys,
+    authored in the library's convention (deltas on rest, CLIP_FORWARD
+    facing). An override REPLACES the library track for that bone in that
+    clip; everything it does not name plays the library's."""
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise CutoutError("clip_overrides must be a dict of clip -> bone -> tracks")
+    out: dict = {}
+    for clip_name, bones in raw.items():
+        if clip_name not in CLIPS:
+            raise CutoutError(f"clip_overrides names clip {clip_name!r}, which the "
+                              f"library does not have ({sorted(CLIPS)})")
+        length = float(CLIPS[clip_name]["length"])
+        for bone, ch in (bones or {}).items():
+            if bone not in bone_names:
+                raise CutoutError(f"clip_overrides[{clip_name}] names bone "
+                                  f"{bone!r}, which does not exist")
+            keys = []
+            for i, key in enumerate((ch or {}).get("rot") or []):
+                t = _num(key[0], f"clip_overrides[{clip_name}][{bone}].rot[{i}].t",
+                         lo=0.0, hi=length)
+                v = _num(key[1], f"clip_overrides[{clip_name}][{bone}].rot[{i}]",
+                         lo=-720.0, hi=720.0)
+                keys.append([round(t, 4), round(v, 3)])
+            keys.sort(key=lambda k: k[0])
+            if keys:
+                out.setdefault(clip_name, {})[bone] = {"rot": keys}
+    return out
+
+
+def clip_for(doc: dict, name: str) -> dict:
+    """The library clip with THIS character's overrides laid over it."""
+    spec = clip(name)
+    over = (doc.get("clip_overrides") or {}).get(name) or {}
+    if not over:
+        return spec
+    out = dict(spec)
+    tracks = {b: dict(c) for b, c in (spec.get("tracks") or {}).items()}
+    for bone, ch in over.items():
+        tracks[bone] = {**tracks.get(bone, {}), **ch}
+    out["tracks"] = tracks
+    out["overridden"] = sorted(over)
     return out
 
 
@@ -885,7 +934,7 @@ def ground_clip(doc: dict, name: str, mirror: float = 1.0,
     not the fit table's spans: a cut kit's boot is its own size, and the
     spans put exit-67-r2's boots 15 px through the floor in crouch.
     """
-    spec = clip(name)
+    spec = clip_for(doc, name)
     tracks = {b: dict(c) for b, c in (spec.get("tracks") or {}).items()}
     mode = GROUND.get(name)
     tmpl = template(doc["template"])
