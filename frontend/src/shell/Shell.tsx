@@ -339,7 +339,7 @@ export function Shell() {
     playtests: (state.sessions || []).length,
     assets: state.asset_groups.length,
   };
-  const assetScreens = new Set(["assets", "spriteedit", "audiolab", "modeledit", "atlas"]);
+  const assetScreens = new Set(["assets", "spriteedit", "audiolab", "modeledit", "cutoutedit", "atlas"]);
   const drift = (state.verify.counts?.modified || 0) + (state.verify.counts?.missing || 0) + (state.verify.counts?.pending || 0);
   const review = state.asset_groups.reduce((n, g) => n + (g.candidates?.length || 0), 0);
   const readinessIssues = Number(!state.project) + Number(!state.asset_groups.length) + Number(drift > 0)

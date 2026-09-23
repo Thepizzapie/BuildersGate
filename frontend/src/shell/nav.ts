@@ -86,6 +86,7 @@ const RAW_AREAS: Area[] = [
       { id: "spriteedit", label: "Sprite editor", icon: "brush",       deck: "spriteedit" },
       { id: "audiolab",   label: "Audio lab",     icon: "wave-sine",   deck: "audiolab" },
       { id: "modeledit",  label: "3D viewer",     icon: "box",         deck: "modeledit" },
+      { id: "cutoutedit", label: "Rig editor",    icon: "bone",        deck: "cutoutedit" },
       { id: "atlas",      label: "Project atlas", icon: "layout-grid", deck: "atlas" },
     ],
   },
@@ -136,6 +137,7 @@ export const SCREEN_NOTE: Record<string, string> = {
   spriteedit: "pixels and rigs",
   audiolab: "sound and music",
   modeledit: "models and animation",
+  cutoutedit: "2D rigs: every pose, drag the joint",
 };
 
 export const SEAT_COLOR: Record<string, string> = {
