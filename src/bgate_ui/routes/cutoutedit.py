@@ -117,7 +117,12 @@ def payload(base: Path, doc_file: Path) -> dict:
         clips[name] = {"length": baked["length"], "loop": bool(baked["loop_mode"]),
                        "tracks": tracks}
     fit = cutoutwire.game_fit(doc, sizes, _player_height(base))
+    overrides = {c: sorted(b) for c, b in (doc.get("clip_overrides") or {}).items()}
+    for name, c in clips.items():
+        if "error" not in c:
+            c["events"] = [list(e) for e in (cutout.clip(name).get("events") or [])]
     return {"ok": True, "rel": _rel(base, doc_file), "name": doc["name"],
+            "overrides": overrides,
             "template": doc["template"], "bones": bones, "parts": parts,
             "clips": clips, "ease": cutoutwire.EASE,
             "adjustments": doc.get("adjustments") or {},
@@ -155,6 +160,47 @@ def rig_file(rel: str) -> FileResponse:
                         headers={"Cache-Control": "no-cache"})
 
 
+def clip_edits(doc: dict, clips: Optional[dict], reset: Optional[dict]) -> dict:
+    """Keys posed in the editor into the document's clip_overrides.
+
+    The editor keys ABSOLUTE Godot rotations (radians, what it plays); the
+    document stores the library's convention - degrees on this character's
+    rest pose, authored facing CLIP_FORWARD - so the emitter bakes them with
+    everything else and the floor solve still runs. `reset` = {clip: [bone]}
+    (an empty list resets the whole clip) drops overrides back to the library.
+    """
+    import math
+    from bgate_core.three_d import cutout
+    out = dict(doc)
+    over = {c: {b: dict(t) for b, t in bones.items()}
+            for c, bones in (doc.get("clip_overrides") or {}).items()}
+    for clip_name, bones in (reset or {}).items():
+        if clip_name in over:
+            if not bones:
+                over.pop(clip_name)
+            else:
+                for b in bones:
+                    over[clip_name].pop(b, None)
+                if not over[clip_name]:
+                    over.pop(clip_name)
+    if clips:
+        rest = cutout.rest_pose(cutout.normalise(doc))
+        facing = int(cutout.template(doc["template"]).get("forward") or 1)
+        m = 1.0 if facing == cutout.CLIP_FORWARD else -1.0
+        for clip_name, bones in clips.items():
+            length = float(cutout.clip(clip_name)["length"])
+            for bone, ch in (bones or {}).items():
+                keys = []
+                for t, g in (ch or {}).get("rot") or []:
+                    doc_deg = -math.degrees(float(g))
+                    keys.append([min(max(0.0, float(t)), length),
+                                 round((doc_deg - rest[bone]["rot"]) / m, 3)])
+                if keys:
+                    over.setdefault(clip_name, {})[bone] = {"rot": keys}
+    out["clip_overrides"] = over
+    return out
+
+
 def apply_edits(doc: dict, adjustments: Optional[dict], pieces: Optional[dict]) -> dict:
     """Bone adjustments and piece fields onto the document. A piece whose
     pivot moved becomes AUTHORED (status flags it if the piece is later
@@ -182,6 +228,11 @@ def apply_edits(doc: dict, adjustments: Optional[dict], pieces: Optional[dict]) 
                     entry[key] = skin[near][key]
             entry["fit"] = False
     out["skin"] = skin
+    # DRAW ORDER lives on the slot, not the skin: a z edit re-ranks the slot.
+    zs = {slot: int(f["z"]) for slot, f in (pieces or {}).items()
+          if isinstance(f, dict) and f.get("z") is not None}
+    if zs:
+        out["slots"] = [dict(sl, z=zs.get(sl["name"], sl["z"])) for sl in doc["slots"]]
     return out
 
 
@@ -193,6 +244,8 @@ def save_rig(body: dict = Body(...)) -> dict:
     doc_file = _doc_path(str(body.get("rel") or ""))
     doc = cutout.load(doc_file)
     doc = cutout.normalise(apply_edits(doc, body.get("adjustments"), body.get("pieces")))
+    # Clip keys convert against the rest pose AFTER the new adjustments.
+    doc = cutout.normalise(clip_edits(doc, body.get("clips"), body.get("clip_reset")))
     cutout.save(doc_file, doc)
     scene = doc_file.with_name(doc["name"] + ".tscn")
     emitted = cutoutwire.emit(doc, project_dir=base, scene_path=scene,
@@ -200,6 +253,53 @@ def save_rig(body: dict = Body(...)) -> dict:
                               force=True)
     return {**payload(base, doc_file), "emitted": bool(emitted.get("ok")),
             "scene": _rel(base, scene)}
+
+
+@router.post("/api/cutout/regen")
+def regen_piece(body: dict = Body(...)) -> dict:
+    """Repaint ONE piece into its silhouette from the rig's written
+    description (the reference image is never sent). One paid image; two
+    for a torso, whose painted-on arm is then edited off. Body: {rel, slot,
+    note}. The piece keeps the template's size and pivot, so it drops into
+    the rig with every joint where it was."""
+    from bgate_core.art import refs
+    from bgate_core.runtime import providers
+    from bgate_core.three_d import cutout, cutoutkit, cutoutshape, cutoutwire
+    base = root()
+    doc_file = _doc_path(str(body.get("rel") or ""))
+    doc = cutout.load(doc_file)
+    slot = str(body.get("slot") or "")
+    near = (doc["skin"].get(slot) or {}).get("reuse_of") or slot
+    if not cutoutshape.has_shape(near):
+        raise api.ApiError(400, f"{slot} has no silhouette to paint (equipment is equipped, not generated)")
+    description = doc.get("description") or ""
+    if not description:
+        raise api.ApiError(400, "this rig has no written description to paint from - "
+                           "cutout_kit_generate(description=...) sets one")
+    ref = refs.resolve(base, doc["reference"]) if doc.get("reference") else doc_file
+    made = cutoutkit.generate_kit(
+        base, doc["name"], str(ref), out_dir=doc_file.parent / "parts",
+        provider=providers.provider_for("sprite", root=base), parts=[near],
+        mode="sheet", description=description, note=str(body.get("note") or ""),
+        max_paid_calls=2 if near == "torso" else 1)
+    fresh = made["parts"].get(near)
+    if not fresh:
+        raise api.ApiError(502, "the piece did not come back: " + "; ".join(
+            f.get("error", "") for f in made["failed"]) or made.get("stopped") or "no piece")
+    entry = dict(doc["skin"].get(near) or {})
+    entry.update({k: v for k, v in fresh.items() if k in (
+        "texture", "part_hash", "anchor_hash", "prompt", "pivot", "scale", "fit", "shape")})
+    entry["pivot_source"] = "default"
+    doc["skin"][near] = entry
+    doc["skin"] = cutoutkit.fill_reuse({k: v for k, v in doc["skin"].items()
+                                        if v.get("reuse_of") != near}, doc["template"])
+    doc = cutout.normalise(doc)
+    cutout.save(doc_file, doc)
+    scene = doc_file.with_name(doc["name"] + ".tscn")
+    cutoutwire.emit(doc, project_dir=base, scene_path=scene, sizes=_sizes(doc),
+                    player_height_px=_player_height(base), force=True)
+    return {**payload(base, doc_file), "regen": {"slot": near, "calls": made["calls"],
+            "flags": [f.get("note") for f in made["flags"]]}}
 
 
 @router.post("/api/cutout/proof")

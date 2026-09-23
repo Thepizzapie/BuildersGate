@@ -153,7 +153,7 @@ def bake_clip(doc: dict, name: str, sizes: Optional[dict] = None) -> dict:
     Returns {name, length, loop_mode, tracks: [{path, property, keys}],
              events: [...]}. Keys are (time, value, transition).
     """
-    spec = cutout.clip(name)
+    spec = cutout.clip_for(doc, name)
     rest = cutout.rest_pose(doc)
     # Mirror the library onto a template that faces the other way than the
     # clips were authored (cutout.CLIP_FORWARD).
@@ -191,9 +191,11 @@ def bake_clip(doc: dict, name: str, sizes: Optional[dict] = None) -> dict:
     # frames in a looping clip, so a walk reads as weight moving through
     # the figure instead of every bone snapping on the same frame.
     if looping:
+        # A bone the author keyed by hand plays exactly as keyed.
+        own = set(spec.get("overridden") or [])
         for track in tracks:
             bone = track["path"].split("/")[-1].split(":")[0]
-            lag = FOLLOW.get(bone, 0.0)
+            lag = 0.0 if bone in own else FOLLOW.get(bone, 0.0)
             if lag and len(track["keys"]) > 1:
                 moved = sorted(((round((t + lag) % length, 4), v)
                                 for t, v in track["keys"]), key=lambda k: k[0])

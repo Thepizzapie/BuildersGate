@@ -36,7 +36,10 @@ SHAPES: dict[str, list[tuple]] = {
     # arms, a narrow torso, no shoulders - and a stocky character painted
     # into it read as a different body. Widened to a sturdy build.
     # Bone at the neck (160 up). Neck, then the skull; crown at ~200.
-    "head": [("cap", 0, -5, 1, 8, 7.5), ("ell", 3, 22, 19, 19)],
+    # MEASURED: a round skull clipped the nose and the cap's brim off a
+    # side-profile head; the face side runs forward of the skull.
+    "head": [("cap", 0, -5, 1, 8, 7.5), ("ell", 4, 22, 20, 19.5),
+             ("ell", 12, 20, 13, 14), ("cap", 6, 31, 22, 30, 5.0)],
     # Bone at the waist (130 up). Down into the hips, up to the shoulder
     # line, with only a neck-wide bump above it. MEASURED: a tall rounded
     # top read as HEAD space - three paints left the top third grey.
