@@ -171,6 +171,12 @@
         <div id="me-page" class="editor-page"></div>
       </section>
 
+      <!-- The cutout RIG editor (cutoutedit.js): every clip of a 2D rig at
+           once, drag a joint or a piece, save into the .cutout.json. -->
+      <section class="deck-view" id="view-cutoutedit">
+        <div id="ce-page" class="editor-page"></div>
+      </section>
+
       <!-- REACT ISLAND, frontend/src/views/playtests/. Play & record, the
            recorded-sessions list, the review overlay (video, triage, telemetry,
            transcript) and the notepad drawer are all rendered from there. The
@@ -534,6 +540,7 @@ const DECK_CRUMB = {
   seats:"Seat workspaces", playtests:"Playtests", assets:"Assets", atlas:"Atlas",
   world:"World bible",
   spriteedit:"Sprite editor", audiolab:"Audio lab", modeledit:"3D viewer",
+  cutoutedit:"Rig editor",
 };
 /* Hand the view to whichever module owns it.
  *
@@ -545,7 +552,8 @@ const DECK_CRUMB = {
  * function runs again once the modules have registered. */
 function activateWorkspace(name){
   const owners = { studio: "Studio", atlas: "Atlas", assets: "AssetLib",
-                   spriteedit: "SpriteEdit", audiolab: "AudioLab", modeledit: "ModelEdit" };
+                   spriteedit: "SpriteEdit", audiolab: "AudioLab", modeledit: "ModelEdit",
+                   cutoutedit: "CutoutEdit" };
   if (name === "atlas") return setAtlasMode(atlasMode);
   // Agents and World need no owner: both are React islands now
   // (frontend/src/shell/agents/, frontend/src/views/world/) and mount themselves.
@@ -1441,6 +1449,7 @@ BGEvents.watch(pollQueue, { kinds: ["item.*", "chain.*", "agent.*", "dispatch.*"
 <script src="/static/vendor/codemirror/jump-to-line.js"></script>
 <script src="/static/atlas_code.js"></script>
 <script src="/static/spriteedit.js"></script>
+<script src="/static/cutoutedit.js"></script>
 <!-- What is making noise, and where it is coming from. Must precede the players
      so its capture-phase listeners are installed before anything can play. -->
 <script src="/static/nowplaying.js"></script>
