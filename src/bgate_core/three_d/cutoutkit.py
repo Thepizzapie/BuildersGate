@@ -625,6 +625,10 @@ def unarm_torso(root, name: str, texture: str, *, chroma_rgb, provider: str,
     return {"ok": True, "cost": cost, "error": ""}
 
 
+#: How deep the grey rim is peeled from a piece's edge, in texture px.
+RIM_PASSES = 4
+
+
 def clear_grey(piece, tol: int = 10):
     """Make the silhouette's own flat grey transparent, feathering its edge.
 
@@ -639,7 +643,25 @@ def clear_grey(piece, tol: int = 10):
     near = (d < tol * 2) & ~grey
     arr[grey, 3] = 0
     arr[near, 3] = (arr[near, 3] * 0.5).astype("uint8")
-    return Image.fromarray(arr, "RGBA")
+    # THE RIM. The model repaints the silhouette's grey a few shades off
+    # where it meets the backdrop, so a flat-grey test leaves a speckled
+    # grey halo round the head and cap (2026-09-22). Grey-ish, unsaturated
+    # pixels that TOUCH transparency are peeled, a few passes deep - never
+    # the inside of the piece, where a grey buckle or highlight is paint.
+    rgb = arr[:, :, :3].astype(int)
+    sat = rgb.max(axis=2) - rgb.min(axis=2)
+    greyish = (np.abs(rgb - np.array(SILHOUETTE_GREY)).sum(axis=2) < 75) & (sat < 22)
+    for _ in range(RIM_PASSES):
+        clear = arr[:, :, 3] < 60
+        pad = np.pad(clear, 1, constant_values=True)
+        edge = (pad[:-2, 1:-1] | pad[2:, 1:-1] | pad[1:-1, :-2] | pad[1:-1, 2:]) & ~clear
+        peel = edge & greyish
+        if not peel.any():
+            break
+        arr[peel, 3] = 0
+    # Loose specks left floating off the edge (antialiased grey that the
+    # peel separated from the piece) are not part of it.
+    return _main_blobs(Image.fromarray(arr, "RGBA"), keep=0.01)
 
 
 def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
