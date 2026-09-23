@@ -404,23 +404,27 @@ CLIPS: dict[str, dict] = {
         },
     },
     "slide": {
-        # Feet first: the lead leg straight out, the other tucked under, the
-        # body leaning back on the far arm, the gun hand pointed forward. Reauthored 2026-09-22.
-        "length": 0.5, "loop": True, "fps": 12,
+        # A MOVE, not a held pose (the first one was one pose keyed twice and
+        # never moved): drop from the stride, kick the lead leg out, settle
+        # onto the tucked leg leaning back with the gun forward, one skid
+        # bump, then hold the slide - it does not loop, Godot holds the last
+        # frame for as long as the slide lasts. Timed to exit-67-r2's slide_time
+        # of 0.37 s: full slide at 0.12, settled by 0.35. Reauthored 2026-09-22.
+        "length": 0.4, "loop": False, "fps": 24,
         "tracks": {
-            "hips": {"pos": [[0.0, [-6.0, -60.0]], [0.25, [-6.0, -61.0]]]},
-            "chest": {"rot": [[0.0, -22.0], [0.25, -22.0]]},
-            "head": {"rot": [[0.0, 18.0], [0.25, 18.0]]},
-            "thigh_near": {"rot": [[0.0, -72.0], [0.25, -72.0]]},
-            "shin_near": {"rot": [[0.0, 4.0], [0.25, 4.0]]},
-            "foot_near": {"rot": [[0.0, 58.0], [0.25, 58.0]]},
-            "thigh_far": {"rot": [[0.0, -40.0], [0.25, -40.0]]},
-            "shin_far": {"rot": [[0.0, 112.0], [0.25, 112.0]]},
-            "foot_far": {"rot": [[0.0, -40.0], [0.25, -40.0]]},
-            "arm_near": {"rot": [[0.0, -17.0], [0.25, -17.0]]},
-            "forearm_near": {"rot": [[0.0, -30.0], [0.25, -30.0]]},
-            "arm_far": {"rot": [[0.0, 67.0], [0.25, 67.0]]},
-            "forearm_far": {"rot": [[0.0, -20.0], [0.25, -20.0]]},
+            "hips": {"pos": [[0.0, [-0.0, -10.0]], [0.06, [-4.0, -40.0]], [0.12, [-6.0, -60.0]], [0.2, [-7.0, -57.0]], [0.28, [-6.0, -60.0]], [0.35, [-6.0, -60.0]]]},
+            "chest": {"rot": [[0.0, 10.0], [0.06, -8.0], [0.12, -22.0], [0.2, -26.0], [0.28, -21.0], [0.35, -22.0]]},
+            "head": {"rot": [[0.0, -5.0], [0.06, 6.0], [0.12, 18.0], [0.2, 22.0], [0.28, 17.0], [0.35, 18.0]]},
+            "thigh_near": {"rot": [[0.0, -30.0], [0.06, -58.0], [0.12, -72.0], [0.2, -74.0], [0.35, -72.0]]},
+            "shin_near": {"rot": [[0.0, 40.0], [0.06, 20.0], [0.12, 4.0], [0.35, 4.0]]},
+            "foot_near": {"rot": [[0.0, -0.0], [0.06, 30.0], [0.12, 58.0], [0.2, 64.0], [0.35, 58.0]]},
+            "thigh_far": {"rot": [[0.0, 20.0], [0.06, -18.0], [0.12, -40.0], [0.2, -42.0], [0.35, -40.0]]},
+            "shin_far": {"rot": [[0.0, 30.0], [0.06, 85.0], [0.12, 112.0], [0.2, 108.0], [0.35, 112.0]]},
+            "foot_far": {"rot": [[0.0, -0.0], [0.06, -30.0], [0.12, -40.0], [0.35, -40.0]]},
+            "arm_near": {"rot": [[0.0, -40.0], [0.06, -26.0], [0.12, -17.0], [0.2, -21.0], [0.28, -15.0], [0.35, -17.0]]},
+            "forearm_near": {"rot": [[0.0, -60.0], [0.06, -40.0], [0.12, -30.0], [0.35, -30.0]]},
+            "arm_far": {"rot": [[0.0, 30.0], [0.06, 55.0], [0.12, 67.0], [0.2, 74.0], [0.28, 64.0], [0.35, 67.0]]},
+            "forearm_far": {"rot": [[0.0, -30.0], [0.06, -24.0], [0.12, -20.0], [0.35, -20.0]]},
         },
     },
     "aim": {

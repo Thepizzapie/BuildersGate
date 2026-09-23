@@ -344,9 +344,10 @@ def test_the_template_ships_every_clip_a_side_scroller_needs(project, doc):
     assert cutout.clip_names() == sorted([
         "idle", "walk", "run", "jump", "fall", "crouch", "slide", "aim", "fire",
         "attack_melee", "hurt", "death"])
-    for name in ("jump", "fire"):
+    # A slide is a move that ends in a held pose, played once per slide.
+    for name in ("jump", "fire", "slide"):
         assert cutoutwire.bake_clip(doc, name)["loop_mode"] == 0
-    for name in ("fall", "crouch", "slide", "aim"):
+    for name in ("fall", "crouch", "aim"):
         assert cutoutwire.bake_clip(doc, name)["loop_mode"] == 1
 
 
