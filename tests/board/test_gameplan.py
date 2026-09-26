@@ -125,7 +125,7 @@ class TestCutDependency:
         queue.set_status(root, first["id"], "cancelled", result="dropped")
         assert queue.blocker(root, second["id"]) is not None   # the dead state
 
-        got = queue.cut_dependency(root, second["id"], first["id"], by="adrian")
+        got = queue.cut_dependency(root, second["id"], first["id"], by="marta")
         assert got["ready"] is True
         assert queue.blocker(root, second["id"]) is None
         assert queue.next_for(root, "gameplay")["id"] == second["id"]
@@ -135,7 +135,7 @@ class TestCutDependency:
         b = queue.add(root, "audio", "b")
         child = queue.add(root, "tech", "c", depends_on=a["id"])
         queue.add_dependency(root, child["id"], b["id"])
-        got = queue.cut_dependency(root, child["id"], b["id"], by="adrian")
+        got = queue.cut_dependency(root, child["id"], b["id"], by="marta")
         assert got["still_waiting_on"] == [a["id"]]
         assert got["ready"] is False
 
