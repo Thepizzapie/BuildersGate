@@ -2414,6 +2414,54 @@ _MIGRATIONS: list = [
     ALTER TABLE run_limits ADD COLUMN large_runtime_s INTEGER;
     ALTER TABLE run_limits ADD COLUMN large_turns INTEGER;
     """,
+
+    # 0054 - PRE-PRODUCTION RESEARCH (bgate_core.design.research). A project
+    # used to start from the pitch alone: the director settled a thesis and
+    # the pillars from one paragraph, and "what did the games this is like
+    # get right and wrong" was answered from memory or not at all.
+    #
+    # research_comp: a comparable game, proposed by the research agent or
+    # added by hand, then confirmed or dropped before anything is spent
+    # researching it. `relation` says WHY it is comparable (same loop, same
+    # setting, same audience, or a cautionary tale).
+    #
+    # research_finding: one system of one comparable, with a verdict and the
+    # sources behind it. Rows rather than a document so a seat can ask
+    # "how did the comparables handle meta-progression" mid-production and
+    # get cited answers back (research_findings); they are also in
+    # search_idx. `confidence` exists because a thinly-sourced verdict must
+    # not read the same as a well-sourced one.
+    """
+    CREATE TABLE research_comp (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        title         TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        why           TEXT NOT NULL DEFAULT '',
+        relation      TEXT NOT NULL DEFAULT 'loop',
+        status        TEXT NOT NULL DEFAULT 'proposed'
+                      CHECK (status IN ('proposed','confirmed','dropped',
+                                        'researched')),
+        summary       TEXT NOT NULL DEFAULT '',
+        by            TEXT NOT NULL DEFAULT '',
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        researched_at TEXT
+    );
+    CREATE TABLE research_finding (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        comp_id      INTEGER NOT NULL
+                     REFERENCES research_comp(id) ON DELETE CASCADE,
+        system       TEXT NOT NULL,
+        verdict      TEXT NOT NULL
+                     CHECK (verdict IN ('worked','failed','mixed')),
+        confidence   TEXT NOT NULL DEFAULT 'medium'
+                     CHECK (confidence IN ('high','medium','low')),
+        claim        TEXT NOT NULL,
+        evidence     TEXT NOT NULL DEFAULT '',
+        sources_json TEXT NOT NULL DEFAULT '[]',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_research_finding_comp ON research_finding(comp_id);
+    CREATE INDEX idx_research_finding_system ON research_finding(system);
+    """,
 ]
 
 

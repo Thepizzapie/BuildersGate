@@ -10,6 +10,33 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **Pre-production research: what the games this one is like got right and
+  wrong, before the thesis is written.** A project started from the pitch
+  alone, and "which games is this like, and what did they learn the hard
+  way" was answered from memory or not at all. The new `research` module
+  (`research_*` tools, `bgate_core.design.research`) runs it as a step
+  between the kickoff brief and the director's first turn:
+  `research_suggest` proposes 5-8 comparables (same loop, setting,
+  audience, look, and at least one cautionary tale), which are confirmed or
+  dropped before anything is spent on them; `research_teardown` grades each
+  confirmed game system by system as worked / failed / mixed with a
+  confidence and its sources; `research_grid` lines them up; and
+  `research_plan_draft` combines the pitch, brief and findings into pillars,
+  core loop, setting, art direction, a keep/avoid/twist stance per system,
+  not-building entries and the open decisions only the human can answer.
+  `research_plan_adopt` writes that into the bible, the not-building list,
+  the decision log (as OPEN decisions) and the greenlight thesis, and it is
+  human-only for the reason `brainstorm_deploy` is. Findings are rows, not a
+  document, so a seat can ask `research_findings(system="progression")`
+  mid-production and get cited answers; gameplay, art and narrative can read
+  them. The researcher is the one session Builders Gate spawns with the web,
+  and only the web: its built-in tools are exactly WebSearch and WebFetch,
+  with no MCP server, no settings sources and a scratch working directory
+  (`bgate_ui.agents.researcher`); what it says is validated row by row
+  before anything is stored, and an unsourced verdict is stored at low
+  confidence whatever it claimed. `kickoff.prompt(research=True)` puts the
+  whole pass in front of the director's thesis. Migration 0054 adds
+  `research_comp` and `research_finding`.
 - **The rig has eyes: a proof sheet after every write, in the response.**
   Every cutout write (`cutout_kit_generate`, `cutout_assemble`,
   `cutout_part_rerun`, `cutout_equip`) now writes a gym beside the
