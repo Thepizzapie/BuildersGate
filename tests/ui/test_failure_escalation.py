@@ -506,7 +506,7 @@ class TestTheProgressBonus:
     def test_a_human_stop_is_still_never_bought_back(self):
         """The stop guard runs before the budget, so a next_approach in the
         note of a run somebody killed must not resurrect it."""
-        got = _decide(_item(auto_retries=0, stopped_by="adrian",
+        got = _decide(_item(auto_retries=0, stopped_by="marta",
                             result=queue.NEXT_APPROACH_MARKER + " an idea"))
         assert _kinds(got) == ["skip"]
 
