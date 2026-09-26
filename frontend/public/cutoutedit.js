@@ -288,13 +288,15 @@ window.CutoutEdit = (() => {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
     const view = mainView();
-    ctx.strokeStyle = "rgba(120,130,140,.7)"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(0, view[5]); ctx.lineTo(c.width, view[5]); ctx.stroke();
     const fit = S.data.game_fit || {};
+    // The ground is where game_fit's lift puts it: the rest pose's lowest pixel.
+    const floorY = view[5] - (fit.lift || 0) / (fit.scale || 1) * S.zoom;
+    ctx.strokeStyle = "rgba(120,130,140,.7)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, floorY); ctx.lineTo(c.width, floorY); ctx.stroke();
     if (S.data.player_height_px && fit.scale){
       const hh = S.data.player_height_px / fit.scale * S.zoom;
       ctx.fillStyle = "rgba(128,128,140,.35)";
-      ctx.fillRect(view[4] + 75 * S.zoom, view[5] - hh, 10, hh);
+      ctx.fillRect(view[4] + 75 * S.zoom, floorY - hh, 10, hh);
     }
     S.world = drawRig(ctx, view, S.clip, S.t, { joints: S.showJoints, sel: S.sel, main: true });
     drawGizmo(ctx);

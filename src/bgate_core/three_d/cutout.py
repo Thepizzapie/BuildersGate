@@ -978,15 +978,16 @@ def ground_clip(doc: dict, name: str, mirror: float = 1.0,
             pts += [(0.0, top), (0.0, bottom)]
     times = sorted({0.0} | {float(k[0]) for c in tracks.values()
                             for ch in ("rot", "pos") for k in (c.get(ch) or [])})
-    root_pos = list((tracks.get(root) or {}).get("pos") or [])
-    solved = []
-    for t in times:
+    if not probes:
+        return tracks
+
+    def low_at(t: float, chans: dict) -> float:
         world: dict[str, tuple] = {}
 
         def bone_world(b: str) -> tuple:
             if b in world:
                 return world[b]
-            ch = tracks.get(b) or {}
+            ch = chans.get(b) or {}
             rot = rest[b]["rot"] + mirror * float(_interp(ch.get("rot") or [], t, 0.0))
             d = _interp(ch.get("pos") or [], t, [0.0, 0.0])
             pos = (rest[b]["pos"][0] + mirror * float(d[0]),
@@ -998,10 +999,20 @@ def ground_clip(doc: dict, name: str, mirror: float = 1.0,
             world[b] = _compose(bone_world(up), local) if up else local
             return world[b]
 
-        low = min(bone_world(b)[1] * x + bone_world(b)[3] * y + bone_world(b)[5]
-                  for b, pts in probes.items() for x, y in pts)
+        return min(bone_world(b)[1] * x + bone_world(b)[3] * y + bone_world(b)[5]
+                   for b, pts in probes.items() for x, y in pts)
+
+    # THE FLOOR IS WHERE THE REST POSE STANDS. With real sprite sizes the
+    # emitter lifts Visual so the rest pose's lowest pixel is on the ground
+    # (cutoutwire.game_fit); solving to y = 0 as well floated every planted
+    # clip by that offset (exit-67-r2's player: 9.6 px at rest).
+    floor = low_at(0.0, {}) if sizes else 0.0
+    root_pos = list((tracks.get(root) or {}).get("pos") or [])
+    solved = []
+    for t in times:
+        low = low_at(t, tracks)
         d = _interp(root_pos, t, [0.0, 0.0])
-        shift = -low if (mode == "planted" or low < 0) else 0.0
+        shift = floor - low if (mode == "planted" or low < floor) else 0.0
         solved.append([t, [round(float(d[0]), 3), round(float(d[1]) + shift, 3)]])
     length = float(spec["length"])
     looping = bool(spec.get("loop")) and name not in NO_LOOP

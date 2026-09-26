@@ -188,8 +188,13 @@ def clip_edits(doc: dict, clips: Optional[dict], reset: Optional[dict]) -> dict:
         facing = int(cutout.template(doc["template"]).get("forward") or 1)
         m = 1.0 if facing == cutout.CLIP_FORWARD else -1.0
         for clip_name, bones in clips.items():
+            if clip_name not in cutout.clip_names():
+                raise api.ApiError(400, f"no clip {clip_name!r} in the library")
             length = float(cutout.clip(clip_name)["length"])
             for bone, ch in (bones or {}).items():
+                if bone not in rest:
+                    raise api.ApiError(400, f"no bone {bone!r} on this rig",
+                                       detail={"clip": clip_name})
                 keys = []
                 for t, g in (ch or {}).get("rot") or []:
                     doc_deg = -math.degrees(float(g))
@@ -284,8 +289,9 @@ def regen_piece(body: dict = Body(...)) -> dict:
         max_paid_calls=2 if near == "torso" else 1)
     fresh = made["parts"].get(near)
     if not fresh:
-        raise api.ApiError(502, "the piece did not come back: " + "; ".join(
-            f.get("error", "") for f in made["failed"]) or made.get("stopped") or "no piece")
+        why = ("; ".join(f.get("error", "") for f in made["failed"])
+               or made.get("stopped") or "no piece")
+        raise api.ApiError(502, "the piece did not come back: " + why)
     entry = dict(doc["skin"].get(near) or {})
     entry.update({k: v for k, v in fresh.items() if k in (
         "texture", "part_hash", "anchor_hash", "prompt", "pivot", "scale", "fit", "shape")})
