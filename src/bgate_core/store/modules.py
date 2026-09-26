@@ -45,6 +45,13 @@ MODULES: dict[str, dict] = {
                  "pads, and Deploy to turn a plan into board items.",
         "tools": ("brainstorm_",), "extras": (), "doctor": (),
     },
+    "research": {
+        "label": "Pre-production research",
+        "blurb": "Research comparable games on the web, grade their systems "
+                 "worked/failed/mixed with sources, and draft pillars, loop, "
+                 "setting and art direction from it for the human to adopt.",
+        "tools": ("research_",), "extras": (), "doctor": (),
+    },
     "music": {
         "label": "Music",
         "blurb": "Suno music generation through kie.ai, candidates, "
@@ -309,6 +316,7 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  # colliders. One call, world space.
                  "godot_scene_audit"),
     "brainstorm": ("brainstorm_",),
+    "research": ("research_",),
 }
 
 # THE SPINE, BY EXACT NAME, because the alternative is what this fixes.

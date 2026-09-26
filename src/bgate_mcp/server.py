@@ -10448,6 +10448,7 @@ def kie_video_generate(prompt: Annotated[str, Field(description='What the clip s
 # ---------------------------------------------------------------------------
 from bgate_mcp.tools_blender import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_brainstorm import *  # noqa: E402,F401,F403
+from bgate_mcp.tools_research import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_cinematic import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_level import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_web import *  # noqa: E402,F401,F403

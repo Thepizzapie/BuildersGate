@@ -85,6 +85,8 @@ SEATS: dict[str, tuple[str, ...]] = {
         "traversal_prove", "scale_check", "scale_record_3d",
         "level_", "encounter_design_set", "room_", "playtest_", "evidence_",
         "iteration_", "telemetry", "game_view_", "causal_", "consistency_check",
+        # What the comparable games got right and wrong, cited. Read-only.
+        "research_findings", "research_grid",
     ),
     # Engine plumbing, build and performance, the same engine surface, plus
     # the project-level knobs gameplay does not touch.
@@ -108,7 +110,7 @@ SEATS: dict[str, tuple[str, ...]] = {
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
         "canon_check", "vfx_animate", "sidescroll_generate", "level_reskin",
-        "game_view_get",
+        "game_view_get", "research_findings", "research_grid",
     ),
     # Music, SFX and mix.
     "audio": (
@@ -134,13 +136,14 @@ SEATS: dict[str, tuple[str, ...]] = {
     # Lore, quests, dialogue.
     "narrative": (
         "lore_", "quest_", "dialogue_", "canon_check", "consistency_check",
-        "storyboard_write_script", "brainstorm_",
+        "storyboard_write_script", "brainstorm_", "research_findings",
     ),
     # Owns the pillars and arbitrates. Reads widely, writes design; measured at
     # SEVEN distinct tools, so this list is deliberately near-CORE.
     "director": (
         "bible_", "decision_", "not_building_", "greenlight_", "lore_brief",
-        "brainstorm_", "godot_screenshot", "godot_evidence", "plan_status",
+        "brainstorm_", "research_", "godot_screenshot", "godot_evidence",
+        "plan_status",
         "agent_steer", "agent_steer_all", "scale_contract_set", "profile_",
         "seat_configure", "dialogue_list", "quest_list",
         # The canon record (canon_set / canon_retire / canon_unretire /
