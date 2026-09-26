@@ -10126,7 +10126,7 @@ def cutout_proof(name: str, poses: Optional[list] = None, at: float = 1.0) -> di
     reported the proof was not rendered. `poses` = [[clip, seconds], ...]
     overrides the default fourteen.
     """
-    from bgate_core.three_d import cutout as _cutout, cutoutproof as _proof
+    from bgate_core.three_d import cutoutproof as _proof
     root = _root()
     home = _cutout_dir(root, name)
     scene = home / f"{name}.tscn"
