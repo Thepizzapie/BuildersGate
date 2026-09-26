@@ -209,8 +209,24 @@ def _upsert(root, title: str, body: str) -> dict:
     return _bible.add(root, "reference", title, body=body)
 
 
-def prompt(root, seeded: dict, *, project_name: str = "") -> str:
-    """The director's first turn: the words the human used to type."""
+RESEARCH_FIRST = (
+    "RESEARCH FIRST. Before the thesis, run pre-production research: "
+    "research_suggest for comparable games, then show me the list and wait "
+    "for me to confirm or drop them (research_comp_set); research_teardown "
+    "each confirmed one; then research_plan_draft and show me the draft. I "
+    "adopt it myself (research_plan_adopt) - do not adopt it for me. Once it "
+    "is adopted, the pillars, loop, setting and art direction are in the "
+    "bible: build the thesis and the board on them, and cite "
+    "research_findings where a comparable taught us something.")
+
+
+def prompt(root, seeded: dict, *, project_name: str = "",
+           research: bool = False) -> str:
+    """The director's first turn: the words the human used to type.
+
+    ``research`` puts pre-production research (bgate_core.design.research)
+    in front of the thesis: the comparables are found and torn down and the
+    human adopts a plan before the director settles anything."""
     root = Path(root)
     lines = [f"PROJECT KICKOFF{(' - ' + project_name) if project_name else ''}."]
     brief_rel = seeded.get("brief")
@@ -231,6 +247,8 @@ def prompt(root, seeded: dict, *, project_name: str = "") -> str:
     if seeded.get("skipped"):
         bad = "; ".join(f"{s['name']}: {s['why']}" for s in seeded["skipped"])
         lines.append(f"Refused at upload, not pinned: {bad}.")
+    if research:
+        lines.append(RESEARCH_FIRST)
     lines.append(
         "Do the project start you would do if I had pasted this myself: read "
         "the brief in full; settle the mechanical thesis "

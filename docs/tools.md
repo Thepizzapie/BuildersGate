@@ -2664,6 +2664,143 @@ is what let a two-tailed character ship for a day.
 godot_project: the directory holding project.godot.
 ```
 
+## research_comp_add
+
+```text
+Add a comparable game by hand, already confirmed.
+
+relation says WHY it is comparable: loop | setting | audience | art |
+cautionary | other. A title already on the list comes back as it is with
+`existed: true` - suggesting a game twice is not an error, re-researching it
+by accident would be.
+```
+
+## research_comp_set
+
+```text
+Confirm or drop a comparable (confirmed | dropped | proposed).
+
+Only confirmed comparables can be torn down, so research_suggest's proposals
+cost nothing until someone agrees they are worth researching. Dropped ones
+leave the grid and research_findings but stay on the list, so they are not
+proposed again. `researched` is set by research_teardown only.
+```
+
+## research_findings
+
+```text
+Cited findings from the comparables research, filterable.
+
+Meant for mid-production as much as kickoff: "how did the comparables handle
+meta-progression?" is `research_findings(system="progression")`. `system`
+matches loosely, `verdict` is worked | failed | mixed, `query` is a substring
+over the claim and evidence. Every row carries its sources and a confidence;
+a finding with no source is stored at `low` whatever the agent claimed, so
+treat `low` as a lead rather than a fact. Findings are also in the project
+search index (kind `research.finding`). Read-only; gameplay, art and
+narrative seats can call it.
+```
+
+## research_grid
+
+```text
+Systems down the side, researched comparables across the top.
+
+Each cell is that comparable's verdict on that system with its confidence.
+Once a plan is drafted, `ours` on each row is this game's stance - keep,
+avoid or twist - and the note says which comparable taught it.
+```
+
+## research_plan
+
+```text
+The current research plan and whether it is none, drafted or adopted.
+```
+
+## research_plan_adopt
+
+```text
+Write the approved research plan into the design database. HUMAN-ONLY.
+
+Pillars become `pillar` bible sections, the core loop a `loop` section, the
+setting and art direction `constraint` sections (art direction then reaches
+image prompts through artdirection.clause), and a `Comparables research`
+reference section summarises the comparables and the stance per system.
+Bible sections upsert by title, so adopting a revised plan updates rather
+than doubles them. not_building entries are recorded with tag `research`,
+decisions are filed OPEN for the human to settle, and a thesis that passes
+the greenlight validator is set; one that does not is reported under
+`thesis_skipped` and the plan is still adopted.
+
+WHY A MACHINE IS REFUSED: the same reason as brainstorm_deploy. A plan an
+agent drafted and then adopted is the review step reviewing itself, and it
+becomes the canon every seat is briefed from. Refused on BGATE_SEAT /
+BGATE_WORK_ITEM / an agent actor.
+
+`plan` is the draft as the human edited it; omit it to adopt the saved draft.
+Adopting the same plan twice is refused (it would record its not-building
+entries and decisions twice) unless `again=True`.
+```
+
+## research_plan_draft
+
+```text
+Turn the pitch, brief and findings into a proposed plan. Writes only the draft.
+
+Spawns the research agent once more (no web needed, but the same process
+shape) with every researched comparable's verdicts. The plan has pillars
+(1-7), core loop, setting, art direction, a stance per system, not-building
+entries that each name the comparable that argued against them, the open
+decisions only the human can answer (title, acceptance, leaves_dark), and a
+mechanical thesis when the pitch supports one. Validated strictly rather
+than repaired; saved as `director/research/plan` in the workspace. `notes`
+is the human's steer ("keep it cozy", "no crafting"). Hand the draft to the
+human - research_plan_adopt is theirs.
+```
+
+## research_status
+
+```text
+Where pre-production research stands and the next step.
+
+The comparables with their status and finding counts, counts per status,
+whether the plan is none / drafted / adopted, and `next`: the one step to
+take now. Start here.
+```
+
+## research_suggest
+
+```text
+Propose 5-8 comparable games from the pitch and the brief.
+
+Spawns the research agent: a Claude Code session whose built-in tools are
+exactly WebSearch and WebFetch, with no MCP server, no settings sources and
+an empty scratch directory for a working dir (bgate_ui.agents.researcher).
+It is the one session Builders Gate spawns with the web; everything it says
+is parsed and validated here before a row is written.
+
+The mix is deliberate: same loop, same setting, the audience's current game,
+the target look, and at least one cautionary tale. Games land as PROPOSED -
+show the list to the human and confirm or drop with research_comp_set
+before tearing any down. Titles already on the list are skipped; 12 is the
+cap. Takes a minute or more; uses the brainstorm model setting.
+```
+
+## research_teardown
+
+```text
+Research ONE confirmed comparable, system by system, from real sources.
+
+The research agent reads reviews, postmortems, talks, store reviews and patch
+notes, and grades each system (core loop, progression, meta-progression,
+economy, onboarding, art style, ...) as worked / failed / mixed - judged by
+how players and critics received it - with a confidence and its sources.
+Rows are validated one by one: a malformed finding is dropped and listed
+under `rejected` rather than sinking the rest. A re-run replaces that
+comparable's findings. Several minutes per game (15-minute ceiling), so run
+one per call.
+```
+
 ## room_audit
 
 ```text
