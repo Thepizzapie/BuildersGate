@@ -154,6 +154,21 @@ def test_the_emitter_scales_and_lifts_visual_to_the_player_height(project, doc):
     assert stamp["game_fit"]["game_height_px"] == 128
 
 
+def test_a_planted_clip_stands_on_the_lifted_floor_not_above_it(doc):
+    """The floor solve and the Visual lift correct the same rest-pose
+    offset once between them: idle's first key is the rest pose, unshifted."""
+    doc = cutout.normalise(doc)
+    fit = cutoutwire.game_fit(doc, SIZES, 128)
+    extent = cutout.rest_extent(doc, SIZES)
+    assert abs(fit["lift"] + extent["bottom"] * fit["scale"]) < 0.01
+    root = next(b["name"] for b in doc["bones"] if not b["parent"])
+    facing = int(cutout.template(doc["template"]).get("forward") or 1)
+    m = 1.0 if facing == cutout.CLIP_FORWARD else -1.0
+    idle = cutout.ground_clip(doc, "idle", m, SIZES)
+    lib = (cutout.clip("idle")["tracks"].get(root) or {}).get("pos") or [[0.0, [0.0, 0.0]]]
+    assert abs(idle[root]["pos"][0][1][1] - float(lib[0][1][1])) < 0.01
+
+
 def test_height_ratio_and_an_explicit_height_win(doc):
     d = dict(doc, height_ratio=2.0)
     assert cutoutwire.game_fit(d, SIZES, 128)["game_height_px"] == 256

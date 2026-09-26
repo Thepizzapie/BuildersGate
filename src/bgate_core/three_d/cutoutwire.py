@@ -314,7 +314,9 @@ def game_fit(doc: dict, sizes: dict, player_height_px: int) -> dict:
     hang below the ankle bone otherwise sinks into the floor.
 
     Returns {scale, lift, figure_height_px, game_height_px, source}; scale 1
-    and lift 0 with `source` saying why when there is nothing to fit to.
+    with `source` saying why when there is no game height. The lift applies
+    whenever the parts are measured: cutout.ground_clip solves every planted
+    clip to the rest pose's lowest point, and this puts that point on y = 0.
     """
     doc = cutout.normalise(doc)
     want = int(doc.get("game_height_px") or 0)
@@ -324,7 +326,8 @@ def game_fit(doc: dict, sizes: dict, player_height_px: int) -> dict:
         source = "player_height_px x height_ratio"
     extent = cutout.rest_extent(doc, sizes or {})
     if not want or not extent or extent["height"] <= 0:
-        return {"scale": 1.0, "lift": 0.0,
+        return {"scale": 1.0,
+                "lift": round(-extent["bottom"], 3) if extent else 0.0,
                 "figure_height_px": round(extent["height"], 1) if extent else 0.0,
                 "game_height_px": want,
                 "source": ("no game height: scale_contract_set(player_height_px"
