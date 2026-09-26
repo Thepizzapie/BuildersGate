@@ -126,11 +126,17 @@ class TestItemRoutes:
         empty = client.patch(f"/api/queue/{item['id']}", json={})
         assert empty.status_code == 400
 
-    def test_reopen_requires_a_finished_item_and_a_reason(self, client, root):
+    def test_reopen_is_a_no_op_on_an_open_item_and_requires_a_reason(
+            self, client, root):
         item = queue.add(root, "gameplay", "fix the jump")
+        # An open item is already going to run: reopening it again is a no-op,
+        # not a second run (queue.reopen), so the row comes back untouched.
         still_queued = client.post(f"/api/queue/{item['id']}/reopen",
                                    json={"reason": "again"})
-        assert still_queued.status_code == 400
+        assert still_queued.status_code == 200
+        assert still_queued.json()["data"]["status"] == "queued"
+        assert still_queued.json()["data"]["attempts"] == item["attempts"]
+        assert "again" not in still_queued.json()["data"]["brief"]
 
         queue.set_status(root, item["id"], "failed", result="agent died")
         no_reason = client.post(f"/api/queue/{item['id']}/reopen", json={})
