@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 
 // THE DEV SERVER PROXIES THE DASHBOARD'S API, and that is not a convenience.
@@ -15,6 +16,12 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  // .bgate/ holds the harness's preimages: byte copies of files an agent
+  // edited, test files included. vitest collecting them ran every suite
+  // twice and failed it on stale copies.
+  test: {
+    exclude: ["**/node_modules/**", ".bgate/**", "dist/**"],
   },
   build: {
     // Named chunks and no inlining, so `web_payload` can attribute the budget
