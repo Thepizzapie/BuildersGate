@@ -17,6 +17,43 @@ from bgate_mcp.server import (  # noqa: F401
 
 
 @_tool
+def merge_order(seat: str = "") -> dict:
+    """The recommended order open work should LAND in, and why.
+
+    Wave by wave (wave 0 can land now), the critical path first, then what
+    unblocks the most. Human steps (checkpoints waiting for sign-off, human
+    tasks) are in the order and flagged. Dispatch picks ready work in this
+    order. Read it before starting: if your item sits behind work you could
+    unblock, say so; never land something a higher-ranked item will rewrite.
+    seat narrows the list to one seat's items.
+    Full notes: docs/tools.md#merge_order
+    """
+    from bgate_core.board import mergeorder as _mergeorder
+    return _mergeorder.order(_root(), seat=seat)
+
+
+@_tool
+def human_task_add(title: str, why: str = "", blocks: Optional[list] = None,
+                   after: Optional[list] = None) -> dict:
+    """File a step ONLY THE HUMAN can do, and make work wait on it.
+
+    blocks: open item ids that must not start until the human is done (they
+    gain a real dependency on this step). after: items the human step itself
+    waits on (play the build after #12 lands). Never dispatched; the human
+    marks it done on the dashboard and everything behind it moves. Use it for
+    a decision, a playtest, an account or a purchase - not for a question
+    (ask_human) and not for sign-off on an existing item (a checkpoint).
+    Full notes: docs/tools.md#human_task_add
+    """
+    from bgate_core.board import queue as _queue
+    try:
+        return _queue.add_human_task(_root(), title, why=why, blocks=blocks or [],
+                                     after=after or [], by=_actor() or "")
+    except (ValueError, LookupError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
 def plan_cut(name: str, why: str, undo: bool = False) -> dict:
     """Deliberately NOT build a plan row, on the record. DIRECTOR.
 

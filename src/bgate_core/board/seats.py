@@ -2299,10 +2299,17 @@ def _fit(payload: dict) -> dict:
             plan["entries"] = [{"name": e["name"], "state": e["state"]}
                                for e in (plan.get("entries") or [])[:10]]
 
+    def trim_merge_order() -> None:
+        block = payload.get("merge_order")
+        if isinstance(block, dict) and block:
+            block["first_on_the_board"] = (block.get("first_on_the_board") or [])[:3]
+            block["yours"] = (block.get("yours") or [])[:4]
+
     steps = [
         lambda: payload.__setitem__("providers", (payload.get("providers") or [])[:4]),
         trim_current,
         trim_domain_plan,
+        trim_merge_order,
         lambda: trim_bible(300),
         lambda: trim_refs(20),
         lambda: payload.__setitem__("approved_artifacts",
@@ -2606,6 +2613,11 @@ def _current_block(root: str | os.PathLike[str], hours: int = 6) -> dict:
         return {"available": False, "reason": "current_activity failed"}
 
 
+def _merge_order_block(root: str | os.PathLike[str], role: str) -> dict:
+    from . import mergeorder as _mergeorder
+    return _mergeorder.brief_block(root, role)
+
+
 def _domain_plan_block(root: str | os.PathLike[str], role: str) -> dict:
     from ..design import domainplan as _domainplan
     return _domainplan.brief_block(root, role)
@@ -2762,6 +2774,9 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         # its live state - or the instruction to write one. Plans existed for
         # quests, encounters and storyboards and no brief carried any of them.
         "domain_plan": _domain_plan_block(root, role),
+        # WHAT LANDS FIRST. This seat's items in the recommended merge order,
+        # the top of the whole board, and the steps waiting on the human.
+        "merge_order": _merge_order_block(root, role),
         "truncated": truncated,
         # Bugs that have already been paid for, gated to this seat and this
         # project's dimension. See TRAPS for why they are in the brief and not

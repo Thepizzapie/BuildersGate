@@ -100,7 +100,7 @@
 .bgl-covers i { color: var(--text-3) }
 .bgl-actions { display: flex; gap: 8px; margin-top: 10px }
 
-/* ── Map: the subway view ───────────────────────────────────────────────── */
+/* ── Pipeline frame: stats strip over a pannable scroll box ──────────────── */
 .bgm-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column }
 .bgm-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px;
   background: var(--line); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line) }
@@ -111,24 +111,6 @@
 /* min-width:0, or the box grows to the graph's width and never scrolls. */
 .bgm-scroll { flex: 1; min-height: 0; min-width: 0; width: 100%; overflow: auto; cursor: grab }
 .bgm-scroll.panning { cursor: grabbing; user-select: none }
-.bgm { width: 100%; min-width: 0 }
-.bgm-svg { display: block }
-.bgm-line { transition: transform .45s ease }
-.bgm-title { font: 600 13px var(--sans); fill: var(--text) }
-.bgm-sub { font: 500 11px var(--mono); fill: var(--text-3) }
-.bgm-track { fill: none; stroke-width: 3.5; stroke-linecap: round; opacity: .6;
-  transition: d .45s ease, opacity .3s }
-.bgm-track.spawn { stroke-width: 2; stroke-dasharray: 2 5; opacity: .5 }
-.bgm-track.live { opacity: 1; stroke-dasharray: 8 6; animation: bgl-flow 1s linear infinite }
-.bgm-track.dead { stroke: var(--bad) !important; stroke-dasharray: 2 5 }
-.bgm-station { cursor: pointer; transition: transform .45s ease }
-.bgm-hit { fill: transparent }
-.bgm-station:hover .bgm-hit, .bgm-station.picked .bgm-hit { fill: var(--surface-2) }
-.bgm-name { font: 500 12.5px var(--sans); fill: var(--text) }
-.bgm-station.s-done .bgm-name, .bgm-station.s-cancelled .bgm-name { fill: var(--text-2) }
-.bgm-cap { font: 500 11px var(--mono) }
-.bgm-tick { fill: none; stroke: var(--surface-1, #0f1115); stroke-width: 2; stroke-linecap: round }
-.bgm-pulse { fill: none; stroke-width: 2; animation: bgl-pulse 1.6s ease-out infinite }
 
 /* ── Pipeline: labeled cards left to right ───────────────────────────────── */
 .bgp2 { width: 100%; min-width: 0 }
@@ -160,3 +142,34 @@
 .bgp2-cap { font: 500 11px var(--mono) }
 .bgp2-pulse { fill: var(--accent); animation: bgl-grow 1s ease-in-out infinite alternate }
 .bgp2-fold { font: 500 11px var(--mono); fill: var(--accent); cursor: pointer }
+
+/* ── Merge order: what lands first, git-style ───────────────────────────── */
+.bgo { padding: 8px 14px 16px; overflow: auto; flex: 1; min-height: 0 }
+.bgo-sum { display: flex; gap: 16px; font: 500 11px var(--mono); color: var(--text-3); margin: 4px 0 10px }
+.bgo-sum b { color: var(--text); font-size: 14px; margin-right: 3px }
+.bgo-sum .you b { color: #ffbb45 }
+.bgo-canvas { position: relative; min-width: 100% }
+.bgo-svg { position: absolute; left: 0; top: 0; overflow: visible }
+.bgo-edge { fill: none; stroke-width: 2; opacity: .5; transition: d .45s ease }
+.bgo-edge.crit { opacity: .95; stroke-width: 2.6 }
+.bgo-edge.live { stroke-dasharray: 5 4; animation: bgl-flow 1.1s linear infinite; opacity: .95 }
+.bgo-dot { cursor: pointer; transition: transform .45s ease }
+.bgo-wh { position: absolute; right: 0; height: 28px; display: flex; align-items: flex-end; padding-bottom: 4px;
+  font: 600 11px var(--mono); color: var(--text-3); text-transform: uppercase; letter-spacing: .08em;
+  border-bottom: 1px solid var(--line); transition: top .45s ease }
+.bgo-row { position: absolute; right: 0; height: 40px; display: flex; align-items: center; gap: 10px;
+  padding: 0 6px; border-radius: 6px; cursor: pointer; transition: top .45s ease }
+.bgo-row:hover, .bgo-row.picked { background: var(--surface-2) }
+.bgo-rank { font: 600 13px var(--mono); color: var(--text-3); width: 26px; text-align: right; flex: none }
+.bgo-row.crit .bgo-rank { color: var(--accent) }
+.bgo-row.human .bgo-rank { color: #ffbb45 }
+.bgo-main { min-width: 0; flex: 1 }
+.bgo-t { font: 500 13px var(--sans); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.bgo-id { font: 500 11px var(--mono); color: var(--text-3) }
+.bgo-why { font: 500 11px var(--mono); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.bgo-row.crit .bgo-why { color: var(--text-2) }
+.bgp2-card.s-human .bgp2-face, .bgp2-card.s-question .bgp2-face {
+  fill: color-mix(in srgb, #ffbb45 10%, var(--surface-2)); stroke: #ffbb45; stroke-dasharray: 5 3 }
+.bgp2-card.s-human .bgp2-edge, .bgp2-card.s-question .bgp2-edge { fill: #ffbb45 }
+.bgl-actions { flex-wrap: wrap }
+.bgl-count.s-human, .bgl-count.s-question { color: #ffbb45; border-color: #7a5a22 }

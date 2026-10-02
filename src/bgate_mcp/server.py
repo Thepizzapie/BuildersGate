@@ -323,7 +323,7 @@ _READ_ONLY_TOOLS = frozenset({
     # the board and the seats, read side
     "seat_list", "seat_brief", "seat_can_write", "seat_notes", "handoff_read",
     "queue_list", "queue_get", "queue_next", "board_digest", "plan_status",
-    "domain_plan_template", "domain_plan_status", "domain_plan_draft",
+    "domain_plan_template", "domain_plan_status", "domain_plan_draft", "merge_order",
     "pending_decisions", "decision_list", "not_building_list",
     "iteration_status", "asset_status", "canon_status", "canon_audit",
     # design, canon and lore, read side
