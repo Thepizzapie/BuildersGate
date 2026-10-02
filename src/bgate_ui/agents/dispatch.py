@@ -1079,6 +1079,9 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         allow_dirty = _flag(root, "dispatch.allow_dirty", "BGATE_ALLOW_DIRTY")
     state = _git.dirty(root)
     if state["available"] and state["dirty"] and not allow_dirty:
+        if _land_finished(root):
+            state = _git.dirty(root)
+    if state["available"] and state["dirty"] and not allow_dirty:
         # ANNOUNCED, not merely returned. This is a FLOOR refusal: it stops the
         # WHOLE board, not one item, and it was pull-only - board_digest.blocked
         # reported it correctly to whoever thought to ask, and nobody did.
@@ -2049,6 +2052,53 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
                     failed=True)
     elif not entry.get("worktree"):
         _auto_commit(root, item_id, entry)
+
+
+def _land_finished(root: str, limit: int = 40) -> bool:
+    """Commit what FINISHED items left in the tree, before refusing a dirty one.
+
+    MEASURED (dungeon-weaver, 2026-10-02): runs whose watchdog died with a
+    dashboard - a restart, a killed server - completed their items and never
+    committed, so the next dispatch hit the dirty-tree floor and the human got
+    a "commit first" dialog over work the board itself had finished. Each
+    recently settled item with no live run gets its attributed paths committed
+    under its own number, the same commit its run would have made."""
+    try:
+        with _lock:
+            live = set(_live)
+        rows = [r for r in _queue.list_items(root)
+                if r.get("status") in ("done", "review")
+                and int(r["id"]) not in live]
+    except Exception:
+        return False
+    rows.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=True)
+    from bgate_core.store import provenance as _prov
+    landed = False
+    for row in rows[:limit]:
+        dirty = set(_git.dirty(root).get("paths") or [])
+        if not dirty:
+            break
+        item_id = int(row["id"])
+        # ONLY what the hook saw this run write or a tool registered against
+        # it - never the seat-lane fallback, which would sweep a human's own
+        # edit in that lane into the newest finished item.
+        try:
+            declared = _prov._with_sidecars(
+                _prov._writelog_paths(root, f"item-{item_id}")
+                | _prov._artifact_paths(root, work_item_id=item_id))
+        except Exception:
+            continue
+        mine = sorted(p for p in dirty
+                      if p in declared or any(p.startswith(d.rstrip("/") + "/")
+                                              for d in declared))
+        if not mine:
+            continue
+        seat = str(row.get("seat") or "")
+        made = _git.commit_paths(
+            root, mine, f"bgate: item #{item_id}" + (f" [{seat}]" if seat else "")
+            + " - landed by the harness after its run lost its watchdog")
+        landed = landed or bool(made.get("ok"))
+    return landed
 
 
 def _auto_commit(root: str, item_id: int, entry: dict) -> None:

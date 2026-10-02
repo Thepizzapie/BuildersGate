@@ -78,9 +78,18 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
   async function load() {
     const got = await readJSON<Graph>(`/api/lifecycle?hours=${hours}&limit=400`,
       { nodes: [], edges: [], lanes: 0, counts: {}, checkpoints_waiting: [], multi_run: [] });
-    setGraph(got);
+    /* A failed read keeps the last good graph and only flags the error: a
+       dashboard restart used to blank the pane for good, since nothing
+       retried until the next board event. */
+    setGraph((prev) => (got.__error && prev && !prev.__error
+      ? { ...prev, __error: got.__error } : got));
   }
   useEffect(() => { if (active) void load(); }, [hours, active]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!active || !graph?.__error) return;
+    const t = window.setTimeout(() => { void load(); }, 3000);
+    return () => window.clearTimeout(t);
+  }, [graph, active]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEvents(() => { void load(); }, { enabled: active, fallbackMs: 4000 });
   const view = useMemo(() => {
     const all = graph?.nodes || [];
