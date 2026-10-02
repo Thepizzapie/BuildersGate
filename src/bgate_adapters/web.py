@@ -199,14 +199,45 @@ def installed(project_dir: str | os.PathLike[str]) -> bool:
 # UTF-8 whatever the console codepage is, and on a Windows machine Python's
 # default is cp1252, which raised UnicodeDecodeError inside subprocess's reader
 # thread and handed back an EMPTY stdout for a suite that had just passed 7/7.
+class _Done:
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def _run(cmd: list[str], cwd: str, timeout: int) -> _Done:
+    """Run a node/npm child to completion WITHOUT the MCP server's stdin, and
+    kill the WHOLE TREE on timeout.
+
+    MEASURED (dungeon-weaver, 2026-10-02): web_test_run sat for 8+ minutes on a
+    suite vitest finishes in 0.5 s. Two faults, both fatal under an MCP stdio
+    server: the child inherited the server's stdin (the protocol pipe), and
+    subprocess.run's timeout kills only npm's cmd.exe shim on Windows - the
+    node grandchild keeps the output pipes open, so communicate() never
+    returns and the timeout never fires. stdin is now DEVNULL and a timeout
+    kills the tree before collecting what was printed.
+    """
+    proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace",
+                            creationflags=_NO_WINDOW)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc.pid)
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return _Done(proc.returncode, out or "", err or "")
+
+
 def _npm_run(project_dir: str, script: str, timeout: int,
              extra: Optional[list[str]] = None) -> dict:
     started = time.monotonic()
     try:
         cmd = [_npm(), "run", script, *(extra or [])]
-        got = subprocess.run(cmd, cwd=str(project_dir), capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                             creationflags=_NO_WINDOW)
+        got = _run(cmd, str(project_dir), timeout)
     except NodeNotFound as exc:
         return {"ok": False, "error": str(exc)}
     except subprocess.TimeoutExpired:
@@ -302,10 +333,8 @@ def run_script(script: str, project_dir: Optional[str] = None,
                                       "this at the .js vite emits."}
     started = time.monotonic()
     try:
-        got = subprocess.run([find_node(), str(path)],
-                             cwd=str(project_dir or path.parent),
-                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                             creationflags=_NO_WINDOW)
+        got = _run([find_node(), str(path)], str(project_dir or path.parent),
+                   timeout)
     except NodeNotFound as exc:
         return {"ok": False, "error": str(exc)}
     except subprocess.TimeoutExpired:

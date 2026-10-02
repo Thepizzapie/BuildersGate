@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 import pytest
 
@@ -429,3 +430,32 @@ class TestContainment:
         found = adopt.detect(tmp_path)
         assert found["engine"] == "web" and found["dimension"] == "3d"
         assert found["dimension_evidence"]["features"] == ["three"]
+
+
+class TestChildProcesses:
+    """npm/node children never inherit the MCP server's stdin, and a timeout
+    kills the whole tree: web_test_run hung 8+ minutes on a 0.5 s suite."""
+
+    def test_stdin_is_detached(self, monkeypatch, tmp_path):
+        import subprocess
+        seen = {}
+        real = subprocess.Popen
+
+        def spy(cmd, **kw):
+            seen.update(kw)
+            return real([sys.executable, "-c", "print('ok')"], **kw)
+        monkeypatch.setattr(web.subprocess, "Popen", spy)
+        got = web._run(["node", "x.js"], str(tmp_path), 30)
+        assert seen["stdin"] is subprocess.DEVNULL
+        assert got.returncode == 0 and "ok" in got.stdout
+
+    def test_timeout_kills_the_tree(self, monkeypatch, tmp_path):
+        import subprocess
+        killed = []
+        real_kill = web._kill_tree
+        monkeypatch.setattr(web, "_kill_tree",
+                            lambda pid: (killed.append(pid), real_kill(pid)))
+        with pytest.raises(subprocess.TimeoutExpired):
+            web._run([sys.executable, "-c", "import time; time.sleep(30)"],
+                     str(tmp_path), 1)
+        assert killed
