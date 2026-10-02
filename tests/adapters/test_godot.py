@@ -86,11 +86,19 @@ class TestStdinIsolation:
         """Same MCP-server hazard as Blender: inheriting stdin hangs forever."""
         captured = {}
 
+        # _spawn polls a Popen now (ITEM #19), so the spy stands in for Popen.
+        class Proc:
+            pid = 1
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", ""
+
         def spy(cmd, **kwargs):
             captured.update(kwargs)
-            return godot.subprocess.CompletedProcess(cmd, 0, "", "")
+            return Proc()
 
-        monkeypatch.setattr(godot.subprocess, "run", spy)
+        monkeypatch.setattr(godot.subprocess, "Popen", spy)
         godot._spawn(["x"], timeout=1)
         assert captured["stdin"] is godot.subprocess.DEVNULL
 
