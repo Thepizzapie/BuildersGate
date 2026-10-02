@@ -1831,7 +1831,35 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                     # which turns the sanctioned loop into a trap. The run's
                     # ceilings (runtime, stall, cost) still bound the whole
                     # session, so this is not an escape from any limit.
-                    if _open_claims(root, item_id):
+                    # LAND THE FINISHED ITEM NOW, not when the process exits.
+                    # MEASURED (dungeon-weaver #4): the agent completed,
+                    # claimed #7 and ended its turn; the commit waited on an
+                    # exit that the open claim held off, the tree stayed
+                    # dirty, and every other dispatch was refused while the
+                    # human got a "commit first" dialog.
+                    _commit_settled(root, item_id, entry)
+                    claims = _open_claims(root, item_id)
+                    if claims and _turn_ended(entry):
+                        # A claimant whose turn ENDED is waiting on stdin,
+                        # not working. One nudge to start the claim; idle
+                        # again after that, the pipe closes and _reap
+                        # requeues the claim for a fresh dispatch.
+                        nudged = entry.get("claim_nudged_at")
+                        if nudged is None:
+                            ids = ", ".join(f"#{c['id']}" for c in claims)
+                            if _send(entry, f"You claimed {ids} and ended your "
+                                            "turn. Start it now, or stop: an "
+                                            "idle claim is requeued."):
+                                entry["claim_nudged_at"] = time.monotonic()
+                                entry["claim_nudge_log"] = _log_size(entry)
+                                continue
+                            claims = []
+                        elif (_log_size(entry) != entry.get("claim_nudge_log")
+                              or time.monotonic() - nudged >= CLAIM_IDLE_S):
+                            claims = []
+                    elif claims:
+                        entry.pop("claim_nudged_at", None)
+                    if claims:
                         continue
                     try:
                         entry["stdin"].close()
@@ -1867,6 +1895,52 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
             # run. Returning here left the entry in _live with a corpse in it,
             # which is exactly the stuck row this file keeps growing scars over.
             entry["eof_at"] = time.monotonic()
+
+
+CLAIM_IDLE_S = 120.0
+
+
+def _log_size(entry: dict) -> int:
+    try:
+        return os.path.getsize(entry.get("log") or "")
+    except OSError:
+        return -1
+
+
+def _turn_ended(entry: dict) -> bool:
+    """True when the run's last stream event is a result: the session ended
+    its turn and is waiting on stdin, whatever it holds."""
+    try:
+        with open(entry.get("log") or "", "rb") as fh:
+            fh.seek(max(0, os.path.getsize(fh.name) - 65536))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    for line in reversed(tail.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            return json.loads(line).get("type") == "result"
+        except ValueError:
+            return False
+    return False
+
+
+def _commit_settled(root: str, item_id: int, entry: dict) -> None:
+    """Commit once per newly settled item of this run (its own item, then any
+    it claimed and completed), so finished work lands while the run goes on."""
+    try:
+        ids = {item_id} | {int(r["id"]) for r in _queue.claimed_by(
+            root, f"agent:item-{item_id}")
+            if r.get("status") in ("done", "failed", "review")}
+    except Exception:
+        ids = {item_id}
+    seen = entry.setdefault("committed_settled", set())
+    if ids <= seen:
+        return
+    seen |= ids
+    _auto_commit(root, item_id, entry)
 
 
 def _open_claims(root: str, item_id: int) -> list[dict]:
@@ -2393,6 +2467,12 @@ def reconcile(root: str) -> dict:
                             failed=(outcome != "done"))
         except Exception:
             continue
+        # The watchdog that would have committed this run died with the old
+        # dashboard; without this its files sit uncommitted and the next
+        # dispatch is refused on a dirty tree.
+        if outcome == "done":
+            _auto_commit(root, item_id, {"seat": item.get("seat") or "",
+                                         "base_commit": _git.head(root) or ""})
         settled.append({"item_id": item_id, "status": outcome})
     return {"settled": settled}
 
