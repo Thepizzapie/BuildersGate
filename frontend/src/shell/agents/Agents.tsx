@@ -9,9 +9,7 @@ import { setSelection } from "../selection";
 import { askText, notifyUpdate, mutate, readJSON, toast } from "../../bridge";
 import { ago } from "../seats/api";
 import { DirectorChat } from "./DirectorChat";
-import { FloorPane } from "./FloorPane";
 import { Lifecycle } from "./Lifecycle";
-import { moduleOff } from "../../bridge";
 import { Streamer } from "./Streamer";
 import { ChatLive } from "./ChatLive";
 import {
@@ -54,7 +52,7 @@ declare global {
   }
 }
 
-export type Pane = "board" | "lifecycle" | "graph" | "floor";
+export type Pane = "board" | "lifecycle" | "graph";
 
 const CLOSED = new Set(["done", "failed", "cancelled", "approved", "rejected"]);
 
@@ -145,9 +143,9 @@ export function Agents() {
 function Rail({ state, open, pane, setPane, dismissed, onDismiss, onRefresh, onClose }: {
   state: ConsoleState;
   open: Item[];
-  /* THREE READINGS OF ONE QUEUE: a list, a dependency graph, and the floor,
-     where a seat is a room and an agent's POSITION is its state. The pane is
-     the parent's state so the rest of the screen can read it. */
+  /* THREE READINGS OF ONE QUEUE: a list, the lifecycle (the dependency
+     pipeline and the merge order) and the card graph. The pane is the
+     parent's state so the rest of the screen can read it. */
   pane: Pane;
   setPane: (p: Pane) => void;
   dismissed: ReadonlySet<string>;
@@ -185,10 +183,6 @@ function Rail({ state, open, pane, setPane, dismissed, onDismiss, onRefresh, onC
                               label: <span><Ti name="git-merge" size={12} /> Lifecycle</span> },
                             { value: "graph",
                               label: <span><Ti name="sitemap" size={12} /> Graph</span> },
-                            /* The floor is a MODULE — a project that switched
-                               it off gets no third segment. */
-                            ...(moduleOff("floor") ? [] : [{ value: "floor",
-                              label: <span><Ti name="building" size={12} /> Floor</span> }]),
                           ]} />
         <span style={{ flex: 1 }} />
         <Badge size="sm" variant="default" leftSection={<Ti name="clock" size={11} />}>
@@ -204,7 +198,6 @@ function Rail({ state, open, pane, setPane, dismissed, onDismiss, onRefresh, onC
                  queueView={tab !== "queue" ? null
                    : pane === "lifecycle" ? <Lifecycle />
                    : pane === "graph" ? <GraphPane state={state} />
-                   : pane === "floor" && !moduleOff("floor") ? <FloorPane state={state} />
                    : null} />
     </div>
   );

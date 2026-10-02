@@ -112,7 +112,7 @@ test("lazy screens load their chunks from the static mount", async ({ page }) =>
     await expect(island).not.toContainText("This screen could not load");
     await expect(island.locator(selector)).toBeVisible();
   }
-  for (const chunk of ["Overview", "Assets", "World", "Playtests", "Floor2",
+  for (const chunk of ["Overview", "Assets", "World", "Playtests", "Floor",
                        "Agents", "Room", "Settings", "Seats"]) {
     expect(loadedChunks).toContain(`/static/dist/bgate-${chunk}.js`);
   }
