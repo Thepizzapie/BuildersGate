@@ -220,3 +220,11 @@ class TestDeployAndDraft:
         got = domainplan.draft(root, "narrative")
         assert got["template"]["entry"] == "beat"
         assert domainplan.get(root, "narrative") is None
+
+
+def test_an_explicit_empty_list_closes_open_questions(root):
+    domainplan.set_plan(root, "gameplay", {**GAMEPLAY, "open_questions": ["death saves?"]})
+    domainplan.set_plan(root, "gameplay", {"goal": GAMEPLAY["goal"]})
+    assert domainplan.get(root, "gameplay")["open_questions"] == ["death saves?"]
+    domainplan.set_plan(root, "gameplay", {"open_questions": []})
+    assert domainplan.get(root, "gameplay")["open_questions"] == []

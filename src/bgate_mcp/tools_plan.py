@@ -109,7 +109,8 @@ def domain_plan_set(domain: str, goal: str = "",
     leaves_dark: what the domain deliberately does not do.
     open_questions: what you could not decide - state it, do not guess.
     merge=True (default) upserts entries by name and keeps the rest; pass
-    merge=False to replace the entry list. Returns the cross-domain findings
+    merge=False to replace the entry list. open_questions=[] (or
+    leaves_dark=[]) clears that list - how an answered question closes. Returns the cross-domain findings
     for this domain (a mechanic nobody teaches, a mechanic with no sound).
     A seat writes its own domain; the director writes any.
     Full notes: docs/tools.md#domain_plan_set
@@ -122,11 +123,16 @@ def domain_plan_set(domain: str, goal: str = "",
                              f"{_dp.DOMAINS[domain]['seat']} seat (or the "
                              "director). Say what it should change in your "
                              "result note or queue_add it to that seat."}
-        plan = {"goal": goal, "done_when": done_when or [],
-                "entries": entries or [], "leaves_dark": leaves_dark or [],
-                "open_questions": open_questions or []}
+        plan = {"goal": goal, "done_when": done_when, "entries": entries,
+                "leaves_dark": leaves_dark, "open_questions": open_questions}
         if merge:
-            plan = {k: v for k, v in plan.items() if v not in ("", [])}
+            # None = leave as is; [] for leaves_dark/open_questions = clear.
+            plan = {k: v for k, v in plan.items()
+                    if v is not None and not (v == "" or (v == [] and k in (
+                        "done_when", "entries")))}
+        else:
+            plan = {k: (v if v is not None else ([] if k != "goal" else ""))
+                    for k, v in plan.items()}
         return _dp.set_plan(_root(), domain, plan, by=_actor() or seat,
                             merge=bool(merge))
     except (ValueError, LookupError) as exc:
