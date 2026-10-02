@@ -143,10 +143,12 @@ export const SCREEN_NOTE: Record<string, string> = {
 export const SEAT_COLOR: Record<string, string> = {
   director: "#e8c05a", narrative: "#b98cf0", gameplay: "#ff6a4a", tech: "#5aa8ff",
   art: "#ff85bd", audio: "#43d6a5", cinematic: "#ffb347", qa: "#a3e055",
+  level: "#4fc7bf",
 };
 
 export const SEAT_ICON: Record<string, string> = {
   director: "user-star", narrative: "book-2", gameplay: "device-gamepad-2",
+  level: "map-2",
   tech: "code", art: "palette", audio: "wave-sine", cinematic: "movie",
   qa: "shield-check",
 };

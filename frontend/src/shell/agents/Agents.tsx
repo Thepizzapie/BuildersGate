@@ -10,6 +10,7 @@ import { askText, notifyUpdate, mutate, readJSON, toast } from "../../bridge";
 import { ago } from "../seats/api";
 import { DirectorChat } from "./DirectorChat";
 import { FloorPane } from "./FloorPane";
+import { Lifecycle } from "./Lifecycle";
 import { moduleOff } from "../../bridge";
 import { Streamer } from "./Streamer";
 import { ChatLive } from "./ChatLive";
@@ -46,11 +47,14 @@ declare global {
       apply(state: unknown): void;
       activate?(): void;
       fit?(): void;
+      relayout?(): void;
+      scope?: string;
+      setScope?(scope: string): Promise<void>;
     };
   }
 }
 
-export type Pane = "board" | "graph" | "floor";
+export type Pane = "board" | "lifecycle" | "graph" | "floor";
 
 const CLOSED = new Set(["done", "failed", "cancelled", "approved", "rejected"]);
 
@@ -174,6 +178,11 @@ function Rail({ state, open, pane, setPane, dismissed, onDismiss, onRefresh, onC
                           data={[
                             { value: "board",
                               label: <span><Ti name="layout-list" size={12} /> Board</span> },
+                            /* The dependency lifecycle: chains as lanes,
+                               dependencies as merge lines, runs per ticket,
+                               human checkpoints - see Lifecycle.tsx. */
+                            { value: "lifecycle",
+                              label: <span><Ti name="git-merge" size={12} /> Lifecycle</span> },
                             { value: "graph",
                               label: <span><Ti name="sitemap" size={12} /> Graph</span> },
                             /* The floor is a MODULE — a project that switched
@@ -193,6 +202,7 @@ function Rail({ state, open, pane, setPane, dismissed, onDismiss, onRefresh, onC
                     both are pictures of the board's items, so neither has
                     anything to say about Approve or Stream. */
                  queueView={tab !== "queue" ? null
+                   : pane === "lifecycle" ? <Lifecycle />
                    : pane === "graph" ? <GraphPane state={state} />
                    : pane === "floor" && !moduleOff("floor") ? <FloorPane state={state} />
                    : null} />
@@ -552,6 +562,18 @@ function QueueCard({ item, items, onDismiss }: { item: Item; items: Item[]; onDi
  * called on every console poll, which is how the graph learns what is running;
  * it diffs internally against `_sig` and rebuilds only when the shape moved.
  */
+/* active = open work and what it stands on; all = plus the finished history. */
+function GraphScope() {
+  const [scope, setScope] = useState<string>(() => window.AgentsGraph?.scope || "active");
+  const pick = (v: string) => { setScope(v); void window.AgentsGraph?.setScope?.(v); };
+  return <>
+    <span className={scope === "active" ? "on" : ""} role="button" onClick={() => pick("active")}
+          title="running, queued, in review, gated and fresh failures, plus everything they depend on">active</span>
+    <span className={scope === "all" ? "on" : ""} role="button" onClick={() => pick("all")}
+          title="everything that landed, with the live work on top of it">all</span>
+  </>;
+}
+
 function GraphPane({ state }: { state: ConsoleState }) {
   const host = useRef<HTMLDivElement>(null);
   const rail = useRef<HTMLDivElement>(null);
@@ -595,8 +617,9 @@ function GraphPane({ state }: { state: ConsoleState }) {
   return (
     <div className="bg4-graphwrap">
       <div className="bg4-graphbar">
-        <span className="on" title="running, queued, gated, and recent failures plus their dependency chain">active</span>
+        <GraphScope />
         <span className="sp" />
+        <button onClick={() => window.AgentsGraph?.relayout?.()} title="forget dragged positions and lay the graph out again">tidy</button>
         <button onClick={() => window.AgentsGraph?.fit?.()} title="fit to view">fit</button>
       </div>
       <div className="cg-canvas" ref={host} />

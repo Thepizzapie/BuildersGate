@@ -384,6 +384,11 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # The map of this surface, and the way to grow it. Universal by
         # definition.
         "tool_index", "tool_unlock",
+        # DOMAIN PLANS. Every seat reads and revises its own discipline's
+        # plan; promoting and cutting rows is the director's.
+        "domain_plan_check", "domain_plan_draft", "domain_plan_set",
+        "domain_plan_status", "domain_plan_template",
+        "plan_promote", "plan_cut", "queue_accept_known_issue",
     }),
     "canon": frozenset({
         "bible_add", "bible_read", "bible_ref_attach", "bible_ref_detach",
@@ -395,6 +400,8 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "greenlight_status", "greenlight_thesis_set",
         "greenlight_graybox_submit", "greenlight_graybox_verdict",
         "greenlight_advance", "greenlight_waive", "greenlight_supersede",
+        "greenlight_risks_set", "greenlight_risk_retire",
+        "greenlight_lock", "greenlight_unlock",
         "encounter_design_set", "scale_contract_set",
         "lore_add", "lore_brief", "lore_fact", "lore_link", "lore_list",
         "lore_update", "not_building_add", "not_building_list",
@@ -412,6 +419,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # .tscn never install a controller either.
         "kit_list", "kit_install", "kit_remove",
         "iteration_record_checks", "iteration_status",
+        "iteration_open", "iteration_attach", "iteration_close",
         "scene_attach_script", "scene_node_add", "scene_outline",
         "scene_rename_node", "scene_reparent_node", "scene_set_property",
         "scene_swap_resource", "scene_unwire", "scene_wire",
@@ -474,6 +482,11 @@ DIRECTOR_ONLY: frozenset[str] = frozenset({
     # retraction (a better measurement) is anybody's to produce; the decision
     # to accept it is not.
     "greenlight_supersede",
+    # SCOPE IS ARBITRATION TOO: which rows go on the board, which are cut,
+    # when the game stops taking features or content, what the key risks are,
+    # and what an iteration commits to.
+    "plan_promote", "plan_cut", "greenlight_lock", "greenlight_unlock",
+    "greenlight_risks_set", "iteration_open", "iteration_close",
 })
 
 

@@ -1,0 +1,162 @@
+/* The lifecycle graph: lanes on the left, one row per ticket, newest on top. */
+
+.bgl { display: flex; flex-direction: column; min-height: 0; min-width: 0; height: 100%; position: relative }
+.bgl-overlay {
+  position: fixed; inset: 0; z-index: 10000; background: var(--surface-0, #0b0d10);
+  padding: 14px 18px; display: flex;
+}
+.bgl-overlay .bgl { flex: 1; width: 100% }
+
+.bgl-head { display: flex; gap: 8px; align-items: center; padding: 6px 8px }
+.bgl-windows { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden }
+.bgl-windows button {
+  font: 500 11px var(--mono); color: var(--text-3); background: none; border: 0;
+  padding: 4px 9px; cursor: pointer;
+}
+.bgl-windows button.on { background: var(--surface-2); color: var(--text) }
+.bgl-seat {
+  font: 500 11px var(--mono); background: var(--surface-2); color: var(--text-2);
+  border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px;
+}
+.bgl-icon {
+  background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--text-2);
+  padding: 3px 5px; cursor: pointer; display: inline-flex;
+}
+
+.bgl-counts { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 6px }
+.bgl-count { font: 500 10px var(--mono); color: var(--text-3); border: 1px solid var(--line);
+  border-radius: 10px; padding: 1px 7px }
+.bgl-count.s-running { color: var(--accent); border-color: var(--accent) }
+.bgl-count.s-checkpoint { color: #ffbb45; border-color: #7a5a22 }
+.bgl-count.s-blocked, .bgl-count.s-failed, .bgl-count.s-multirun { color: var(--bad); border-color: var(--bad-line) }
+.bgl-err, .bgl-empty { font: 400 12px var(--sans); color: var(--text-3); padding: 12px }
+
+.bgl-scroll { flex: 1; overflow: auto; min-height: 0 }
+.bgl-canvas { position: relative; min-width: 100% }
+.bgl-svg { position: absolute; left: 0; top: 0; overflow: visible }
+
+/* FLUID: a reorder slides; nothing is redrawn from scratch. */
+.bgl-edge { fill: none; stroke-width: 2; opacity: .55; transition: d .45s ease, opacity .3s }
+.bgl-edge.live { opacity: .95; stroke-dasharray: 5 4; animation: bgl-flow 1.2s linear infinite }
+.bgl-edge.dead { stroke: var(--bad) !important; stroke-dasharray: 2 4 }
+@keyframes bgl-flow { to { stroke-dashoffset: -18 } }
+
+.bgl-dot { cursor: pointer; transition: transform .45s ease }
+.bgl-dot.s-waiting circle:first-child, .bgl-dot.s-held circle:first-child { stroke-dasharray: 3 2 }
+.bgl-dot.s-held circle:first-child { stroke: var(--text-3) }
+.bgl-dot.s-failed circle:first-child, .bgl-dot.s-blocked circle:first-child { stroke: var(--bad); fill: var(--bad) }
+.bgl-dot.s-cancelled, .bgl-dot.s-parked { opacity: .45 }
+.bgl-dot.picked circle:first-child, .bgl-dot.picked rect { stroke-width: 3.5 }
+.bgl-pulse { fill: none; stroke-width: 2; transform-origin: 0 0; animation: bgl-pulse 1.6s ease-out infinite }
+@keyframes bgl-pulse { from { opacity: .9; transform: scale(.7) } to { opacity: 0; transform: scale(1.7) } }
+
+.bgl-row {
+  position: absolute; right: 0; top: 0; height: 30px;
+  display: flex; align-items: center; gap: 7px; padding: 0 10px 0 4px;
+  font: 400 12px var(--sans); color: var(--text-2); cursor: pointer;
+  transition: transform .45s ease, background .2s; border-radius: 4px;
+  white-space: nowrap; overflow: hidden;
+}
+.bgl-row:hover { background: var(--surface-2) }
+.bgl-row.picked { background: var(--surface-2); color: var(--text) }
+.bgl-row.s-done, .bgl-row.s-cancelled { color: var(--text-3) }
+.bgl-row.s-running { color: var(--text) }
+.bgl-id { font: 500 10px var(--mono); color: var(--text-3); flex: none }
+.bgl-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis }
+.bgl-seatchip { font: 500 10px var(--mono); flex: none }
+.bgl-state { font: 500 10px var(--mono); color: var(--text-3); flex: none; min-width: 56px; text-align: right }
+.bgl-state.s-running { color: var(--accent) }
+.bgl-state.s-ready { color: var(--good) }
+.bgl-state.s-checkpoint, .bgl-state.s-review { color: #ffbb45 }
+.bgl-state.s-blocked, .bgl-state.s-failed { color: var(--bad) }
+.bgl-tag { font: 500 10px var(--mono); flex: none; border-radius: 8px; padding: 0 5px;
+  border: 1px solid var(--line); color: var(--text-3); display: inline-flex; align-items: center }
+.bgl-tag.cp { color: #ffbb45; border-color: #7a5a22 }
+.bgl-tag.runs { color: var(--warn); border-color: var(--warn-line) }
+.bgl-tag.runs.hot { color: var(--bad); border-color: var(--bad-line) }
+.bgl-tag.clock { color: var(--accent); border-color: transparent }
+
+/* The run timeline, expanded view only: one bar per run across the window. */
+.bgl-runs { position: relative; flex: none; width: 34%; height: 8px;
+  background: var(--surface-2); border-radius: 4px; margin-left: 6px }
+.bgl-runs i { position: absolute; top: 0; height: 8px; border-radius: 4px; background: var(--text-3) }
+.bgl-runs i.r-done, .bgl-runs i.r-ok, .bgl-runs i.r-succeeded { background: var(--good) }
+.bgl-runs i.r-failed, .bgl-runs i.r-killed, .bgl-runs i.r-error { background: var(--bad) }
+.bgl-runs i.r-open { animation: bgl-grow 1.4s ease-in-out infinite alternate }
+@keyframes bgl-grow { from { opacity: .55 } to { opacity: 1 } }
+
+.bgl-detail {
+  border-top: 1px solid var(--line); background: var(--surface-2); padding: 10px 12px;
+  max-height: 45%; overflow: auto; font: 400 12px/1.5 var(--sans); color: var(--text-2);
+}
+.bgl-dhead { display: flex; gap: 8px; align-items: center; color: var(--text) }
+.bgl-dmeta { display: flex; flex-wrap: wrap; gap: 8px; font: 500 10px var(--mono); color: var(--text-3); margin: 4px 0 6px }
+.bgl-dmeta .sev { color: var(--bad) }
+.bgl-dline { margin-top: 4px }
+.bgl-dline.warn { color: var(--warn) }
+.bgl-dline.result { font: 400 11px/1.5 var(--mono); color: var(--text-3); white-space: pre-wrap }
+.bgl-covers { margin-top: 8px; border-left: 2px solid #7a5a22; padding-left: 8px }
+.bgl-covers div { font: 400 11px/1.6 var(--sans) }
+.bgl-covers i { color: var(--text-3) }
+.bgl-actions { display: flex; gap: 8px; margin-top: 10px }
+
+/* ── Map: the subway view ───────────────────────────────────────────────── */
+.bgm-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column }
+.bgm-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px;
+  background: var(--line); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line) }
+.bgm-stats > div { background: var(--surface-1, #0f1115); padding: 6px 10px; display: flex;
+  flex-direction: column; gap: 2px }
+.bgm-stats span { font: 500 10px var(--mono); color: var(--text-3) }
+.bgm-stats b { font: 600 15px var(--mono); color: var(--text) }
+/* min-width:0, or the box grows to the graph's width and never scrolls. */
+.bgm-scroll { flex: 1; min-height: 0; min-width: 0; width: 100%; overflow: auto; cursor: grab }
+.bgm-scroll.panning { cursor: grabbing; user-select: none }
+.bgm { width: 100%; min-width: 0 }
+.bgm-svg { display: block }
+.bgm-line { transition: transform .45s ease }
+.bgm-title { font: 600 13px var(--sans); fill: var(--text) }
+.bgm-sub { font: 500 11px var(--mono); fill: var(--text-3) }
+.bgm-track { fill: none; stroke-width: 3.5; stroke-linecap: round; opacity: .6;
+  transition: d .45s ease, opacity .3s }
+.bgm-track.spawn { stroke-width: 2; stroke-dasharray: 2 5; opacity: .5 }
+.bgm-track.live { opacity: 1; stroke-dasharray: 8 6; animation: bgl-flow 1s linear infinite }
+.bgm-track.dead { stroke: var(--bad) !important; stroke-dasharray: 2 5 }
+.bgm-station { cursor: pointer; transition: transform .45s ease }
+.bgm-hit { fill: transparent }
+.bgm-station:hover .bgm-hit, .bgm-station.picked .bgm-hit { fill: var(--surface-2) }
+.bgm-name { font: 500 12.5px var(--sans); fill: var(--text) }
+.bgm-station.s-done .bgm-name, .bgm-station.s-cancelled .bgm-name { fill: var(--text-2) }
+.bgm-cap { font: 500 11px var(--mono) }
+.bgm-tick { fill: none; stroke: var(--surface-1, #0f1115); stroke-width: 2; stroke-linecap: round }
+.bgm-pulse { fill: none; stroke-width: 2; animation: bgl-pulse 1.6s ease-out infinite }
+
+/* ── Pipeline: labeled cards left to right ───────────────────────────────── */
+.bgp2 { width: 100%; min-width: 0 }
+.bgp2-svg { display: block }
+.bgp2-band { transition: transform .45s ease }
+.bgp2-title { font: 600 13px var(--sans); fill: var(--text) }
+.bgp2-sub { font: 500 11px var(--mono); fill: var(--text-3) }
+.bgp2-box rect { fill: none; stroke: var(--text-3); stroke-dasharray: 4 3; opacity: .55 }
+.bgp2-box text { font: 500 11px var(--mono); fill: var(--text-3) }
+.bgp2-wire { fill: none; stroke-width: 2; opacity: .55; transition: d .45s ease, opacity .3s }
+.bgp2-wire.spawn { stroke-dasharray: 2 4; opacity: .45 }
+.bgp2-wire.live { opacity: 1; stroke-dasharray: 6 5; animation: bgl-flow 1s linear infinite }
+.bgp2-wire.dead { stroke: var(--bad) !important; stroke-dasharray: 2 4 }
+.bgp2-card { cursor: pointer; transition: transform .45s ease }
+.bgp2-face { fill: var(--surface-2); stroke: var(--line); stroke-width: 1 }
+.bgp2-edge { fill: var(--seat) }
+.bgp2-card.s-done .bgp2-face { fill: color-mix(in srgb, var(--good) 12%, var(--surface-2)); stroke: var(--good-line) }
+.bgp2-card.s-running .bgp2-face { fill: color-mix(in srgb, var(--accent) 14%, var(--surface-2)); stroke: var(--accent) }
+.bgp2-card.s-checkpoint .bgp2-face, .bgp2-card.s-review .bgp2-face {
+  fill: color-mix(in srgb, #ffbb45 14%, var(--surface-2)); stroke: #ffbb45 }
+.bgp2-card.s-failed .bgp2-face, .bgp2-card.s-blocked .bgp2-face {
+  fill: color-mix(in srgb, var(--bad) 12%, var(--surface-2)); stroke: var(--bad-line) }
+.bgp2-card.s-waiting .bgp2-face, .bgp2-card.s-held .bgp2-face, .bgp2-card.s-parked .bgp2-face {
+  fill: none; stroke-dasharray: 4 3 }
+.bgp2-card.picked .bgp2-face { stroke-width: 2.5 }
+.bgp2-card:hover .bgp2-face { stroke: var(--text-2) }
+.bgp2-name { font: 500 12.5px var(--sans); fill: var(--text) }
+.bgp2-card.s-waiting .bgp2-name, .bgp2-card.s-held .bgp2-name { fill: var(--text-2) }
+.bgp2-cap { font: 500 11px var(--mono) }
+.bgp2-pulse { fill: var(--accent); animation: bgl-grow 1s ease-in-out infinite alternate }
+.bgp2-fold { font: 500 11px var(--mono); fill: var(--accent); cursor: pointer }

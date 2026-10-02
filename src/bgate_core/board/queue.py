@@ -137,6 +137,59 @@ HELD_SOURCES = ("chat",)
 # a rename in one place and not the other silently makes escalations
 # auto-dispatchable again, which is the exact failure the tuple exists to stop.
 FAILURE_ESCALATION_SOURCE = "failure-escalation"
+
+# ── kind and severity (the production ladder) ───────────────────────────────
+# What an item DOES to the game. Feature lock refuses new `feature` filings,
+# content lock refuses new `content`, and the release gate reads `severity`.
+# '' is process work - gates, planning, debriefs - which no lock touches.
+KINDS = ("feature", "content", "fix", "polish")
+SEVERITIES = ("showstopper", "major", "minor")
+
+#: Sources whose items are repairs by construction.
+FIX_SOURCES = frozenset({
+    "playtest", "playtest-triage", "playtest-repro", "qa-gate-escalation",
+    FAILURE_ESCALATION_SOURCE, "unblock",
+})
+#: Process work: it reviews or plans the game rather than changing it. Never
+#: held by the slice stage and never refused by a lock.
+PROCESS_SOURCES = frozenset({
+    "qa-gate", "slice-check", "domain-plan", "completion", "chat",
+    "iteration-debrief", "decompose",
+})
+DECOMPOSE_SOURCE = "decompose"
+
+_ROW_KIND = {"system": "feature", "entity": "feature", "level": "feature",
+             "scene": "feature", "asset": "content", "sound": "content",
+             "dialogue": "content"}
+_CONTENT_DOMAINS = {"art", "animation", "audio", "narrative", "cinematic"}
+
+
+def kind_for_row(root: str | os.PathLike[str], name: str) -> str:
+    """The kind a plan row's work is: its discipline first, its row kind
+    second. '' when there is no such row."""
+    try:
+        row = db.connect(root).execute(
+            "SELECT kind, domain FROM plan_row WHERE name = ?",
+            (str(name or ""),)).fetchone()
+    except Exception:                                             # noqa: BLE001
+        return ""
+    if row is None:
+        return ""
+    if row["domain"] in _CONTENT_DOMAINS:
+        return "content"
+    return _ROW_KIND.get(row["kind"], "feature")
+
+
+def derive_kind(root: str | os.PathLike[str], source: str,
+                source_ref: str = "") -> str:
+    """The kind an item gets when its filer did not say. Never refuses."""
+    if source in FIX_SOURCES:
+        return "fix"
+    if source in PROCESS_SOURCES:
+        return ""
+    if source == "game-plan":
+        return kind_for_row(root, source_ref)
+    return ""
 # A row created in two statements — INSERT with a placeholder, then UPDATE with
 # the real text — is briefly dispatchable with nothing in it.
 PLACEHOLDER_BRIEF = "(preparing%"
@@ -278,12 +331,56 @@ def brief_breadth(brief: str) -> dict:
     return {"score": score, "reasons": reasons}
 
 
+_ACCEPT_SPLIT_RE = re.compile(r";|\band\b|\n\s*[-*\d]", re.I)
+
+
+def acceptance_breadth(acceptance: str) -> dict:
+    """Does the acceptance line name more than ONE check? Same shape as
+    brief_breadth. An item held to three checks is three items: each failed
+    check is another run of the whole thing."""
+    text = str(acceptance or "").strip()
+    parts = [p for p in _ACCEPT_SPLIT_RE.split(text) if p and p.strip()]
+    if len(parts) > 2:
+        return {"score": 1, "reasons": [
+            f"acceptance names {len(parts)} checks - one item, one check; "
+            "the rest are their own items"]}
+    return {"score": 0, "reasons": []}
+
+
+def scope_grade(brief: str, acceptance: str = "", size: str = "medium",
+                title: str = "") -> dict:
+    """Everything the filing paths know about whether this is ONE deliverable.
+
+    brief_breadth + acceptance_breadth + the size: a 'large' item is graded
+    one point broader, because large is what a filer reaches for when the work
+    is really several items. Score >= 2 is refused for every filer (the
+    director included) unless the call carries an explicit allow_broad reason.
+    """
+    got = brief_breadth(brief)
+    acc = acceptance_breadth(acceptance)
+    score = got["score"] + acc["score"]
+    reasons = list(got["reasons"]) + list(acc["reasons"])
+    if str(size or "").lower() == "large":
+        score += 1
+        reasons.append("size 'large' - a large item is usually a chain; split "
+                       "it into small/medium links with queue_add_chain")
+    words = re.findall(r"\b(and|plus|also|then)\b", str(title or ""), re.I)
+    if len(words) >= 2:
+        score += 1
+        reasons.append(f"the title joins {len(words) + 1} things - one title, "
+                       "one deliverable")
+    return {"score": score, "reasons": reasons}
+
+
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
         chain_id: str = "", chain_pos: int = 0,
         depends_on: Optional[int] = None, chain_self: bool = False,
         max_runtime_s: Optional[int] = None,
-        size: str = "medium", acceptance: str = "") -> dict:
+        size: str = "medium", acceptance: str = "",
+        kind: str = "", severity: str = "",
+        checkpoint: bool = False, checkpoint_note: str = "",
+        split_of: Optional[int] = None) -> dict:
     # A `scope_tier_id` used to be filed here and run through scope.enforce
     # first — the cut line's one gate. It never refused an item in the product's
     # life: untiered work was deliberately allowed through, and nothing was ever
@@ -300,17 +397,30 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
     size = str(size or "medium").strip().lower()
     if size not in ("small", "medium", "large"):
         raise ValueError(f"unknown size {size!r}; sizes are small, medium, large")
+    kind = str(kind or "").strip().lower() or derive_kind(root, source, source_ref)
+    if kind and kind not in KINDS:
+        raise ValueError(f"unknown kind {kind!r}; kinds are {KINDS}")
+    severity = str(severity or "").strip().lower()
+    if severity and severity not in SEVERITIES:
+        raise ValueError(f"unknown severity {severity!r}; severities are {SEVERITIES}")
+    # THE LOCKS REFUSE AT FILING, not at dispatch: the agent that wanted the
+    # feature learns now, in its own turn, instead of an item sitting held.
+    from ..design import greenlight as _greenlight
+    _greenlight.lock_guard(root, kind)
     with db.tx(root) as conn:
         cur = conn.execute(
             "INSERT INTO work_item (seat, title, brief, priority, source, "
             "source_ref, chain_id, chain_pos, depends_on, "
-            "max_runtime_s, size, acceptance) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "max_runtime_s, size, acceptance, kind, severity, checkpoint, "
+            "checkpoint_note, split_of) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (seat, title.strip(), brief, priority, source, source_ref,
              chain_id.strip(), int(chain_pos),
              int(depends_on) if depends_on is not None else None,
              int(max_runtime_s) if max_runtime_s is not None else None,
-             size, str(acceptance or "").strip()),
+             size, str(acceptance or "").strip(), kind, severity,
+             1 if checkpoint else 0, str(checkpoint_note or "").strip()[:600],
+             int(split_of) if split_of is not None else None),
         )
         item_id = int(cur.lastrowid)
         if chain_self:
@@ -394,6 +504,8 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
     if len(links) == 1:
         raise ValueError("a one-link chain is just an item — use queue_add")
 
+    if mode in ("serial", "strict", "line"):
+        mode = "linear"
     chain_id = (chain_id or "").strip()
     made: list[dict] = []
     previous: Optional[dict] = None
@@ -415,7 +527,13 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
                    source=str(link.get("source") or source),
                    source_ref=str(link.get("source_ref") or source_ref),
                    chain_id=chain_id, chain_pos=pos, depends_on=waits_on,
-                   chain_self=not chain_id and pos == 1)
+                   chain_self=not chain_id and pos == 1,
+                   max_runtime_s=link.get("max_runtime_s"),
+                   size=str(link.get("size") or "medium"),
+                   acceptance=str(link.get("acceptance") or ""),
+                   kind=str(link.get("kind") or ""),
+                   checkpoint=bool(link.get("checkpoint")),
+                   checkpoint_note=str(link.get("checkpoint_note") or ""))
         if not chain_id:
             chain_id = str(item["chain_id"])
         previous = item
@@ -486,7 +604,10 @@ def update(root: str | os.PathLike[str], item_id: int, *,
            seat: Optional[str] = None, priority: Optional[int] = None,
            max_runtime_s: Optional[int] = None,
            max_paid_calls: Optional[int] = None,
-           size: Optional[str] = None) -> dict:
+           size: Optional[str] = None, kind: Optional[str] = None,
+           severity: Optional[str] = None,
+           checkpoint: Optional[bool] = None,
+           checkpoint_note: Optional[str] = None) -> dict:
     """Edit an existing item in place, without changing its status/lineage.
 
     This is how a reviewer enriches a ticket: e.g. the video-watching director
@@ -523,6 +644,22 @@ def update(root: str | os.PathLike[str], item_id: int, *,
         sets.append("max_paid_calls = ?"); params.append(int(max_paid_calls))
     if size is not None:
         sets.append("size = ?"); params.append(str(size).strip().lower())
+    if kind is not None:
+        kind = str(kind).strip().lower()
+        if kind and kind not in KINDS:
+            raise ValueError(f"unknown kind {kind!r}; kinds are {KINDS}")
+        sets.append("kind = ?"); params.append(kind)
+    if severity is not None:
+        severity = str(severity).strip().lower()
+        if severity and severity not in SEVERITIES:
+            raise ValueError(f"unknown severity {severity!r}; severities are "
+                             f"{SEVERITIES}")
+        sets.append("severity = ?"); params.append(severity)
+    if checkpoint is not None:
+        sets.append("checkpoint = ?"); params.append(1 if checkpoint else 0)
+    if checkpoint_note is not None:
+        sets.append("checkpoint_note = ?")
+        params.append(str(checkpoint_note).strip()[:600])
     if not sets:
         return get(root, item_id)
     params.append(item_id)
@@ -534,6 +671,31 @@ def update(root: str | os.PathLike[str], item_id: int, *,
     activity.log(root, "queue", f"item {item_id} edited: {item['title'][:60]}",
                  seat=item["seat"], ref=str(item_id))
     return item
+
+
+def accept_known_issue(root: str | os.PathLike[str], item_id: int,
+                       by: str, why: str) -> dict:
+    """A human accepts an open MINOR as a known issue the game ships with.
+
+    Only minors: a showstopper or a major accepted is a gate waived, and the
+    release gate takes no waiver. `why` is on the record because "known
+    issue" without a reason is how the list grows to everything.
+    """
+    item = get(root, item_id)
+    if item.get("severity") != "minor":
+        raise ValueError(f"#{item_id} is {item.get('severity') or 'untriaged'} - "
+                         "only a minor can ship as a known issue; triage it "
+                         "(queue_update severity) or fix it")
+    why = " ".join(str(why or "").split())
+    if len(why) < 15:
+        raise ValueError("say why this ships unfixed, in a sentence")
+    with db.tx(root) as conn:
+        conn.execute("UPDATE work_item SET accepted_by = ?, "
+                     "updated_at = datetime('now') WHERE id = ?",
+                     (f"{by}: {why}"[:500], int(item_id)))
+    activity.log(root, "queue", f"#{item_id} accepted as a known issue: {why[:100]}",
+                 seat=item["seat"], ref=str(item_id))
+    return get(root, item_id)
 
 
 def list_items(root: str | os.PathLike[str], status: Optional[str] = None,
@@ -1404,10 +1566,16 @@ def complete(root: str | os.PathLike[str], item_id: int, result: str = "",
     by_machine = activity.is_machine(closer)
     if skip_gate is None:
         skip_gate = not by_machine and not failed
+    is_checkpoint = bool(int(get(root, item_id).get("checkpoint") or 0))
     if failed:
         item = set_status(root, item_id, "failed", result=result)
-    elif _gates.holds_for_human(root):
+    elif _gates.holds_for_human(root) or is_checkpoint:
+        # A HUMAN CHECKPOINT parks for sign-off whatever the gate mode is:
+        # the human chose this point while planning, so the board stops here
+        # and only here, with everything since the last checkpoint listed.
         item = set_status(root, item_id, "review", result=result)
+        if is_checkpoint:
+            _ask_checkpoint(root, item)
     else:
         item = set_status(root, item_id, "done", result=result)
     # NOT droppable telemetry, retried and then SHOUTED. gate_skip is policy:
@@ -1438,6 +1606,66 @@ def complete(root: str | os.PathLike[str], item_id: int, result: str = "",
     if kind:
         _emit(root, kind, ref=str(item_id), payload=_item_event_payload(item))
     return item
+
+
+def checkpoint_digest(root: str | os.PathLike[str], item_id: int) -> list[dict]:
+    """Everything that landed upstream of this checkpoint since the previous
+    one: the ancestors, walked back until an earlier checkpoint stops the
+    walk. What the human is actually signing off."""
+    seen: set[int] = set()
+    out: list[dict] = []
+    todo = [p["id"] if isinstance(p, dict) else int(p)
+            for p in _parent_ids(root, int(item_id))]
+    while todo:
+        i = int(todo.pop())
+        if i in seen:
+            continue
+        seen.add(i)
+        try:
+            row = get(root, i)
+        except LookupError:
+            continue
+        out.append({"id": i, "seat": row["seat"], "title": row["title"][:100],
+                    "status": row["status"], "runs": runs_of(row)})
+        if int(row.get("checkpoint") or 0):
+            continue                      # the previous sign-off covers the rest
+        todo.extend(_parent_ids(root, i))
+    return sorted(out, key=lambda r: r["id"])
+
+
+def _parent_ids(root: str | os.PathLike[str], item_id: int) -> list[int]:
+    try:
+        return [int(p) for p in parents(root, int(item_id))]
+    except Exception:                                             # noqa: BLE001
+        return []
+
+
+def _ask_checkpoint(root: str | os.PathLike[str], item: dict) -> None:
+    """Put the checkpoint in front of the human, once. Never raises."""
+    try:
+        from . import steerbox as _steerbox
+        tag = f"CHECKPOINT #{item['id']}"
+        if any(tag in str(q.get("question") or "")
+               for q in _steerbox.open_questions(root)):
+            return
+        batch = checkpoint_digest(root, int(item["id"]))
+        lines = "; ".join(f"#{b['id']} {b['title'][:50]} ({b['status']})"
+                          for b in batch[:12])
+        note = str(item.get("checkpoint_note") or "").strip()
+        _steerbox.ask(
+            root,
+            f"{tag}: {item['title'][:100]} is done and waits for you."
+            + (f" Look at: {note}." if note else "")
+            + (f" Since the last checkpoint: {lines}." if lines else "")
+            + " Approve to release everything behind it, or reject with what "
+              "to change.",
+            refs=[f"item:{item['id']}"], seat=item.get("seat") or "director",
+            by="checkpoint",
+            options=["APPROVE: release the work behind it",
+                     "REJECT: send it back with a reason",
+                     "I will look at the build first"])
+    except Exception:                                             # noqa: BLE001
+        pass
 
 
 def approve(root: str | os.PathLike[str], item_id: int, note: str = "",
@@ -1889,6 +2117,88 @@ def format_frame_verdicts(frame_gate: dict) -> str:
     return "\n".join(lines)
 
 
+DEFAULT_SPLIT_AFTER = 2
+
+
+def split_after(root: str | os.PathLike[str]) -> int:
+    """Runs an item gets before a machine reopen becomes a split. 0 = off."""
+    try:
+        from ..store import settings as _settings
+        got = _settings.get(root, "dispatch.split_after_runs")
+        return max(0, int(DEFAULT_SPLIT_AFTER if got is None else got))
+    except Exception:
+        return DEFAULT_SPLIT_AFTER
+
+
+def _should_decompose(root: str | os.PathLike[str], item: dict) -> bool:
+    limit = split_after(root)
+    if not limit or runs_of(item) < limit:
+        return False
+    if str(item.get("source") or "") in PROCESS_SOURCES:
+        return False                      # gates and splits are not split
+    return activity.is_machine(activity.current_actor())
+
+
+def request_split(root: str | os.PathLike[str], item_id: int,
+                  reason: str) -> dict:
+    """Park the ticket and hand the director its history to split.
+
+    Idempotent: one open decomposition per ticket. The parked item comes back
+    with `split_requested` naming the director item.
+    """
+    item = get(root, item_id)
+    conn = db.connect(root)
+    existing = conn.execute(
+        "SELECT id FROM work_item WHERE split_of = ? AND source = ? AND "
+        "status IN ('queued','dispatched','review','parked')",
+        (int(item_id), DECOMPOSE_SOURCE)).fetchone()
+    if item["status"] in ("done", "cancelled"):
+        set_status(root, item_id, "queued", result="held for a split")
+    if get(root, item_id)["status"] != "parked":
+        park(root, item_id, f"split requested after {runs_of(item)} run(s): "
+                            f"{reason[:200]}")
+    if existing:
+        return {**get(root, item_id), "split_requested": int(existing["id"])}
+    history = re.findall(r"--- REOPENED \(attempt \d+\) ---\n(.{0,300})",
+                         item.get("brief") or "", re.S)
+    try:
+        from ..store import writelog
+        on_disk = writelog.summary(root, f"item-{item_id}") or ""
+    except Exception:                                             # noqa: BLE001
+        on_disk = ""
+    earlier = ("EARLIER FAILURES:\n- "
+               + "\n- ".join(h.strip()[:300] for h in history) + "\n\n"
+               if history else "")
+    disk = f"ALREADY ON DISK:\n{on_disk[:1500]}\n\n" if on_disk else ""
+    brief = (
+        f"SPLIT #{item_id} - it has had {runs_of(item)} run(s) and is being "
+        "asked for another. That is a brief the wrong shape, not bad luck.\n\n"
+        f"TICKET: [{item['seat']}] {item['title']}\n"
+        f"ACCEPTANCE: {item.get('acceptance') or '(none written)'}\n\n"
+        f"WHY THE LAST RUN FAILED: {reason[:800]}\n\n"
+        + earlier + disk
+        + "DO THIS:\n"
+        "1. Read the original brief (queue_get) and the failures above. Name "
+        "the separate deliverables it actually contains.\n"
+        "2. queue_add_chain with ONE deliverable per link: size small or "
+        "medium, ONE acceptance check each, the work already on disk named "
+        "so nothing is redone. Put the part that failed first.\n"
+        f"3. queue_cancel #{item_id} with 'split into #a-#b'. If it truly is "
+        f"one deliverable, queue_unpark #{item_id} instead and say what "
+        "changes about the next run - another identical run is not an "
+        "option.")
+    split = add(root, "director", f"SPLIT #{item_id}: {item['title'][:80]}",
+                brief=brief, priority=9, source=DECOMPOSE_SOURCE,
+                source_ref=str(item_id), size="small",
+                acceptance=f"#{item_id} is cancelled or unparked and its work "
+                           "is on the board as single-deliverable items",
+                split_of=int(item_id))
+    activity.log(root, "queue", f"#{item_id} parked for a split after "
+                                f"{runs_of(item)} run(s) - #{split['id']}",
+                 seat=item["seat"], ref=str(item_id))
+    return {**get(root, item_id), "split_requested": int(split["id"])}
+
+
 def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
           frame_verdicts: Optional[dict] = None,
           after: Optional[int] = None) -> dict:
@@ -1925,6 +2235,14 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("reason is required — say exactly what to fix")
+    # SPLIT, DON'T RE-ROLL. An item that needs a further run after its
+    # split_after_runs-th is a brief the wrong shape, and another run of the
+    # same brief is the nine-runs-$33 ticket. A MACHINE asking for that run
+    # gets a decomposition instead: the item is parked and the director is
+    # handed the history to split it. A human reopen still goes through - the
+    # human has decided.
+    if after is None and _should_decompose(root, item):
+        return request_split(root, item_id, reason)
     # WHAT IS ALREADY ON DISK RIDES INTO THE NEXT ROUND. A reopen used to hand
     # the agent nothing but the reason, so a run that was stopped by a ceiling
     # or stranded by a dashboard restart was repeated from scratch — paying
@@ -2190,16 +2508,81 @@ def ready(root: str | os.PathLike[str], seat: str = "",
         # failure it guards against is expensive; a deadlocked queue is worse,
         # and state() surfaces the unreadable doc to anyone looking.
         held = set()
+    # THE SLICE STAGE admits only the vertical slice: items building a slice
+    # row, repairs, and process work. Everything else waits for production -
+    # content for a game whose one sequence does not yet play at ship quality
+    # is the phase contamination the stage exists to stop.
+    try:
+        in_slice = _greenlight.stage(root) == _greenlight.SLICE
+    except Exception:
+        in_slice = False
+    slice_items = _slice_item_ids(root) if in_slice else set()
+    try:
+        content_locked = bool(_greenlight.locks(root).get("content"))
+    except Exception:
+        content_locked = False
+    # PLAN FIRST. Once a project writes any domain plan, a seat whose own
+    # discipline has none is held - except for the planning item itself,
+    # which is how the hold ends. The planning item also passes the STAGE
+    # hold: planning art during graybox is exactly when it should happen.
+    try:
+        from ..design import domainplan as _domainplan
+        unplanned = _domainplan.planning_held(root)
+        planning = _domainplan.PLANNING_SOURCE
+    except Exception:
+        unplanned, planning = set(), ""
     # EXHAUSTED WORK IS NOT CLAIMABLE WORK. An item the harness has stopped
     # retrying (see mark_exhausted) is waiting on a decision, not on a slot,
     # and offering it to a dispatcher is how it gets re-run for free while a
     # director item about it sits unread. Cleared by reopen(), which is the
     # explicit action.
-    return [c for c in candidates
-            if c["seat"] not in held
-            and not c.get("exhausted_at")
-            and not over_attempt_cap(root, c)
-            and blocker(root, int(c["id"])) is None]
+    out = [c for c in candidates
+           if (c["source"] == planning
+               or (c["seat"] not in held and c["seat"] not in unplanned))
+           and (not in_slice or _admitted_in_slice(c, slice_items))
+           and not c.get("exhausted_at")
+           and not over_attempt_cap(root, c)
+           and blocker(root, int(c["id"])) is None]
+    if content_locked:
+        # After content lock the board is a bug list: fixes first, then
+        # polish, then anything else. Stable, so priority still orders
+        # within each band.
+        rank = {"fix": 0, "polish": 1}
+        out.sort(key=lambda c: rank.get(c.get("kind") or "", 2))
+    return out
+
+
+def _slice_item_ids(root: str | os.PathLike[str]) -> set[int]:
+    try:
+        return {int(r[0]) for r in db.connect(root).execute(
+            "SELECT work_item_id FROM plan_row WHERE slice = 1 "
+            "AND work_item_id IS NOT NULL")}
+    except Exception:                                             # noqa: BLE001
+        return set()
+
+
+def _admitted_in_slice(item: dict, slice_items: set[int]) -> bool:
+    return (int(item["id"]) in slice_items
+            or (item.get("kind") or "") == "fix"
+            or item.get("source") in PROCESS_SOURCES
+            or item.get("source") in FIX_SOURCES
+            or item.get("source") == "domain-plan")
+
+
+def slice_hold_reason(root: str | os.PathLike[str], item: dict) -> str:
+    """Why the slice stage is holding this item, or ''."""
+    from ..design import greenlight as _greenlight
+    try:
+        if _greenlight.stage(root) != _greenlight.SLICE:
+            return ""
+    except Exception:
+        return ""
+    if _admitted_in_slice(item, _slice_item_ids(root)):
+        return ""
+    return ("held: the project is at the 'slice' stage - only work on a "
+            "vertical-slice plan row, fixes and gates dispatch until the "
+            "slice check passes and greenlight_advance('production'). Link it "
+            "to a slice row (queue_add plan_row=...) if it belongs to the slice.")
 
 
 def claim_next(root: str | os.PathLike[str], seat: str,

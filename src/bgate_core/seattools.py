@@ -66,6 +66,10 @@ CORE: tuple[str, ...] = (
     "not_building_list", "recall", "ask_human",
     "asset_status", "asset_lock", "asset_release", "asset_track", "asset_verify",
     "agent_activity", "provider_status", "bgate_doctor",
+    # EVERY SEAT PLANS ITS OWN DISCIPLINE. The domain plan is the end state
+    # the seat builds toward; a seat that cannot read or revise it is back
+    # to building against a feature list. plan_promote stays director-only.
+    "domain_plan_", "plan_status",
     # THE ENGINE-NEUTRAL SPINE. engine_status / engine_check /
     # engine_screenshot are the same three questions godot_* answers, asked
     # of whichever engine the project records; a seat brief on a web or
@@ -83,10 +87,21 @@ SEATS: dict[str, tuple[str, ...]] = {
         "kit_", "library_",
         "godot_", "web_", "unity_", "scene_",
         "traversal_prove", "scale_check", "scale_record_3d",
-        "level_", "encounter_design_set", "room_", "playtest_", "evidence_",
+        "encounter_design_set", "playtest_", "evidence_",
         "iteration_", "telemetry", "game_view_", "causal_", "consistency_check",
         # What the comparable games got right and wrong, cited. Read-only.
         "research_findings", "research_grid",
+    ),
+    # Layout, pacing, encounter placement and graybox geometry. The level and
+    # room families moved here from gameplay and tech: one owner, one rule.
+    "level": (
+        "kit_", "library_",
+        "level_", "room_", "encounter_", "blockout_", "sidescroll_generate",
+        "traversal_prove", "scene_", "game_view_", "scale_check",
+        "godot_screenshot", "godot_evidence", "godot_run", "godot_test_run",
+        "godot_check_project", "godot_status", "godot_scene_audit",
+        "web_status", "unity_status", "evidence_", "playtest_",
+        "screen_audit", "research_findings",
     ),
     # Engine plumbing, build and performance, the same engine surface, plus
     # the project-level knobs gameplay does not touch.
@@ -143,7 +158,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     "director": (
         "bible_", "decision_", "not_building_", "greenlight_", "lore_brief",
         "brainstorm_", "research_", "godot_screenshot", "godot_evidence",
-        "plan_status",
+        "plan_status", "plan_promote", "plan_cut", "iteration_",
         "agent_steer", "agent_steer_all", "scale_contract_set", "profile_",
         "seat_configure", "dialogue_list", "quest_list",
         # The canon record (canon_set / canon_retire / canon_unretire /

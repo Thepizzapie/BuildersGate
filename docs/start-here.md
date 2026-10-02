@@ -243,14 +243,38 @@ graybox     Gameplay proves that loop in ONE UGLY ROOM.  No art, no audio, no
             saying whether the interaction is actually interesting.
             If it reduces to attack + dodge + hold interact, fail it here.
 
-production   The specialist fan-out. To get here the graybox has to have
-            PASSED, a declared enemy roster has to be interactions rather than
-            isolated state machines, and a declared objective list has to be
-            more than one commitment shape wearing several names.
+slice       ONE SEQUENCE AT SHIP QUALITY, every discipline on it and nothing
+            else. To get here the graybox has to have PASSED, a declared
+            enemy roster has to be interactions rather than isolated state
+            machines, and a declared objective list has to be more than one
+            commitment shape wearing several names. Every seat dispatches,
+            but only work on a vertical-slice plan row, fixes and gates.
+
+production   The specialist fan-out. To get here a SLICE CHECK has to have
+            passed (filed automatically once every slice row is built) and
+            every key risk on the thesis (greenlight_risks_set) has to be
+            retired: confirmed or modified with evidence, or accepted by you.
+            Inside production, greenlight_lock('feature') is alpha (no new
+            features filed) and greenlight_lock('content') is beta (no new
+            content; the board runs fixes first). plan_cut takes a row out
+            on the record so a lock can close.
 
 release     Everything above, plus a presentation gate that `--export-release`
-            runs and nothing waives.
+            runs and nothing waives. It includes the board (no open
+            showstopper or major, every open minor accepted by you with
+            queue_accept_known_issue) and the golden path (the QA plan's
+            done_when checks, passing on evidence recorded after the build
+            last moved).
 ```
+
+Each discipline also keeps a DOMAIN PLAN - its end state, the checks that
+settle it, and every deliverable - that its seat builds toward and reads in
+its brief (`domain_plan_status`). Once a project writes one, a seat whose
+discipline has no plan writes it before building. Level design is its own
+seat, holding the level, room and encounter tools. `autopilot.scope =
+iteration` turns the continuous pump into iterations: commit work
+(`iteration_open`), play the checked build, close it (`iteration_close`), and
+open the next from what it taught.
 
 If a queued item will not dispatch and its dependencies are clean, this is
 almost always why, `greenlight_status` says which seats are held and what

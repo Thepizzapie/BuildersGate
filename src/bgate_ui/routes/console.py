@@ -101,7 +101,40 @@ _CARD_FIELDS = ("id", "seat", "title", "status", "priority", "source",
 # Columns a project's database may not have yet: the card must still build on
 # one that predates the migration, so these are read defensively rather than
 # named in _CARD_FIELDS. `exhausted_at`/`exhausted_why` arrived with 0043.
-_CARD_OPTIONAL = ("exhausted_at", "exhausted_why", "auto_retries")
+_CARD_OPTIONAL = ("exhausted_at", "exhausted_why", "auto_retries",
+                  # The graph draws these: a checkpoint is a diamond that
+                  # waits for the human, a split ticket points at the one it
+                  # replaces, and kind/size/severity colour the triage.
+                  "checkpoint", "checkpoint_note", "split_of", "kind",
+                  "severity", "size")
+
+
+def _deps(conn, items: list[dict]) -> dict[str, list[int]]:
+    """child id -> every parent id it waits on, for the items in the payload.
+
+    BOTH dependency stores: the single `depends_on` column and the multi-parent
+    work_item_dep rows (minus cut links). The graph draws dependencies, not
+    delegation, and a fan-in drawn with one parent is a fan-in nobody sees.
+    """
+    ids = [int(it["id"]) for it in items]
+    out: dict[str, list[int]] = {}
+    for it in items:
+        if it.get("depends_on"):
+            out.setdefault(str(it["id"]), []).append(int(it["depends_on"]))
+    if not ids:
+        return out
+    try:
+        marks = ", ".join("?" * len(ids))
+        for row in conn.execute(
+                f"SELECT item_id, depends_on FROM work_item_dep "
+                f"WHERE item_id IN ({marks}) AND (cut_at IS NULL OR cut_at = '')",
+                ids):
+            got = out.setdefault(str(row["item_id"]), [])
+            if int(row["depends_on"]) not in got:
+                got.append(int(row["depends_on"]))
+    except Exception:                                             # noqa: BLE001
+        pass
+    return out
 
 
 def _card(row) -> dict:
@@ -792,6 +825,7 @@ def console_state(steps: bool = True) -> dict:
         "items": items,
         "agents": agents,
         "lineage": _lineage(r),
+        "deps": _deps(conn, items),
         "gates": _gates(r, conn, active),
         "questions": questions,
         "steps": live_steps,
@@ -820,6 +854,21 @@ def console_state(steps: bool = True) -> dict:
             "failed": counts.get("failed", 0),
         },
     }
+
+
+@router.get("/api/console/graph-history")
+def console_graph_history(limit: int = 200) -> dict:
+    """Finished work for the graph's ALL scope: the history behind the live
+    board, as cards plus their dependencies. Separate from the state poll so
+    the board does not pay for a history only the graph draws."""
+    r = root()
+    conn = db.connect(r)
+    rows_ = conn.execute(
+        "SELECT * FROM work_item WHERE status IN ('done','failed','cancelled') "
+        "ORDER BY updated_at DESC, id DESC LIMIT ?",
+        (max(1, min(int(limit), 600)),)).fetchall()
+    items = [_card(row) for row in rows_]
+    return {"items": items, "deps": _deps(conn, items)}
 
 
 @router.post("/api/console/attention/dismiss")

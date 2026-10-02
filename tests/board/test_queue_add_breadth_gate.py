@@ -1,6 +1,6 @@
 """GRIPE 41 wiring at the MCP surface: queue_add refuses a broad brief or a
-missing acceptance for a non-director caller, and warns (rather than refuses)
-the director.
+missing acceptance for a non-director caller, and refuses a broad brief from
+the director too unless the call says why (allow_broad).
 """
 from __future__ import annotations
 
@@ -58,8 +58,10 @@ class TestQueueAddBreadthGate:
         assert "error" not in got
         assert got["size"] == "small"
 
-    async def test_director_bypasses_the_hard_refusal_but_still_gets_a_warning(
+    async def test_the_director_is_refused_too_unless_it_says_why(
             self, wired, monkeypatch):
+        # The director used to be warned and let through; the broad tickets
+        # that cost a seat run after run were director tickets.
         monkeypatch.setenv("BGATE_SEAT", "director")
         brief = (
             "Ship the shop screen:\n"
@@ -69,5 +71,9 @@ class TestQueueAddBreadthGate:
         )
         got = await call("queue_add", seat="tech", title="shop screen",
                          brief=brief)
+        assert got["refused"] == "too_broad"
+        got = await call("queue_add", seat="tech", title="shop screen",
+                         brief=brief, allow_broad="the human asked for the "
+                                                  "whole screen in one pass")
         assert "error" not in got
         assert got.get("warnings")

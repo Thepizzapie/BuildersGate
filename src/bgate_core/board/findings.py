@@ -396,6 +396,14 @@ BLIND_SPOTS: dict[str, str] = {
         "whether a cue has been heard in context by a person. It measures no "
         "levels, no mix, and nothing about whether the cue fires at the right "
         "moment — only that somebody listened.",
+    "board":
+        "reads the severity agents and humans assigned. An untriaged bug, or "
+        "a bug nobody filed, is invisible to it; it counts tickets, not "
+        "defects.",
+    "golden_path":
+        "is the QA plan's own done_when, recorded with evidence. It covers "
+        "the path somebody wrote down and played, never a path they did not "
+        "think of.",
     "traversal":
         "proves ONE route, with ONE input program, from ONE launch surface. A "
         "pass says that route is completable, not that the level is; and it "

@@ -310,7 +310,25 @@ def _candidates(root: str) -> list[dict]:
     # pushed every chain successor past the window and the chain simply never
     # advanced — starvation with no refusal recorded anywhere.
     from bgate_core.board import queue as _q
-    return _q.ready(root, limit=120)
+    ready = _q.ready(root, limit=120)
+    # ITERATION SCOPE (opt-in). The pump dispatches only the work committed
+    # to the active iteration, plus repairs and gates; with no iteration open
+    # nothing but those runs, which is the point - the next set of work is
+    # decided by playing the last one.
+    try:
+        from bgate_core.store import settings as _settings
+        scope = str(_settings.get(root, "autopilot.scope") or "board")
+    except Exception:
+        scope = "board"
+    if scope != "iteration":
+        return ready
+    from bgate_core.board import iterations as _it
+    active = _it.active_id(root)
+    committed = _it.item_ids_of(root, active) if active else set()
+    return [c for c in ready
+            if int(c["id"]) in committed
+            or c.get("source") in _q.PROCESS_SOURCES
+            or (c.get("kind") or "") == "fix"]
 
 
 def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:

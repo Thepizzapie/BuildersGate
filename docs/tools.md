@@ -2333,6 +2333,97 @@ Lands at <godot project>/dialogue/<name>.dialogue.json - inside the
 narrative seat's own lane, for both project layouts.
 ```
 
+## domain_plan_check
+
+```text
+Record a verdict on one of a domain plan's done_when checks. QA or the
+director only: the seat that built a domain does not grade it.
+
+check is the 0-based index or the exact text; verdict pass | fail;
+evidence says what was run and what it showed (20+ chars). Verdicts are
+keyed by the check's text, so rewording a check voids its verdict. A pass
+recorded before the domain's latest finished item reads 'stale'. A domain
+is complete when every check passes (not stale) and every entry is in the
+game. A fail flags the plan for revision.
+```
+
+## domain_plan_draft
+
+```text
+Start a plan from what the project already holds. Writes nothing.
+
+Returns the template, the current plan, entries drafted from existing
+material - narrative: quests; cinematic: storyboards; audio: the hooks the
+code already calls (audio_hooks scan); gameplay: the encounter roster and
+objectives as context - and the other disciplines' plans to plan against.
+Drafted entries may carry empty fields: those are the decisions the old
+material never made, and domain_plan_set refuses them until they are made.
+```
+
+## domain_plan_template
+
+```text
+What a plan for one discipline must decide, and its entry shape.
+
+Domains: gameplay (mechanics: verb, feedback, tunables), level (spaces:
+purpose, introduces, connects_to), art (assets: use, view), animation
+(clips: character, plays_on), audio (cues: type, trigger), narrative
+(beats: reveals, delivered_by), cinematic (sequences: trigger, purpose),
+ui (screens: purpose, shows, leads_to), tech (systems: owns, interfaces),
+qa (scenarios: steps, covers). Every entry also takes name, acceptance,
+slice and depends_on. `answer_these` lists the questions the plan must
+answer for that discipline.
+```
+
+## domain_plan_set
+
+```text
+Write or revise one discipline's plan: its END STATE and its deliverables.
+
+goal       what this domain's part of the finished game is (>= 40 chars)
+done_when  1-8 binary checks that settle the whole domain
+entries    typed deliverables (domain_plan_template); each compiles into a
+           plan_row tagged with the domain, so plan_status, the slice check
+           and the digest count it
+leaves_dark     what the domain deliberately does not do
+open_questions  what could not be decided; the director answers them
+
+merge=True (default) upserts entries by name and keeps the rest, so a
+plan grows a piece at a time; merge=False replaces the entry list (rows
+that left it are deleted while spec, reported as dropped_but_on_board
+when the board holds them). Row names are unique across all domains.
+
+A seat writes its own domains (gameplay: gameplay, level, ui; art: art,
+animation); the director and the human write any. The result carries the
+cross-domain findings for this domain. A revision resolves the plan's open
+replan flags.
+
+PLAN FIRST: once a project has any domain plan, a seat whose own
+discipline (gameplay, art, audio, narrative, cinematic, tech, qa) has none
+is held from dispatch. The follow-up sweep files one "PLAN: write the <x>
+plan" item for that seat, which dispatches past both this hold and the
+stage hold; writing the plan releases the seat. The same sweep flags a plan
+for revision on a failed slice check, a refuted premise, or a failed QA
+gate on one of its rows.
+```
+
+## domain_plan_status
+
+```text
+Each discipline's plan against the live build, plus cross-domain findings.
+
+Without a domain: per discipline, the goal, entries in the game / total,
+open questions and the rows not yet in the game. With one: the full plan
+with every entry's live state (spec / on_board / lost / built / wired /
+verified, the plan_status ladder).
+
+`findings` reads the plans against each other: a missing plan for an
+active seat, open questions, a mechanic no level introduces, a level
+introducing something no mechanic defines, a mechanic with no audio cue,
+a clip for a character neither art nor canon names, a domain no QA
+scenario covers, a domain with nothing in the vertical slice.
+```
+
 ## encounter_design_set
 
 ```text
@@ -2670,6 +2761,90 @@ evidence_assert(scene, frame, says=...) - a file on disk that nobody opened
 is what let a two-tailed character ship for a day.
 
 godot_project: the directory holding project.godot.
+```
+
+## greenlight_lock
+
+```text
+FEATURE LOCK (alpha) or CONTENT LOCK (beta). Director or human; production
+or release stage only.
+
+feature needs every feature plan row (systems, levels, scenes, entities)
+built or cut; afterwards queue_add of a kind='feature' item is refused at
+filing, naming kind='fix'/'polish' and greenlight_unlock as the ways
+through. content needs feature lock first and every row built or cut;
+afterwards kind='content' is refused and queue.ready() orders fixes, then
+polish, then the rest.
+```
+
+## greenlight_risk_retire
+
+```text
+Retire one key risk: outcome confirmed | modified | accepted, with
+evidence (20+ chars: the test, build or measurement that settled it).
+accepted - shipping with the risk open - is refused for an agent; it is the
+human's call.
+```
+
+## greenlight_risks_set
+
+```text
+Name the KEY RISKS on the settled thesis: 1-4 binary hypotheses, each
+{hypothesis, retire_by}. A hypothesis whose text is unchanged keeps its
+outcome. Every risk must be retired before slice -> production. Also
+accepted as `risks` on greenlight_thesis_set. Director only.
+```
+
+## greenlight_unlock
+
+```text
+Lift a lock. Human only. Lifting feature lock lifts content lock too.
+```
+
+## iteration_attach
+
+```text
+Commit more work items to the active iteration.
+```
+
+## iteration_close
+
+```text
+Close the active iteration. Requires iteration_record_checks first
+(godot_test_run + screen_audit on the default scene). Writes the outcome
+(summary, per-item status, the checks) and files a director debrief item
+that decides the next iteration.
+```
+
+## iteration_open
+
+```text
+Open an iteration with the work committed to it (the studio sprint,
+without dates). When autopilot.scope = iteration, autopilot dispatches only
+committed items plus fixes and gates. If an iteration came before,
+previous_takeaway (what it taught, 20+ chars) is required.
+```
+
+## plan_cut
+
+```text
+Deliberately not build a plan row. Director or human; 20+ char reason.
+
+The row reads 'cut': milestones (feature_complete, content_complete) and
+the locks count it as settled, it leaves `remaining`, and the reason lands
+on the not-building list. Refused while a live item is building the row.
+undo=True restores it.
+```
+
+## queue_accept_known_issue
+
+```text
+Accept an open MINOR as a known issue the game ships with. Human only.
+
+The release gate's board section blocks on every open showstopper and
+major, every open minor nobody accepted, and every open fix with no
+severity. Only a minor can be accepted, with a sentence saying why it
+ships unfixed.
 ```
 
 ## research_comp_add
@@ -3165,18 +3340,22 @@ door for a thing that truly cannot wait, on the record.
 ```text
 Move the project to the next production stage, or learn why it cannot.
 
-thesis -> graybox -> production -> release. Moving BACKWARD is always
-allowed and is not a failure: a project that discovers in production that
-its loop does not hold should drop to graybox and say so.
+thesis -> graybox -> slice -> production -> release. Moving BACKWARD is
+always allowed and is not a failure: a project that discovers in production
+that its loop does not hold should drop to graybox and say so.
 
 Forward, each boundary asks for something real:
   graybox      a settled mechanical thesis
-  production   a graybox the director passed, plus an enemy roster that
+  slice        a graybox the director passed, plus an enemy roster that
                is interactions rather than isolated state machines and an
                objective list that is more than one commitment shape
+  production   a vertical slice (slice rows exist), a SLICE CHECK that
+               ended 'VERDICT: PASS', and every key risk retired
   release      the presentation gate: every room reviewed as a WHOLE room,
                every delivered asset measured at game scale, every wired
-               audio cue heard in a gameplay capture
+               audio cue heard in a gameplay capture, no open showstopper
+               or major and only accepted minors, and the QA plan's golden
+               path checks passing
 
 THE RELEASE BOUNDARY TAKES NO WAIVER. greenlight_waive lets one seat
 through a stage hold; nothing lets a release candidate through an
@@ -4081,6 +4260,21 @@ declaring anything finished, and uses queue_add to put uncovered rows on
 the board.
 ```
 
+## plan_promote
+
+```text
+File spec plan rows onto the board, in dependency order. Director only.
+
+Ingest files only the vertical slice; every other plan row waited as
+'spec' with nothing able to move it. This files the named rows as work
+items: each carries the row's acceptance as the item's acceptance and its
+domain plan's goal in the brief, so the agent knows what the piece is FOR.
+depends_on links are real (multi-parent where a row needs several). A row
+whose dependency is still spec must be promoted in the same call, or the
+call is refused - filing it alone would dispatch before its input exists.
+Only spec or lost rows are promoted.
+```
+
 ## project_select
 
 ```text
@@ -4531,6 +4725,27 @@ when the group is already on the board.
 A dependency on an item that does not exist is refused rather than dropped:
 an item silently waiting on nothing is indistinguishable from one that is
 ready, and it would dispatch immediately - the exact failure being prevented.
+
+plan_row names the plan row this item builds (plan_status /
+domain_plan_status). Coverage then counts the item against that row, the
+brief gains the row's domain goal, and an empty acceptance is filled from
+the row. A row already being built by a live item is refused.
+
+checkpoint=True makes the item a HUMAN CHECKPOINT: when it finishes it
+parks in review whatever gate.mode is, nothing behind it dispatches, and
+the human is asked once with everything that landed since the previous
+checkpoint listed (checkpoint_note says what to look at). Placed by the
+director or the human; only the human removes one (queue_update).
+
+SCOPE: brief, acceptance, size and title are graded together
+(queue.scope_grade): several deliverables, several acceptance checks, size
+'large' and a title joining several things each count. Two or more is
+refused for EVERY filer, the director included; allow_broad='<why>' (20+
+chars) files it anyway. queue_add_chain grades every link the same way.
+
+SPLIT, DON'T RE-ROLL: after dispatch.split_after_runs runs (default 2), an
+agent's reopen parks the item and files a director SPLIT item carrying the
+failure history; a human reopen still goes through.
 ```
 
 ## queue_add_chain

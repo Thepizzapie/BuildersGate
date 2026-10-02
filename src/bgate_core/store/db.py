@@ -2462,6 +2462,66 @@ _MIGRATIONS: list = [
     CREATE INDEX idx_research_finding_comp ON research_finding(comp_id);
     CREATE INDEX idx_research_finding_system ON research_finding(system);
     """,
+
+    # 0055 - DOMAIN PLANS (bgate_core.design.domainplan). The game plan said
+    # WHAT the game consists of as one flat list; nothing said, per
+    # discipline, what the finished thing must BE (the end state), how that
+    # is checked (done_when), what is deliberately left out, and what is
+    # still undecided. Audio, UI, tech and level had no plan artifact at all.
+    # One row per domain; its entries compile into plan_row, which gains a
+    # `domain` so coverage can be read per discipline.
+    """
+    CREATE TABLE domain_plan (
+        domain         TEXT PRIMARY KEY,
+        goal           TEXT NOT NULL,
+        done_when      TEXT NOT NULL DEFAULT '[]',
+        leaves_dark    TEXT NOT NULL DEFAULT '[]',
+        open_questions TEXT NOT NULL DEFAULT '[]',
+        entries        TEXT NOT NULL DEFAULT '[]',
+        by             TEXT NOT NULL DEFAULT '',
+        revision       INTEGER NOT NULL DEFAULT 1,
+        updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    ALTER TABLE plan_row ADD COLUMN domain TEXT NOT NULL DEFAULT '';
+    """,
+
+    # 0056 - A DOMAIN PLAN IS HELD TO ITS OWN CHECKS, AND HEARS WHEN IT IS
+    # WRONG. check_results: {done_when text: {verdict, evidence, by, at}},
+    # keyed by the check's text so rewording a check voids its old verdict.
+    # replan: [{reason, source, at, resolved}] - a failed slice check, a
+    # refuted premise or a failed QA gate on one of the plan's rows; a
+    # revision of the plan resolves them, and `source` is never flagged twice.
+    """
+    ALTER TABLE domain_plan ADD COLUMN check_results TEXT NOT NULL DEFAULT '{}';
+    ALTER TABLE domain_plan ADD COLUMN replan TEXT NOT NULL DEFAULT '[]';
+    """,
+
+    # 0057 - PRODUCTION LADDER (studio milestones). `kind` says what an item
+    # does to the game - feature | content | fix | polish, '' for process
+    # work (gates, planning) - so feature lock and content lock can refuse
+    # the right filings. `severity` (showstopper | major | minor) is the
+    # triage the release gate reads; `accepted_by` names the human who
+    # accepted an open minor as a known issue. `cut_why` on a plan row is a
+    # deliberate cut: the row stops counting as missing.
+    """
+    ALTER TABLE work_item ADD COLUMN kind TEXT NOT NULL DEFAULT '';
+    ALTER TABLE work_item ADD COLUMN severity TEXT NOT NULL DEFAULT '';
+    ALTER TABLE work_item ADD COLUMN accepted_by TEXT NOT NULL DEFAULT '';
+    ALTER TABLE plan_row ADD COLUMN cut_why TEXT NOT NULL DEFAULT '';
+    """,
+
+    # 0058 - HUMAN CHECKPOINTS. A checkpoint item parks in 'review' when it
+    # finishes, whatever the gate mode, so the human signs off at the points
+    # they chose while planning instead of on every item. `checkpoint_note`
+    # says what to look at. Plan rows carry the flag so promote/ingest can
+    # stamp it on the item that builds the row. `split_of` links a
+    # decomposition item to the ticket it replaces.
+    """
+    ALTER TABLE work_item ADD COLUMN checkpoint INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE work_item ADD COLUMN checkpoint_note TEXT NOT NULL DEFAULT '';
+    ALTER TABLE work_item ADD COLUMN split_of INTEGER;
+    ALTER TABLE plan_row ADD COLUMN checkpoint INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

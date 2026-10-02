@@ -419,12 +419,25 @@ def art_mesh_route_rule(root: str | os.PathLike[str]) -> str:
     return ART_MESH_ROUTE_RULES.get(route, ART_MESH_ROUTE_RULES["smart"])
 
 DISPATCH_RULES = {
-    # gameplay and tech both hold the `level` craft, so both can run
-    # level_generate - and both can spend an afternoon on a level whose
-    # art does not exist yet. The rule is identical for each seat, so it
-    # is written once and shared.
-    "gameplay": _LEVEL_RULE,
-    "tech": _LEVEL_RULE,
+    # THE DIRECTOR SCOPES. A seat stuck in run after run on one ticket was,
+    # measured, nearly always a director brief several deliverables wide.
+    "director": (
+        "DIRECTOR HOUSE RULE - ONE ITEM, ONE DELIVERABLE:\n"
+        "• Every item you file names ONE thing that will exist when it is "
+        "done and ONE check that proves it. If the title needs 'and', or the "
+        "acceptance needs two checks, it is two items: file a chain.\n"
+        "• Size small or medium. A 'large' item is a chain you have not "
+        "written yet.\n"
+        "• Put HUMAN CHECKPOINTS (checkpoint=True) only where the human must "
+        "look before anything behind it runs - the slice playable, a look "
+        "locked, a layout approved. A few per project, never every item.\n"
+        "• A SPLIT item means a ticket failed twice: split it into a chain "
+        "of single deliverables, the failed part first, the work on disk "
+        "named so nothing is redone."
+    ),
+    # The level craft has ONE owner now (the level seat), so the rule that was
+    # duplicated on gameplay and tech lives on it alone.
+    "level": _LEVEL_RULE,
     "narrative": (
         "NARRATIVE HOUSE RULE - NO FIRST-THOUGHT JOKES:\n"
         "• Before landing ANY name/line/bark, generate 5 candidates and kill "
@@ -751,6 +764,34 @@ DEFAULT_SEATS: dict[str, dict] = {
             "WHY: a scene that is four monolithic layers is a scene nobody can "
             "edit; the authoring left the editor and moved into your code, where "
             "the designer cannot reach it."
+        ),
+    },
+    # LEVEL DESIGN IS A DISCIPLINE. It was split across gameplay and tech -
+    # both held the level tools, both carried the same house rule twice - and
+    # "weak level tools" was the verdict on the run that measured it. Level
+    # owns layout, pacing, encounter placement and the graybox geometry; art
+    # dresses it; tech wires colliders and layers under it.
+    "level": {
+        "title": "Level",
+        "mission": "Own layout, pacing and encounter placement: what each space "
+                   "teaches, tests or rewards, in what order, and the graybox "
+                   "geometry that proves it. Measure the critical path before "
+                   "any prop; connectivity is not pathing. Art dresses your "
+                   "spaces, tech wires colliders and layers under them - route "
+                   "those with queue_add rather than doing them.",
+        "write_globs": ["game/scenes/levels/**", "game/levels/**",
+                        "design/levels/**"],
+        "workflow": (
+            "1. game_view_get, then the level plan (domain_plan_status('level')): "
+            "every space you build is an entry with a purpose and what it "
+            "introduces.\n"
+            "2. GRAYBOX FIRST: blockout or room_build from primitives, then "
+            "traversal_prove the critical path and room_audit the composition "
+            "BEFORE any art is asked for.\n"
+            "3. Name every placed thing (Spawn_A, DoorEast); instance repeated "
+            "pieces; TileMapLayer is for terrain only.\n"
+            "4. Hand dressing to art and collision/layers to tech with "
+            "queue_add, waiting on your own item."
         ),
     },
     "tech": {
@@ -1428,6 +1469,7 @@ SEAT_PERSONA: dict[str, dict] = {
     "director": {"cast": "director", "surface": "wood", "vibe": "calls"},
     "narrative": {"cast": "narrative", "surface": "carpet", "vibe": "story"},
     "gameplay": {"cast": "gameplay", "surface": "carpet", "vibe": "play"},
+    "level": {"cast": "gameplay", "surface": "concrete", "vibe": "maps"},
     "tech": {"cast": "tech", "surface": "concrete", "vibe": "code"},
     "art": {"cast": "art", "surface": "vinyl", "vibe": "paint"},
     "audio": {"cast": "audio", "surface": "carpet", "vibe": "sound"},
@@ -2014,6 +2056,7 @@ def detect_layout(root: str | os.PathLike[str]) -> dict:
 ENGINE_LANES: dict[str, dict[str, list[str]]] = {
     "web": {
         "gameplay": ["src/**"],
+        "level": ["src/levels/**", "public/levels/**"],
         "tech": ["src/**", "public/**", "index.html", "package.json",
                  "package-lock.json", "tsconfig*.json", "vite.config.*",
                  "*.config.*"],
@@ -2028,6 +2071,7 @@ ENGINE_LANES: dict[str, dict[str, list[str]]] = {
     "unity": {
         "gameplay": ["Assets/Scripts/**", "Assets/Scenes/**",
                      "Assets/Prefabs/**"],
+        "level": ["Assets/Scenes/Levels/**", "Assets/Levels/**"],
         "tech": ["Assets/**", "ProjectSettings/**", "Packages/**",
                  "Assets/**/*.asmdef"],
         "art": ["Assets/Art/**", "Assets/Models/**", "Assets/Textures/**",
@@ -2245,9 +2289,20 @@ def _fit(payload: dict) -> dict:
         else:
             payload["current"] = {"available": False}
 
+    def trim_domain_plan() -> None:
+        # Entries go down to name + state; goal, done_when and open
+        # questions stay, they are the end state the seat builds toward.
+        block = payload.get("domain_plan")
+        if not isinstance(block, dict):
+            return
+        for plan in block.get("plans") or []:
+            plan["entries"] = [{"name": e["name"], "state": e["state"]}
+                               for e in (plan.get("entries") or [])[:10]]
+
     steps = [
         lambda: payload.__setitem__("providers", (payload.get("providers") or [])[:4]),
         trim_current,
+        trim_domain_plan,
         lambda: trim_bible(300),
         lambda: trim_refs(20),
         lambda: payload.__setitem__("approved_artifacts",
@@ -2272,6 +2327,20 @@ def _fit(payload: dict) -> dict:
             "note": f"this brief exceeded {BRIEF_CHARS} characters and was "
                     "shrunk, bible_read, ref_list, lore_list, playtest_list "
                     "and seat_notes all page the full thing"}
+        if size() <= BRIEF_CHARS:
+            return payload
+    # The domain plan goes down to one line per plan before the bible is cut
+    # to a table of contents: domain_plan_status pages the rest.
+    block = payload.get("domain_plan")
+    if isinstance(block, dict) and block:
+        payload["domain_plan"] = {
+            "plans": [{"domain": p.get("domain"),
+                       "goal": str(p.get("goal") or "")[:160],
+                       **({"missing": "no plan - domain_plan_template"}
+                          if p.get("missing") else {})}
+                      for p in block.get("plans") or []],
+            **({"held": block["held"]} if block.get("held") else {}),
+            "more": "domain_plan_status for checks, entries and findings"}
         if size() <= BRIEF_CHARS:
             return payload
     # THE LADDER RAN OUT AND THE PAYLOAD IS STILL OVER. That used to return
@@ -2537,6 +2606,11 @@ def _current_block(root: str | os.PathLike[str], hours: int = 6) -> dict:
         return {"available": False, "reason": "current_activity failed"}
 
 
+def _domain_plan_block(root: str | os.PathLike[str], role: str) -> dict:
+    from ..design import domainplan as _domainplan
+    return _domainplan.brief_block(root, role)
+
+
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
     """Everything a seat needs to start, BOUNDED.
 
@@ -2683,6 +2757,11 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         # the board being broken, and the observed response to a board that
         # looks broken is to work around it.
         "stage": _stage_block(root, role),
+        # THE END STATE THIS SEAT BUILDS TOWARD. Its discipline's plan - goal,
+        # done_when, what it leaves dark, open questions, and every entry with
+        # its live state - or the instruction to write one. Plans existed for
+        # quests, encounters and storyboards and no brief carried any of them.
+        "domain_plan": _domain_plan_block(root, role),
         "truncated": truncated,
         # Bugs that have already been paid for, gated to this seat and this
         # project's dimension. See TRAPS for why they are in the brief and not

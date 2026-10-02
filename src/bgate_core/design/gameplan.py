@@ -70,6 +70,7 @@ def validate_manifest(manifest: Any) -> list[dict]:
             "kind": kind, "name": name, "seat": seat,
             "acceptance": str(raw.get("acceptance") or "").strip()[:MAX_ACCEPTANCE],
             "slice": bool(raw.get("slice")),
+            "checkpoint": bool(raw.get("checkpoint")),
             "depends_on": [str(d).strip() for d in deps if str(d).strip()],
         })
     # Dependencies must name rows that exist — a dep on a fiction would compile
@@ -137,11 +138,11 @@ def ingest(root: str | os.PathLike[str], manifest: Any,
             if prior:
                 tx.execute(
                     "UPDATE plan_row SET kind=?, seat=?, acceptance=?, slice=?, "
-                    "depends_on_names=?, session_id=COALESCE(?, session_id) "
-                    "WHERE name=?",
+                    "depends_on_names=?, session_id=COALESCE(?, session_id), "
+                    "checkpoint=? WHERE name=?",
                     (row["kind"], row["seat"], row["acceptance"],
                      1 if row["slice"] else 0, json.dumps(row["depends_on"]),
-                     session_id, row["name"]))
+                     session_id, 1 if row["checkpoint"] else 0, row["name"]))
                 kept += 1
                 if prior["work_item_id"]:
                     item_for[row["name"]] = int(prior["work_item_id"])
@@ -149,10 +150,11 @@ def ingest(root: str | os.PathLike[str], manifest: Any,
             else:
                 tx.execute(
                     "INSERT INTO plan_row (kind, name, seat, acceptance, slice, "
-                    "depends_on_names, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "depends_on_names, session_id, checkpoint) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (row["kind"], row["name"], row["seat"], row["acceptance"],
                      1 if row["slice"] else 0, json.dumps(row["depends_on"]),
-                     session_id))
+                     session_id, 1 if row["checkpoint"] else 0))
         if not (file_slice and row["slice"]):
             continue
         # The slice goes on the board. Deps compile to depends_on links; the
@@ -171,7 +173,8 @@ def ingest(root: str | os.PathLike[str], manifest: Any,
         item = _queue.add(root, row["seat"], f"{row['kind']}: {row['name']}",
                           brief=brief, priority=5, source="game-plan",
                           source_ref=row["name"],
-                          depends_on=dep_items[0] if dep_items else None)
+                          depends_on=dep_items[0] if dep_items else None,
+                          checkpoint=row["checkpoint"])
         item_for[row["name"]] = int(item["id"])
         for extra in dep_items[1:]:
             _queue.add_dependency(root, int(item["id"]), extra)
@@ -201,7 +204,11 @@ def ingest(root: str | os.PathLike[str], manifest: Any,
 #   wired     something in the project actually REFERENCES it. Measured by
 #             reading the scenes, not by asking the agent that made it.
 #   verified  a QA gate passed on the item that built it.
-STATES = ("spec", "on_board", "lost", "built", "wired", "verified")
+#   cut       deliberately not being built (plan_cut). Not missing: the locks
+#             and milestones count it as settled, and it never shows in
+#             `remaining`.
+STATES = ("spec", "on_board", "lost", "built", "wired", "verified", "cut")
+DONE_ENOUGH = ("built", "wired", "verified", "cut")
 
 
 def _referenced_names(root: str | os.PathLike[str]) -> set[str]:
@@ -516,25 +523,25 @@ def open_slice_check(root: str | os.PathLike[str]) -> dict:
     return {"ok": True, "item": int(item["id"]), "ref": due.get("ref") or ""}
 
 
-def status(root: str | os.PathLike[str]) -> dict:
-    """Coverage: what the game consists of vs what is actually IN it.
+def row_states(root: str | os.PathLike[str]) -> list[dict]:
+    """Every plan row with its DERIVED state (see STATES).
 
-    THE answer to "what remains to build", and it deliberately does not stop
-    at 'built': a generated sprite no scene references, and a scene no
-    reviewer ever passed, are both work that looks finished from the board and
-    is not in the game. See STATES.
+    One read, shared by the whole-game ``status`` and the per-discipline
+    domain plans, so the two can never disagree about what one row is.
     """
     joined = rows(db.connect(root).execute(
-        "SELECT p.kind, p.name, p.seat, p.slice, p.work_item_id, "
-        "w.status AS item_status "
+        "SELECT p.kind, p.name, p.seat, p.slice, p.work_item_id, p.domain, "
+        "p.acceptance, p.cut_why, w.status AS item_status "
         "FROM plan_row p LEFT JOIN work_item w ON w.id = p.work_item_id "
         "ORDER BY p.slice DESC, p.id"))
+    if not joined:
+        return []
     blob = "\n".join(_referenced_names(root)).lower()
     passed = _verdicts(root)
-    counts = {state: 0 for state in STATES}
-    remaining: list[dict] = []
     for r in joined:
-        if not r["work_item_id"] or r["item_status"] is None:
+        if r.get("cut_why"):
+            state = "cut"
+        elif not r["work_item_id"] or r["item_status"] is None:
             state = "spec"
         elif r["item_status"] in ("failed", "cancelled"):
             state = "lost"
@@ -546,12 +553,132 @@ def status(root: str | os.PathLike[str]) -> dict:
             state = "wired"
         else:
             state = "built"
-        counts[state] += 1
         r["state"] = state
-        if state not in ("wired", "verified"):
+        r["domain"] = r.get("domain") or ""
+    return joined
+
+
+def link(root: str | os.PathLike[str], name: str, item_id: int) -> dict:
+    """Point a plan row at the work item now building it.
+
+    The other way onto the board. Ingest and promote file their own items; an
+    item filed by hand with queue_add was invisible to coverage, so the row
+    stayed 'spec' while the work it named was done. Refused when the row
+    already has a LIVE item: two items building one row is the double
+    dispatch this ledger exists to make visible.
+    """
+    conn = db.connect(root)
+    row = conn.execute("SELECT p.name, p.work_item_id, w.status "
+                       "FROM plan_row p LEFT JOIN work_item w "
+                       "ON w.id = p.work_item_id WHERE p.name = ?",
+                       (str(name).strip(),)).fetchone()
+    if row is None:
+        raise LookupError(f"no plan row named {name!r} - plan_status lists them")
+    if row["work_item_id"] and row["status"] in ("queued", "dispatched",
+                                                  "review", "parked"):
+        raise ValueError(f"plan row {name!r} is already being built by item "
+                         f"#{row['work_item_id']} ({row['status']})")
+    with db.tx(root) as tx:
+        tx.execute("UPDATE plan_row SET work_item_id = ? WHERE name = ?",
+                   (int(item_id), row["name"]))
+    return {"row": row["name"], "item": int(item_id),
+            "replaced": row["work_item_id"]}
+
+
+def milestones(root: str | os.PathLike[str],
+               joined: Optional[list[dict]] = None) -> dict:
+    """ALPHA AND BETA, derived from the rows - never stored.
+
+    feature_complete: every FEATURE row (systems, levels, scenes, entities -
+    see queue.kind_for_row) is built or better, or cut.
+    content_complete: every row is built or better, or cut.
+    Both are False on a project with no rows: an empty manifest is not a
+    finished game.
+    """
+    from ..board import queue as _queue
+
+    joined = row_states(root) if joined is None else joined
+    features = [r for r in joined
+                if _queue.kind_for_row(root, r["name"]) == "feature"]
+    short_f = [r["name"] for r in features if r["state"] not in DONE_ENOUGH]
+    short_c = [r["name"] for r in joined if r["state"] not in DONE_ENOUGH]
+    return {
+        "feature_complete": bool(joined) and not short_f,
+        "content_complete": bool(joined) and not short_c,
+        "features_left": short_f[:30],
+        "content_left": short_c[:30],
+    }
+
+
+def cut(root: str | os.PathLike[str], name: str, why: str, by: str = "") -> dict:
+    """Deliberately not build a plan row, on the record.
+
+    The row stays (its need is still written down) and reads 'cut'; the
+    milestones and the locks count it as settled. Refused while an item is
+    building it - cancel that first, so the cut and the board agree. The
+    reason also lands on the not-building list, which every seat reads.
+    """
+    why = " ".join(str(why or "").split())
+    if len(why) < 20:
+        raise ValueError("a cut costs a sentence: why this is not being built "
+                         "(at least 20 characters)")
+    conn = db.connect(root)
+    row = conn.execute("SELECT p.name, p.work_item_id, w.status FROM plan_row p "
+                       "LEFT JOIN work_item w ON w.id = p.work_item_id "
+                       "WHERE p.name = ?", (str(name).strip(),)).fetchone()
+    if row is None:
+        raise LookupError(f"no plan row named {name!r}")
+    if row["work_item_id"] and row["status"] in ("queued", "dispatched",
+                                                  "review", "parked"):
+        raise ValueError(f"#{row['work_item_id']} is building {name!r} - "
+                         "queue_cancel it first")
+    with db.tx(root) as tx:
+        tx.execute("UPDATE plan_row SET cut_why = ? WHERE name = ?",
+                   (why[:1000], row["name"]))
+    try:
+        from . import decisions as _decisions
+        _decisions.refuse(root, f"plan row {row['name']}", why, tag="cut",
+                          actor=by or "")
+    except Exception:                                             # noqa: BLE001
+        pass
+    activity.log(root, "game-plan", f"cut {row['name']}: {why[:120]}",
+                 seat="director")
+    return {"ok": True, "row": row["name"], "cut": why}
+
+
+def uncut(root: str | os.PathLike[str], name: str) -> dict:
+    with db.tx(root) as tx:
+        n = tx.execute("UPDATE plan_row SET cut_why = '' WHERE name = ?",
+                       (str(name).strip(),)).rowcount
+    if not n:
+        raise LookupError(f"no plan row named {name!r}")
+    return {"ok": True, "row": str(name).strip()}
+
+
+def status(root: str | os.PathLike[str]) -> dict:
+    """Coverage: what the game consists of vs what is actually IN it.
+
+    THE answer to "what remains to build", and it deliberately does not stop
+    at 'built': a generated sprite no scene references, and a scene no
+    reviewer ever passed, are both work that looks finished from the board and
+    is not in the game. See STATES.
+    """
+    joined = row_states(root)
+    counts = {state: 0 for state in STATES}
+    by_domain: dict[str, dict] = {}
+    remaining: list[dict] = []
+    for r in joined:
+        state = r["state"]
+        counts[state] += 1
+        dom = by_domain.setdefault(r["domain"] or "(unplanned)",
+                                   {"rows": 0, "in_game": 0})
+        dom["rows"] += 1
+        if state in ("wired", "verified"):
+            dom["in_game"] += 1
+        elif state != "cut":
             remaining.append({"kind": r["kind"], "name": r["name"],
                               "seat": r["seat"], "slice": bool(r["slice"]),
-                              "state": state,
+                              "domain": r["domain"], "state": state,
                               "item": r["work_item_id"]})
     slice_rows = [r for r in joined if r["slice"]]
     in_game = ("wired", "verified")
@@ -562,6 +689,8 @@ def status(root: str | os.PathLike[str]) -> dict:
         "in_game": counts["wired"] + counts["verified"],
         "slice": {"rows": len(slice_rows), "in_game": slice_in,
                   "complete": bool(slice_rows) and slice_in == len(slice_rows)},
+        "by_domain": by_domain,
+        "milestones": milestones(root, joined),
         "remaining": remaining[:60],
         "note": ("no game plan ingested yet — brainstorm one and deploy it "
                  "with a manifest" if not joined else

@@ -329,10 +329,8 @@ def brainstorm_deploy(session_id: int, plan: dict, again: bool = False) -> dict:
         # same human gate as the items - the manifest IS the plan, at a finer
         # grain. validate_plan ignores the key, so a manifest-free plan is
         # exactly what it always was.
-        if isinstance(plan, dict) and plan.get("manifest"):
-            from bgate_core.design import gameplan as _gameplan
-            out["game_plan"] = _gameplan.ingest(
-                root, plan["manifest"], session_id=int(session_id))
+        out.update(_bs.deploy_plans(root, plan, int(session_id),
+                                    by=_actor() or "human"))
         return out
     except _bs.AlreadyFiled as exc:
         return {"ok": False, "error": str(exc), "already_filed": exc.entry}

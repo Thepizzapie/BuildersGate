@@ -49,6 +49,9 @@
     director:  `<circle cx="12" cy="12" r="7.5"/><path class="e" d="M12 2.5 V7 M12 17 V21.5 M2.5 12 H7 M17 12 H21.5"/>`,
     narrative: `<path d="M4.5 6.5 H19.5 M4.5 11 H19.5 M4.5 15.5 H14"/><path class="e" d="M4.5 20 H10"/>`,
     gameplay:  `<path d="M8.5 4 V9 H3.5 V15 H8.5 V20 H15.5 V15 H20.5 V9 H15.5 V4 Z"/><path class="e" d="M12 9 V15"/>`,
+    /* A floor plan: the outer wall, an inner wall with a doorway, and the
+       critical path through it as the emphasis stroke. */
+    level:     `<rect x="3.5" y="3.5" width="17" height="17" rx="1"/><path d="M12 3.5 V9.5 M12 13.5 V20.5"/><path class="e" d="M7 17 L7 11.5 L17 11.5 L17 7"/>`,
     tech:      `<path d="M8.5 7.5 L4 12 L8.5 16.5"/><path d="M15.5 7.5 L20 12 L15.5 16.5"/><path class="e" d="M13.5 5 L10.5 19"/>`,
     art:       `<rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path class="e" d="M3.5 16 L9 10.5 L14 15.5 L17.5 12 L20.5 15"/>`,
     audio:     `<path d="M4 10 V14 M8 7 V17 M20 10 V14"/><path class="e" d="M12 4 V20 M16 8 V16"/>`,

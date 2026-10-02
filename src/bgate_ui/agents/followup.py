@@ -1983,6 +1983,16 @@ def tick(root: str | os.PathLike[str]) -> dict:
                 _gameplan.open_slice_check(root)
         except Exception:
             pass
+        # PLAN FIRST, AND REPLAN ON EVIDENCE. Files the planning item for a
+        # seat held without a plan, and turns failed slice checks, refuted
+        # premises and failed QA gates into replan flags on the owning plan.
+        # Both idempotent; a project with no domain plan answers off one query.
+        try:
+            from bgate_core.design import domainplan as _domainplan
+
+            _domainplan.sweep(root)
+        except Exception:
+            pass
     return {"seq": int(batch.get("seq") or main_seq),
             "notify_seq": int(pending.get("seq") or notify_seq),
             "actions": actions, "applied": applied,

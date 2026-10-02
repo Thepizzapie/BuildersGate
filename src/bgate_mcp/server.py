@@ -323,6 +323,7 @@ _READ_ONLY_TOOLS = frozenset({
     # the board and the seats, read side
     "seat_list", "seat_brief", "seat_can_write", "seat_notes", "handoff_read",
     "queue_list", "queue_get", "queue_next", "board_digest", "plan_status",
+    "domain_plan_template", "domain_plan_status", "domain_plan_draft",
     "pending_decisions", "decision_list", "not_building_list",
     "iteration_status", "asset_status", "canon_status", "canon_audit",
     # design, canon and lore, read side
@@ -6366,14 +6367,30 @@ def ui_concept(game_summary: Annotated[str, Field(description='One or two senten
     if refused:
         return refused
     from bgate_adapters import imagegen  # noqa: F401  (provider registry side effects)
-    wanted = [str(s).strip() for s in (screens or ["title", "main_menu", "hud", "results"]) if str(s).strip()]
+    # THE UI PLAN DECIDES THE SCREENS. The layouts below were written for one
+    # racer (lap counter, RACE button) and every other game got a racer's HUD.
+    # A ui domain plan names each screen, its purpose and everything on it;
+    # when one exists its entries are the default list and its words the body.
+    from bgate_core.design import domainplan as _domainplan
+    try:
+        ui_plan = _domainplan.get(str(root), "ui")
+    except Exception:
+        ui_plan = None
+    planned = {e["name"]: (f"the {e['name'].replace('_', ' ').upper()} screen: "
+                           f"{e['purpose']}. On it: {', '.join(e['shows'])}"
+                           + (f". Leads to: {', '.join(e['leads_to'])}"
+                              if e.get("leads_to") else ""))
+               for e in ((ui_plan or {}).get("entries") or [])}
+    default = list(planned) or ["title", "main_menu", "hud", "results"]
+    wanted = [str(s).strip() for s in (screens or default) if str(s).strip()]
     layouts = {
         "title": "the TITLE SCREEN: the game logo large and centred-top in a bespoke display typeface, a full-bleed painted key visual behind it, a small 'press start' line at the bottom, no other UI",
-        "main_menu": "the MAIN MENU: the logo smaller at top, a vertical stack of three menu entries (RACE / OPTIONS / QUIT) as designed buttons with a visible focus state on the first, a blurred/darkened key visual behind, hints for controls in a footer",
-        "hud": "the in-game HUD over a gameplay frame: lap counter top-left, position top-left under it, lap timer top-right, a big speed readout bottom-right, a minimal centre - all chrome designed to the game's look, legible, not stock",
-        "results": "the RESULTS SCREEN: a headline banner for the finishing position, a two-column panel with lap times on the left and the finishing order with driver names and colour swatches on the right, two buttons (RESTART / MENU) at the bottom, over a dimmed gameplay frame",
+        "main_menu": "the MAIN MENU: the logo smaller at top, a vertical stack of three menu entries (PLAY / OPTIONS / QUIT) as designed buttons with a visible focus state on the first, a blurred/darkened key visual behind, hints for controls in a footer",
+        "hud": "the in-game HUD over a gameplay frame: only what the player must read at a glance for THIS game's core loop, kept to the corners, a clear centre - all chrome designed to the game's look, legible, not stock",
+        "results": "the RESULTS SCREEN: a headline banner for the outcome, a panel with the run's key numbers, two buttons (RETRY / MENU) at the bottom, over a dimmed gameplay frame",
         "pause": "the PAUSE overlay: a compact centred panel with the logo, PAUSED, three entries (RESUME / RESTART / MENU), over a dimmed gameplay frame",
-        "options": "the OPTIONS screen: four labelled sliders (master, music, sfx, engine), two toggles, a BACK button, in the same panel language as the menu",
+        "options": "the OPTIONS screen: three labelled sliders (master, music, sfx), two toggles, a BACK button, in the same panel language as the menu",
+        **planned,
     }
     pinned_names, pinned_paths = _pinned_refs(root, use_pinned) if use_pinned else ([], [])
     frames: dict = {}
@@ -7613,6 +7630,49 @@ def iteration_status(limit: int = 10) -> dict:
 
 
 @_tool
+def iteration_open(goal: str, item_ids: Optional[list] = None,
+                   previous_takeaway: str = "") -> dict:
+    """Open an iteration with its committed work (the studio sprint).
+
+    With autopilot.scope = iteration, autopilot dispatches only these items
+    (plus fixes and gates). When an iteration came before, previous_takeaway -
+    what it taught, in a sentence - is required.
+    Full notes: docs/tools.md#iteration_open
+    """
+    try:
+        return _iterations.open_next(_root(), goal, list(item_ids or []),
+                                     previous_takeaway)
+    except (ValueError, LookupError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
+def iteration_attach(item_ids: list) -> dict:
+    """Commit more work items to the active iteration.
+    Full notes: docs/tools.md#iteration_attach
+    """
+    try:
+        return _iterations.attach(_root(), list(item_ids or []))
+    except (ValueError, LookupError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
+def iteration_close(summary: str) -> dict:
+    """Close the active iteration on a checked build and file the debrief.
+
+    Needs iteration_record_checks first (godot_test_run + screen_audit on the
+    default scene); writes the outcome and files a director debrief item that
+    decides the next iteration.
+    Full notes: docs/tools.md#iteration_close
+    """
+    try:
+        return _iterations.close(_root(), summary)
+    except (ValueError, LookupError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
 def iteration_record_checks(status: str, summary: str = "",
                             checks: Optional[dict] = None) -> dict:
     """Attach automated-check results to the active iteration and next snapshot."""
@@ -8418,7 +8478,15 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
             try:
                 from bgate_core.design import greenlight as _gl
 
-                stage_hold = _gl.allows(root, str(item.get("seat") or ""))[1]
+                stage_hold = (_gl.allows(root, str(item.get("seat") or ""))[1]
+                              or _q.slice_hold_reason(root, item))
+                if not stage_hold and item.get("source") != "domain-plan":
+                    from bgate_core.design import domainplan as _dpl
+                    if str(item.get("seat") or "") in _dpl.planning_held(root):
+                        stage_hold = ("held: this project plans first - the "
+                                      f"{item.get('seat')} seat's discipline "
+                                      "has no domain plan yet; its PLAN item "
+                                      "dispatches first")
             except Exception:
                 stage_hold = ""
             if stage_hold:
@@ -8652,7 +8720,9 @@ def _focus_warning(root, title: str, brief: str) -> str:
 @_tool
 def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
               depends_on: Optional[int] = None, size: str = "medium",
-              acceptance: str = "") -> dict:
+              acceptance: str = "", plan_row: str = "", kind: str = "",
+              severity: str = "", checkpoint: bool = False,
+              checkpoint_note: str = "", allow_broad: str = "") -> dict:
     """Queue work for a seat. Use when your work uncovers work that isn't yours.
 
     ``depends_on`` is an EXISTING item id this work must not start before;
@@ -8673,6 +8743,19 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     two lanes - see queue.brief_breadth) is refused outright for a
     non-director caller and returned as a warning for the director: split it
     with queue_add_chain instead.
+    ``plan_row`` names the plan row (plan_status / domain_plan_status) this
+    item builds: coverage then counts it, and the brief gains that domain's
+    goal. A row already being built by a live item is refused.
+    ``kind`` (feature|content|fix|polish) says what the item does to the game
+    - derived from plan_row or the source when omitted; feature lock and
+    content lock refuse new feature/content filings. ``severity``
+    (showstopper|major|minor) triages a fix; the release gate reads it.
+    ``checkpoint=True`` makes this a HUMAN CHECKPOINT: when it finishes it
+    parks in review for the human whatever the gate mode, and nothing behind
+    it runs until they approve (``checkpoint_note`` says what to look at).
+    SCOPE: a brief, acceptance, size and title graded as more than one
+    deliverable is refused for EVERY filer, the director included - split it
+    with queue_add_chain. ``allow_broad`` (a sentence why) files it anyway.
     Full notes: docs/tools.md#queue_add
     """
     from bgate_core.board import queue as _q
@@ -8682,13 +8765,23 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     # The director is the top-level session: no BGATE_SEAT, no work item.
     # Keying on BGATE_SEAT == "director" refused the human's own queue_add.
     is_director = (_seat() or "") == "director" or not _caller_is_agent()
-    breadth = _q.brief_breadth(brief)
-    if breadth["score"] >= 2 and not is_director:
+    breadth = _q.scope_grade(brief, acceptance, size, title)
+    # THE DIRECTOR IS NOT EXEMPT. Measured: a seat stuck in run after run on
+    # one ticket was nearly always a director brief several deliverables
+    # wide; the warning it used to get was read and filed past.
+    if breadth["score"] >= 2 and len(str(allow_broad or "").strip()) < 20:
         return {"ok": False, "refused": "too_broad",
-                "error": "this brief reads as more than one deliverable - "
-                         "split it: queue_add_chain(links=[...]) instead of "
-                         "one wide item. " + "; ".join(breadth["reasons"]),
+                "error": "this reads as more than one deliverable - split it: "
+                         "queue_add_chain(links=[...]) with one deliverable "
+                         "and one acceptance check per link. "
+                         + "; ".join(breadth["reasons"])
+                         + " (allow_broad='<why>' files it anyway)",
                 "breadth": breadth}
+    if (checkpoint and _caller_is_agent()
+            and (_seat() or "") != "director"):
+        return {"ok": False, "refused": "director_only",
+                "error": "human checkpoints are placed by the director or "
+                         "the human while planning"}
     if not is_director and not str(acceptance or "").strip():
         return {"ok": False, "refused": "no_acceptance",
                 "error": "acceptance is required: name the one check that "
@@ -8723,10 +8816,31 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
                          f"[{dup['seat']}] {dup['title'][:90]} - steer it or let it "
                          "run instead of filing a twin",
                 "existing": dup["id"]}
-    item = _q.add(_root(), seat, title, brief=brief, priority=priority,
-                  source=f"seat:{_seat() or 'unknown'}",
-                  source_ref=own_item,
-                  depends_on=depends_on, size=size, acceptance=acceptance)
+    plan_row = str(plan_row or "").strip()
+    if plan_row:
+        planned = _plan_row_context(plan_row)
+        if planned.get("error"):
+            return {"ok": False, "refused": "plan_row", "error": planned["error"]}
+        if planned["goal"] and planned["goal"] not in brief:
+            brief = (f"{brief}\n\n[{planned['domain']} plan] DOMAIN GOAL: "
+                     f"{planned['goal']}").strip()
+        if not str(acceptance or "").strip():
+            acceptance = planned["acceptance"][:500]
+        kind = kind or _q.kind_for_row(_root(), plan_row)
+    try:
+        item = _q.add(_root(), seat, title, brief=brief, priority=priority,
+                      source=f"seat:{_seat() or 'unknown'}",
+                      source_ref=own_item,
+                      depends_on=depends_on, size=size, acceptance=acceptance,
+                      kind=kind, severity=severity,
+                      checkpoint=bool(checkpoint),
+                      checkpoint_note=checkpoint_note)
+    except PermissionError as exc:
+        return {"ok": False, "refused": "locked", "error": str(exc)}
+    if plan_row:
+        from bgate_core.design import gameplan as _gameplan
+        _gameplan.link(_root(), plan_row, int(item["id"]))
+        item = {**item, "plan_row": plan_row}
     focus_warning = _focus_warning(_root(), title, brief)
     if focus_warning:
         item = {**item, "focus_warning": focus_warning}
@@ -8756,6 +8870,26 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
                  "ready now")}}
 
 
+def _plan_row_context(name: str) -> dict:
+    """The row's domain goal and acceptance, or why it cannot be linked."""
+    from bgate_core.design import domainplan as _dp
+    from bgate_core.store import db as _db
+    row = _db.connect(_root()).execute(
+        "SELECT p.name, p.domain, p.acceptance, p.work_item_id, w.status "
+        "FROM plan_row p LEFT JOIN work_item w ON w.id = p.work_item_id "
+        "WHERE p.name = ?", (name,)).fetchone()
+    if row is None:
+        return {"error": f"no plan row named {name!r} - plan_status lists them"}
+    if row["work_item_id"] and row["status"] in ("queued", "dispatched",
+                                                  "review", "parked"):
+        return {"error": f"plan row {name!r} is already being built by item "
+                         f"#{row['work_item_id']} ({row['status']}) - steer "
+                         "that one instead"}
+    plan = _dp.get(_root(), row["domain"]) if row["domain"] else None
+    return {"domain": row["domain"] or "game", "acceptance": row["acceptance"],
+            "goal": (plan or {}).get("goal", "")}
+
+
 @_tool
 def queue_add_chain(links: list, chain_id: str = "",
                     mode: str = "auto") -> dict:
@@ -8776,6 +8910,28 @@ def queue_add_chain(links: list, chain_id: str = "",
     Full notes: docs/tools.md#queue_add_chain
     """
     from bgate_core.board import queue as _q
+    # EVERY LINK IS ONE DELIVERABLE. A chain of wide links is the same wide
+    # ticket in several pieces, each of which then needs several runs.
+    for i, link in enumerate(links or []):
+        if not isinstance(link, dict):
+            continue
+        grade = _q.scope_grade(str(link.get("brief") or ""),
+                               str(link.get("acceptance") or ""),
+                               str(link.get("size") or "medium"),
+                               str(link.get("title") or ""))
+        if (grade["score"] >= 2
+                and len(str(link.get("allow_broad") or "").strip()) < 20):
+            return {"ok": False, "refused": "too_broad", "link": i,
+                    "error": f"link {i} ({str(link.get('title') or '')[:60]}) "
+                             "reads as more than one deliverable - split it "
+                             "into more links. " + "; ".join(grade["reasons"])
+                             + " (a link's allow_broad='<why>' files it anyway)",
+                    "breadth": grade}
+        if link.get("checkpoint") and _caller_is_agent() \
+                and (_seat() or "") != "director":
+            return {"ok": False, "refused": "director_only",
+                    "error": "human checkpoints are placed by the director or "
+                             "the human"}
     rows = _q.add_chain(
         _root(),
         [dict(link) for link in (links or [])],
@@ -8791,8 +8947,14 @@ def queue_add_chain(links: list, chain_id: str = "",
 def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str] = None,
                  seat: Optional[str] = None, priority: Optional[int] = None,
                  steer_running: bool = False,
-                 max_paid_calls: Optional[int] = None) -> dict:
-    """Edit an existing work item in place (title/brief/seat/priority).
+                 max_paid_calls: Optional[int] = None,
+                 kind: Optional[str] = None,
+                 severity: Optional[str] = None,
+                 checkpoint: Optional[bool] = None,
+                 checkpoint_note: Optional[str] = None) -> dict:
+    """Edit an existing work item in place (title/brief/seat/priority, and the
+    triage fields kind=feature|content|fix|polish, severity=showstopper|
+    major|minor).
 
     Only the fields you pass change; brief REPLACES, it does not append. THIS
     DOES NOT REACH A RUNNING AGENT: a brief change on a DISPATCHED item is
@@ -8824,9 +8986,19 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
             "instead": "agent_steer",
         }
 
+    if checkpoint is not None and _caller_is_agent():
+        # Placing one is the director's planning act; REMOVING one is the
+        # human's - an agent that could lift the checkpoint in front of its
+        # own work has not been gated.
+        if checkpoint is False or (_seat() or "") != "director":
+            return {"ok": False, "refused": "checkpoint",
+                    "error": "the director places checkpoints; only the "
+                             "human removes one"}
     updated = _q.update(root, item_id, title=title, brief=brief,
                         seat=seat, priority=priority,
-                        max_paid_calls=max_paid_calls)
+                        max_paid_calls=max_paid_calls, kind=kind,
+                        severity=severity, checkpoint=checkpoint,
+                        checkpoint_note=checkpoint_note)
     delivered = False
     steer: dict = {}
     if running and changes_the_work and steer_running:
@@ -9077,7 +9249,7 @@ def evidence_assert(scene: str, frame: str, says: str,
 @_tool
 def greenlight_thesis_set(sentence: str, options: list, stakes: str,
                           tension: str, dominant_strategy: str,
-                          cadence: str) -> dict:
+                          cadence: str, risks: Optional[list] = None) -> dict:
     """Settle the MECHANICAL THESIS - the one sentence the game is built on.
 
     A feature list is refused: the sentence must name an act of choosing, with
@@ -9086,15 +9258,109 @@ def greenlight_thesis_set(sentence: str, options: list, stakes: str,
     `dominant_strategy` (the play that would COLLAPSE the decision, named so
     QA can hunt it) and `cadence` (how often it comes round). Settling a
     thesis does not advance the stage - greenlight_advance does.
+    `risks`: the top 1-4 KEY RISKS, each {hypothesis, retire_by} - a binary
+    statement the vertical slice can settle. They must be retired before the
+    slice opens production.
     Full notes: docs/tools.md#greenlight_thesis_set
     """
     from bgate_core.design import greenlight as _gl
 
-    return _gl.set_thesis(_root(), {
-        "sentence": sentence, "options": list(options or []),
-        "stakes": stakes, "tension": tension,
-        "dominant_strategy": dominant_strategy, "cadence": cadence},
-        by=_actor())
+    raw = {"sentence": sentence, "options": list(options or []),
+           "stakes": stakes, "tension": tension,
+           "dominant_strategy": dominant_strategy, "cadence": cadence}
+    if risks:
+        raw["risks"] = list(risks)
+    return _gl.set_thesis(_root(), raw, by=_actor())
+
+
+@_tool
+def greenlight_risks_set(risks: list) -> dict:
+    """Name the project's KEY RISKS: 1-4 binary hypotheses the slice settles.
+
+    Each {hypothesis, retire_by}: "players find the parry window without a
+    tutorial", retire_by "playtest of the slice". A hypothesis whose text is
+    unchanged keeps its outcome. All must be retired (greenlight_risk_retire)
+    before slice -> production.
+    Full notes: docs/tools.md#greenlight_risks_set
+    """
+    from bgate_core.design import greenlight as _gl
+    try:
+        return {"risks": _gl.set_risks(_root(), risks, by=_actor())}
+    except (ValueError, PermissionError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
+def greenlight_risk_retire(index: int, outcome: str, evidence: str) -> dict:
+    """Retire one key risk: confirmed | modified (with evidence) | accepted.
+
+    `accepted` - shipping with the risk open - is the HUMAN's call and is
+    refused for an agent; ask_human instead.
+    Full notes: docs/tools.md#greenlight_risk_retire
+    """
+    from bgate_core.design import greenlight as _gl
+    if str(outcome or "").strip().lower() == "accepted" and _caller_is_agent():
+        return {"ok": False, "refused": "human_only",
+                "error": "accepting a risk is the human's call - ask_human "
+                         "with the hypothesis and what the slice showed"}
+    try:
+        return _gl.retire_risk(_root(), int(index), outcome, evidence,
+                               by=_actor())
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
+def greenlight_lock(which: str, reason: str) -> dict:
+    """FEATURE LOCK (alpha) or CONTENT LOCK (beta). Director or human.
+
+    feature: every feature plan row built or cut; afterwards queue_add of a
+    kind='feature' item is refused. content: after feature lock, every row
+    built or cut; afterwards kind='content' is refused and the board runs
+    fixes first. Lifting a lock is the human's (greenlight_unlock).
+    Full notes: docs/tools.md#greenlight_lock
+    """
+    from bgate_core.design import greenlight as _gl
+    if _caller_is_agent() and (_seat() or "") != "director":
+        return {"ok": False, "refused": "director_only",
+                "error": "locks are the director's call"}
+    try:
+        return {"locks": _gl.lock(_root(), which, reason, by=_actor())}
+    except (ValueError, PermissionError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
+def greenlight_unlock(which: str) -> dict:
+    """Lift a feature or content lock. HUMAN ONLY (feature also lifts content).
+    Full notes: docs/tools.md#greenlight_unlock
+    """
+    from bgate_core.design import greenlight as _gl
+    if _caller_is_agent():
+        return {"ok": False, "refused": "human_only",
+                "error": "only the human lifts a lock - ask_human with what "
+                         "has to get in and why"}
+    return {"locks": _gl.unlock(_root(), str(which or "").strip().lower())}
+
+
+@_tool
+def queue_accept_known_issue(item_id: int, why: str) -> dict:
+    """Accept an open MINOR as a known issue the game ships with. HUMAN ONLY.
+
+    The release gate's board section blocks on every open showstopper and
+    major, and on every open minor nobody accepted. Only a minor can be
+    accepted.
+    Full notes: docs/tools.md#queue_accept_known_issue
+    """
+    from bgate_core.board import queue as _q
+    if _caller_is_agent():
+        return {"ok": False, "refused": "human_only",
+                "error": "shipping with a known bug is the human's call"}
+    try:
+        return _q.accept_known_issue(_root(), int(item_id), _actor() or "human",
+                                     why)
+    except (ValueError, LookupError) as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @_tool
@@ -9148,10 +9414,11 @@ def greenlight_graybox_verdict(verdict: str, interesting: bool,
 def greenlight_advance(stage: str) -> dict:
     """Move the project to the next production stage, or learn why it cannot.
 
-    thesis -> graybox -> production -> release. Moving BACKWARD is always
-    allowed. Forward: graybox needs a settled thesis; production needs a
+    thesis -> graybox -> slice -> production -> release. Moving BACKWARD is
+    always allowed. Forward: graybox needs a settled thesis; slice needs a
     graybox the director passed plus an enemy roster of interactions and more
-    than one objective shape; release needs the presentation gate (every room
+    than one objective shape; production needs a passed slice check and every
+    key risk retired; release needs the presentation gate (every room
     reviewed whole, every asset measured, every audio cue heard). THE RELEASE
     BOUNDARY TAKES NO WAIVER - greenlight_status('presentation') lists what is
     owed.
@@ -10526,6 +10793,7 @@ from bgate_mcp.tools_level import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_web import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_unity import *  # noqa: E402,F401,F403
 from bgate_mcp.tools_reuse import *  # noqa: E402,F401,F403
+from bgate_mcp.tools_plan import *  # noqa: E402,F401,F403
 # THE TEST SEAMS THE STAR IMPORTS SKIP. A pile of tests stub the blender
 # adapter by mutating the MODULE OBJECT through this namespace
 # (`setattr(server._blender, "combine", ...)`) - that works from any module
