@@ -16,15 +16,15 @@ import { useEvents } from "../../hooks";
  */
 
 type Entry = {
-  rank: number; wave: number; id: number; title: string; seat: string; state: string;
+  rank: number; wave: number; goal: number; goal_title: string; solo: boolean;
+  id: number; title: string; seat: string; state: string;
   human: boolean; critical: boolean; path: number; unblocks: number;
   after: number[]; before: number[]; runs: number; why: string;
 };
 type Order = { order: Entry[]; waves: number; critical_path: number[]; human_steps: number[]; __error?: string };
 
-const ROW = 40, HEAD = 28, LANE = 16, PAD = 12;
+const ROW = 40, HEAD = 34, LANE = 16, PAD = 12;
 const AMBER = "#ffbb45";
-const WAVE_NAME = (w: number) => (w === 0 ? "Land now" : w === 1 ? "Next" : `Wave ${w + 1}`);
 
 function color(e: Entry): string {
   return e.human ? AMBER : SEAT_COLOR[e.seat] || "var(--text-3)";
@@ -33,12 +33,24 @@ function color(e: Entry): string {
 function layout(rows: Entry[]) {
   const pos = new Map<number, number>();            // id -> index in rows
   rows.forEach((e, i) => pos.set(e.id, i));
-  // y with a header row before each new wave
+  // A header before each goal: the goal and the work feeding it, together.
   const ys: number[] = [];
-  const heads: { wave: number; y: number }[] = [];
-  let y = 0, wave = -1;
+  const heads: { key: string; y: number; label: string; sub: string }[] = [];
+  let y = 0, group = "";
+  const keyOf = (e: Entry) => (e.solo ? "solo" : `g${e.goal}`);
   rows.forEach((e) => {
-    if (e.wave !== wave) { wave = e.wave; heads.push({ wave, y }); y += HEAD; }
+    const k = keyOf(e);
+    if (k !== group) {
+      group = k;
+      const members = rows.filter((r) => keyOf(r) === k);
+      const now = members.filter((r) => r.wave === 0 && r.state !== "running").length;
+      const live = members.filter((r) => r.state === "running").length;
+      heads.push({ key: k, y,
+        label: e.solo ? "Independent" : `Toward #${e.goal} ${e.goal_title}`,
+        sub: `${members.length} step${members.length === 1 ? "" : "s"}`
+          + (now ? ` · ${now} can land now` : "") + (live ? ` · ${live} running` : "") });
+      y += HEAD;
+    }
     ys.push(y + ROW / 2);
     y += ROW;
   });
@@ -138,7 +150,9 @@ export function MergeOrder({ active, seat, pick, onPick }: {
           })}
         </svg>
         {g.heads.map((h) => (
-          <div key={h.wave} className="bgo-wh" style={{ top: h.y, left: gutter }}>{WAVE_NAME(h.wave)}</div>
+          <div key={h.key} className="bgo-wh" style={{ top: h.y, left: gutter }}>
+            <span className="bgo-goal">{h.label}</span><span className="bgo-gsub">{h.sub}</span>
+          </div>
         ))}
         {rows.map((e, i) => (
           <div key={e.id}
@@ -150,7 +164,8 @@ export function MergeOrder({ active, seat, pick, onPick }: {
               <div className="bgo-t"><span className="bgo-id">#{e.id}</span> {e.title}</div>
               <div className="bgo-why">
                 <span style={{ color: color(e) }}>{e.human ? "you" : e.seat}</span>
-                {" · "}{e.state}{e.runs > 1 ? ` · ${e.runs} runs` : ""}{e.why ? ` · ${e.why}` : ""}
+                {" · "}{e.wave === 0 && !["running", "needs you", "parked"].includes(e.state) ? "can land now" : e.state}
+                {e.runs > 1 ? ` · ${e.runs} runs` : ""}{e.why ? ` · ${e.why}` : ""}
               </div>
             </div>
           </div>

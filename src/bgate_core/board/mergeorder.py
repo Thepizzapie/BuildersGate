@@ -6,17 +6,19 @@ human scanning the board, actually needs: what has to be FINISHED first so
 everything behind it can move. Ids are filing order and priority is a
 preference; neither is that order.
 
-The order is computed, never stored:
+The order is computed, never stored, GOAL BY GOAL:
 
-  * WAVES are topological levels over the OPEN work only - a finished parent
-    is satisfied, so wave 0 is everything that can land now (running, ready,
-    in review, waiting on a human). Wave 1 lands after wave 0, and so on.
-  * Within a wave, work lands first when it is on the CRITICAL PATH (the
-    longest chain of open work still behind it), then when it UNBLOCKS more
-    open work, then by priority, then by filing order.
+  * a GOAL is open work nothing else waits on. Each goal is emitted with its
+    whole open upstream in post-order - what it waits on first (deepest
+    chain first), then the goal - so the work feeding a target sits directly
+    above it and a reader never chases a line off the screen;
+  * the goal on the CRITICAL PATH (the longest chain of open work) goes
+    first, then goals with the most work behind them; goals with nothing
+    behind them are the independent tail;
+  * WAVES (topological levels over open work; a finished parent is
+    satisfied) are reported per item: wave 0 can land now;
   * HUMAN steps (checkpoints waiting for sign-off, human tasks) are ranked
-    like any other step - they are on the path - and flagged, because they
-    are the steps no agent can finish.
+    like any other step - they are on the path - and flagged.
 
 ``rank`` is the position in that order; ``weight`` (critical path, unblocks)
 is what queue.ready() sorts ready work by, so dispatch follows the same
@@ -96,7 +98,7 @@ def weights(root: str | os.PathLike[str]) -> dict[int, tuple[int, int]]:
 
 
 def order(root: str | os.PathLike[str], seat: str = "") -> dict:
-    """The recommended order, wave by wave, with the reason for each place."""
+    """The recommended order, goal by goal, with the reason for each place."""
     items, ups, downs = _graph(root)
     w = weights(root)
     wave: dict[int, int] = {}
@@ -129,8 +131,45 @@ def order(root: str | os.PathLike[str], seat: str = "") -> dict:
         return it.get("source") == HUMAN_SOURCE or (
             it.get("status") == "review" and int(it.get("checkpoint") or 0) == 1)
 
-    ranked = sorted(items, key=lambda i: (
-        wave[i], -w[i][0], -w[i][1], -int(items[i].get("priority") or 0), i))
+    # GOAL BY GOAL. A goal is open work nothing else waits on (a sink). Each
+    # goal's whole upstream is emitted in post-order - what it waits on first,
+    # deepest chain first - and then the goal itself, so the work feeding a
+    # target sits directly above it. Dependencies are still respected (every
+    # item comes after everything it waits on); work shared by two goals lands
+    # with the first goal that needs it. The goal on the critical path goes
+    # first, then the goals with the most work behind them; goals with nothing
+    # behind them are the independent tail.
+    def upstream(i: int) -> set[int]:
+        seen: set[int] = set()
+        todo = list(ups[i])
+        while todo:
+            c = todo.pop()
+            if c not in seen:
+                seen.add(c)
+                todo.extend(ups[c])
+        return seen
+
+    sinks = [i for i in items if not downs[i]]
+    size = {i: len(upstream(i)) for i in sinks}
+    sinks.sort(key=lambda i: (0 if i in chain else 1, 0 if size[i] else 1,
+                              -wave[i], -size[i], i))
+    ranked: list[int] = []
+    goal_of: dict[int, int] = {}
+    emitted: set[int] = set()
+
+    def visit(i: int, goal: int, guard: int = 0) -> None:
+        if i in emitted or guard > 400:
+            return
+        emitted.add(i)                    # cycle guard; position set below
+        for p in sorted(ups[i], key=lambda p: (-w[p][0], -w[p][1], p)):
+            visit(p, goal, guard + 1)
+        ranked.append(i)
+        goal_of[i] = goal
+
+    for g in sinks:
+        visit(g, g)
+    for i in sorted(items):               # anything a cycle hid from the sinks
+        visit(i, i)
     out = []
     for n, i in enumerate(ranked, 1):
         it = items[i]
@@ -147,7 +186,10 @@ def order(root: str | os.PathLike[str], seat: str = "") -> dict:
                  else "parked" if it["status"] == "parked"
                  else "waiting" if ups[i] else it["status"])
         out.append({
-            "rank": n, "wave": wave[i], "id": i, "title": str(it["title"])[:140],
+            "rank": n, "wave": wave[i], "goal": goal_of[i],
+            "goal_title": str(items[goal_of[i]]["title"])[:140],
+            "solo": not ups[goal_of[i]] and goal_of[i] == i,
+            "id": i, "title": str(it["title"])[:140],
             "seat": it["seat"], "state": state, "human": human(it),
             "critical": i in chain, "path": path, "unblocks": unblocks,
             "after": sorted(ups[i]), "before": sorted(downs[i]),
@@ -160,10 +202,11 @@ def order(root: str | os.PathLike[str], seat: str = "") -> dict:
         "waves": max(wave.values(), default=-1) + 1,
         "critical_path": sorted(chain, key=lambda i: wave[i]),
         "human_steps": [e["id"] for e in out if e["human"]],
-        "note": ("land work in this order: everything in wave N before wave "
-                 "N+1, and within a wave the critical path first, then what "
-                 "unblocks the most. Human steps are on the path like any "
-                 "other step."),
+        "note": ("land work in this order, goal by goal: the goal on the "
+                 "critical path first, and inside each goal everything it "
+                 "waits on before the goal itself. `wave` says how many "
+                 "steps of open work stand in front of an item (0 = it can "
+                 "land now). Human steps are in the order like any other."),
     }
 
 
