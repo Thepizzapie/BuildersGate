@@ -154,9 +154,10 @@
 .bgo-edge.crit { opacity: .95; stroke-width: 2.6 }
 .bgo-edge.live { stroke-dasharray: 5 4; animation: bgl-flow 1.1s linear infinite; opacity: .95 }
 .bgo-dot { cursor: pointer; transition: transform .45s ease }
-.bgo-wh { position: absolute; right: 0; height: 28px; display: flex; align-items: flex-end; padding-bottom: 4px;
-  font: 600 11px var(--mono); color: var(--text-3); text-transform: uppercase; letter-spacing: .08em;
-  border-bottom: 1px solid var(--line); transition: top .45s ease }
+.bgo-wh { position: absolute; right: 0; height: 30px; display: flex; align-items: flex-end; gap: 10px;
+  padding-bottom: 4px; border-bottom: 1px solid var(--line); transition: top .45s ease; overflow: hidden }
+.bgo-goal { font: 600 12px var(--sans); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.bgo-gsub { font: 500 11px var(--mono); color: var(--text-3); white-space: nowrap; flex: none }
 .bgo-row { position: absolute; right: 0; height: 40px; display: flex; align-items: center; gap: 10px;
   padding: 0 6px; border-radius: 6px; cursor: pointer; transition: top .45s ease }
 .bgo-row:hover, .bgo-row.picked { background: var(--surface-2) }
