@@ -370,7 +370,11 @@ def set_plan(root: str | os.PathLike[str], domain: str, plan: Any,
     if merge and prior:
         combined = dict(prior)
         for key in ("goal", "done_when", "leaves_dark", "open_questions"):
-            if plan.get(key) not in (None, "", []):
+            # An explicit [] clears a list (an answered question closes); a
+            # missing key or None leaves it; an empty goal never blanks one.
+            if key in ("leaves_dark", "open_questions") and plan.get(key) == []:
+                combined[key] = []
+            elif plan.get(key) not in (None, "", []):
                 combined[key] = plan[key]
         by_name = {e["name"]: e for e in prior["entries"]}
         for e in plan.get("entries") or []:
