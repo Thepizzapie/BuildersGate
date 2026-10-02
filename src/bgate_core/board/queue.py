@@ -130,7 +130,13 @@ SATISFIED = ("done",)
 # that failed N rounds needed a PERSON. It needed a decision; the director
 # seat is dispatched for exactly that, and holding it left "QA loop: #5
 # failed 6 rounds" queued for a human who was asleep while the board sat.
-HELD_SOURCES = ("chat",)
+HELD_SOURCES = ("chat", "human-task")
+
+# A HUMAN STEP: work only a person can do (a call, a playtest, a sign-off that
+# is not a checkpoint on an existing item). It lives on the board as an item
+# so work can DEPEND on it like any other - the agent chain waits on the human
+# and the human sees exactly what is waiting - and it is never dispatched.
+HUMAN_SOURCE = "human-task"
 
 # The source stamped on that escalation. Named here rather than in the router
 # that files them because the hold above and the filing must never drift apart:
@@ -671,6 +677,65 @@ def update(root: str | os.PathLike[str], item_id: int, *,
     activity.log(root, "queue", f"item {item_id} edited: {item['title'][:60]}",
                  seat=item["seat"], ref=str(item_id))
     return item
+
+
+def add_human_task(root: str | os.PathLike[str], title: str, *,
+                   why: str = "", blocks: Optional[list] = None,
+                   after: Optional[list] = None, by: str = "") -> dict:
+    """File a step only the human can do, and make work wait on it.
+
+    ``blocks`` are open items that must not start until the human is done;
+    ``after`` are items the human step itself waits on (a playtest after the
+    build lands). Never dispatched (HELD_SOURCES); finished by human_done.
+    """
+    title = " ".join(str(title or "").split())
+    if len(title) < 6:
+        raise ValueError("say what the human has to do")
+    ups = [int(a) for a in (after or [])]
+    for a in ups:
+        get(root, a)
+    item = add(root, "director", f"YOU: {title}"[:200],
+               brief=(why or title).strip(), priority=8, source=HUMAN_SOURCE,
+               source_ref=by[:80], depends_on=ups[0] if ups else None,
+               acceptance="the human marks it done")
+    for a in ups[1:]:
+        add_dependency(root, int(item["id"]), a)
+    for b in blocks or []:
+        target = get(root, int(b))
+        if target["status"] in ("done", "cancelled"):
+            raise ValueError(f"#{b} is {target['status']} - nothing left to block")
+        add_dependency(root, int(b), int(item["id"]))
+    activity.log(root, "queue", f"human step #{item['id']}: {title[:80]}"
+                 + (f" (blocks {', '.join('#' + str(b) for b in blocks)})" if blocks else ""),
+                 seat="director", ref=str(item["id"]))
+    _emit(root, "item.human_task", ref=str(item["id"]),
+          payload={"title": title[:200], "blocks": [int(b) for b in blocks or []]})
+    return get(root, int(item["id"]))
+
+
+def human_done(root: str | os.PathLike[str], item_id: int, note: str = "",
+               by: str = "") -> dict:
+    """The human finished their step: done, and everything behind it moves."""
+    item = get(root, item_id)
+    if item.get("source") != HUMAN_SOURCE:
+        raise ValueError(f"#{item_id} is not a human step")
+    if item["status"] in ("done", "cancelled"):
+        return item
+    actor = by or activity.current_actor()
+    done = set_status(root, item_id, "done",
+                      result=f"done by {actor}" + (f": {note.strip()[:600]}" if note.strip() else ""))
+    _emit(root, "item.done", ref=str(item_id), payload=_item_event_payload(done))
+    return done
+
+
+def set_checkpoint(root: str | os.PathLike[str], item_id: int, on: bool,
+                   note: str = "") -> dict:
+    """Make an item a human checkpoint (or stop it being one)."""
+    item = get(root, item_id)
+    if item["status"] in ("done", "cancelled"):
+        raise ValueError(f"#{item_id} is {item['status']} - a checkpoint on finished work gates nothing")
+    return update(root, item_id, checkpoint=bool(on),
+                  checkpoint_note=note if on else "")
 
 
 def accept_known_issue(root: str | os.PathLike[str], item_id: int,
@@ -2543,6 +2608,18 @@ def ready(root: str | os.PathLike[str], seat: str = "",
            and not c.get("exhausted_at")
            and not over_attempt_cap(root, c)
            and blocker(root, int(c["id"])) is None]
+    # MERGE ORDER. Among ready work, priority first (a human's explicit
+    # preference), then the work with the longest chain of open work behind it,
+    # then the work that unblocks the most - the same order the board shows
+    # and every brief carries, so what dispatches is what should land first.
+    try:
+        from . import mergeorder as _mergeorder
+        wt = _mergeorder.weights(root)
+        out.sort(key=lambda c: (-int(c.get("priority") or 0),
+                                -wt.get(int(c["id"]), (0, 0))[0],
+                                -wt.get(int(c["id"]), (0, 0))[1], int(c["id"])))
+    except Exception:
+        pass
     if content_locked:
         # After content lock the board is a bug list: fixes first, then
         # polish, then anything else. Stable, so priority still orders

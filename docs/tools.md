@@ -2801,6 +2801,20 @@ accepted as `risks` on greenlight_thesis_set. Director only.
 Lift a lock. Human only. Lifting feature lock lifts content lock too.
 ```
 
+## human_task_add
+
+```text
+File a step ONLY THE HUMAN can do, and make work wait on it.
+
+title is what the human has to do ("Pick the fog density"); blocks are open
+items that gain a real dependency on the step; after are items the step
+waits on (play the build after #12 lands). The step is a work item titled
+"YOU: ...", never dispatched (HELD_SOURCES), shown as the human's node on
+the Lifecycle pipeline and in merge order, and finished by the human with
+Mark done (POST /api/queue/{id}/human-done). For a question use ask_human;
+for sign-off on an existing item use a checkpoint.
+```
+
 ## iteration_attach
 
 ```text
@@ -2823,6 +2837,21 @@ Open an iteration with the work committed to it (the studio sprint,
 without dates). When autopilot.scope = iteration, autopilot dispatches only
 committed items plus fixes and gates. If an iteration came before,
 previous_takeaway (what it taught, 20+ chars) is required.
+```
+
+## merge_order
+
+```text
+The recommended order open work should LAND in, and why.
+
+Waves are topological levels over OPEN work only (a finished parent is
+satisfied): wave 0 can land now. Within a wave the critical path (the
+longest chain of open work still behind an item) comes first, then what
+unblocks the most, then priority, then filing order. Human steps
+(checkpoints waiting for sign-off, human tasks) sit in the order and are
+flagged. queue.ready() dispatches ready work in the same order after
+priority, and every seat brief carries its own items' places
+(`merge_order` block). seat narrows the list to one seat.
 ```
 
 ## plan_cut

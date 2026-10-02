@@ -189,6 +189,8 @@ def graph(root: str | os.PathLike[str], *, hours: float = 48,
         hold = _hold_reason(root, it, held_seats, unplanned)
         if status == "dispatched":
             state = "running"
+        elif it.get("source") == "human-task" and status not in ("done", "cancelled"):
+            state = "human"
         elif status == "review":
             state = "checkpoint" if int(it.get("checkpoint") or 0) else "review"
         elif status in ("done", "failed", "cancelled", "parked"):
@@ -227,6 +229,32 @@ def graph(root: str | os.PathLike[str], *, hours: float = 48,
             "waiting_on": unresolved,
             "result": str(it.get("result") or "")[-280:],
         })
+    # OPEN QUESTIONS an agent put to the human, hung off the item that asked.
+    # Not dependencies - the asker keeps working - but they are the human's
+    # side of the chain and belong on the picture.
+    try:
+        from . import steerbox as _steerbox
+        for q in _steerbox.open_questions(root)[:20]:
+            asker = int(q.get("item_id") or 0)
+            if asker not in items:
+                continue
+            qid = -int(q.get("event_seq") or 0) or -(len(nodes) + 10_000)
+            nodes.append({
+                "id": qid, "title": "Answer: " + str(q.get("question") or "")[:110],
+                "seat": "human", "status": "question", "state": "question",
+                "lane": lane_of.get(asker, 0), "row": row_of.get(asker, 0),
+                "parents": [], "hidden_parents": 0, "chain_id": "", "kind": "",
+                "severity": "", "size": "", "checkpoint": False,
+                "checkpoint_note": "", "split_of": None, "spawned_by": asker,
+                "source": "question", "runs": 1, "run_log": [], "elapsed_s": None,
+                "created_at": q.get("asked_at") or "",
+                "updated_at": q.get("asked_at") or "",
+                "acceptance": "", "hold": "", "waiting_on": [], "result": "",
+                "question_id": int(q.get("event_seq") or 0),
+            })
+            counts["question"] = counts.get("question", 0) + 1
+    except Exception:                                             # noqa: BLE001
+        pass
     edges = [{"from": p, "to": c} for c, ups in parents_of.items() for p in ups]
     return {
         "nodes": nodes,
@@ -235,6 +263,8 @@ def graph(root: str | os.PathLike[str], *, hours: float = 48,
         "counts": counts,
         "window_hours": hours,
         "checkpoints_waiting": [n["id"] for n in nodes if n["state"] == "checkpoint"],
+        "human_waiting": [n["id"] for n in nodes
+                          if n["state"] in ("checkpoint", "human", "question")],
         "multi_run": [n["id"] for n in nodes if n["runs"] >= 2
                       and n["status"] in OPEN + ("failed",)],
     }

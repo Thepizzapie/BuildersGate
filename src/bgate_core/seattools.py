@@ -69,7 +69,7 @@ CORE: tuple[str, ...] = (
     # EVERY SEAT PLANS ITS OWN DISCIPLINE. The domain plan is the end state
     # the seat builds toward; a seat that cannot read or revise it is back
     # to building against a feature list. plan_promote stays director-only.
-    "domain_plan_", "plan_status",
+    "domain_plan_", "plan_status", "merge_order", "human_task_add",
     # THE ENGINE-NEUTRAL SPINE. engine_status / engine_check /
     # engine_screenshot are the same three questions godot_* answers, asked
     # of whichever engine the project records; a seat brief on a web or

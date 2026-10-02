@@ -4,7 +4,7 @@ import { Ti } from "../Ti";
 import { SEAT_COLOR } from "../nav";
 import { askText, mutate, readJSON, toast } from "../../bridge";
 import { useEvents } from "../../hooks";
-import { SubwayMap } from "./SubwayMap";
+import { MergeOrder } from "./MergeOrder";
 import { Pipeline } from "./Pipeline";
 import "./lifecycle.css";
 
@@ -44,9 +44,6 @@ type Graph = {
 };
 type Covers = { covers: { id: number; seat: string; title: string; status: string; runs: number }[] };
 
-const ROW = 30;
-const LANE = 15;
-const PAD = 10;
 const WINDOWS: { label: string; hours: number }[] = [
   { label: "Live", hours: 6 }, { label: "24h", hours: 24 },
   { label: "7d", hours: 168 }, { label: "All", hours: 0 },
@@ -54,6 +51,7 @@ const WINDOWS: { label: string; hours: number }[] = [
 const LIVE = new Set(["running", "ready", "waiting", "held", "blocked", "checkpoint", "review", "parked"]);
 const STATE_LABEL: Record<string, string> = {
   running: "running", ready: "ready", waiting: "waiting", held: "held",
+  human: "needs you", question: "question for you",
   blocked: "blocked", checkpoint: "checkpoint", review: "review", done: "done",
   failed: "failed", cancelled: "cancelled", parked: "parked",
 };
@@ -62,27 +60,20 @@ function color(seat: string): string {
   return SEAT_COLOR[seat] || "var(--text-3)";
 }
 
-function fmtDur(s: number): string {
-  if (s < 60) return `${Math.round(s)}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
-  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
-}
-
 export function Lifecycle({ active = true }: { active?: boolean }) {
   const [hours, setHours] = useState(24);
   const [graph, setGraph] = useState<Graph | null>(null);
   const [pick, setPick] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [seatFilter, setSeatFilter] = useState<string>("");
-  /* Flow (the pipeline) or Log (the git-style history list). */
+  /* pipeline (the dependency picture) or order (what lands first). */
   const [mode, setMode] = useState<string>(() => {
     try {
       const got = localStorage.getItem("bgl-mode");
-      return got === "log" || got === "map" ? got : "pipeline";
+      return got === "order" ? "order" : "pipeline";
     } catch { return "pipeline"; }
   });
   const pickMode = (m: string) => { setMode(m); try { localStorage.setItem("bgl-mode", m); } catch { /* private */ } };
-  const [tick, setTick] = useState(0);
 
   async function load() {
     const got = await readJSON<Graph>(`/api/lifecycle?hours=${hours}&limit=400`,
@@ -91,13 +82,6 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
   }
   useEffect(() => { if (active) void load(); }, [hours, active]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEvents(() => { void load(); }, { enabled: active, fallbackMs: 4000 });
-  /* The elapsed clocks on running rows tick between polls. */
-  useEffect(() => {
-    if (!active) return;
-    const t = window.setInterval(() => setTick((n) => n + 1), 1000);
-    return () => window.clearInterval(t);
-  }, [active]);
-
   const view = useMemo(() => {
     const all = graph?.nodes || [];
     let nodes = hours === 6 ? all.filter((n) => LIVE.has(n.state)
@@ -106,33 +90,13 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
       const keep = new Set(nodes.filter((n) => n.seat === seatFilter).map((n) => n.id));
       nodes = nodes.filter((n) => keep.has(n.id));
     }
-    /* Newest first: a working tree over its history. Display row = reversed
-       topological row, compacted after filtering. */
-    const ordered = [...nodes].sort((a, b) => b.row - a.row);
-    const y = new Map<number, number>();
-    ordered.forEach((n, i) => y.set(n.id, i));
-    const lanesUsed = Math.max(1, ...nodes.map((n) => n.lane + 1));
-    return { ordered, y, lanesUsed };
+    const ordered = [...nodes].sort((a, b) => a.row - b.row);
+    return { ordered };
   }, [graph, hours, seatFilter]);
 
   const byId = useMemo(() => new Map((graph?.nodes || []).map((n) => [n.id, n])), [graph]);
-  const gutter = PAD * 2 + view.lanesUsed * LANE;
-  const height = Math.max(ROW, view.ordered.length * ROW);
   const seats = useMemo(() => [...new Set((graph?.nodes || []).map((n) => n.seat))].sort(), [graph]);
   const selected = pick != null ? byId.get(pick) || null : null;
-
-  /* The run timeline (expanded view): one bar per run across the window. */
-  const span = useMemo(() => {
-    const starts = (graph?.nodes || []).flatMap((n) => n.run_log.map((r) => r.started));
-    const now = Date.now() / 1000;
-    const lo = starts.length ? Math.min(...starts) : now - 3600;
-    return { lo, hi: now, w: Math.max(60, now - lo) };
-  }, [graph, tick]);   // eslint-disable-line react-hooks/exhaustive-deps
-
-  const cx = (n: Node) => PAD + n.lane * LANE + LANE / 2;
-  const cy = (n: Node) => (view.y.get(n.id) || 0) * ROW + ROW / 2;
-
-  const edges = (graph?.edges || []).filter((e) => view.y.has(e.from) && view.y.has(e.to));
 
   const body = (
     <div className={`bgl ${expanded ? "bgl-expanded" : ""}`}>
@@ -144,7 +108,7 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
           ))}
         </div>
         <div className="bgl-windows">
-          {["pipeline", "map", "log"].map((m) => (
+          {["pipeline", "order"].map((m) => (
             <button key={m} className={mode === m ? "on" : ""} onClick={() => pickMode(m)}>{m}</button>
           ))}
         </div>
@@ -159,7 +123,7 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
         </button>
       </div>
       <div className="bgl-counts">
-        {(["running", "ready", "waiting", "held", "blocked", "checkpoint", "done", "failed"] as const)
+        {(["running", "ready", "waiting", "held", "blocked", "checkpoint", "human", "question", "done", "failed"] as const)
           .filter((k) => graph?.counts?.[k])
           .map((k) => <span key={k} className={`bgl-count s-${k}`}>{graph!.counts[k]} {STATE_LABEL[k]}</span>)}
         {!!graph?.multi_run?.length && (
@@ -168,64 +132,9 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
           </span>)}
       </div>
       {graph?.__error && <div className="bgl-err">could not read the board — {graph.__error}</div>}
-      {mode !== "log" && <MapBody nodes={view.ordered} pick={pick} onPick={setPick} pipeline={mode === "pipeline"} />}
-      <div className="bgl-scroll" style={mode !== "log" ? { display: "none" } : undefined}>
-        {!view.ordered.length && <div className="bgl-empty">nothing on the board in this window</div>}
-        <div className="bgl-canvas" style={{ height }}>
-          <svg className="bgl-svg" width={gutter} height={height}>
-            {edges.map((e) => {
-              const a = byId.get(e.from)!, b = byId.get(e.to)!;
-              const x1 = cx(a), y1 = cy(a), x2 = cx(b), y2 = cy(b);
-              const mid = (y1 + y2) / 2;
-              const d = x1 === x2 ? `M${x1},${y1} L${x2},${y2}`
-                : `M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`;
-              const live = b.state === "running" || b.state === "ready";
-              return <path key={`${e.from}-${e.to}`} d={d}
-                           className={`bgl-edge${live ? " live" : ""}${b.state === "blocked" ? " dead" : ""}`}
-                           stroke={color(b.seat)} />;
-            })}
-            {view.ordered.map((n) => {
-              const x = cx(n), y = cy(n), c = color(n.seat);
-              const cls = `bgl-dot s-${n.state}${pick === n.id ? " picked" : ""}`;
-              return (
-                <g key={n.id} className={cls} onClick={() => setPick(n.id)}
-                   style={{ transform: `translate(${x}px, ${y}px)` }}>
-                  {n.checkpoint
-                    ? <rect x={-6} y={-6} width={12} height={12} transform="rotate(45)"
-                            fill={n.state === "done" || n.state === "checkpoint" ? "#ffbb45" : "var(--surface-1, #0f1115)"}
-                            stroke="#ffbb45" strokeWidth={2} />
-                    : <circle r={5.5} stroke={c} strokeWidth={2}
-                              fill={["done", "running"].includes(n.state) ? c : "var(--surface-1, #0f1115)"} />}
-                  {n.state === "running" && <circle r={9} className="bgl-pulse" stroke={c} />}
-                  {n.state === "checkpoint" && <circle r={11} className="bgl-pulse" stroke="#ffbb45" />}
-                </g>
-              );
-            })}
-          </svg>
-          {view.ordered.map((n) => {
-            const y = (view.y.get(n.id) || 0) * ROW;
-            const open = n.run_log.find((r) => r.ended == null);
-            const elapsed = open ? Date.now() / 1000 - open.started : n.elapsed_s;
-            return (
-              <div key={n.id} className={`bgl-row s-${n.state}${pick === n.id ? " picked" : ""}`}
-                   style={{ transform: `translateY(${y}px)`, left: gutter }}
-                   onClick={() => setPick(n.id)} title={n.hold || n.title}>
-                <span className="bgl-id">#{n.id}</span>
-                <span className="bgl-title">{n.title}</span>
-                {n.checkpoint && <span className="bgl-tag cp" title={n.checkpoint_note || "human checkpoint"}>
-                  <Ti name="flag" size={11} /></span>}
-                {n.runs >= 2 && <span className={`bgl-tag runs${n.runs >= 3 ? " hot" : ""}`}
-                                      title="runs this ticket has needed">{n.runs}×</span>}
-                {n.state === "running" && elapsed != null &&
-                  <span className="bgl-tag clock">{fmtDur(elapsed)}</span>}
-                <span className="bgl-seatchip" style={{ color: color(n.seat) }}>{n.seat}</span>
-                <span className={`bgl-state s-${n.state}`}>{STATE_LABEL[n.state] || n.state}</span>
-                {expanded && <RunBars n={n} span={span} />}
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      {mode === "pipeline"
+        ? <MapBody nodes={view.ordered} pick={pick} onPick={setPick} />
+        : <MergeOrder active={active} seat={seatFilter} pick={pick} onPick={setPick} />}
       {selected && <Detail n={selected} byId={byId} onClose={() => setPick(null)} onChanged={load} />}
     </div>
   );
@@ -234,8 +143,8 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
   return expanded ? createPortal(<div className="bgl-overlay">{body}</div>, document.body) : body;
 }
 
-function MapBody({ nodes, pick, onPick, pipeline }: {
-  nodes: Node[]; pick: number | null; onPick: (id: number) => void; pipeline: boolean;
+function MapBody({ nodes, pick, onPick }: {
+  nodes: Node[]; pick: number | null; onPick: (id: number) => void;
 }) {
   const live = nodes.filter((n) => n.state === "running");
   /* DRAG TO PAN: grab the background and move the board in any direction. A
@@ -273,8 +182,8 @@ function MapBody({ nodes, pick, onPick, pipeline }: {
     ["open", nodes.filter((n) => !["done", "cancelled", "failed"].includes(n.state)).length],
     ["running", live.length, live.length ? "var(--accent)" : undefined],
     ["done", nodes.filter((n) => n.state === "done").length, "var(--good)"],
-    ["to sign off", nodes.filter((n) => n.state === "checkpoint").length,
-     nodes.some((n) => n.state === "checkpoint") ? "#ffbb45" : undefined],
+    ["waiting on you", nodes.filter((n) => ["checkpoint", "human", "question"].includes(n.state)).length,
+     nodes.some((n) => ["checkpoint", "human", "question"].includes(n.state)) ? "#ffbb45" : undefined],
     ["multi-run", nodes.filter((n) => n.runs >= 2).length,
      nodes.some((n) => n.runs >= 2) ? "var(--bad)" : undefined],
   ];
@@ -287,26 +196,10 @@ function MapBody({ nodes, pick, onPick, pipeline }: {
       </div>
       <div className="bgm-scroll" ref={pan} {...panHandlers}>
         {nodes.length
-          ? pipeline ? <Pipeline nodes={nodes} pick={pick} onPick={onPick} />
-            : <SubwayMap nodes={nodes} pick={pick} onPick={onPick} />
+          ? <Pipeline nodes={nodes} pick={pick} onPick={onPick} />
           : <div className="bgl-empty">nothing on the board in this window</div>}
       </div>
     </div>
-  );
-}
-
-function RunBars({ n, span }: { n: Node; span: { lo: number; hi: number; w: number } }) {
-  return (
-    <span className="bgl-runs">
-      {n.run_log.map((r, i) => {
-        const end = r.ended ?? span.hi;
-        const left = ((r.started - span.lo) / span.w) * 100;
-        const width = Math.max(0.6, ((end - r.started) / span.w) * 100);
-        return <i key={i} className={`r-${r.ended ? r.status : "open"}`}
-                  style={{ left: `${left}%`, width: `${width}%`, background: r.ended ? undefined : color(n.seat) }}
-                  title={`run ${i + 1}: ${fmtDur(end - r.started)} ${r.ended ? r.status : "running"}`} />;
-      })}
-    </span>
   );
 }
 
@@ -327,6 +220,37 @@ function Detail({ n, byId, onClose, onChanged }: {
           r.ok ? "ok" : undefined);
     if (r.ok) onChanged();
   }
+  async function humanDone() {
+    const note = await askText({ title: `done: ${n.title.replace(/^YOU: /, "")}`,
+      body: "Anything the work behind it should know? Optional.", ok: "mark done" });
+    if (note === null || note === undefined) return;
+    const r = await mutate(`/api/queue/${n.id}/human-done`, { body: { note }, quiet: true });
+    toast(r.ok ? `#${n.id} done — the work behind it is released` : r.error || "refused", r.ok ? "ok" : undefined);
+    if (r.ok) onChanged();
+  }
+  async function toggleCheckpoint() {
+    let note = "";
+    if (!n.checkpoint) {
+      const got = await askText({ title: `make #${n.id} a checkpoint`,
+        body: "What should you look at when it finishes? Nothing behind it runs until you approve.",
+        ok: "make checkpoint" });
+      if (got === null || got === undefined) return;
+      note = got;
+    }
+    const r = await mutate(`/api/queue/${n.id}/checkpoint`, { body: { on: !n.checkpoint, note }, quiet: true });
+    toast(r.ok ? (n.checkpoint ? `#${n.id} is no longer a checkpoint` : `#${n.id} will wait for your sign-off`)
+                : r.error || "refused", r.ok ? "ok" : undefined);
+    if (r.ok) onChanged();
+  }
+  async function humanBefore() {
+    const title = await askText({ title: `a step for you before #${n.id}`,
+      body: "What do you have to do first? The item waits until you mark it done.", ok: "add step" });
+    if (!title) return;
+    const r = await mutate(`/api/queue/${n.id}/human-before`, { body: { title }, quiet: true });
+    toast(r.ok ? `#${n.id} now waits on your step` : r.error || "refused", r.ok ? "ok" : undefined);
+    if (r.ok) onChanged();
+  }
+  const open = !["done", "cancelled"].includes(n.status) && n.id > 0;
   async function reject() {
     const reason = await askText({ title: `send #${n.id} back`,
       body: "What has to change? The next run reads this.", ok: "send back" });
@@ -345,18 +269,20 @@ function Detail({ n, byId, onClose, onChanged }: {
         <button className="bgl-icon" onClick={onClose}><Ti name="x" size={13} /></button>
       </div>
       <div className="bgl-dmeta">
-        <span style={{ color: color(n.seat) }}>{n.seat}</span>
+        {["human", "question"].includes(n.state)
+          ? <span style={{ color: "#ffbb45" }}>you</span>
+          : <span style={{ color: color(n.seat) }}>{n.seat}</span>}
         <span className={`bgl-state s-${n.state}`}>{STATE_LABEL[n.state] || n.state}</span>
         {n.kind && <span>{n.kind}</span>}
         {n.severity && <span className="sev">{n.severity}</span>}
-        <span>{n.runs} run{n.runs === 1 ? "" : "s"}</span>
+        {n.id > 0 && n.source !== "human-task" && <span>{n.runs} run{n.runs === 1 ? "" : "s"}</span>}
         {n.chain_id && <span>chain {n.chain_id}</span>}
         {n.split_of && <span>split of #{n.split_of}</span>}
       </div>
       {n.hold && <div className="bgl-dline warn">{n.hold}</div>}
       {!!n.waiting_on.length && <div className="bgl-dline">waiting on {n.waiting_on.map((p) =>
         `#${p} ${byId.get(p)?.title?.slice(0, 40) || ""}`).join(", ")}</div>}
-      {n.acceptance && <div className="bgl-dline"><b>acceptance</b> {n.acceptance}</div>}
+      {n.acceptance && n.source !== "human-task" && <div className="bgl-dline"><b>acceptance</b> {n.acceptance}</div>}
       {n.checkpoint && n.checkpoint_note && <div className="bgl-dline"><b>look at</b> {n.checkpoint_note}</div>}
       {covers && covers.length > 0 && (
         <div className="bgl-covers">
@@ -366,12 +292,25 @@ function Detail({ n, byId, onClose, onChanged }: {
         </div>
       )}
       {n.result && <div className="bgl-dline result">{n.result}</div>}
-      {n.status === "review" && (
-        <div className="bgl-actions">
+      {n.state === "question" && (
+        <div className="bgl-dline warn">An agent asked you this. Answer it in Needs attention; the asker keeps working meanwhile.</div>
+      )}
+      <div className="bgl-actions">
+        {n.status === "review" && <>
           <button className="bgs-btn" onClick={approve}><Ti name="check" size={13} /> Approve</button>
           <button className="bgs-btn" onClick={reject}><Ti name="arrow-back-up" size={13} /> Send back</button>
-        </div>
-      )}
+        </>}
+        {n.state === "human" &&
+          <button className="bgs-btn" onClick={humanDone}><Ti name="check" size={13} /> Mark done</button>}
+        {n.state === "question" &&
+          <button className="bgs-btn" onClick={() => window.dispatchEvent(new CustomEvent("bgate:orchestration-tab",
+            { detail: { tab: "attention" } }))}><Ti name="message-question" size={13} /> Answer it</button>}
+        {open && n.source !== "human-task" && n.state !== "question" && <>
+          <button className="bgs-btn" onClick={toggleCheckpoint}>
+            <Ti name="flag" size={13} /> {n.checkpoint ? "Remove checkpoint" : "Make checkpoint"}</button>
+          <button className="bgs-btn" onClick={humanBefore}><Ti name="user-plus" size={13} /> Add a step for you first</button>
+        </>}
+      </div>
     </div>
   );
 }

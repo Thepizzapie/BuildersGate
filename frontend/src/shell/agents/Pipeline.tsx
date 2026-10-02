@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SEAT_COLOR } from "../nav";
-import type { MapNode } from "./SubwayMap";
 
 /* PIPELINE — the board read left to right, every step titled.
  *
@@ -11,6 +10,13 @@ import type { MapNode } from "./SubwayMap";
  * the left edge of what waits on it, so a fan-out spreads and a fan-in
  * converges. Text is full size; a band wider than the panel scrolls sideways.
  */
+
+export type MapNode = {
+  id: number; title: string; seat: string; state: string; status: string;
+  parents: number[]; spawned_by?: number | null; chain_id: string;
+  checkpoint: boolean; source: string; runs: number; elapsed_s: number | null;
+  waiting_on: number[];
+};
 
 const CW = 176, CH = 40;          // a card
 const PITCH_X = 214, PITCH_Y = 52;
@@ -34,6 +40,8 @@ function fmtDur(s: number): string {
 function caption(n: MapNode): { text: string; tone: string } {
   const runs = n.runs > 1 ? ` · ${n.runs} runs` : "";
   switch (n.state) {
+    case "human": return { text: "needs you", tone: AMBER };
+    case "question": return { text: "answer it - Needs attention", tone: AMBER };
     case "checkpoint": return { text: "your sign-off", tone: AMBER };
     case "review": return { text: "in review", tone: AMBER };
     case "running": return { text: `running${n.elapsed_s ? " · " + fmtDur(n.elapsed_s) : ""}`, tone: "var(--accent)" };
@@ -288,6 +296,7 @@ export function Pipeline({ nodes, pick, onPick }: {
           const n = c.n;
           const cap = n.group ? { text: n.caption || "show", tone: "var(--text-3)" } : caption(n);
           const cp = n.checkpoint || n.source === "qa-gate";
+          const you = n.state === "human" || n.state === "question";
           return (
             <g key={n.id} className={`bgp2-card s-${n.state}${pick === n.id ? " picked" : ""}`}
                style={{ transform: `translate(${c.x}px, ${c.y}px)`, ["--seat" as string]: seatColor(n.seat) } as React.CSSProperties}
@@ -297,7 +306,7 @@ export function Pipeline({ nodes, pick, onPick }: {
               <rect className="bgp2-edge" width={4} height={CH} rx={2} />
               {n.state === "running" && <circle className="bgp2-pulse" cx={CW - 12} cy={12} r={5} />}
               <text className="bgp2-name" x={12} y={17}>
-                {(cp ? "◆ " : n.state === "done" ? "✓ " : "") + (n.title.length > 21 ? n.title.slice(0, 20) + "…" : n.title)}
+                {(you ? "● " : cp ? "◆ " : n.state === "done" ? "✓ " : "") + (n.title.length > 21 ? n.title.slice(0, 20) + "…" : n.title)}
               </text>
               <text className="bgp2-cap" x={12} y={32} style={{ fill: cap.tone }}>{cap.text}</text>
             </g>

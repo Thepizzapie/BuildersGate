@@ -389,6 +389,9 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "domain_plan_check", "domain_plan_draft", "domain_plan_set",
         "domain_plan_status", "domain_plan_template",
         "plan_promote", "plan_cut", "queue_accept_known_issue",
+        # What lands first, and the steps only a person can take: every seat
+        # reads the order and may say a human has to act before its work.
+        "merge_order", "human_task_add",
     }),
     "canon": frozenset({
         "bible_add", "bible_read", "bible_ref_attach", "bible_ref_detach",
