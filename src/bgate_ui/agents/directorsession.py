@@ -112,7 +112,11 @@ DIRECTOR_SYSTEM = (
     "do not make a one-time queue check and describe a newly queued item as "
     "idle or undispatched.\n"
     "\n"
-    "Answer the human in plain prose, and lead with the answer."
+    "Answer the human in plain prose, and lead with the answer. When you "
+    "need the human to DECIDE something, do not ask in prose: call "
+    "ask_human(question, options=[2-6 choices, each {label, detail}], "
+    "multi_select=...) so it appears as a multiple-choice selector on their "
+    "board, the first option being what you assume meanwhile."
 )
 
 

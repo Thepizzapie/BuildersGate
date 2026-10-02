@@ -279,14 +279,38 @@ MAX_OPTIONS = 6
 MAX_OPTION = 80
 
 
+MAX_DETAIL = 160
+
+
+def _label(o) -> str:
+    raw = o.get("label") if isinstance(o, dict) else o
+    return " ".join(str(raw or "").split())[:MAX_OPTION]
+
+
 def clean_options(options) -> list[str]:
-    """The option list as it is stored: trimmed, deduplicated, capped."""
+    """The option LABELS as stored: trimmed, deduplicated, capped.
+
+    An option is a string, or {label, detail} where detail is one line on
+    what picking it means - the same shape as a multiple-choice selector."""
     out: list[str] = []
     for o in (options or []):
-        text = " ".join(str(o or "").split())[:MAX_OPTION]
+        text = _label(o)
         if text and text not in out:
             out.append(text)
     return out[:MAX_OPTIONS]
+
+
+def clean_details(options) -> list[str]:
+    """One detail per stored label ('' where none was given)."""
+    labels = clean_options(options)
+    detail: dict[str, str] = {}
+    for o in (options or []):
+        if isinstance(o, dict):
+            text = _label(o)
+            if text and text not in detail:
+                detail[text] = " ".join(str(o.get("detail") or o.get("description")
+                                            or "").split())[:MAX_DETAIL]
+    return [detail.get(lbl, "") for lbl in labels]
 OPEN_LIMIT = 20
 # How far back a scan for open questions goes. Bounded because the console polls
 # this every few seconds, and a project that has answered a thousand questions
@@ -344,6 +368,8 @@ def _shape(row) -> dict:
         "asked_at": str(row["created_at"] or ""),
         "refs": [str(r) for r in (payload.get("refs") or [])][:MAX_REFS],
         "options": clean_options(payload.get("options")),
+        "option_details": [str(d) for d in (payload.get("option_details") or [])][:MAX_OPTIONS],
+        "multi": bool(payload.get("multi") or False),
         "asked_by": str(payload.get("asked_by") or row["actor"] or ""),
         "answer": str(payload.get("answer") or ""),
         "answered_at": str(payload.get("answered_at") or ""),
@@ -541,8 +567,12 @@ def ask_seat(root: str | os.PathLike[str], seat: str, question: str, *,
 
 def ask(root: str | os.PathLike[str], question: str,
         refs: Optional[list] = None, *, item_id: int = 0, seat: str = "",
-        by: str = "", options: Optional[list] = None) -> dict:
+        by: str = "", options: Optional[list] = None,
+        multi: bool = False) -> dict:
     """Record one question for the human. Returns the event id to answer it by.
+
+    ``options`` are the choices (strings or {label, detail}); ``multi`` lets
+    the human pick several, sent back as one answer joined with '; '.
 
     Raises when the question is empty, over :data:`MAX_QUESTION`, or could not be
     recorded at all — an ``ask_human`` that silently wrote nothing leaves an agent
@@ -567,6 +597,11 @@ def ask(root: str | os.PathLike[str], question: str,
     payload = {"question": text, "refs": clean, "item_id": item,
                "seat": str(seat or "")[:40], "asked_by": str(by or "")[:80],
                "options": choices}
+    details = clean_details(options)
+    if any(details):
+        payload["option_details"] = details
+    if multi and choices:
+        payload["multi"] = True
     seq = events.emit(root, QUESTION_KIND, ref=str(item or ""), payload=payload)
     if not seq:
         # events.emit swallows its own failures by design (see its docstring), so
@@ -577,7 +612,8 @@ def ask(root: str | os.PathLike[str], question: str,
             "write) — nothing would ever show it to the human, so it was not "
             "asked. Retry, or say it in your result note instead.")
     return {"ok": True, "seq": int(seq), "question": text, "refs": clean,
-            "item_id": item, "seat": str(seat or ""), "options": choices}
+            "item_id": item, "seat": str(seat or ""), "options": choices,
+            "option_details": details, "multi": bool(payload.get("multi"))}
 
 
 def question(root: str | os.PathLike[str], seq: int) -> Optional[dict]:

@@ -67,6 +67,10 @@ export type Question = {
   /** The asker's choices: each is a one-click answer, sent through the same
    *  route as a typed one. Empty when the agent asked a free-form question. */
   options?: string[];
+  /** One line per option on what picking it means ('' where none). */
+  option_details?: string[];
+  /** Several options can be picked together; the answer joins them with "; ". */
+  multi?: boolean;
 };
 /** `blocking` IS THE FIELD THAT DECIDES WHETHER A HUMAN IS NEEDED, and it was
  *  missing from this type while the route has always sent it: routes/console.py

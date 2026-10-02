@@ -1843,3 +1843,21 @@ body.ptn-open .bg4 {
 @media(prefers-reduced-motion:reduce){
   :root[data-theme="mythic"] .nc-node[data-status="running"]{animation:none}
 }
+
+/* Multiple-choice selector on a question card: one row per option, the
+   label and a one-line detail; ticks for multi-select. */
+.bg4-choices { display: flex; flex-direction: column; gap: 4px; margin-top: 8px }
+.bg4-choice { display: flex; gap: 8px; align-items: flex-start; text-align: left; width: 100%;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px; cursor: pointer; color: var(--text) }
+.bg4-choice:hover:not(:disabled) { border-color: var(--accent) }
+.bg4-choice.on { border-color: var(--accent); background: var(--accent-soft) }
+.bg4-choice-mark { flex: none; width: 14px; height: 14px; margin-top: 2px; border-radius: 50%;
+  border: 1.5px solid var(--text-3); display: inline-flex; align-items: center; justify-content: center;
+  font: 600 9px var(--mono); color: var(--accent) }
+.bg4-choice-mark.box { border-radius: 3px }
+.bg4-choice.on .bg4-choice-mark { border-color: var(--accent) }
+.bg4-choice-body { display: flex; flex-direction: column; min-width: 0 }
+.bg4-choice-label { font: 500 12px var(--sans) }
+.bg4-choice-label em { font: 500 10px var(--mono); color: var(--text-3); font-style: normal }
+.bg4-choice-detail { font: 400 11px/1.4 var(--sans); color: var(--text-3) }

@@ -9972,12 +9972,16 @@ def agent_activity(item_id: int, limit: int = 30) -> dict:
 @_tool
 def ask_human(question: str, refs: Optional[list] = None,
               to: str = "human",
-              options: Annotated[Optional[list], Field(description='2-6 answers the human can pick with ONE CLICK, each under 80 characters; the first is what you assume meanwhile. REQUIRED IN SPIRIT: a question without options is a paragraph the human has to write back. "Flatten the riser" / "Reroute the bot" / "Cut the section" beats "what should I do about the riser?"')] = None) -> dict:
+              options: Annotated[Optional[list], Field(description='REQUIRED for the human: 2-6 choices, each a string or {"label": "...", "detail": "one line on what picking it means"}; labels under 80 characters; the first is what you assume meanwhile. "Flatten the riser" / "Reroute the bot" / "Cut the section" beats "what should I do about the riser?"')] = None,
+              multi_select: Annotated[bool, Field(description='True when several options can be picked together (which seats, which assets); the answer comes back joined with "; ".')] = False) -> dict:
     """Ask ONE question of a NAMED recipient - and keep working.
 
-    GIVE CHOICES. `options` become buttons on the human's board; a click is
-    the whole answer. The human said it: "I am tired of having to re-prompt
-    everything". Ask A-or-B, name A and B.
+    MULTIPLE CHOICE, ALWAYS. A question to the human (or the director) is
+    REFUSED without 2-6 `options`: they render as a selector on the human's
+    board and a click is the whole answer (an "Other" box stays for anything
+    else). Give each a one-line `detail`; set multi_select when several can be
+    picked together. USER DIRECTIVE: questions come as multiple-choice
+    selectors, never as prose the human has to answer in writing.
 
     `to`: human (DEFAULT), director (FAILS if no live director session, never
     silently rerouted), seat:<name> (blackboard plus a steer to that seat's
@@ -10000,6 +10004,13 @@ def ask_human(question: str, refs: Optional[list] = None,
         _log("question", f"asked the {target} seat: {str(question)[:100]}",
              ref=str(item_id))
         return got
+    if to in ("human", "director") and len(_steerbox.clean_options(options)) < 2:
+        return {"ok": False, "refused": "no_options",
+                "error": "questions to the human are multiple choice: pass "
+                         "options=[2-6 choices] (strings or {label, detail}), "
+                         "first = what you assume meanwhile; multi_select=True "
+                         "if several can be picked. The human answers with a "
+                         "click, or types into Other."}
     if to == "director":
         got = _steerbox.ask_director(root, question, refs=refs,
                                      item_id=item_id, by=_actor(),
@@ -10024,11 +10035,7 @@ def ask_human(question: str, refs: Optional[list] = None,
 
     result = _steerbox.ask(root, question, refs=refs, item_id=item_id,
                            seat=_seat() or "director", by=_actor(),
-                           options=options)
-    if not result.get("options"):
-        result["warning"] = ("no options: the human has to write the answer "
-                             "out. Next time pass options=[...] so it is one "
-                             "click.")
+                           options=options, multi=bool(multi_select))
     _log("question", f"asked the human: {str(question)[:120]}",
          ref=str(item_id or result["seq"]))
     if item_id:
