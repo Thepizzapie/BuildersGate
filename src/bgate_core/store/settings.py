@@ -125,6 +125,7 @@ EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.stopped",
 LABELS: dict[str, str] = {
     # Dispatch
     "autopilot.on": "Start queued work automatically",
+    "autopilot.scope": "Autopilot scope",
     "dispatch.mode": "Director dispatch mode",
     "dispatch.allow_dirty": "Allow dispatch with uncommitted changes",
     "dispatch.auto_commit": "Commit completed agent work",
@@ -138,18 +139,21 @@ LABELS: dict[str, str] = {
     "dispatch.codex_model": "Model for Codex-run seats",
     "dispatch.model_narrative": "Narrative worker model",
     "dispatch.model_gameplay": "Gameplay worker model",
+    "dispatch.model_level": "Level worker model",
     "dispatch.model_tech": "Tech worker model",
     "dispatch.model_audio": "Audio worker model",
     "dispatch.model_cinematic": "Cinematic worker model",
     "dispatch.model_qa": "QA worker model",
     "dispatch.runner_narrative": "Narrative worker CLI",
     "dispatch.runner_gameplay": "Gameplay worker CLI",
+    "dispatch.runner_level": "Level worker CLI",
     "dispatch.runner_tech": "Tech worker CLI",
     "dispatch.runner_audio": "Audio worker CLI",
     "dispatch.runner_cinematic": "Cinematic worker CLI",
     "dispatch.runner_qa": "QA worker CLI",
     "dispatch.max_turns": "Turn limit per agent",
     "dispatch.max_attempts": "Run cap per work item",
+    "dispatch.split_after_runs": "Split a ticket after this many runs",
     # Gates
     "enforcement.profile": "Enforcement level",
     "gate.mode": "Completion approval",
@@ -214,6 +218,7 @@ LABELS: dict[str, str] = {
 # registry entries for maintainers; the UI only needs what the control changes.
 DESCRIPTIONS: dict[str, str] = {
     "autopilot.on": "Start ready queue items automatically when a slot is available.",
+    "autopilot.scope": "Board dispatches anything ready; iteration dispatches only the open iteration's committed work.",
     "dispatch.mode": "Structured follows dependencies. Chaos isolates every task and lets the Director merge it.",
     "dispatch.allow_dirty": "Allow dispatch while the main worktree has uncommitted changes. Reverts may be less reliable.",
     "dispatch.auto_commit": "Commit only the files changed by each completed agent run.",
@@ -229,18 +234,21 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.codex_model": "Model handed to Codex runners when the seat's model is a Claude name. Blank uses Codex's own default.",
     "dispatch.model_narrative": "Model for the narrative seat. Blank uses the default worker model.",
     "dispatch.model_gameplay": "Model for the gameplay seat. Blank uses the default worker model.",
+    "dispatch.model_level": "Model for the level seat. Blank uses the default worker model.",
     "dispatch.model_tech": "Model for the tech seat. Blank uses the default worker model.",
     "dispatch.model_audio": "Model for the audio seat. Blank uses the default worker model.",
     "dispatch.model_cinematic": "Model for the cinematic seat. Blank uses the default worker model.",
     "dispatch.model_qa": "Model for the qa seat. Blank uses the default worker model.",
     "dispatch.runner_narrative": "CLI for the narrative seat. Blank uses the default worker CLI.",
     "dispatch.runner_gameplay": "CLI for the gameplay seat. Blank uses the default worker CLI.",
+    "dispatch.runner_level": "CLI for the level seat. Blank uses the default worker CLI.",
     "dispatch.runner_tech": "CLI for the tech seat. Blank uses the default worker CLI.",
     "dispatch.runner_audio": "CLI for the audio seat. Blank uses the default worker CLI.",
     "dispatch.runner_cinematic": "CLI for the cinematic seat. Blank uses the default worker CLI.",
     "dispatch.runner_qa": "CLI for the qa seat. Blank uses the default worker CLI.",
     "dispatch.max_turns": "Maximum assistant turns in one run. Set to 0 for no limit.",
     "dispatch.max_attempts": "How many runs one work item may have, ever. Past it nothing dispatches or reopens it: split the item instead.",
+    "dispatch.split_after_runs": "After this many runs an agent's reopen becomes a director split with the failure history. 0 is off.",
     "enforcement.profile": "Sets the default strictness for lanes, project boundaries, and approvals.",
     "gate.mode": "Choose whether completion needs no review, QA review, or your approval.",
     "greenlight.generation_hold": "No paid art, 3D, music or video until you have played the graybox and advanced the stage. Off for a game whose art is the loop.",
@@ -423,6 +431,14 @@ SETTINGS: tuple[Setting, ...] = (
              "the toggle - 'my chains never auto-deploy' was this default. "
              "Turn it off for a board you want to hand-dispatch."),
     Setting(
+        key="autopilot.scope", group="Dispatch", kind=ENUM, default="board",
+        choices=("board", "iteration"),
+        store=("workspace", "director", "autopilot", "scope"),
+        help="board: autopilot dispatches anything ready. iteration: only the "
+             "work committed to the open iteration (plus fixes and gates); "
+             "an iteration closes on a checked build and the next is opened "
+             "from what it taught - the studio sprint, without dates."),
+    Setting(
         key="dispatch.mode", group="Dispatch", kind=ENUM, default="structured",
         choices=("structured", "chaos"), store=("registry", "dispatch.mode"),
         human_only=True,
@@ -523,6 +539,15 @@ SETTINGS: tuple[Setting, ...] = (
              "codex pick its account default; a name codex's catalog does "
              "not list is passed through as typed."),
     Setting(
+        key="dispatch.split_after_runs", group="Dispatch", kind=INT, default=2,
+        minimum=0, maximum=10, store=("registry", "dispatch.split_after_runs"),
+        human_only=True,
+        help="After this many runs, an agent's request to run an item AGAIN "
+             "parks it and files a director SPLIT item with the failure "
+             "history instead - another run of a brief that has failed twice "
+             "is the same brief failing a third time. A human reopen still "
+             "goes through. 0 turns it off."),
+    Setting(
         key="dispatch.max_attempts", group="Dispatch", kind=INT, default=3,
         minimum=1, maximum=20, store=("registry", "dispatch.max_attempts"),
         scope=MACHINE, env="BGATE_MAX_ATTEMPTS", human_only=True,
@@ -603,8 +628,8 @@ SETTINGS: tuple[Setting, ...] = (
              "and another agent will not settle it — it is a money pump."),
     Setting(
         key="qa.gated_seats", group="Gates", kind=LIST, advanced=True,
-        default=("art", "gameplay", "audio", "narrative", "tech", "cinematic"),
-        choices=("art", "gameplay", "audio", "narrative", "tech", "cinematic"),
+        default=("art", "gameplay", "level", "audio", "narrative", "tech", "cinematic"),
+        choices=("art", "gameplay", "level", "audio", "narrative", "tech", "cinematic"),
         store=("registry", "qa.gated_seats"), human_only=True,
         help="Which maker seats get an automatic QA reviewer when their work "
              "is completed. Was a hardcoded tuple in the gate, so a studio that "
@@ -1061,7 +1086,7 @@ SETTINGS: tuple[Setting, ...] = (
 # and nowhere else. Blank means "inherit dispatch.runner / dispatch.model",
 # which is what every seat did before these existed.
 ROUTABLE_SEATS: tuple[str, ...] = (
-    "narrative", "gameplay", "tech", "audio", "cinematic", "qa")
+    "narrative", "gameplay", "level", "tech", "audio", "cinematic", "qa")
 
 
 def _seat_settings() -> tuple:
@@ -1559,6 +1584,7 @@ _DYNAMIC_CHOICES: dict[str, str] = {
     "dispatch.model_art": "agent-models",
     "dispatch.model_narrative": "agent-models",
     "dispatch.model_gameplay": "agent-models",
+    "dispatch.model_level": "agent-models",
     "dispatch.model_tech": "agent-models",
     "dispatch.model_audio": "agent-models",
     "dispatch.model_cinematic": "agent-models",

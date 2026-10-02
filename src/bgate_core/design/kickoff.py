@@ -255,10 +255,16 @@ def prompt(root, seeded: dict, *, project_name: str = "",
         "(greenlight_thesis_set) and say which option the brief leaves open; "
         "write the pillars, the core loop and the constraints into the bible "
         "(bible_add); record what this project is deliberately not building "
-        "(not_building_add); then lay the board out as chains "
-        "(queue_add_chain) with an acceptance test in every brief, and tell me "
-        "what you dispatched. Ask me only what the brief genuinely leaves open, "
-        "in one message, before you spend anything.")
+        "(not_building_add); write the DOMAIN PLANS - for gameplay, level and "
+        "tech, and for every other discipline the brief needs, read "
+        "domain_plan_template(<domain>) and write domain_plan_set with the "
+        "end state (goal), the binary done_when checks, every deliverable "
+        "with its acceptance test and slice flag, and open_questions for what "
+        "the brief leaves open; then put the slice on the board with "
+        "plan_promote (or chains via queue_add_chain, each link naming its "
+        "plan_row) and tell me what you dispatched. Ask me only what the "
+        "brief genuinely leaves open, in one message, before you spend "
+        "anything.")
     if brief_rel:
         try:
             text = (root / brief_rel).read_text(encoding="utf-8").strip()

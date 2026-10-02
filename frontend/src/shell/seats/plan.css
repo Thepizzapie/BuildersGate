@@ -1,0 +1,30 @@
+/* The Plan tab: one card per discipline. */
+
+.bgp { display: flex; flex-direction: column; gap: 14px }
+.bgp-domain {
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-2); padding: 10px 13px;
+}
+.bgp-goal { font: 400 13px/1.5 var(--sans); color: var(--text); margin: 4px 0 8px }
+.bgp-replan {
+  font: 500 11px/1.5 var(--sans); color: var(--bad);
+  border-left: 2px solid var(--bad-line); padding-left: 8px; margin-bottom: 6px;
+}
+.bgp-checks { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px }
+.bgp-check, .bgp-finding {
+  display: flex; gap: 8px; align-items: baseline;
+  font: 400 12px/1.5 var(--sans); color: var(--text-2);
+}
+.bgp-finding .d { font: 500 10px var(--mono); color: var(--text-3); flex: none }
+.bgp-finding .t { min-width: 0 }
+.bgp-q { margin: 0 0 8px 18px; font: 400 12px/1.5 var(--sans); color: var(--text-2) }
+.bgp-dark { font: 500 10px/1.6 var(--mono); color: var(--text-3); margin-bottom: 8px }
+.bgp-rows { display: flex; flex-direction: column; gap: 3px }
+.bgp-row { display: flex; gap: 8px; align-items: center; font: 500 11px var(--mono); color: var(--text-2) }
+.bgp-row .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.bgp-row .i { color: var(--text-3) }
+.bgp-promote {
+  display: flex; gap: 10px; align-items: center; justify-content: flex-end;
+  font: 400 12px var(--sans); color: var(--text-2);
+}
+.bgp-findings { display: flex; flex-direction: column; gap: 4px }

@@ -229,4 +229,28 @@ def _reach_production(fresh_root):
     greenlight.advance(fresh_root, greenlight.GRAYBOX)
     _submit(fresh_root)
     _pass(fresh_root)
+    greenlight.advance(fresh_root, greenlight.SLICE)
+    clear_slice(fresh_root)
     greenlight.advance(fresh_root, greenlight.PRODUCTION)
+
+
+def clear_slice(root):
+    """What the slice stage owes: a slice row, a passed slice check, and every
+    key risk retired."""
+    from bgate_core.board import queue
+    from bgate_core.design import gameplan
+    from bgate_core.store import db
+
+    gameplan.ingest(root, [{"kind": "scene", "name": "hub_room",
+                            "seat": "gameplay", "slice": True,
+                            "acceptance": "boots headless"}])
+    check = queue.add(root, "qa", "SLICE CHECK",
+                      source=gameplan.SLICE_CHECK_SOURCE)
+    with db.tx(root) as tx:
+        tx.execute("UPDATE work_item SET status = 'done', result = ? WHERE id = ?",
+                   ("booted, played the slice end to end. VERDICT: PASS",
+                    check["id"]))
+    greenlight.set_risks(root, [{"hypothesis": "the dash reads clearly at "
+                                               "sixty frames per second"}])
+    greenlight.retire_risk(root, 0, "confirmed",
+                           "measured 60 fps in the slice playtest capture")

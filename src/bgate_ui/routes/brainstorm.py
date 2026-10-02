@@ -608,8 +608,13 @@ def deploy(session_id: int, payload: dict) -> dict:
             "send back the plan you approved (optionally edited)",
             session_id=session_id)
     try:
-        return api.ok(_bs.file_plan(project, session, payload.get("plan"),
-                                    again=bool(payload.get("again"))))
+        plan = payload.get("plan")
+        out = _bs.file_plan(project, session, plan,
+                            again=bool(payload.get("again")))
+        # The same back half the MCP door runs: a manifest the human approved
+        # lands in plan_row and its slice on the board. This door skipped it.
+        out.update(_bs.deploy_plans(project, plan, int(session_id)))
+        return api.ok(out)
     except _bs.AlreadyFiled as exc:
         # The double-click guard, which on this endpoint files every item twice.
         raise api.conflict(str(exc), session_id=session_id, deploy=exc.entry)

@@ -15,6 +15,7 @@ import { Audio } from "./Audio";
 import { Cinematic } from "./Cinematic";
 import { Qa } from "./Qa";
 import { Work } from "./Work";
+import { Plan } from "./Plan";
 import { SeatBrainstorm } from "./Brainstorm";
 import { ChipSink, type Chip } from "./chips";
 import "./seats.css";
@@ -46,7 +47,10 @@ import "./seats.css";
  */
 
 const BODIES: Record<string, (p: SeatBodyProps) => React.JSX.Element> = {
-  director: Director, narrative: Narrative, gameplay: Gameplay, tech: Tech,
+  director: Director, narrative: Narrative, gameplay: Gameplay,
+  /* Level has no craft panels yet: its tabs are the desk and the plan, both
+     rendered by this shell, so the body is never mounted. */
+  level: Gameplay, tech: Tech,
   art: Art, audio: Audio, cinematic: Cinematic, qa: Qa,
 };
 
@@ -121,8 +125,17 @@ const DESK_TAB: SeatTab = {
   hint: "brief this seat, start work, and inspect what it owns",
 };
 
+/* THE PLAN COMES BEFORE THE CRAFT. Every seat's discipline plan - its end
+   state, done_when checks and deliverables against the live build - sits
+   right after the desk, because it is what every other tab is working toward. */
+const PLAN_TAB: SeatTab = {
+  id: "plan", label: "Plan", icon: "target",
+  hint: "the end state this seat builds toward, live against the build",
+};
+
 function tabsFor(role: string): SeatTab[] {
-  return [DESK_TAB, ...(TABS[role] || []).filter((item) => item.id !== "work")];
+  return [DESK_TAB, PLAN_TAB,
+          ...(TABS[role] || []).filter((item) => item.id !== "work")];
 }
 
 const LIVE = new Set(["dispatched", "running", "in_progress"]);
@@ -290,6 +303,8 @@ export function Seats() {
                      subtree. Keying on the seat forces a remount when you switch
                      between the two seats that have a room — `mount` scopes to
                      the seat it was handed and would otherwise keep the first. */
+                  : tab === "plan"
+                  ? <Plan seat={seat} active={onScreen} tab={tab} />
                   : tab === "room"
                   ? <SeatBrainstorm key={seat.role} seat={seat} active={onScreen} tab={tab} />
                   /* Same interception, same reason: WF owns its host's

@@ -1351,7 +1351,8 @@ _SYNTH_MANIFEST = (
     '   "seat": "which seat builds it",\n'
     '   "acceptance": "the test that settles whether it is done",\n'
     '   "slice": true|false,\n'
-    '   "depends_on": ["names of rows this one needs first"]}\n'
+    '   "depends_on": ["names of rows this one needs first"],\n'
+    '   "checkpoint": true|false}\n'
     "Rules for the manifest:\n"
     "- MARK THE VERTICAL SLICE. slice:true is the smallest set that is "
     "actually PLAYABLE — one scene, one character, one loop, end to end. Those "
@@ -1366,6 +1367,12 @@ _SYNTH_MANIFEST = (
     "- Cover the whole thing, including the parts nobody will build this week. "
     "The manifest is what makes 'what is left' answerable; rows you leave out "
     "are work nothing will ever notice is missing.\n"
+    "- CHECKPOINTS: mark checkpoint:true on the few rows where the human "
+    "must look before anything behind them runs (the slice playable, a "
+    "character's look locked, a level's layout). Two to five for a whole "
+    "game; never every row.\n"
+    "- Keep every row ONE deliverable with ONE acceptance test; a row that "
+    "needs 'and' to describe is two rows.\n"
     "- Omit the key entirely if this session was not about building something."
 )
 
@@ -1382,11 +1389,39 @@ _SYNTH_SEAT = {
 }
 
 
+def _synth_domain_plans() -> str:
+    """The domain-plan request, built from domainplan.DOMAINS so the prompt
+    and the validator can never disagree about a field."""
+    from . import domainplan as _dp
+
+    shapes = "\n".join(
+        f"  {d}: {spec['entry']} {{" + ", ".join(spec["fields"]) + "}"
+        for d, spec in _dp.DOMAINS.items())
+    return (
+        "\n\nIF THIS SESSION DESIGNED A GAME OR A FEATURE, also return "
+        '"domain_plans": an object keyed by discipline, one plan per '
+        "discipline the work touches:\n"
+        '  {"<domain>": {"goal": "what this discipline\'s part of the FINISHED '
+        'thing IS (40+ chars)", "done_when": ["binary checks"], '
+        '"leaves_dark": ["what it deliberately does not do"], '
+        '"open_questions": ["what this session did not settle"], '
+        '"entries": [{"name", "acceptance", "slice", "depends_on", '
+        "...the discipline's own fields}]}}\n"
+        f"Disciplines and their entry fields:\n{shapes}\n"
+        "Rules: entry names are unique across ALL plans and are the same names "
+        "the manifest uses when a row is in both (a plan entry IS a manifest "
+        "row, typed); put what the session left open in open_questions rather "
+        "than inventing an answer; omit a discipline the work does not touch, "
+        "and omit the key entirely if nothing is being built.")
+
+
 def synthesis_system(seat: str) -> str:
     base = f"{_SYNTH_SEAT.get(seat, _SYNTH_SEAT['director'])}\n\n{_SYNTH_COMMON}"
     # The narrative seat files canon, not buildable pieces; a manifest there
     # would be a coverage table of lore entries nobody can mark 'wired'.
-    return base + (_SYNTH_MANIFEST if seat == "director" else "")
+    if seat != "director":
+        return base
+    return base + _SYNTH_MANIFEST + _synth_domain_plans()
 
 
 def session_context(session: dict, msgs: list[dict]) -> str:
@@ -1815,13 +1850,75 @@ def parse_plan(text: str, seat: str) -> dict:
                      "item")
     questions = [str(q).strip()[:400] for q in parsed.get("questions") or []
                  if str(q).strip()][:8]
-    return {
+    out = {
         "summary": str(parsed.get("summary") or "").strip()[:4000],
         "items": items,
         "chained": chained,
         "questions": questions,
         "notes": notes,
     }
+    # THE MANIFEST RIDES THROUGH. _SYNTH_MANIFEST asks for it and this
+    # function used to drop it, so the preview never showed one and deploy
+    # only ingested a manifest a human typed by hand: plan_row stayed empty on
+    # every project that brainstormed its plan. Checked here so the human
+    # sees a broken one before approving; gameplan.ingest re-validates.
+    manifest = parsed.get("manifest")
+    if isinstance(manifest, list) and manifest:
+        from . import gameplan as _gameplan
+        try:
+            _gameplan.validate_manifest(manifest)
+        except ValueError as exc:
+            notes.append(f"the manifest does not validate yet: {exc} - fix it "
+                         "before deploying or it will be refused")
+        out["manifest"] = manifest
+    plans = parsed.get("domain_plans")
+    if isinstance(plans, dict) and plans:
+        from . import domainplan as _dp
+        kept: dict = {}
+        for domain, body in plans.items():
+            try:
+                _dp.validate(str(domain), body)
+            except ValueError as exc:
+                notes.append(f"the {domain} plan does not validate yet: {exc} - "
+                             "fix it before deploying or it will be refused")
+            kept[str(domain)] = body
+        out["domain_plans"] = kept
+    return out
+
+
+def deploy_plans(root, plan: Any, session_id: int, by: str = "human") -> dict:
+    """The approved plan's back half, shared by both deploy doors.
+
+    Domain plans first (their entries become plan rows), then the manifest
+    (whose ingest files the slice and keeps the rows the plans already
+    wrote). A domain plan that fails validation is reported, not half
+    written; the others still land, because each discipline's plan stands
+    alone. Called only behind the human gate of each door.
+    """
+    out: dict = {}
+    if not isinstance(plan, dict):
+        return out
+    plans = plan.get("domain_plans")
+    if isinstance(plans, dict) and plans:
+        from . import domainplan as _dp
+        written, refused = [], {}
+        for domain, body in plans.items():
+            try:
+                _dp.set_plan(root, str(domain), body, by=by)
+                written.append(str(domain))
+            except (ValueError, LookupError) as exc:
+                refused[str(domain)] = str(exc)
+        out["domain_plans"] = {"written": written, "refused": refused}
+    if plan.get("manifest"):
+        from . import gameplan as _gameplan
+        out["game_plan"] = _gameplan.ingest(root, plan["manifest"],
+                                            session_id=int(session_id))
+    elif (out.get("domain_plans") or {}).get("written"):
+        # No manifest: the plans' own slice entries ARE the slice, and filing
+        # them is the same human-approved act the manifest's ingest is.
+        from . import domainplan as _dp
+        out["slice_filed"] = _dp.promote_slice(root)
+    return out
 
 
 def _int(value: Any) -> int:

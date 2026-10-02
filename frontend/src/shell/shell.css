@@ -1337,10 +1337,11 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   font: 500 9px var(--mono); letter-spacing: .1em; text-transform: uppercase;
   padding: 3px 9px; border-radius: 3px;
 }
-.bg4-graphbar > span.on {
-  color: var(--accent); font: 500 9px var(--mono); letter-spacing: .1em;
-  text-transform: uppercase; padding: 3px 9px;
+.bg4-graphbar > span {
+  color: var(--text-3); font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; padding: 3px 9px; cursor: pointer; border-radius: 3px;
 }
+.bg4-graphbar > span.on { color: var(--accent); background: var(--accent-soft) }
 .bg4-graphbar button:hover { color: var(--text-2) }
 .bg4-graphbar button.on { background: var(--accent-soft); color: var(--accent) }
 

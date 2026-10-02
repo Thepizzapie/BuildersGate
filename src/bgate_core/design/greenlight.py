@@ -53,9 +53,15 @@ DOC_KEY = "greenlight"
 
 THESIS = "thesis"
 GRAYBOX = "graybox"
+SLICE = "slice"
 PRODUCTION = "production"
 RELEASE = "release"
-STAGES = (THESIS, GRAYBOX, PRODUCTION, RELEASE)
+# THE SLICE STAGE sits between a proven loop and the content fan-out: every
+# discipline works, but only on the vertical slice - one sequence at ship
+# quality - until a slice check passes and the key risks are retired. Studios
+# call it the last practical moment to cancel; production opening every seat
+# the moment the graybox passed was phase contamination by default.
+STAGES = (THESIS, GRAYBOX, SLICE, PRODUCTION, RELEASE)
 
 #: What a project is at before anybody says otherwise. Starting at ``thesis``
 #: rather than ``production`` is the change: an unconfigured project used to be
@@ -65,6 +71,7 @@ DEFAULT = THESIS
 STAGE_LABELS = {
     THESIS: "thesis — name the repeated decision before anything is built",
     GRAYBOX: "graybox — prove the loop in one ugly room",
+    SLICE: "slice — one sequence at ship quality, every discipline, nothing else",
     PRODUCTION: "production — specialist fan-out is open",
     RELEASE: "release — presentation QA binds on close",
 }
@@ -77,7 +84,9 @@ STAGE_LABELS = {
 #: An empty tuple means every seat, which is what production and release are.
 STAGE_SEATS: dict[str, tuple[str, ...]] = {
     THESIS: ("director", "narrative", "qa"),
-    GRAYBOX: ("director", "narrative", "gameplay", "tech", "qa"),
+    GRAYBOX: ("director", "narrative", "gameplay", "level", "tech", "qa"),
+    # Every seat - and queue.ready() admits only slice work. See SLICE.
+    SLICE: (),
     PRODUCTION: (),
     RELEASE: (),
 }
@@ -352,7 +361,83 @@ def validate_thesis(raw: Any) -> dict:
         if len(value) < 10:
             raise ValueError(f"the thesis has no {key}: {why}")
         fields[key] = value
-    return {"sentence": sentence, "options": options, **fields}
+    out = {"sentence": sentence, "options": options, **fields}
+    if raw.get("risks"):
+        out["risks"] = validate_risks(raw.get("risks"))
+    return out
+
+
+# ── key risks ───────────────────────────────────────────────────────────────
+# Pre-production exists to retire the top three or four risks, each written as
+# a binary hypothesis ("the dash reads at 60 fps on a 1050 Ti", "players find
+# the parry window without a tutorial"). A risk is retired by evidence -
+# confirmed or modified - or ACCEPTED, and accepting a risk is a human's call.
+MAX_RISKS = 4
+RISK_OUTCOMES = ("confirmed", "modified", "accepted")
+
+
+def validate_risks(raw: Any) -> list[dict]:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("risks is a list of 1-4 {hypothesis, retire_by}")
+    if len(raw) > MAX_RISKS:
+        raise ValueError(f"{len(raw)} risks; name the top {MAX_RISKS} - a list "
+                         "of everything is a list nobody retires")
+    out = []
+    for i, r in enumerate(raw):
+        r = r if isinstance(r, dict) else {"hypothesis": r}
+        hyp = " ".join(str(r.get("hypothesis") or "").split())[:400]
+        if len(hyp) < 20:
+            raise ValueError(f"risk {i}: a hypothesis is a binary statement "
+                             "that a test can settle (at least 20 characters)")
+        out.append({"hypothesis": hyp,
+                    "retire_by": " ".join(str(r.get("retire_by") or "").split())[:400],
+                    "status": "open"})
+    return out
+
+
+def risks(root: str | os.PathLike[str]) -> list[dict]:
+    got = thesis(root).get("risks")
+    return got if isinstance(got, list) else []
+
+
+def set_risks(root: str | os.PathLike[str], raw: Any, by: str = "") -> list[dict]:
+    """Write the key risks onto the settled thesis. A hypothesis whose text is
+    unchanged keeps its outcome; a new or reworded one starts open."""
+    doc = _doc(root)
+    th = doc.get("thesis")
+    if not isinstance(th, dict) or not th.get("sentence"):
+        raise StageRefused("settle the thesis first (greenlight_thesis_set)")
+    prior = {r.get("hypothesis"): r for r in th.get("risks") or []}
+    fresh = validate_risks(raw)
+    th["risks"] = [prior.get(r["hypothesis"]) or r for r in fresh]
+    doc["thesis"] = th
+    _save(root, doc)
+    activity.log(root, "greenlight", f"{len(fresh)} key risk(s) named", seat=SEAT)
+    return th["risks"]
+
+
+def retire_risk(root: str | os.PathLike[str], index: int, outcome: str,
+                evidence: str, by: str = "") -> dict:
+    outcome = str(outcome or "").strip().lower()
+    if outcome not in RISK_OUTCOMES:
+        raise ValueError(f"outcome is one of {RISK_OUTCOMES}")
+    evidence = " ".join(str(evidence or "").split())[:MAX_TEXT]
+    if len(evidence) < 20:
+        raise ValueError("say what settled it: the test, the build, the "
+                         "measurement (at least 20 characters)")
+    doc = _doc(root)
+    th = doc.get("thesis") or {}
+    got = th.get("risks") or []
+    if not 0 <= int(index) < len(got):
+        raise ValueError(f"there are {len(got)} risk(s); {index} is out of range")
+    got[int(index)].update({"status": outcome, "evidence": evidence,
+                            "by": by or activity.current_actor(), "at": _now()})
+    th["risks"] = got
+    doc["thesis"] = th
+    _save(root, doc)
+    activity.log(root, "greenlight",
+                 f"risk {outcome}: {got[int(index)]['hypothesis'][:100]}", seat=SEAT)
+    return got[int(index)]
 
 
 def thesis(root: str | os.PathLike[str]) -> dict:
@@ -372,6 +457,13 @@ def set_thesis(root: str | os.PathLike[str], raw: Any, by: str = "") -> dict:
     clean["by"] = by or activity.current_actor()
     clean["at"] = _now()
     doc = _doc(root)
+    # Re-settling the sentence must not erase retired risks.
+    prior = (doc.get("thesis") or {}).get("risks") or []
+    if "risks" in clean:
+        known = {r.get("hypothesis"): r for r in prior}
+        clean["risks"] = [known.get(r["hypothesis"]) or r for r in clean["risks"]]
+    elif prior:
+        clean["risks"] = prior
     doc["thesis"] = clean
     _save(root, doc)
     activity.log(root, "greenlight",
@@ -550,7 +642,7 @@ def blockers(root: str | os.PathLike[str], to: str) -> list[str]:
             "no mechanical thesis is settled — greenlight_thesis_set. One "
             "sentence: what decision is the player repeatedly making that "
             "makes this game interesting?")
-    if STAGES.index(to) >= STAGES.index(PRODUCTION):
+    if STAGES.index(to) >= STAGES.index(SLICE):
         got = graybox(root)
         if not got.get("scene"):
             out.append(
@@ -565,6 +657,8 @@ def blockers(root: str | os.PathLike[str], to: str) -> list[str]:
         from ..level import encounter as _enc
 
         out.extend(_enc.production_blockers(root))
+    if STAGES.index(to) >= STAGES.index(PRODUCTION):
+        out.extend(_slice_blockers(root))
     if STAGES.index(to) >= STAGES.index(RELEASE):
         unmet = presentation_check(root)["unmet"]
         out.extend(f"presentation QA: {row}" for row in unmet)
@@ -577,6 +671,44 @@ def blockers(root: str | os.PathLike[str], to: str) -> list[str]:
                 "there is no waiver for the presentation gate — "
                 "greenlight_waive releases a seat from a STAGE hold and does "
                 "nothing here. The rows above clear by being done.")
+    return out
+
+
+def _slice_blockers(root: str | os.PathLike[str]) -> list[str]:
+    """What the vertical slice still owes before content fans out."""
+    from ..store import db
+    from . import gameplan as _gameplan
+
+    out: list[str] = []
+    state = _gameplan.status(root)
+    if not state["slice"]["rows"]:
+        out.append("there is no vertical slice - mark the slice entries "
+                   "(slice: true) in the domain plans or the manifest; the "
+                   "slice is the one sequence every discipline takes to ship "
+                   "quality first")
+    else:
+        try:
+            last = db.connect(root).execute(
+                "SELECT id, result FROM work_item WHERE source = ? AND "
+                "status = 'done' ORDER BY id DESC LIMIT 1",
+                (_gameplan.SLICE_CHECK_SOURCE,)).fetchone()
+        except Exception:                                         # noqa: BLE001
+            last = None
+        if last is None or "VERDICT: PASS" not in (last["result"] or ""):
+            out.append(
+                "the slice check has not passed - every slice row built, then "
+                "a SLICE CHECK (filed automatically) that boots the game and "
+                "ends 'VERDICT: PASS'"
+                + (f"; the last one (#{last['id']}) did not" if last else ""))
+    named = risks(root)
+    if not named:
+        out.append("no key risks are named - greenlight_risks_set with the top "
+                   "1-4, each a binary hypothesis the slice can settle")
+    for i, r in enumerate(named):
+        if r.get("status") == "open":
+            out.append(f"key risk {i} is open: {r['hypothesis'][:160]} - "
+                       "greenlight_risk_retire (confirmed | modified with "
+                       "evidence; accepted is the human's call)")
     return out
 
 
@@ -603,6 +735,90 @@ def advance(root: str | os.PathLike[str], to: str, by: str = "") -> dict:
     activity.log(root, "greenlight", f"stage {at} -> {to}", seat=SEAT)
     _events.emit(root, "greenlight.stage", ref=to, payload={"from": at, "to": to})
     return state(root)
+
+
+# ── feature lock and content lock ───────────────────────────────────────────
+# Alpha and beta. After feature lock no new FEATURE is filed; after content
+# lock no new CONTENT either, and the board orders fixes first. Scope creep is
+# a long run of reasonable individual decisions, and the refusal lands at
+# filing - in the turn of the agent that wanted the feature - not at dispatch.
+LOCKS = ("feature", "content")
+
+
+def locks(root: str | os.PathLike[str]) -> dict:
+    got = _doc(root).get("locks")
+    return got if isinstance(got, dict) else {}
+
+
+def lock(root: str | os.PathLike[str], which: str, reason: str,
+         by: str = "") -> dict:
+    from . import gameplan as _gameplan
+
+    which = str(which or "").strip().lower()
+    if which not in LOCKS:
+        raise ValueError(f"lock is one of {LOCKS}")
+    if stage(root) not in (PRODUCTION, RELEASE):
+        raise StageRefused(f"locks belong to production; the project is at "
+                           f"{stage(root)!r}")
+    reason = " ".join(str(reason or "").split())[:MAX_TEXT]
+    if len(reason) < 15:
+        raise ValueError("a lock costs a sentence: what is in, and why now")
+    ms = _gameplan.milestones(root)
+    if which == "feature" and not ms["feature_complete"]:
+        raise StageRefused(
+            "feature lock needs every feature row built or cut; still open: "
+            + ", ".join(ms["features_left"][:12])
+            + " - build them, or plan_cut what is not going in")
+    if which == "content":
+        if "feature" not in locks(root):
+            raise StageRefused("content lock comes after feature lock")
+        if not ms["content_complete"]:
+            raise StageRefused(
+                "content lock needs every row built or cut; still open: "
+                + ", ".join(ms["content_left"][:12]))
+    doc = _doc(root)
+    held = doc.get("locks") if isinstance(doc.get("locks"), dict) else {}
+    held[which] = {"reason": reason, "by": by or activity.current_actor(),
+                   "at": _now()}
+    doc["locks"] = held
+    _save(root, doc)
+    activity.log(root, "greenlight", f"{which} lock: {reason[:120]}", seat=SEAT)
+    _events.emit(root, "greenlight.lock", ref=which, payload={"reason": reason})
+    return held
+
+
+def unlock(root: str | os.PathLike[str], which: str) -> dict:
+    doc = _doc(root)
+    held = doc.get("locks") if isinstance(doc.get("locks"), dict) else {}
+    if which in held:
+        held.pop(which)
+        if which == "feature":
+            held.pop("content", None)
+        doc["locks"] = held
+        _save(root, doc)
+        activity.log(root, "greenlight", f"{which} lock lifted", seat=SEAT)
+    return held
+
+
+def lock_guard(root: str | os.PathLike[str], kind: str) -> None:
+    """Raise StageRefused when a lock forbids filing work of this kind."""
+    if kind not in ("feature", "content"):
+        return
+    try:
+        held = locks(root)
+    except Exception:                                             # noqa: BLE001
+        return
+    if kind == "feature" and "feature" in held:
+        raise StageRefused(
+            f"feature lock ({held['feature'].get('reason', '')[:120]}): no new "
+            "features. If this is a fix or polish to something already in, "
+            "file it with kind='fix' or 'polish'; if the game truly needs it, "
+            "the human lifts the lock (greenlight_unlock).")
+    if kind == "content" and "content" in held:
+        raise StageRefused(
+            f"content lock ({held['content'].get('reason', '')[:120]}): no new "
+            "content. File repairs as kind='fix'; anything else needs the "
+            "human to lift the lock (greenlight_unlock).")
 
 
 def waive(root: str | os.PathLike[str], seat: str, reason: str,
@@ -659,7 +875,8 @@ def unwaive(root: str | os.PathLike[str], seat: str) -> dict:
 #: demo while every named-scene test passed, and it shipped delivered assets
 #: nothing loaded while `asset_verify` — which already answers exactly that,
 #: with `delivered_but_unwired` — was never run by anybody.
-_SECTIONS = ("default_scene", "export", "assets", "rooms", "scale", "audio")
+_SECTIONS = ("default_scene", "export", "assets", "rooms", "scale", "audio",
+             "board", "golden_path")
 
 
 def presentation_check(root: str | os.PathLike[str]) -> dict:
@@ -705,7 +922,8 @@ def presentation_check(root: str | os.PathLike[str]) -> dict:
                      ("export", _export_unmet),
                      ("assets", _assets_unmet),
                      ("rooms", _rooms_unmet), ("scale", _scale_unmet),
-                     ("audio", _audio_unmet)):
+                     ("audio", _audio_unmet), ("board", _board_unmet),
+                     ("golden_path", _golden_path_unmet)):
         try:
             found = list(fn(root) or [])
         except Exception as exc:                                  # noqa: BLE001
@@ -947,6 +1165,78 @@ def _audio_unmet(root) -> list[dict]:
         for i, sentence in enumerate(check(root) or [])]
 
 
+def _board_unmet(root) -> list[dict]:
+    """GOLD MEANS NO SHOWSTOPPERS, NO MAJORS, ONLY ACCEPTED MINORS.
+
+    The gate used to read the project directory and never the board, so a
+    release could close over an open crash ticket. Untriaged fixes block too:
+    an open repair nobody has graded is a severity nobody knows.
+    """
+    from ..board import findings as _findings
+    from ..store import db
+    from ..store.util import rows as _rows
+
+    items = _rows(db.connect(root).execute(
+        "SELECT id, seat, title, kind, severity, accepted_by FROM work_item "
+        "WHERE status IN ('queued','dispatched','review','parked') "
+        "AND (severity <> '' OR kind = 'fix')"))
+    out: list[dict] = []
+    for it in items:
+        label = f"#{it['id']} [{it['seat']}] {it['title'][:90]}"
+        sev = it["severity"]
+        if sev in ("showstopper", "major"):
+            out.append(_findings.make(
+                gate="board", key=f"open:{it['id']}", kind=_findings.BLOCKING,
+                claim=f"{label} is an open {sev}",
+                tool="queue_list", measured={"severity": sev},
+                clears_by="fix it (or re-triage it with queue_update severity "
+                          "if it is not what it says)"))
+        elif sev == "minor" and not it["accepted_by"]:
+            out.append(_findings.make(
+                gate="board", key=f"minor:{it['id']}", kind=_findings.JUDGEMENT,
+                claim=f"{label} is an open minor nobody accepted",
+                tool="queue_list", measured={"severity": sev},
+                clears_by="fix it, or the human accepts it as a known issue "
+                          "(queue_accept_known_issue)"))
+        elif not sev:
+            out.append(_findings.make(
+                gate="board", key=f"untriaged:{it['id']}",
+                kind=_findings.BLOCKING,
+                claim=f"{label} is an open fix with no severity",
+                tool="queue_list", measured={"severity": ""},
+                clears_by="triage it: queue_update(severity=showstopper|"
+                          "major|minor)"))
+    return out
+
+
+def _golden_path_unmet(root) -> list[dict]:
+    """START TO FINISH, PLAYED. The QA plan's done_when is the golden path:
+    every check passing on evidence recorded after the build last moved."""
+    from ..board import findings as _findings
+    from . import domainplan as _dp
+
+    plan = _dp.get(root, "qa")
+    if plan is None:
+        return [_findings.make(
+            gate="golden_path", key="golden_path:no-plan",
+            kind=_findings.BLOCKING,
+            claim="there is no QA plan, so nothing says what the golden path is",
+            tool="domain_plan_status",
+            clears_by="domain_plan_set('qa') with the golden-path scenario as "
+                      "entries and its checks as done_when")]
+    out = []
+    for c in _dp.check_state(root, "qa", plan):
+        if c["state"] != "pass":
+            out.append(_findings.make(
+                gate="golden_path", key=f"golden_path:{c['check'][:60]}",
+                kind=_findings.BLOCKING,
+                claim=f"golden path check is {c['state']}: {c['check'][:160]}",
+                tool="domain_plan_status", measured={"state": c["state"]},
+                clears_by="play it and record the verdict with evidence "
+                          "(domain_plan_check('qa', ...))"))
+    return out
+
+
 def release_guard(root: str | os.PathLike[str]) -> None:
     """Raise :class:`StageRefused` if a release candidate may not close.
 
@@ -989,6 +1279,8 @@ def state(root: str | os.PathLike[str]) -> dict:
         "thesis": thesis(root),
         "graybox": graybox(root),
         "waivers": waivers(root),
+        "risks": risks(root),
+        "locks": locks(root),
         "held_seats": list(held_seats(root)),
         "next": nxt,
         "blockers": blockers(root, nxt) if nxt else [],

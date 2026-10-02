@@ -1117,6 +1117,9 @@ def _with_chain_state(root: Path, row: dict) -> dict:
             from bgate_core.design import greenlight as _greenlight
 
             ok, why = _greenlight.allows(root, str(row.get("seat") or ""))
+            if ok:
+                why = _queue.slice_hold_reason(root, row)
+                ok = not why
         except Exception:                                         # noqa: BLE001
             ok, why = True, ""
         if not ok:

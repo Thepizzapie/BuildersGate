@@ -70,7 +70,8 @@ def needs_per_frame_verdict(item: dict) -> bool:
 # unreadable settings doc, on the same reasoning as MAX_ROUNDS below — a gate
 # that cannot read its own configuration keeps the coverage it always had rather
 # than silently reviewing nothing.
-GATED_SEATS = ("art", "gameplay", "audio", "narrative", "tech", "cinematic")
+GATED_SEATS = ("art", "gameplay", "level", "audio", "narrative", "tech",
+               "cinematic")
 
 # Rounds of QA an item may go through before a human is asked to arbitrate.
 # 3 = the original attempt plus two fix rounds; past that the disagreement is

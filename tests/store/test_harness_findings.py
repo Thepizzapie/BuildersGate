@@ -110,7 +110,7 @@ def test_gated_seats_defaults_to_every_maker_seat(root):
     # every maker seat is gated by default now. director and qa stay out:
     # that is recursion, not review.
     assert qa_gate.gated_seats(root) == (
-        "art", "gameplay", "audio", "narrative", "tech", "cinematic")
+        "art", "gameplay", "level", "audio", "narrative", "tech", "cinematic")
 
 
 def test_a_project_can_narrow_qa_to_one_seat(root, as_human):

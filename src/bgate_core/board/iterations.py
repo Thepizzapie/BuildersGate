@@ -469,6 +469,122 @@ def record_checks(root: str | os.PathLike[str], result: dict) -> dict:
             "iteration_id": iteration_id}
 
 
+# ── iteration-scoped work (autopilot.scope = iteration) ─────────────────────
+# A studio does not run a continuous pump: it commits a set of work, builds
+# it, PLAYS the integrated build, and decides the next set from what it saw.
+# With the scope on, autopilot dispatches only items attached to the active
+# iteration; closing one needs recorded checks and files the director debrief;
+# opening the next needs a sentence about what the last one taught.
+ITEM_STAGE = "item"
+DEBRIEF_SOURCE = "iteration-debrief"
+
+
+def attach(root: str | os.PathLike[str], item_ids: list[int],
+           iteration_id: Optional[int] = None) -> dict:
+    from . import queue as _queue
+
+    iteration_id = iteration_id or active_id(root)
+    if not iteration_id:
+        raise LookupError("no active iteration - iteration_open first")
+    have = item_ids_of(root, iteration_id)
+    added = []
+    for raw in item_ids or []:
+        item = _queue.get(root, int(raw))
+        if int(item["id"]) in have:
+            continue
+        add_event(root, iteration_id, ITEM_STAGE, "work_item", str(item["id"]),
+                  f"#{item['id']} committed to this iteration: {item['title'][:80]}")
+        added.append(int(item["id"]))
+    return {"iteration": iteration_id, "added": added,
+            "items": sorted(have | set(added))}
+
+
+def item_ids_of(root: str | os.PathLike[str], iteration_id: int) -> set[int]:
+    got = db.connect(root).execute(
+        "SELECT ref_id FROM iteration_event WHERE iteration_id = ? AND stage = ? "
+        "AND ref_type = 'work_item'", (int(iteration_id), ITEM_STAGE)).fetchall()
+    return {int(r["ref_id"]) for r in got if str(r["ref_id"]).isdigit()}
+
+
+def open_next(root: str | os.PathLike[str], goal: str, item_ids: list[int],
+              previous_takeaway: str = "") -> dict:
+    """Open an iteration with its committed work. When a previous iteration
+    exists, `previous_takeaway` - what it taught, in a sentence - is required:
+    an iteration opened without reading the last one's outcome is a pump with
+    extra steps."""
+    goal = " ".join(str(goal or "").split())
+    if len(goal) < 15:
+        raise ValueError("an iteration goal is a sentence the build will be "
+                         "played against")
+    conn = db.connect(root)
+    previous = conn.execute("SELECT id, outcome_json FROM iteration "
+                            "ORDER BY id DESC LIMIT 1").fetchone()
+    takeaway = " ".join(str(previous_takeaway or "").split())
+    if previous and len(takeaway) < 20:
+        raise ValueError(
+            f"iteration #{previous['id']} came before this one - read its "
+            "outcome (iteration_status) and say what it taught in "
+            "previous_takeaway (at least 20 characters)")
+    got = create(root, goal)
+    if previous:
+        add_event(root, int(got["id"]), "takeaway", "iteration",
+                  str(previous["id"]), takeaway)
+    if item_ids:
+        attach(root, list(item_ids), int(got["id"]))
+    return get(root, int(got["id"]))
+
+
+def close(root: str | os.PathLike[str], summary: str) -> dict:
+    """Close the active iteration: checks recorded, outcome written, the
+    director debrief filed."""
+    from . import queue as _queue
+
+    iteration_id = active_id(root)
+    if not iteration_id:
+        raise LookupError("no active iteration to close")
+    summary = " ".join(str(summary or "").split())
+    if len(summary) < 20:
+        raise ValueError("say what the integrated build showed (20+ characters)")
+    conn = db.connect(root)
+    checks = conn.execute(
+        "SELECT data_json FROM iteration_event WHERE iteration_id = ? AND "
+        "stage = 'automated_checks' ORDER BY id DESC LIMIT 1",
+        (iteration_id,)).fetchone()
+    if checks is None:
+        raise ValueError(
+            "an iteration closes on a PLAYED, CHECKED build: run godot_test_run "
+            "and screen_audit on the default scene, then iteration_record_checks "
+            "with the result, then close")
+    ids = item_ids_of(root, iteration_id)
+    states = {}
+    for i in ids:
+        try:
+            states[i] = _queue.get(root, i)["status"]
+        except LookupError:
+            states[i] = "missing"
+    outcome = {"summary": summary,
+               "items": {str(k): v for k, v in sorted(states.items())},
+               "checks": json.loads(checks["data_json"] or "{}")}
+    with db.tx(root) as tx:
+        tx.execute("UPDATE iteration SET status = 'complete', outcome_json = ?, "
+                   "completed_at = datetime('now') WHERE id = ?",
+                   (json.dumps(outcome), iteration_id))
+    unfinished = [i for i, s in states.items() if s != "done"]
+    debrief = _queue.add(
+        root, "director", f"ITERATION #{iteration_id} DEBRIEF",
+        brief=(f"Iteration #{iteration_id} closed: {summary}\n\n"
+               f"{len(ids) - len(unfinished)} of {len(ids)} committed item(s) "
+               "done" + (f"; unfinished: {', '.join('#' + str(i) for i in unfinished)}"
+                         if unfinished else "")
+               + ".\nDecide the next iteration: what to keep, what to change, "
+                 "what to cut. Open it with iteration_open(goal, item_ids, "
+                 "previous_takeaway)."),
+        priority=8, source=DEBRIEF_SOURCE, source_ref=str(iteration_id),
+        size="small")
+    return {"iteration": iteration_id, "outcome": outcome,
+            "debrief": int(debrief["id"])}
+
+
 def _decode(row: dict) -> dict:
     for source, target, fallback in (
         ("active_artifact_ids_json", "active_artifact_ids", []),

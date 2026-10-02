@@ -30,7 +30,7 @@
 (function () {
   "use strict";
 
-  const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "cinematic", "qa"];
+  const SEATS = ["director", "narrative", "gameplay", "level", "tech", "art", "audio", "cinematic", "qa"];
   const WS_PATH = "/api/workspace/director/console-graph";
 
   // x is the left edge of a node; the canvas pans, so this is only the FIRST
@@ -291,6 +291,10 @@
     apply(state) {
       if (!state || !this.host) return;
       this.state = state;
+      if (this.scope === "all" && Date.now() - (this._historyAt || 0) > 15000) {
+        this._historyAt = Date.now();
+        this.loadHistory().then(() => { try { this.rebuild(); } catch (e) {} });
+      }
       try { this.rebuild(); } catch (e) { try { console.warn("[agents-graph]", e); } catch (_) {} }
       // After the rebuild: the node has to exist in the DOM before it can be lit.
       try { this.spotlight(this.liveSet()); } catch (e) {}
@@ -341,9 +345,11 @@
       }, 1800);
     },
 
+    /* Only a position the USER dragged sticks. An automatic position used to
+     * stick too, so a growing board laid new cards over old ones that never
+     * moved out of the way; now the layout is recomputed every rebuild and
+     * cards glide to their new places (see flow()). */
     place(id, x, y) {
-      const prev = this.nodes.get(id);
-      if (prev && Number.isFinite(prev.x)) return { x: prev.x, y: prev.y };
       const saved = this.positions[id];
       if (saved && Number.isFinite(saved.x)) return { x: saved.x, y: saved.y };
       return { x, y };
@@ -351,38 +357,22 @@
 
     /* Which work belongs on the graph.
      *
-     * DEPLOYED WORK ONLY. A queued item is a plan, and a plan on the canvas is
-     * indistinguishable from work in progress — that is what made this thing
-     * read as a backlog. The queue lives in the console's own panel, where
-     * deploying it is one button; crossing that line is what puts a task here.
+     * TWO SCOPES. `active` is the work that has not finished - queued,
+     * dispatched, in review, a gate's subject, a failure from the last half
+     * hour - plus every ANCESTOR it waits on, finished or not, because a chain
+     * with its finished links removed is a lie about what the open work stands
+     * on. `all` adds the history (graph-history) so the canvas reads like a
+     * source-control log: everything that landed, and what is in flight on
+     * top of it.
      *
-     * The exception is a task holding a gate. Its run is over, but the gate has
-     * to hang off something: "approve this" with no idea what "this" was is not
-     * a decision anyone can make. It leaves the graph the moment you act on it.
-     *
-     * A FRESH FAILURE STAYS. An item that broke was neither live nor dispatched
-     * nor gated, so the poll after the run died removed its node — the canvas
-     * that had a task on it a moment ago simply had one fewer, which is
-     * indistinguishable from a dispatch that never happened. Everything below is
-     * already written to draw one: the failed glyph, the var(--bad) accent,
-     * status:"failed" for the border treatment.
-     *
-     * FRESH is the whole of it, and the version that said `i.status === "failed"`
-     * left that word out. The server's window ranks failed work third and caps at
-     * BOARD, so it is bounded — but bounded at 80, which on a board with a week
-     * behind it meant the in-flight filter drew MORE nodes than "everything"
-     * (measured: 74 against 60). A break you did not watch happen is history; the
-     * board below owns it, and re-running it from there puts it back here live.
-     *
-     * Ancestors come back with active work because a chain with its
-     * middle removed is a lie about who caused what. */
+     * Ancestors are walked through DEPENDENCIES first (depends_on and
+     * work_item_dep - what has to land before this runs) and delegation second
+     * (the qa gate hanging off the item it verifies). */
     keep(items, live) {
+      if (this.scope === "all") return items;
       const byId = new Map(items.map(i => [Number(i.id), i]));
-      const parents = ((this.state || {}).lineage || {}).parents || {};
       const gated = new Set(((this.state || {}).gates || [])
         .map(g => Number(g.over_item_id || 0)).filter(Boolean));
-      // Newest first, then take a handful: a fan-out that dies whole would
-      // otherwise put its entire fan on the canvas inside one window.
       const now = Date.now();
       const fresh = new Set(items
         .filter(i => i.status === "failed"
@@ -391,89 +381,88 @@
         .slice(0, FAIL_KEEP)
         .map(i => Number(i.id)));
       const keep = new Set();
-      /* QUEUED COUNTS AS IN FLIGHT. It was left out — the set was live +
-         dispatched + a fresh failure + gated — so the graph showed what was
-         RUNNING and nothing that was about to. On a board that dispatches
-         itself that is a canvas which empties between ticks and refills with
-         different nodes, and on a board that does not, it is a graph that never
-         shows the work you just filed. "Active" means the work that has not
-         finished, which is what a reader of this pane is asking about. */
       items.forEach(i => {
         const id = Number(i.id);
-        if (live.has(id) || i.status === "dispatched" || i.status === "queued"
+        if (live.has(id) || ["dispatched", "queued", "review", "integrating"].includes(i.status)
             || fresh.has(id) || gated.has(id)) keep.add(id);
       });
-      // Walk up: a kept task's ancestors stay so the tree keeps its trunk.
-      [...keep].forEach(id => {
-        let up = Number(parents[id] || parents[String(id)] || 0), guard = 0;
-        while (up && byId.has(up) && !keep.has(up) && guard++ < 12) {
-          keep.add(up);
-          up = Number(parents[up] || parents[String(up)] || 0);
-        }
-      });
+      const todo = [...keep];
+      let guard = 0;
+      while (todo.length && guard++ < 2000) {
+        const id = todo.pop();
+        this.upOf(id).forEach(p => {
+          if (byId.has(p) && !keep.has(p)) { keep.add(p); todo.push(p); }
+        });
+      }
       return items.filter(i => keep.has(Number(i.id)));
+    },
+
+    /* What an item stands on: its dependencies, else the item that spawned
+     * it (a qa gate, a delegation, a split). */
+    depsOf(id) {
+      const d = this._deps || {};
+      return (d[id] || d[String(id)] || []).map(Number);
+    },
+    lineageOf(id) {
+      const parents = ((this.state || {}).lineage || {}).parents || {};
+      const p = Number(parents[id] || parents[String(id)] || 0);
+      return p ? [p] : [];
+    },
+    upOf(id) {
+      const d = this.depsOf(id);
+      return d.length ? d : this.lineageOf(id);
+    },
+
+    /* The items the canvas works from: the state's window plus, in the ALL
+     * scope, the fetched history. Deduplicated by id, the state's copy wins
+     * (it is the fresher). */
+    sourceItems() {
+      const s = this.state || {};
+      const out = new Map();
+      (s.items || []).forEach(i => out.set(Number(i.id), i));
+      this._deps = Object.assign({}, (this._history || {}).deps || {}, s.deps || {});
+      if (this.scope === "all") {
+        ((this._history || {}).items || []).forEach(i => {
+          if (!out.has(Number(i.id))) out.set(Number(i.id), i);
+        });
+      }
+      return [...out.values()].filter(i => i.source !== "chat");
     },
 
     compute() {
       const s = this.state || {};
       const live = this.liveSet();
       const steps = s.steps || {};
-      const parents = (s.lineage && s.lineage.parents) || {};
-      // A turn that never dispatched is a message, not work: it belongs in the
-      // transcript and in the queue panel, where deploying it is one button.
-      // Drawing it here put an undeployed thing on a canvas whose whole rule is
-      // that everything on it is live — which is exactly how a cancelled
-      // dispatch ended up looking like it had started.
       const turns = (s.turns || []).filter(t => t.status !== "queued").slice(-8);
       const turnIds = new Set(turns.map(t => Number(t.id)));
-      const items = this.keep((s.items || []).filter(i => i.source !== "chat"), live);
+      const items = this.keep(this.sourceItems(), live);
       const byId = new Map(items.map(i => [Number(i.id), i]));
+      const H = this._heights || (this._heights = {});
 
       const nodes = new Map();
       const edges = [];
       const add = n => nodes.set(n.id, n);
       const IN = [{ id: "i", label: "" }], OUT = [{ id: "o", label: "" }];
+      const visibleUp = id => this.upOf(id).filter(p => byId.has(p));
 
-      const parentOf = id => Number(parents[id] || parents[String(id)] || 0);
-
-      // Depth: a turn's child is depth 1, its child is 2, and so on. A task
-      // whose parent fell outside the window starts a trunk of its own.
+      /* COLUMN = DEPENDENCY DEPTH. A ticket sits one column right of the
+       * deepest thing it waits on, so a chain reads left to right and two
+       * independent tickets share a column. */
+      const depth = new Map();
       const depthOf = (id, guard) => {
-        const p = parentOf(id);
-        if (!p || (guard || 0) > 12) return 1;
-        if (turnIds.has(p)) return 1;
-        if (!byId.has(p)) return 1;
-        return 1 + depthOf(p, (guard || 0) + 1);
+        if (depth.has(id)) return depth.get(id);
+        if ((guard || 0) > 60) return 1;
+        const ups = visibleUp(id);
+        const d = ups.length ? 1 + Math.max(...ups.map(p => depthOf(p, (guard || 0) + 1))) : 1;
+        depth.set(id, d);
+        return d;
       };
+      items.forEach(i => depthOf(Number(i.id)));
 
-      // Children first, so a run reads top-to-bottom as it was delegated.
-      const kids = new Map();
-      items.forEach(i => {
-        const p = parentOf(i.id);
-        const key = byId.has(p) ? p : (turnIds.has(p) ? "turn_" + p : "_root");
-        (kids.get(key) || kids.set(key, []).get(key)).push(i);
-      });
-      // Per-column cursors. Reset at the top of every seat lane (see below), so
-      // "the next free row in this column" means "in this lane" rather than
-      // "anywhere on the canvas" — which is what made every task on the board
-      // queue up in one endless column no matter whose it was.
-      let cursor = {};
-      const nextY = (col, want) => {
-        const y = Math.max(cursor[col] || 20, want || 0);
-        cursor[col] = y + ROW.task;
-        return y;
-      };
-
-      // WHOSE PHASES ARE OPEN, decided before anything is placed — the stack has
-      // to be reserved for at the moment its task takes a row, or the next task
-      // in that column lands inside it.
+      // Phase stacks: open only for the selected task (or a lone runner).
       const phaseMap = s.phases || {};
       const withPhases = Object.keys(phaseMap)
-        .filter(k => (phaseMap[k] || []).length
-          && (live.has(Number(k)) || byId.has(Number(k))))
-        .map(Number);
-      // A selected PHASE counts as selecting its task — otherwise opening a
-      // pocket collapses the stack it lives in and the rail shuts on itself.
+        .filter(k => (phaseMap[k] || []).length && byId.has(Number(k))).map(Number);
       const sel = String(this.sel || "");
       const selectedItem = sel.startsWith("task_") ? Number(sel.slice(5))
         : sel.startsWith("phase_") ? Number(sel.split("_")[1]) : 0;
@@ -488,18 +477,15 @@
         const p = this.place(id, COL.turn, 20 + i * ROW.turn);
         add({
           id, type: "turn", turn: t, title: trunc(t.said || t.title, 42),
-          glyph: "»", w: 258, x: p.x, y: p.y,
-          accent: "var(--accent)",
+          glyph: "»", w: 258, x: p.x, y: p.y, accent: "var(--accent)",
           badge: t.reply && t.reply.running ? "thinking"
             : (t.status === "done" ? "answered" : t.status),
-          running: !!(t.reply && t.reply.running),
-          ports: { out: OUT },
+          running: !!(t.reply && t.reply.running), ports: { out: OUT },
         });
       });
 
-      // ── the floor. Only seats that are ON something: seven permanent boxes,
-      // five of them idle, is a floor plan — this is a picture of what is
-      // happening, and an idle seat is not happening.
+      // ── seat lanes. Every seat that holds work, in the house order, then
+      // any seat the order does not know (a new seat must never vanish).
       const counts = {};
       items.forEach(i => {
         const c = counts[i.seat] || (counts[i.seat] = { queued: 0, running: 0, done: 0 });
@@ -507,179 +493,129 @@
         else if (i.status === "queued") c.queued++;
         if (i.status === "done") c.done++;
       });
-      const working = SEATS.filter(s => counts[s]);
+      const working = SEATS.filter(x => counts[x])
+        .concat(Object.keys(counts).filter(x => !SEATS.includes(x)).sort());
 
-      /* ── SEAT LANES ────────────────────────────────────────────────────────
-       *
-       * The old layout put every seat box in one column and every task in
-       * another, both filled top-to-bottom in their own order. With eight items
-       * across four seats that is a 3000px column of tasks beside a 400px
-       * column of seats, joined by eight long diagonals that cross each other —
-       * the graph fitted to 64% and the only thing it actually told you was how
-       * much work there was, which the queue badge already says.
-       *
-       * A LANE PER SEAT FIXES THE PICTURE AND THE EDGES AT THE SAME TIME. Each
-       * working seat gets a horizontal band: its box on the left, its work laid
-       * out to the right of it, and the band is exactly as tall as that seat's
-       * work needs. Every seat→task edge is then a short horizontal hop inside
-       * one band, so the crossings are gone — not routed around, structurally
-       * absent — and a handoff between seats is the only diagonal left, which
-       * is the one edge worth noticing.
-       *
-       * Reading it: DOWN is who, RIGHT is what happened next.
-       */
-      // Which tasks start a lane: a task whose parent is another task on this
-      // canvas is a handoff and belongs beside its parent, not at the lane head.
-      const rootsBySeat = {};
-      items.forEach(i => {
-        if (byId.has(parentOf(i.id))) return;          // laid by its parent
-        (rootsBySeat[i.seat] || (rootsBySeat[i.seat] = [])).push(i);
-      });
-
-      // How tall a lane has to be before the next one starts. Counted from the
-      // rows its roots will take (plus any open phase stack, which is drawn in
-      // the column to the right but still occupies this lane's height) and
-      // floored at the seat box itself, so a seat with one task is not squeezed
-      // under its own header.
-      const laneHeight = (seat) => {
-        const roots = rootsBySeat[seat] || [];
-        let h = 0;
-        roots.forEach(it => {
-          const rows = phaseRows(it.id);
-          h += rows ? Math.max(ROW.task, rows * ROW.phase + DROP) : ROW.task;
-        });
-        return Math.max(ROW.seat, h || ROW.task);
-      };
-
-      const laneTop = {};
+      /* PACKING. Each lane keeps one cursor per column; a ticket takes the next
+       * free slot in its column, no higher than the ticket it depends on in
+       * the same lane (so a chain stays on one line when it can). Heights are
+       * MEASURED from the rendered cards (see measure()), falling back to an
+       * estimate, so cards never overlap whatever their content is. */
+      const GAP = 18;
+      const heightOf = id => H[id] || (id.startsWith("seat_") ? ROW.seat - 20 : 118);
+      const order = [...items].sort((a, b) =>
+        (depth.get(Number(a.id)) - depth.get(Number(b.id))) || (Number(a.id) - Number(b.id)));
+      const placed = new Map();          // task id -> {x, y}
       let laneY = 20;
-      working.forEach((seat) => {
-        laneTop[seat] = laneY;
-        laneY += laneHeight(seat) + LANE_GAP;
-      });
-
-      working.forEach((seat) => {
-        const id = "seat_" + seat;
-        const p = this.place(id, COL.seat, laneTop[seat]);
-        const c = counts[seat] || { queued: 0, running: 0, done: 0 };
+      const laneOf = {};
+      working.forEach(seat => {
+        const top = laneY;
+        const cursor = {};
+        const lane = { top, cursor };
+        laneOf[seat] = lane;
+        const seatId = "seat_" + seat;
+        const sp = this.place(seatId, COL.seat, top);
+        const c = counts[seat];
         add({
-          id, type: "seat", seat, title: seat.toUpperCase(), glyph: "▪",
-          w: 206, x: p.x, y: p.y, accent: seatColor(seat), counts: c,
+          id: seatId, type: "seat", seat, title: seat.toUpperCase(), glyph: "▪",
+          w: 206, x: sp.x, y: sp.y, accent: seatColor(seat), counts: c,
           badge: c.running ? "live" : "", running: !!c.running,
-          // The seat boxes double as the canvas's colour key — this hue is that
-          // seat, everywhere, for the rest of the graph.
-          status: c.running ? "running" : "",
-          ports: { in: IN, out: OUT },
+          status: c.running ? "running" : "", ports: { in: IN, out: OUT },
         });
+        let bottom = top + heightOf(seatId);
+        order.filter(i => i.seat === seat).forEach(it => {
+          const id = "task_" + it.id;
+          const d = depth.get(Number(it.id));
+          const col = COL.task + (d - 1) * COL.step;
+          const sameLaneUp = visibleUp(Number(it.id))
+            .map(p => placed.get(p)).filter(Boolean)
+            .filter(p => p.seat === seat).map(p => p.y);
+          const want = Math.max(top, ...(sameLaneUp.length ? [Math.min(...sameLaneUp)] : [top]));
+          const y = Math.max(cursor[col] || top, want);
+          const p = this.place(id, col, y);
+          const rows = phaseRows(it.id);
+          const h = heightOf(id);
+          cursor[col] = p.y + h + GAP;
+          if (rows) {
+            const band = p.y + rows * ROW.phase + DROP;
+            cursor[col + COL.step] = Math.max(cursor[col + COL.step] || top, band);
+            bottom = Math.max(bottom, band);
+          }
+          bottom = Math.max(bottom, p.y + h);
+          placed.set(Number(it.id), { x: p.x, y: p.y, seat });
+          const running = live.has(Number(it.id));
+          const stack = Math.min((phaseMap[String(it.id)] || []).length, 99);
+          const runs = Number(it.attempts || 0) + 1;
+          const cp = Number(it.checkpoint || 0) === 1;
+          add({
+            id, type: "task", item: it, running, seat: it.seat,
+            title: trunc(it.title, 40),
+            glyph: cp ? "◆" : running ? "▶" : it.status === "done" ? "✓"
+              : it.status === "failed" ? "×" : "▷",
+            w: 268, x: p.x, y: p.y, phases: stack, phasesOpen: !!rows,
+            accent: it.status === "failed" ? "var(--bad)" : seatColor(it.seat),
+            status: running ? "running" : it.status === "failed" ? "failed"
+              : it.status === "done" ? "passed" : "",
+            badge: (cp && it.status === "review") ? "sign off"
+              : (!rows && stack) ? `${stack} phase${stack === 1 ? "" : "s"}`
+              : running ? "running"
+              : (runs >= 2 && it.status !== "done") ? `${runs} runs`
+              : cp ? "checkpoint" : it.status,
+            step: running ? lastStep(steps[String(it.id)]) : null,
+            cost: it.total_cost_usd ? "$" + Number(it.total_cost_usd).toFixed(2) : "",
+            ports: { in: IN, out: OUT },
+          });
+        });
+        laneY = Math.max(bottom, top + ROW.seat) + LANE_GAP;
       });
 
-      // ── the work, laid out depth-first from each root
-      const laid = new Set();
-      const layTask = (it, wantY) => {
-        const id = "task_" + it.id;
-        if (laid.has(id)) return;
-        laid.add(id);
-        const running = live.has(Number(it.id));
-        const depth = depthOf(it.id);
-        const col = COL.task + (depth - 1) * COL.step;
-        const p = this.place(id, col, nextY(col, wantY));
-        // Reserve the band its phase stack will occupy — in this column, so the
-        // next sibling clears it, and in the phase column, so a CHILD task laid
-        // there later does not land on top of the stack. This is the whole bug
-        // behind the pile-up: the stack was drawn after the fact and never
-        // claimed the space it took.
-        const rows = phaseRows(it.id);
-        if (rows) {
-          const band = p.y + rows * ROW.phase + DROP;
-          cursor[col] = Math.max(cursor[col] || 0, band);
-          cursor[col + COL.step] = Math.max(cursor[col + COL.step] || 20, band);
-        }
-        const stack = Math.min((phaseMap[String(it.id)] || []).length, 99);
-        add({
-          id, type: "task", item: it, running, seat: it.seat,
-          title: trunc(it.title, 40),
-          glyph: running ? "▶" : it.status === "done" ? "✓"
-            : it.status === "failed" ? "×" : "▷",
-          w: 268, x: p.x, y: p.y, phases: stack, phasesOpen: !!rows,
-          // HUE IS WHOSE, NOT WHAT STATE. A task wears its seat's colour for its
-          // whole life; running/done/failed is carried by the border treatment
-          // and the badge (see data-status). Painting a running node accent-
-          // orange and a finished one green meant the canvas told you the status
-          // of everything and the owner of nothing — which is backwards, because
-          // the status is already written on the node in words.
-          accent: it.status === "failed" ? "var(--bad)" : seatColor(it.seat),
-          status: running ? "running" : it.status === "failed" ? "failed"
-            : it.status === "done" ? "passed" : "",
-          // A collapsed stack says so on the node, so "where did its steps go"
-          // has an answer you can see instead of a feature that looks broken.
-          badge: (!rows && stack) ? `${stack} phase${stack === 1 ? "" : "s"}`
-            : running ? "running" : it.status,
-          step: running ? lastStep(steps[String(it.id)]) : null,
-          cost: it.total_cost_usd ? "$" + Number(it.total_cost_usd).toFixed(2) : "",
-          ports: { in: IN, out: OUT },
-        });
-        // ONE incoming edge: the thing that caused this task. A handoff comes
-        // from the parent task; everything else comes from its seat.
-        const parent = parentOf(it.id);
-        if (byId.has(parent)) {
-          edges.push({ from: ["task_" + parent, "o"], to: [id, "i"] });
-        } else {
-          edges.push({ from: ["seat_" + it.seat, "o"], to: [id, "i"] });
-          if (turnIds.has(parent)) {
-            edges.push({ from: ["turn_" + parent, "o"], to: ["seat_" + it.seat, "i"] });
+      // ── edges. A DEPENDENCY is a solid line (this cannot start before that
+      // lands); a SPAWN (the qa gate on the item it verifies, a delegation, a
+      // split) is a soft one; a ticket with neither hangs off its seat.
+      items.forEach(it => {
+        const id = Number(it.id);
+        const to = "task_" + id;
+        const deps = this.depsOf(id).filter(p => byId.has(p));
+        const into = live.has(id) ? "nc-live" : "";
+        deps.forEach(p => edges.push({
+          from: ["task_" + p, "o"], to: [to, "i"], cls: into,
+          title: `#${id} waits on #${p}`,
+        }));
+        const spawn = this.lineageOf(id).filter(p => byId.has(p) && !deps.includes(p));
+        spawn.forEach(p => edges.push({
+          from: ["task_" + p, "o"], to: [to, "i"], cls: "nc-soft",
+          title: `#${id} was spawned by #${p}`,
+        }));
+        if (!deps.length && !spawn.length) {
+          edges.push({ from: ["seat_" + it.seat, "o"], to: [to, "i"], cls: into });
+          const lp = this.lineageOf(id)[0];
+          if (lp && turnIds.has(lp)) {
+            edges.push({ from: ["turn_" + lp, "o"], to: ["seat_" + it.seat, "i"] });
           }
         }
-        (kids.get(Number(it.id)) || []).forEach(kid => layTask(kid, p.y + DROP));
-      };
-      // LANE BY LANE, and the cursor is emptied between them. Each seat's work
-      // starts at its own band's top; its handoffs walk right from there. A
-      // shared cursor is what stacked every seat's work into one column.
-      working.forEach((seat) => {
-        cursor = {};
-        (rootsBySeat[seat] || []).forEach(it => layTask(it, laneTop[seat]));
       });
-      // Anything the walk missed — an item whose seat is not in `working` can
-      // only happen if counts and items disagree, but a task that silently
-      // vanishes from the canvas is worse than one in the wrong lane.
-      cursor = {};
-      items.forEach(it => layTask(it, laneY));
-
-      // A turn that has not delegated anything yet still shows where it went.
       turns.forEach(t => {
         if (t.status !== "dispatched" && t.status !== "queued") return;
         if (edges.some(e => e.from[0] === "turn_" + t.id)) return;
-        edges.push({ from: ["turn_" + t.id, "o"], to: ["seat_director", "i"] });
+        if (nodes.has("seat_director")) {
+          edges.push({ from: ["turn_" + t.id, "o"], to: ["seat_director", "i"] });
+        }
       });
 
       // ── the pockets of work inside each running agent.
-      // A run is not one action: the agent says what it is about to do, does it,
-      // says the next thing. Those are the units you actually want to open —
-      // this phase produced these three renders, that one is where it went
-      // wrong — and they exist only while the agent is working.
-      const phases = s.phases || {};
-      Object.keys(phases).forEach(itemId => {
+      Object.keys(phaseMap).forEach(itemId => {
         const anchor = nodes.get("task_" + itemId);
-        if (!anchor) return;
-        // Collapsed: the count is on the task node and the rail still lists every
-        // phase. Select the task to open the stack.
-        if (!openFor.has(Number(itemId))) return;
-        const list = (phases[itemId] || []).slice(-PHASE_CAP);
+        if (!anchor || !openFor.has(Number(itemId))) return;
+        const list = (phaseMap[itemId] || []).slice(-PHASE_CAP);
         let prev = null;
         list.forEach((ph, i) => {
           const id = `phase_${itemId}_${ph.n}`;
-          const col = anchor.x + COL.step;
-          // Aligned with its task rather than dropped below it: the band that was
-          // reserved starts at the anchor's row, and a stack that starts lower
-          // than the space claimed for it is a stack that runs out the bottom.
-          const p = this.place(id, col, (anchor.y || 20) + i * ROW.phase);
+          const p = this.place(id, anchor.x + COL.step, (anchor.y || 20) + i * ROW.phase);
           const arts = ph.artifacts || [];
           add({
             id, type: "phase", phase: ph, itemId: Number(itemId),
             title: trunc(`${ph.n} · ${ph.title}`, 40),
             glyph: ph.state === "running" ? "▶" : ph.state === "trouble" ? "!" : "✓",
-            // Narrower than its task and in its task's colour: a phase is part
-            // OF a run, and a stack of full-width cards in a fourth colour read
-            // as five more agents rather than one agent's five pockets.
             w: 226, x: p.x, y: p.y, seat: anchor.seat,
             accent: ph.state === "trouble" ? "var(--bad)" : seatColor(anchor.seat),
             badge: arts.length ? `${arts.length} made` : "",
@@ -688,15 +624,13 @@
               : ph.state === "trouble" ? "failed" : "passed",
             ports: { in: IN, out: OUT },
           });
-          edges.push(prev
-            ? { from: [prev, "o"], to: [id, "i"] }
+          edges.push(prev ? { from: [prev, "o"], to: [id, "i"] }
             : { from: ["task_" + itemId, "o"], to: [id, "i"] });
           prev = id;
         });
       });
 
-      // ── sideways relations: two agents on one thing, one blocked on another,
-      // one steering another. Dashed, because these are not delegations.
+      // ── sideways relations: two agents on one thing, one blocked on another.
       (s.collab || []).forEach(c => {
         const a = "task_" + c.a, b = "task_" + c.b;
         if (!nodes.has(a) || !nodes.has(b)) return;
@@ -708,23 +642,28 @@
         });
       });
 
-      // ── what the in-flight work cannot get past on its own
+      // ── what the in-flight work cannot get past on its own: placed in the
+      // anchor's lane, one column right, below anything already there.
       (s.gates || []).slice(0, 12).forEach(g => {
         const id = "gate_" + g.id;
         const over = g.over_item_id;
         const anchor = over ? nodes.get("task_" + over) : null;
-        // Past the phase column only when that stack is actually OPEN — a gate
-        // shoved two columns right of a collapsed task is a gate nobody scrolls to.
+        const lane = anchor ? laneOf[anchor.seat] : null;
         const col = anchor ? anchor.x + COL.step * (openFor.has(Number(over)) ? 2 : 1)
-          : COL.task + COL.step * 2;
-        const p = this.place(id, col, nextY(col, anchor ? anchor.y + DROP : 0));
+          : COL.task;
+        let y;
+        if (lane) {
+          y = Math.max(lane.cursor[col] || lane.top, anchor.y);
+          lane.cursor[col] = y + heightOf(id) + GAP;
+        } else {
+          y = laneY;
+          laneY += heightOf(id) + GAP;
+        }
+        const p = this.place(id, col, y);
         add({
           id, type: "gate", gate: g, title: trunc(g.title, 34),
           glyph: g.kind === "art" ? "◇" : "!", w: 236, x: p.x, y: p.y,
           accent: g.kind === "escalation" ? "var(--bad)" : "var(--spark)",
-          // A gate is the one node that is NOT a seat's work — it is the board
-          // waiting on a person, so it keeps its own colour and gets the dashed
-          // outline that means "stopped here".
           status: "",
           badge: g.kind === "art" ? "approval"
             : g.kind === "escalation" ? "escalated" : "qa gate",
@@ -789,13 +728,18 @@
         });
         this.nc.mount();
         this.renderDetail();
+        this.measure();
         return taskCount;
       }
-      if (sig !== this._sig) {
+      const geo = [...next.nodes.values()].map(n => `${n.id}@${n.x},${n.y}`).join("|");
+      if (sig !== this._sig || geo !== this._geo) {
         this.nodes = next.nodes;
         this.edges = next.edges;
         this._sig = sig;
+        this._geo = geo;
+        this.flow();
         this.nc.setNodes([...next.nodes.values()], next.edges);
+        this.measure();
         if (this.sel && next.nodes.has(this.sel)) this.nc.select(this.sel);
         else if (this.sel) {
           // Clear it on the CANVAS too. select() early-returns on an unchanged
@@ -1308,6 +1252,64 @@
     },
 
     fit() { if (this.nc) { try { this.nc.fit(); } catch (e) {} } },
+
+    /* MEASURED HEIGHTS. A card's height depends on its content (a brief line,
+     * a live step, a badge); packing against a constant is what stacked cards
+     * on top of each other. After a render the real heights are read back and,
+     * if any changed, the layout runs again against them. Bounded: a second
+     * pass that still moves is left alone rather than looped. */
+    measure() {
+      if (!this.host) return;
+      requestAnimationFrame(() => {
+        const H = this._heights || (this._heights = {});
+        let moved = false;
+        this.host.querySelectorAll(".nc-node[data-node]").forEach(el => {
+          const id = el.dataset.node, h = el.offsetHeight;
+          if (h && Math.abs((H[id] || 0) - h) > 6) { H[id] = h; moved = true; }
+        });
+        if (moved && (this._measures = (this._measures || 0) + 1) < 4) {
+          this._geo = "";
+          try { this.layout(); } catch (e) {}
+        } else if (!moved) {
+          this._measures = 0;
+        }
+      });
+    },
+
+    /* Cards glide to a new layout instead of jumping, and the wires follow
+     * them for the length of the transition. */
+    flow() {
+      if (!this.host) return;
+      this.host.classList.add("nc-flow");
+      clearTimeout(this._flowT);
+      const until = performance.now() + 520;
+      const tick = () => {
+        try { this.nc && this.nc._renderEdges(); } catch (e) {}
+        if (performance.now() < until) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      this._flowT = setTimeout(() => this.host && this.host.classList.remove("nc-flow"), 560);
+    },
+
+    /* active | all. `all` pulls the finished history behind the live board. */
+    scope: (() => { try { return localStorage.getItem("bg-graph-scope") || "active"; }
+                    catch (e) { return "active"; } })(),
+    async setScope(scope) {
+      this.scope = scope === "all" ? "all" : "active";
+      try { localStorage.setItem("bg-graph-scope", this.scope); } catch (e) {}
+      if (this.scope === "all") await this.loadHistory();
+      this._sig = ""; this._geo = "";
+      this.rebuild();
+      setTimeout(() => this.fit(), 60);
+    },
+    async loadHistory() {
+      try {
+        const r = await fetch("/api/console/graph-history?limit=200",
+                              { headers: { accept: "application/json" } });
+        this._history = await r.json();
+        this._historyAt = Date.now();
+      } catch (e) { this._history = null; }
+    },
 
     activate() {
       if (!this.nc) return;
