@@ -437,38 +437,64 @@ function QuestionCard({ question, onAnswered, onDismiss }: {
   question: Question; onAnswered(): void; onDismiss(): void;
 }) {
   const [answer, setAnswer] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  /* ONE CLICK IS THE ANSWER. The agent named its choices; a button sends the
-     choice through the same route as typed text, so nothing downstream can
-     tell the difference. The textarea stays for "none of these". */
-  async function send(choice?: string) {
-    const text = (choice ?? answer).trim();
-    if (!text) return;
+  const options = question.options || [];
+  const details = question.option_details || [];
+  const multi = !!question.multi;
+  /* A MULTIPLE-CHOICE SELECTOR. Single choice: clicking an option IS the
+     answer. Multi: tick several, then send them as one answer joined with
+     "; ". "Other" stays for anything the options do not cover. Every path
+     goes through the same route, so nothing downstream can tell them apart. */
+  async function send(text: string) {
+    const body = text.trim();
+    if (!body) return;
     setBusy(true);
     const r = await mutate<{ delivery?: string }>("/api/console/answer",
-      { body: { seq: question.id, answer: text }, quiet: true });
+      { body: { seq: question.id, answer: body }, quiet: true });
     setBusy(false);
     if (!r.ok) { toast(r.error || "the answer was refused"); return; }
     toast(String(r.data?.delivery || "answer recorded"), "ok");
-    setAnswer(""); onAnswered();
+    setAnswer(""); setPicked([]); onAnswered();
+  }
+  function choose(o: string) {
+    if (!multi) { void send(o); return; }
+    setPicked((cur) => (cur.includes(o) ? cur.filter((x) => x !== o) : [...cur, o]));
   }
   return <Paper p="xs" withBorder className="bg4-sidecard bg4-question-card">
     <Group gap={6} wrap="nowrap"><Text size="xs" c="dimmed">{question.seat || "director"}</Text>
       <Text size="xs" c="dimmed" style={{ flex: 1 }}>{ago(question.asked_at)}</Text>
       <Button size="compact-xs" variant="subtle" color="gray" onClick={onDismiss}>dismiss</Button></Group>
-    <Text size="xs" mt={5}>{question.text}</Text>
-    {!!(question.options || []).length && (
-      <Group gap={6} mt="xs" wrap="wrap" className="bg4-question-options">
-        {(question.options || []).map((o) => (
-          <Button key={o} size="compact-xs" variant="light" loading={busy}
-                  onClick={() => void send(o)}>{o}</Button>
-        ))}
-      </Group>
+    <Text size="sm" fw={500} mt={5}>{question.text}</Text>
+    {multi && !!options.length && <Text size="xs" c="dimmed">pick any that apply</Text>}
+    {!!options.length && (
+      <div className="bg4-choices">
+        {options.map((o, i) => {
+          const on = picked.includes(o);
+          return (
+            <button key={o} type="button" disabled={busy}
+                    className={`bg4-choice${on ? " on" : ""}${i === 0 ? " assumed" : ""}`}
+                    onClick={() => choose(o)}>
+              <span className={`bg4-choice-mark${multi ? " box" : ""}`}>{on ? "✓" : ""}</span>
+              <span className="bg4-choice-body">
+                <span className="bg4-choice-label">{o}{i === 0 && <em> · assumed meanwhile</em>}</span>
+                {details[i] && <span className="bg4-choice-detail">{details[i]}</span>}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     )}
-    <Textarea value={answer} onChange={(e) => setAnswer(e.currentTarget.value)} autosize minRows={2} maxRows={5}
-              mt="xs" size="xs" placeholder={(question.options || []).length ? "or answer in your own words" : "Answer this question"}
-              onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send(); }} />
-    <Group justify="flex-end" mt="xs"><Button size="compact-xs" loading={busy} disabled={!answer.trim()} onClick={() => void send()}>Send answer</Button></Group>
+    <Textarea value={answer} onChange={(e) => setAnswer(e.currentTarget.value)} autosize minRows={1} maxRows={5}
+              mt="xs" size="xs" placeholder={options.length ? "Other — answer in your own words" : "Answer this question"}
+              onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send(answer); }} />
+    <Group justify="flex-end" mt="xs" gap={6}>
+      {multi && <Button size="compact-xs" loading={busy} disabled={!picked.length}
+                        onClick={() => void send([...picked, answer.trim()].filter(Boolean).join("; "))}>
+        Send {picked.length || ""} selected</Button>}
+      <Button size="compact-xs" variant={multi ? "default" : "filled"} loading={busy}
+              disabled={!answer.trim()} onClick={() => void send(answer)}>Send other</Button>
+    </Group>
   </Paper>;
 }
 
