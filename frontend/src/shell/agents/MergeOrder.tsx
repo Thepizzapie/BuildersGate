@@ -108,10 +108,16 @@ export function MergeOrder({ active, seat, pick, onPick }: {
 }) {
   const [data, setData] = useState<Order | null>(null);
   async function load() {
-    setData(await readJSON<Order>("/api/lifecycle/merge-order",
-      { order: [], waves: 0, critical_path: [], human_steps: [] }));
+    const got = await readJSON<Order>("/api/lifecycle/merge-order",
+      { order: [], waves: 0, critical_path: [], human_steps: [] });
+    setData((prev) => (got.__error && prev && !prev.__error ? prev : got));
   }
   useEffect(() => { if (active) void load(); }, [active]);
+  useEffect(() => {
+    if (!active || !data?.__error) return;
+    const t = window.setTimeout(() => { void load(); }, 3000);
+    return () => window.clearTimeout(t);
+  }, [data, active]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEvents(() => { void load(); }, { enabled: active, fallbackMs: 4000 });
 
   const rows = useMemo(() => (data?.order || []).filter((e) => !seat || e.seat === seat), [data, seat]);
