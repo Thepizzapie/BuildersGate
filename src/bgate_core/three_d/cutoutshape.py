@@ -22,8 +22,6 @@ biped_v1 figure. The numbers are read off the bone table in cutout.py.
 """
 from __future__ import annotations
 
-import math
-from typing import Optional
 
 #: Texture pixels per template pixel for a finished piece. 2x keeps detail;
 #: the sprite is scaled back by 1/TEX in the rig.

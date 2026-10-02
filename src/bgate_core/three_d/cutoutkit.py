@@ -636,7 +636,7 @@ def clear_grey(piece, tol: int = 10):
     highlights and left holes all over the torso (2026-09-22). Unpainted
     silhouette is FLAT grey; painted grey is not."""
     import numpy as np
-    from PIL import Image, ImageFilter
+    from PIL import Image
     arr = np.asarray(piece.convert("RGBA")).copy()
     d = np.abs(arr[:, :, :3].astype(int) - np.array(SILHOUETTE_GREY)).sum(axis=2)
     grey = d < tol
@@ -689,7 +689,6 @@ def slice_sheet(sheet_path: str | os.PathLike[str], layout: dict,
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     lw, lh = layout["size"]
-    unit = float(layout.get("scale") or SHEET_SCALE)
     with Image.open(sheet_path) as src:
         sheet = src.convert("RGBA")
     sx, sy = sheet.width / lw, sheet.height / lh
