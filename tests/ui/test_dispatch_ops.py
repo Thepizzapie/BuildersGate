@@ -276,6 +276,49 @@ class TestWatchdog:
         assert "runtime limit" in row["result"]
         dispatch._live.clear()
 
+    def test_a_finished_item_lands_while_its_claimant_idles(self, root,
+                                                             monkeypatch):
+        """dungeon-weaver #4: done, claimed #7, ended its turn. The commit
+        waited on an exit the claim held off and the dirty tree stopped the
+        board. Now: commit at done, nudge once, then close the pipe."""
+        from bgate_core.store import db
+        item = queue.add(root, "tech", "fallback_seed")
+        claim = queue.add(root, "tech", "prefetch_queue")
+        queue.set_status(root, item["id"], "done")
+        queue.set_status(root, claim["id"], "dispatched")
+        con = db.connect(root)
+        con.execute("UPDATE work_item SET actor = ? WHERE id = ?",
+                    (f"agent:item-{item['id']}", claim["id"]))
+        con.commit()
+        log = root / ".bgate" / "agents" / f"item-{item['id']}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text('{"type":"result","subtype":"success"}' + chr(10),
+                       encoding="utf-8")
+        entry = self._entry(log, stdin_closed=False, started_at=0,
+                            max_runtime_s=3600)
+        dispatch._live[item["id"]] = entry
+        clock = [0.0]
+
+        def tick(_):
+            clock[0] += 30
+            if entry.get("stdin_closed") or clock[0] > 1000:
+                dispatch._live.pop(item["id"], None)
+
+        commits = []
+        monkeypatch.setattr(dispatch.time, "sleep", tick)
+        monkeypatch.setattr(dispatch.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(dispatch, "_last_output_age_s", lambda *a: 0)
+        monkeypatch.setattr(dispatch, "_terminal_error", lambda *a: "")
+        monkeypatch.setattr(dispatch, "_auto_commit",
+                            lambda r, i, e: commits.append(i))
+        monkeypatch.setattr(dispatch._assets, "heartbeat", lambda *a: None)
+        dispatch._watch_completion(str(root), item["id"])
+
+        assert commits == [item["id"]]
+        assert b"You claimed #%d" % claim["id"] in entry["stdin"].getvalue()
+        assert entry["stdin_closed"] is True
+        assert clock[0] >= dispatch.CLAIM_IDLE_S
+
     def test_healthy_agent_is_left_alone(self, root, monkeypatch):
         item = queue.add(root, "art", "fine")
         queue.set_status(root, item["id"], "dispatched")
