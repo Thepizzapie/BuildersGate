@@ -499,7 +499,7 @@ class TestDevStartContention:
             held.close()
         assert got["ok"] and got["port"] != busy
         assert seen["stdin"] is subprocess.DEVNULL
-        assert not (tmp_path / ".bgate_web_dev.lock").exists()
+        assert not (tmp_path / "web_dev.lock").exists()
 
     def test_the_second_caller_waits_for_the_first(self, tmp_path):
         import threading

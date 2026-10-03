@@ -745,7 +745,10 @@ class _StartLock:
     and then finds the first one's server running."""
 
     def __init__(self, root: Path, wait: float):
-        self.path = Path(root) / ".bgate_web_dev.lock"
+        # Inside .bgate/, which every project already ignores: a lock file at
+        # the root showed up as an uncommitted change and stopped the board.
+        state = Path(root) / ".bgate"
+        self.path = (state if state.is_dir() else Path(root)) / "web_dev.lock"
         self.wait = wait
         self.held = False
 
