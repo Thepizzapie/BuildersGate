@@ -129,6 +129,7 @@ LABELS: dict[str, str] = {
     "dispatch.mode": "Director dispatch mode",
     "dispatch.allow_dirty": "Allow dispatch with uncommitted changes",
     "dispatch.auto_commit": "Commit completed agent work",
+    "proof.auto_capture": "Screenshot finished on-screen tickets",
     "dispatch.isolation": "Use a separate worktree per agent",
     "dispatch.max_concurrent": "Concurrent agent limit",
     "dispatch.max_per_seat": "Per-seat concurrent agent limit",
@@ -222,6 +223,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.mode": "Structured follows dependencies. Chaos isolates every task and lets the Director merge it.",
     "dispatch.allow_dirty": "Allow dispatch while the main worktree has uncommitted changes. Reverts may be less reliable.",
     "dispatch.auto_commit": "Commit only the files changed by each completed agent run.",
+    "proof.auto_capture": "When a gameplay, level, UI or art ticket finishes, the dashboard photographs the running game and attaches it to the ticket's evidence.",
     "dispatch.isolation": "Run each agent in a separate git worktree. Chaos mode always does this.",
     "dispatch.max_concurrent": "Maximum number of agent processes that may run at once.",
     "dispatch.max_per_seat": "Per-seat cap, e.g. {\"art\": 2}. Overrides nothing "
@@ -453,6 +455,13 @@ SETTINGS: tuple[Setting, ...] = (
         help="Let an agent be dispatched on top of uncommitted changes. Off, "
              "because the resulting diff cannot tell the agent's edits from "
              "yours — which is what makes a revert safe."),
+    Setting(
+        key="proof.auto_capture", group="Dispatch", kind=BOOL, default=True,
+        store=("registry", "proof.auto_capture"), scope=MACHINE,
+        env="BGATE_PROOF_CAPTURE", human_only=True,
+        help="Photograph the running game when an on-screen ticket finishes "
+             "and file the frame as its evidence: the harness's picture, not "
+             "the agent's word."),
     Setting(
         key="dispatch.auto_commit", group="Dispatch", kind=BOOL, default=True,
         store=("registry", "dispatch.auto_commit"), scope=MACHINE,

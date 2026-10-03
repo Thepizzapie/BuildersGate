@@ -27,10 +27,15 @@ def lifecycle_graph(hours: float = 48, limit: int = 300) -> dict:
 
 
 @router.get("/api/lifecycle/merge-order")
-def merge_order(seat: str = "") -> dict:
-    """What has to land first: waves, the critical path, the human steps."""
+def merge_order(seat: str = "", hours: float = -1) -> dict:
+    """What has to land first: waves, the critical path, the human steps.
+    With ``hours`` >= 0 it also carries what already landed in that window
+    (0 = all of it), oldest first, so the view reads as one history."""
     from bgate_core.board import mergeorder as _mergeorder
-    return api.ok(_mergeorder.order(root(), seat=seat))
+    got = _mergeorder.order(root(), seat=seat)
+    if hours >= 0:
+        got["landed"] = _mergeorder.history(root(), hours=hours, seat=seat)["landed"]
+    return api.ok(got)
 
 
 @router.post("/api/queue/{item_id}/human-done")
@@ -128,3 +133,10 @@ def proof_run(item_id: int) -> dict:
     return api.ok({k: got.get(k) for k in (
         "ok", "no_tests", "scripts_run", "scripts_failed", "assertions_passed",
         "assertions_failed", "seconds", "error", "why", "log")})
+
+
+@router.post("/api/lifecycle/proof/{item_id}/shot")
+def proof_shot(item_id: int) -> dict:
+    """Photograph the running game now and file it against this ticket."""
+    from bgate_core.board import proof as _proof
+    return api.ok(_proof.capture(root(), item_id, by="human"))

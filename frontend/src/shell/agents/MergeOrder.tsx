@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SEAT_COLOR } from "../nav";
 import { readJSON } from "../../bridge";
 import { useEvents } from "../../hooks";
@@ -15,13 +15,35 @@ import { useEvents } from "../../hooks";
  * Human steps are amber diamonds; running work pulses.
  */
 
+type Landed = { id: number; title: string; seat: string; landed_at: string;
+  commits: { sha: string; at: string; files: number }[]; after: number[]; runs: number;
+  human: boolean; qa: boolean };
 type Entry = {
+  landed?: Landed;
   rank: number; wave: number; goal: number; goal_title: string; solo: boolean;
   id: number; title: string; seat: string; state: string;
   human: boolean; critical: boolean; path: number; unblocks: number;
   after: number[]; before: number[]; runs: number; why: string;
 };
-type Order = { order: Entry[]; waves: number; critical_path: number[]; human_steps: number[]; __error?: string };
+type Order = { order: Entry[]; waves: number; critical_path: number[]; human_steps: number[];
+  landed?: Landed[]; __error?: string };
+
+/* A landed ticket as a row of the same log, so history and the open order
+   read as one line of commits: what merged, then what merges next. */
+function fromLanded(l: Landed): Entry {
+  return { landed: l, rank: 0, wave: -1, goal: 0, goal_title: "", solo: false,
+    id: l.id, title: l.title, seat: l.seat, state: "landed", human: l.human,
+    critical: false, path: 0, unblocks: 0, after: l.after, before: [], runs: l.runs, why: "" };
+}
+
+function when(at: string): string {
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) return at;
+  const d = new Date(t);
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 
 const ROW = 40, HEAD = 34, LANE = 16, PAD = 12;
 const AMBER = "#ffbb45";
@@ -37,7 +59,7 @@ function layout(rows: Entry[]) {
   const ys: number[] = [];
   const heads: { key: string; y: number; label: string; sub: string }[] = [];
   let y = 0, group = "";
-  const keyOf = (e: Entry) => (e.solo ? "solo" : `g${e.goal}`);
+  const keyOf = (e: Entry) => (e.landed ? "landed" : e.solo ? "solo" : `g${e.goal}`);
   rows.forEach((e) => {
     const k = keyOf(e);
     if (k !== group) {
@@ -45,6 +67,17 @@ function layout(rows: Entry[]) {
       const members = rows.filter((r) => keyOf(r) === k);
       const now = members.filter((r) => r.wave === 0 && r.state !== "running").length;
       const live = members.filter((r) => r.state === "running").length;
+      if (e.landed) {
+        heads.push({ key: k, y, label: "Landed", sub: `${members.length} merged, oldest first` });
+        y += HEAD;
+        ys.push(y + ROW / 2);
+        y += ROW;
+        return;
+      }
+      if (rows.some((r) => r.landed) && !heads.some((h) => h.key === "now")) {
+        heads.push({ key: "now", y, label: "Next to land", sub: "" });
+        y += HEAD / 2;
+      }
       heads.push({ key: k, y,
         label: e.solo ? "Independent" : `Toward #${e.goal} ${e.goal_title}`,
         sub: `${members.length} step${members.length === 1 ? "" : "s"}`
@@ -103,16 +136,21 @@ function layout(rows: Entry[]) {
   return { ys, heads, lane, lanes, x, edges, height: y };
 }
 
-export function MergeOrder({ active, seat, pick, onPick }: {
-  active: boolean; seat: string; pick: number | null; onPick: (id: number) => void;
+export function MergeOrder({ active, seat, pick, onPick, hours }: {
+  active: boolean; seat: string; pick: number | null; onPick: (id: number) => void; hours: number;
 }) {
   const [data, setData] = useState<Order | null>(null);
+  const [chores, setChores] = useState(false);
+  const nowRef = useRef<HTMLDivElement | null>(null);
+  const scrolled = useRef(false);
+  /* Live is open work only; the other windows carry what landed in them. */
+  const span = hours === 6 ? -1 : hours;
   async function load() {
-    const got = await readJSON<Order>("/api/lifecycle/merge-order",
+    const got = await readJSON<Order>(`/api/lifecycle/merge-order?hours=${span}`,
       { order: [], waves: 0, critical_path: [], human_steps: [] });
     setData((prev) => (got.__error && prev && !prev.__error ? prev : got));
   }
-  useEffect(() => { if (active) void load(); }, [active]);
+  useEffect(() => { if (active) void load(); }, [active, span]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!active || !data?.__error) return;
     const t = window.setTimeout(() => { void load(); }, 3000);
@@ -120,10 +158,23 @@ export function MergeOrder({ active, seat, pick, onPick }: {
   }, [data, active]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEvents(() => { void load(); }, { enabled: active, fallbackMs: 4000 });
 
-  const rows = useMemo(() => (data?.order || []).filter((e) => !seat || e.seat === seat), [data, seat]);
+  /* QA gates and unblock tickets are bookkeeping around a ticket, not work
+     that merged; folded unless asked for. */
+  const isChore = (l: Landed) => l.qa || l.title.startsWith("UNBLOCK");
+  const landedAll = useMemo(() => (data?.landed || []).filter((l) => !seat || l.seat === seat), [data, seat]);
+  const choreCount = landedAll.filter(isChore).length;
+  const rows = useMemo(() => [
+    ...landedAll.filter((l) => chores || !isChore(l)).map(fromLanded),
+    ...(data?.order || []).filter((e) => !seat || e.seat === seat),
+  ], [data, seat, chores, landedAll]);   // eslint-disable-line react-hooks/exhaustive-deps
   const g = useMemo(() => layout(rows), [rows]);
+  useEffect(() => {
+    if (scrolled.current || !nowRef.current) return;
+    scrolled.current = true;
+    nowRef.current.scrollIntoView({ block: "center" });
+  });
   if (data?.__error) return <div className="bgl-err">could not read the order — {data.__error}</div>;
-  if (!rows.length) return <div className="bgl-empty">no open work — nothing to order</div>;
+  if (!rows.length) return <div className="bgl-empty">nothing landed in this window and no open work</div>;
   const gutter = PAD * 2 + g.lanes * LANE;
 
   return (
@@ -132,6 +183,10 @@ export function MergeOrder({ active, seat, pick, onPick }: {
         <span><b>{data!.waves}</b> waves</span>
         <span><b>{data!.critical_path.length}</b> on the critical path</span>
         <span className={data!.human_steps.length ? "you" : ""}><b>{data!.human_steps.length}</b> waiting on you</span>
+        {span !== -1 && <span><b>{landedAll.length - choreCount}</b> landed</span>}
+        {span !== -1 && !!choreCount &&
+          <button className="bgo-chores" onClick={() => setChores(!chores)}>
+            {chores ? "hide" : "show"} {choreCount} QA / unblock steps</button>}
       </div>
       <div className="bgo-canvas" style={{ height: g.height }}>
         <svg className="bgo-svg" width={gutter} height={g.height}>
@@ -145,7 +200,9 @@ export function MergeOrder({ active, seat, pick, onPick }: {
               <g key={e.id} className="bgo-dot" style={{ transform: `translate(${cx}px, ${cy}px)` }}
                  onClick={() => onPick(e.id)}>
                 {e.state === "running" && <circle r={10} className="bgl-pulse" stroke={c} />}
-                {e.human
+                {e.landed
+                  ? <circle r={5} fill={c} stroke={c} strokeWidth={1.5} opacity={0.75} />
+                  : e.human
                   ? <rect x={-6} y={-6} width={12} height={12} transform="rotate(45)" fill={AMBER} stroke={AMBER} strokeWidth={2} />
                   : <circle r={6} stroke={c} strokeWidth={2.2}
                             strokeDasharray={e.state === "waiting" ? "3 2" : undefined}
@@ -156,23 +213,31 @@ export function MergeOrder({ active, seat, pick, onPick }: {
           })}
         </svg>
         {g.heads.map((h) => (
-          <div key={h.key} className="bgo-wh" style={{ top: h.y, left: gutter }}>
+          <div key={h.key} ref={h.key === "now" ? nowRef : undefined}
+               className={`bgo-wh${h.key === "now" ? " now" : ""}`} style={{ top: h.y, left: gutter }}>
             <span className="bgo-goal">{h.label}</span><span className="bgo-gsub">{h.sub}</span>
           </div>
         ))}
         {rows.map((e, i) => (
           <div key={e.id}
-               className={`bgo-row${e.human ? " human" : ""}${e.critical ? " crit" : ""}${pick === e.id ? " picked" : ""}`}
+               className={`bgo-row${e.landed ? " landed" : ""}${e.human ? " human" : ""}${e.critical ? " crit" : ""}${pick === e.id ? " picked" : ""}`}
                style={{ top: g.ys[i] - ROW / 2, left: gutter }}
                onClick={() => onPick(e.id)}>
-            <span className="bgo-rank">{e.rank}</span>
+            <span className="bgo-rank">{e.landed ? "✓" : e.rank}</span>
             <div className="bgo-main">
               <div className="bgo-t"><span className="bgo-id">#{e.id}</span> {e.title}</div>
-              <div className="bgo-why">
+              {e.landed ? <div className="bgo-why">
+                <span style={{ color: color(e) }}>{e.human ? "you" : e.seat}</span>
+                {" · landed "}{when(e.landed.landed_at)}
+                {e.landed.commits.length
+                  ? " · " + e.landed.commits.map((c) => `${c.sha} (${c.files} file${c.files === 1 ? "" : "s"})`).join(", ")
+                  : " · no commit"}
+                {e.runs > 1 ? ` · ${e.runs} runs` : ""}
+              </div> : <div className="bgo-why">
                 <span style={{ color: color(e) }}>{e.human ? "you" : e.seat}</span>
                 {" · "}{e.wave === 0 && !["running", "needs you", "parked"].includes(e.state) ? "can land now" : e.state}
                 {e.runs > 1 ? ` · ${e.runs} runs` : ""}{e.why ? ` · ${e.why}` : ""}
-              </div>
+              </div>}
             </div>
           </div>
         ))}

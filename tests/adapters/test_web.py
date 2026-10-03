@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 import pytest
 
@@ -339,14 +340,14 @@ class TestDevServerBinding:
     def test_the_url_it_returns_is_the_address_it_binds(self):
         import inspect
 
-        source = inspect.getsource(web.dev_start)
+        source = inspect.getsource(web._dev_start)
         assert '"--host", _HOST' in source
         assert 'f"http://{_HOST}:{port}/"' in source
 
     def test_a_timed_out_start_kills_the_tree_not_the_shim(self):
         import inspect
 
-        source = inspect.getsource(web.dev_start)
+        source = inspect.getsource(web._dev_start)
         assert "_kill_tree(proc.pid)" in source
         assert "proc.terminate()" not in source
 
@@ -459,3 +460,74 @@ class TestChildProcesses:
             web._run([sys.executable, "-c", "import time; time.sleep(30)"],
                      str(tmp_path), 1)
         assert killed
+
+
+class TestDevStartContention:
+    """Two agents photographing at once: one start, one port, no lost shot."""
+
+    def _project(self, tmp_path):
+        (tmp_path / "package.json").write_text(
+            '{"name":"x","scripts":{"dev":"vite"}}', encoding="utf-8")
+        (tmp_path / "node_modules").mkdir()
+
+    def test_a_held_port_is_skipped_and_stdin_detached(self, tmp_path, monkeypatch):
+        import socket
+        import subprocess
+        self._project(tmp_path)
+        held = socket.socket()
+        held.bind(("127.0.0.1", 0))
+        busy = held.getsockname()[1]
+        seen = {}
+
+        class Proc:
+            pid = 4321
+            returncode = None
+
+            def poll(self):
+                return None
+
+        def spawn(cmd, **kw):
+            seen["cmd"], seen["stdin"] = cmd, kw.get("stdin")
+            return Proc()
+
+        monkeypatch.setattr(web, "_npm", lambda: "npm")
+        monkeypatch.setattr(web.subprocess, "Popen", spawn)
+        monkeypatch.setattr(web, "_answers", lambda url: True)
+        try:
+            got = web.dev_start(str(tmp_path), port=busy)
+        finally:
+            held.close()
+        assert got["ok"] and got["port"] != busy
+        assert seen["stdin"] is subprocess.DEVNULL
+        assert not (tmp_path / ".bgate_web_dev.lock").exists()
+
+    def test_the_second_caller_waits_for_the_first(self, tmp_path):
+        import threading
+        order = []
+        lock = web._StartLock(tmp_path, wait=5)
+
+        def second():
+            with web._StartLock(tmp_path, wait=5):
+                order.append("second")
+
+        with lock:
+            t = threading.Thread(target=second)
+            t.start()
+            time.sleep(0.4)
+            order.append("first")
+        t.join(timeout=5)
+        assert order == ["first", "second"]
+
+
+def test_a_failed_build_states_its_first_errors():
+    got = web._failure_lines("> build\n> tsc --noEmit\n\nsrc/main.ts(122,3): error TS2304: "
+                             "Cannot find name 'mountFork'.\n")
+    assert got.startswith("src/main.ts(122,3): error TS2304")
+
+
+def test_an_installed_edge_is_a_browser(tmp_path, monkeypatch):
+    edge = tmp_path / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+    edge.parent.mkdir(parents=True)
+    edge.write_bytes(b"")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    assert web._system_channel() == "msedge"
