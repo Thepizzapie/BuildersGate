@@ -321,12 +321,24 @@ def brief_breadth(brief: str) -> dict:
                       for role, cfg in _seats_mod.DEFAULT_SEATS.items()}
     except Exception:
         lane_table = {}
+    # A lane is named by a PATH, matched as a path. MEASURED (dungeon-weaver,
+    # 2026-10-03): the check took each glob's first segment ("game") and
+    # looked for it as a substring, so "the game falls back" in a one-file
+    # fix "named paths in 8 lanes" and was refused as too broad. Now each
+    # glob's literal directory prefix ("game/scripts/", "design/") must
+    # appear as a path, and a prefix more than two lanes share proves nothing.
+    owners: dict[str, set[str]] = {}
     for seat_name, globs in (lane_table or {}).items():
         for g in globs or ():
-            prefix = str(g).split("*", 1)[0].split("/", 1)[0]
-            if prefix and prefix in text:
-                lanes_touched.add(seat_name)
-                break
+            literal = str(g).split("*", 1)[0]
+            prefix = literal[:literal.rfind("/") + 1]
+            if prefix:
+                owners.setdefault(prefix, set()).add(seat_name)
+    for prefix, seats_ in owners.items():
+        if len(seats_) > _BREADTH_MAX_LANES:
+            continue
+        if re.search(r"(?<![\w./-])" + re.escape(prefix), text):
+            lanes_touched |= seats_
     if len(lanes_touched) > _BREADTH_MAX_LANES:
         score += 1
         reasons.append(
