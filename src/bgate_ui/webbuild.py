@@ -32,7 +32,7 @@ def _game(root: str | os.PathLike[str]) -> Path | None:
 # Trees inside the game dir that a build does NOT depend on. Everything else
 # does, including directories nobody thought of when this was written.
 SKIP_DIRS = {".godot", ".bgate", ".bgate_out", ".git", ".import", "__pycache__",
-             "export", "build", ".asset_work", "node_modules"}
+             "export", "build", ".asset_work", "node_modules", "dist"}
 
 
 def _newest_source(game_dir: Path) -> tuple[float, str]:
@@ -55,8 +55,9 @@ def _newest_source(game_dir: Path) -> tuple[float, str]:
     """
     latest, newest = 0.0, ""
     for p in game_dir.rglob("*"):
-        if SKIP_DIRS & set(p.relative_to(game_dir).parts):
-            continue
+        parts = p.relative_to(game_dir).parts
+        if SKIP_DIRS & set(parts) or parts[-1].startswith(".bgate"):
+            continue             # the harness's own pid/log/lock files
         try:
             if not p.is_file():
                 continue
@@ -66,6 +67,64 @@ def _newest_source(game_dir: Path) -> tuple[float, str]:
         if m > latest:
             latest, newest = m, p.relative_to(game_dir).as_posix()
     return latest, newest
+
+
+def _web_game(root: str | os.PathLike[str]) -> Path | None:
+    """The vite + TypeScript game, when this project is a web one."""
+    try:
+        from bgate_core.runtime import enginetests as _et
+        return _et._web_dir(root)
+    except Exception:                                             # noqa: BLE001
+        return None
+
+
+def play_dir(root: str | os.PathLike[str]) -> Path:
+    """Where /play/ serves from: Godot's export/web, or for a web project the
+    vite build under .bgate_out/ (already gitignored, so building to play
+    never dirties the tree and stops the board)."""
+    if _game(root) is None and _web_game(root) is not None:
+        return Path(root) / ".bgate_out" / "play"
+    return Path(root) / "export" / "web"
+
+
+def _web_status(root, game: Path) -> dict:
+    page = play_dir(root) / "index.html"
+    if not page.exists():
+        return {"built": False, "stale": True, "engine": "web", "reason": "never built"}
+    src, newest = _newest_source(game)
+    built = page.stat().st_mtime
+    stale = built < src
+    return {"built": True, "stale": stale, "engine": "web",
+            "build_mtime": built, "source_mtime": src,
+            "newest_source": newest if stale else "",
+            "reason": f"{newest} is newer than the build" if stale else "",
+            "blocked": ""}
+
+
+def _web_rebuild(root, game: Path, timeout: int) -> dict:
+    """`npm run build` into export/web/, the directory /play/ serves.
+
+    THE PLAY TAB WAS GODOT-ONLY: a web project's playtest showed "no web
+    build - export it first" and Rebuild answered "no game project at this
+    root" (dungeon-weaver, 2026-10-03). The project's own build script runs
+    (tsc then vite), with vite pointed at export/web and a RELATIVE base, so
+    the page's assets resolve under /play/ instead of the dashboard root.
+    It builds into play_dir(), not export/web, which a web project's
+    .gitignore does not cover."""
+    from bgate_adapters import web as _web
+
+    if not _web.installed(game):
+        return {"ok": False, "engine": "web",
+                "error": "node_modules is not there: run `npm install` in the game first"}
+    out = play_dir(root).resolve()
+    got = _web._npm_run(str(game), "build", timeout,
+                        extra=["--", "--base=./", f"--outDir={out}", "--emptyOutDir"])
+    ok = bool(got.get("ok")) and (out / "index.html").exists()
+    return {"ok": ok, "engine": "web", "output": str(out),
+            "seconds": got.get("seconds"),
+            "error": "" if ok else str(got.get("error") or "the build wrote no index.html"),
+            "stdout": str(got.get("stdout") or "")[-4000:],
+            "stderr": str(got.get("stderr") or "")[-4000:]}
 
 
 def status(root: str | os.PathLike[str]) -> dict:
@@ -80,6 +139,9 @@ def status(root: str | os.PathLike[str]) -> dict:
     game = _game(root)
     pck = Path(root) / "export" / "web" / "index.pck"
     if game is None:
+        web = _web_game(root)
+        if web is not None:
+            return _web_status(root, web)
         return {"built": False, "stale": True, "reason": "no game project"}
     if not pck.exists():
         return {"built": False, "stale": True, "reason": "never exported"}
@@ -150,7 +212,8 @@ def rebuild(root: str | os.PathLike[str], timeout: int = 240) -> dict:
     switched off inside a week.
     """
     game = _game(root)
-    if game is None:
+    web = _web_game(root) if game is None else None
+    if game is None and web is None:
         return {"ok": False, "error": "no game project at this root"}
     try:
         from bgate_core.design import greenlight as _greenlight
@@ -163,6 +226,8 @@ def rebuild(root: str | os.PathLike[str], timeout: int = 240) -> dict:
         # already counts as a failure rather than a skip. Either way this
         # build does not happen, and the reason is the whole message.
         return {"ok": False, "error": str(exc), "refused": "presentation"}
+    if web is not None:
+        return _web_rebuild(root, web, timeout)
     if not (game / "export_presets.cfg").exists():
         return {"ok": False, "error": "no export_presets.cfg — copy the Web "
                                       "preset the scaffold ships "
