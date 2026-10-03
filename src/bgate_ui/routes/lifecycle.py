@@ -82,3 +82,49 @@ def checkpoint(item_id: int) -> dict:
         return api.ok(_lifecycle.checkpoint_detail(root(), item_id))
     except LookupError as exc:
         raise api.not_found(str(exc))
+
+
+@router.get("/api/lifecycle/proof/{item_id}")
+def proof(item_id: int) -> dict:
+    """What the harness recorded for a ticket: commits, test runs, check-tool
+    verdicts, images. The agent's own note comes back labelled as a claim."""
+    from bgate_core.board import proof as _proof
+    try:
+        return api.ok(_proof.proof(root(), item_id))
+    except LookupError as exc:
+        raise api.not_found(str(exc))
+
+
+@router.get("/api/lifecycle/proof/{item_id}/diff")
+def proof_diff(item_id: int, sha: str = "") -> dict:
+    from bgate_core.board import proof as _proof
+    try:
+        return api.ok({"sha": sha, "diff": _proof.diff(root(), sha)})
+    except ValueError as exc:
+        raise api.bad_request(str(exc))
+    except LookupError as exc:
+        raise api.not_found(str(exc))
+
+
+@router.get("/api/lifecycle/proof-image")
+def proof_image(path: str = ""):
+    from fastapi.responses import FileResponse
+    from bgate_core.board import proof as _proof
+    try:
+        return FileResponse(_proof.image_path(root(), path))
+    except ValueError as exc:
+        raise api.bad_request(str(exc))
+    except LookupError as exc:
+        raise api.not_found(str(exc))
+
+
+@router.post("/api/lifecycle/proof/{item_id}/run")
+def proof_run(item_id: int) -> dict:
+    """Run the project's test suite NOW, from the dashboard, and record it
+    against this ticket - the one result no agent wrote."""
+    from bgate_core.board import proof as _proof
+    from bgate_core.runtime import enginetests as _et
+    got = _et.run(root(), actor=_proof.human_actor(item_id), mode="summary")
+    return api.ok({k: got.get(k) for k in (
+        "ok", "no_tests", "scripts_run", "scripts_failed", "assertions_passed",
+        "assertions_failed", "seconds", "error", "why", "log")})
