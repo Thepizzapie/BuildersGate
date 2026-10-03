@@ -531,3 +531,19 @@ def test_an_installed_edge_is_a_browser(tmp_path, monkeypatch):
     edge.write_bytes(b"")
     monkeypatch.setenv("ProgramFiles", str(tmp_path))
     assert web._system_channel() == "msedge"
+
+
+def test_a_web_project_plays_from_its_own_vite_build(tmp_path, monkeypatch):
+    from bgate_ui import webbuild
+    game = tmp_path
+    (game / "src").mkdir()
+    (game / "src" / "main.ts").write_text("x", encoding="utf-8")
+    (game / ".bgate_web_dev.log").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(webbuild, "_game", lambda root: None)
+    monkeypatch.setattr(webbuild, "_web_game", lambda root: game)
+    assert webbuild.play_dir(tmp_path) == tmp_path / ".bgate_out" / "play"
+    assert webbuild.status(tmp_path)["reason"] == "never built"
+    page = tmp_path / ".bgate_out" / "play" / "index.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html>", encoding="utf-8")
+    assert webbuild.status(tmp_path)["stale"] is False

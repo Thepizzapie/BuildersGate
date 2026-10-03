@@ -2173,10 +2173,11 @@ def play_rebuild() -> dict:
 def play_files(file_path: str = "") -> FileResponse:
     """Serve the WASM build inside the dashboard origin (COI comes from the
     middleware). /play/ -> index.html."""
+    from bgate_ui import webbuild
     root = _root().resolve()
-    web = (root / "export" / "web").resolve()
+    web = webbuild.play_dir(root).resolve()
     if not web.is_dir():
-        raise _api.not_found("no web build — export it first (tech seat)")
+        raise _api.not_found("no build to play yet — press Rebuild")
     target = (web / (file_path or "index.html")).resolve()
     try:
         target.relative_to(web)
