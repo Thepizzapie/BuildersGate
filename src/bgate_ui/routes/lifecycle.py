@@ -34,7 +34,8 @@ def merge_order(seat: str = "", hours: float = -1) -> dict:
     from bgate_core.board import mergeorder as _mergeorder
     got = _mergeorder.order(root(), seat=seat)
     if hours >= 0:
-        got["landed"] = _mergeorder.history(root(), hours=hours, seat=seat)["landed"]
+        hist = _mergeorder.history(root(), hours=hours, seat=seat)
+        got["landed"], got["running"] = hist["landed"], hist["running"]
     return api.ok(got)
 
 

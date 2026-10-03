@@ -4,7 +4,7 @@ import { Ti } from "../Ti";
 import { SEAT_COLOR } from "../nav";
 import { askText, mutate, readJSON, toast } from "../../bridge";
 import { useEvents } from "../../hooks";
-import { MergeOrder } from "./MergeOrder";
+import { GitGraph } from "./GitGraph";
 import { Pipeline } from "./Pipeline";
 import { Proof } from "./Proof";
 import "./lifecycle.css";
@@ -119,7 +119,8 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
         </div>
         <div className="bgl-windows">
           {["pipeline", "order"].map((m) => (
-            <button key={m} className={mode === m ? "on" : ""} onClick={() => pickMode(m)}>{m}</button>
+            <button key={m} className={mode === m ? "on" : ""} onClick={() => pickMode(m)}>
+              {m === "order" ? "merges" : m}</button>
           ))}
         </div>
         <select className="bgl-seat" value={seatFilter} onChange={(e) => setSeatFilter(e.target.value)}>
@@ -144,7 +145,7 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
       {graph?.__error && <div className="bgl-err">could not read the board — {graph.__error}</div>}
       {mode === "pipeline"
         ? <MapBody nodes={view.ordered} pick={pick} onPick={setPick} />
-        : <MergeOrder active={active} seat={seatFilter} pick={pick} onPick={setPick} hours={hours} />}
+        : <GitGraph active={active} seat={seatFilter} pick={pick} onPick={setPick} hours={hours} />}
       {selected && <Detail n={selected} byId={byId} onClose={() => setPick(null)} onChanged={load} />}
     </div>
   );

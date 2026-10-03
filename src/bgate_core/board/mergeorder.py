@@ -303,15 +303,36 @@ def history(root: str | os.PathLike[str], hours: float = 0, seat: str = "",
     picked.sort()
     picked = picked[-int(limit):]
     keep = {i for _, i in picked}
+    started: dict[int, float] = {}
+    try:
+        for r in conn.execute("SELECT item_id, MIN(started_at) AS s FROM agent_runs "
+                              "GROUP BY item_id"):
+            if r["s"] is not None:
+                started[int(r["item_id"])] = float(r["s"])
+    except Exception:                                             # noqa: BLE001
+        pass
     out_rows = []
     for t, i in picked:
         it = done[i]
+        landed_ts = t.timestamp() if t.year > 1 else 0.0
         out_rows.append({
             "id": i, "title": str(it["title"])[:140], "seat": it["seat"],
-            "landed_at": landed_at(i), "commits": commits.get(i, []),
+            "landed_at": landed_at(i), "landed_ts": landed_ts,
+            # where the branch leaves main: the first run's start, never
+            # after the landing (a hand-closed item can lack a run)
+            "started_ts": min(started.get(i, landed_ts), landed_ts),
+            "commits": commits.get(i, []),
             "after": sorted(p for p in ups[i] if p in keep),
             "runs": int(it.get("attempts") or 0) + 1,
             "human": it.get("source") == HUMAN_SOURCE,
             "qa": str(it["title"]).startswith("QA gate"),
         })
-    return {"landed": out_rows, "count": len(out_rows)}
+    running = []
+    for r in rows(conn.execute(
+            "SELECT id, seat, title FROM work_item WHERE status = 'dispatched'")):
+        i = int(r["id"])
+        if seat and r["seat"] != seat:
+            continue
+        running.append({"id": i, "title": str(r["title"])[:140], "seat": r["seat"],
+                        "started_ts": started.get(i, 0.0)})
+    return {"landed": out_rows, "count": len(out_rows), "running": running}
