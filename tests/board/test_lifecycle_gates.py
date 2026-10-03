@@ -133,3 +133,12 @@ def test_lifecycle_marks_what_spawned_a_gate(root):
     gate = queue.add(root, "qa", "QA gate", source="qa-gate", source_ref=str(item["id"]))
     by = {n["id"]: n for n in lifecycle.graph(root)["nodes"]}
     assert by[gate["id"]]["spawned_by"] == item["id"]
+
+
+def test_lanes_are_named_by_paths_not_by_words():
+    """'the game falls back' named eight lanes and refused a one-file fix."""
+    assert queue.brief_breadth(
+        "the game silently loads the fallback; fix src/llm_adapters.ts")["score"] == 0
+    wide = queue.brief_breadth("touch game/scripts/a.gd, game/assets/x.png, "
+                               "game/levels/z.tscn and design/levels/l.md")
+    assert any("lanes" in r for r in wide["reasons"])
