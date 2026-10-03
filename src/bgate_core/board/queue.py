@@ -510,8 +510,13 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
     if len(links) == 1:
         raise ValueError("a one-link chain is just an item — use queue_add")
 
-    if mode in ("serial", "strict", "line"):
+    # "sequential" read as "auto" and filed four links that had to run in
+    # order as independent (dungeon-weaver playable_slice, 2026-10-03). An
+    # unknown mode is refused rather than quietly downgraded.
+    if mode in ("serial", "strict", "line", "sequential", "sequence", "ordered"):
         mode = "linear"
+    if mode not in ("auto", "linear"):
+        raise ValueError(f"unknown chain mode {mode!r}: use 'auto' or 'linear'")
     chain_id = (chain_id or "").strip()
     made: list[dict] = []
     previous: Optional[dict] = None
