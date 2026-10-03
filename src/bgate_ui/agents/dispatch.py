@@ -2054,6 +2054,35 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
         _auto_commit(root, item_id, entry)
 
 
+def _capture_proof(root: str, item_id: int) -> None:
+    """A finished on-screen ticket gets a frame the HARNESS took.
+
+    USER DIRECTIVE (2026-10-03): image evidence wherever it applies, and the
+    agent's own word is not evidence. In a thread: booting vite and Chromium
+    takes seconds and the reap must not wait on it."""
+    try:
+        from bgate_core.board import proof as _proof
+        item = _queue.get(root, item_id)
+        if (str(item.get("seat") or "") not in _proof.VISIBLE_SEATS
+                or item.get("status") not in ("done", "review")
+                or not _flag(root, "proof.auto_capture", "BGATE_PROOF_CAPTURE")):
+            return
+    except Exception:
+        return
+
+    def run() -> None:
+        try:
+            got = _proof.capture(root, item_id)
+            from bgate_core.board import activity as _act
+            _act.log(root, "proof", f"item {item_id}: "
+                     + (f"screenshot {got['path']}" if got.get("ok")
+                        else f"no screenshot ({got.get('error')})"), ref=str(item_id))
+        except Exception:
+            pass
+
+    threading.Thread(target=run, name=f"proof-{item_id}", daemon=True).start()
+
+
 def _land_finished(root: str, limit: int = 40) -> bool:
     """Commit what FINISHED items left in the tree, before refusing a dirty one.
 
@@ -2375,6 +2404,8 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
     except Exception:
         pass
     _finalize(root, item_id, entry)
+    if outcome == "done":
+        _capture_proof(root, item_id)
     pid = getattr(entry.get("proc"), "pid", None)
     row = {"item_id": item_id, "state": "exited", "code": code,
            "pid": pid, "log": entry.get("log", ""), "ended_at": time.time(),

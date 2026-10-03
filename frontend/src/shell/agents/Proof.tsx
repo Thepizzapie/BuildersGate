@@ -16,8 +16,9 @@ type TestRun = { at: string; by: string; item: number | null; ok: boolean; passe
   failures: number; scripts_run: number; scripts_failed: number; seconds: number | null;
   failing: string[]; error: string };
 type Check = { item: number; tool: string; ok: boolean | null; summary: string; images: string[] };
+type Shot = { path: string; at: string; by: string; errors: string[] };
 type ProofData = { item_id: number; related: number[]; commits: Commit[]; tests: TestRun[];
-  checks: Check[]; images: string[]; claim: string; __error?: string };
+  checks: Check[]; images: string[]; shots?: Shot[]; visible?: boolean; claim: string; __error?: string };
 
 const EMPTY: ProofData = { item_id: 0, related: [], commits: [], tests: [], checks: [], images: [], claim: "" };
 
@@ -41,6 +42,8 @@ export function Proof({ id, compact = false }: { id: number; compact?: boolean }
   const [data, setData] = useState<ProofData | null>(null);
   const [diff, setDiff] = useState<{ sha: string; text: string } | null>(null);
   const [running, setRunning] = useState(false);
+  const [shooting, setShooting] = useState(false);
+  const [shotErr, setShotErr] = useState("");
   const [big, setBig] = useState<string | null>(null);
 
   async function load() {
@@ -60,6 +63,15 @@ export function Proof({ id, compact = false }: { id: number; compact?: boolean }
     void load();
   }
 
+  async function shootNow() {
+    setShooting(true);
+    setShotErr("");
+    const r = await mutate<{ ok: boolean; error?: string }>(`/api/lifecycle/proof/${id}/shot`, { quiet: true });
+    setShooting(false);
+    if (r.data && !r.data.ok) setShotErr(r.data.error || "screenshot failed");
+    void load();
+  }
+
   if (!data) return <div className="bgp"><div className="bgp-dim">reading the record…</div></div>;
   if (data.__error) return <div className="bgp"><div className="bgp-dim">could not read the record: {data.__error}</div></div>;
   const ownTests = data.tests.filter((t) => t.item === id && !t.by.startsWith("human"));
@@ -71,7 +83,10 @@ export function Proof({ id, compact = false }: { id: number; compact?: boolean }
         <span style={{ flex: 1 }} />
         <button className="bgs-btn" disabled={running} onClick={runNow}>
           <Ti name="player-play" size={12} /> {running ? "running the suite…" : "Run the tests now"}</button>
+        <button className="bgs-btn" disabled={shooting} onClick={shootNow}>
+          <Ti name="camera" size={12} /> {shooting ? "photographing…" : "Take a screenshot now"}</button>
       </div>
+      {shotErr && <div className="bgp-fail">{shotErr}</div>}
 
       <div className="bgp-sec">
         <div className="bgp-label">Test runs</div>
@@ -119,14 +134,22 @@ export function Proof({ id, compact = false }: { id: number; compact?: boolean }
         ))}
       </div>
 
-      {!!data.images.length && (
+      {(!!data.images.length || data.visible) && (
         <div className="bgp-sec">
           <div className="bgp-label">Images</div>
+          {!data.images.length && <div className="bgp-miss">No screenshot of this on-screen ticket yet.</div>}
           <div className="bgp-shots">
             {data.images.map((p) => {
               const src = `/api/lifecycle/proof-image?path=${encodeURIComponent(p)}`;
-              return <button key={p} className="bgp-shot" onClick={() => setBig(src)} title={p}>
-                <img src={src} alt={p} loading="lazy" /></button>;
+              const shot = (data.shots || []).find((s) => s.path === p);
+              return <figure key={p} className="bgp-fig">
+                <button className="bgp-shot" onClick={() => setBig(src)} title={p}>
+                  <img src={src} alt={p} loading="lazy" /></button>
+                <figcaption className="bgp-dim">
+                  {shot ? `${shot.by === "human" ? "you" : "harness"} · ${when(shot.at)}` : "from a check tool"}
+                  {shot && shot.errors.length ? <span className="bgp-fail"> · {shot.errors.length} console error(s)</span> : null}
+                </figcaption>
+              </figure>;
             })}
           </div>
         </div>

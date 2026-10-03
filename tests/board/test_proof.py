@@ -69,3 +69,25 @@ def test_images_outside_the_project_are_refused(root, tmp_path_factory):
         proof.image_path(root, str(outside))
     with pytest.raises(ValueError):
         proof.diff(root, "HEAD; rm -rf /")
+
+
+@needs_git
+def test_history_lists_landed_work_oldest_first_with_commits(root):
+    from bgate_core.board import mergeorder
+    (root / "base.txt").write_text("x", encoding="utf-8")
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "base", "--no-gpg-sign")
+    a = queue.add(root, "tech", "rng")
+    b = queue.add(root, "tech", "campaign", depends_on=a["id"])
+    for item, name in ((a, "rng.ts"), (b, "campaign.ts")):
+        (root / name).write_text("x", encoding="utf-8")
+        gitwork.commit_paths(root, [name], f"bgate: item #{item['id']} [tech] - x")
+        queue.set_status(root, item["id"], "done")
+    open_one = queue.add(root, "tech", "still open")
+
+    got = mergeorder.history(root, hours=0)["landed"]
+    assert [r["id"] for r in got] == [a["id"], b["id"]]
+    assert got[1]["after"] == [a["id"]]
+    assert got[0]["commits"][0]["files"] == 1
+    assert open_one["id"] not in {r["id"] for r in got}

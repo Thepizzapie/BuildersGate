@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -245,7 +246,7 @@ def _npm_run(project_dir: str, script: str, timeout: int,
                 "error": f"`npm run {script}` did not finish within {timeout}s"}
     except OSError as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    return {
+    out = {
         "ok": got.returncode == 0,
         "exit_code": got.returncode,
         "stdout": got.stdout or "",
@@ -253,6 +254,21 @@ def _npm_run(project_dir: str, script: str, timeout: int,
         "seconds": round(time.monotonic() - started, 2),
         "script": script,
     }
+    if got.returncode != 0:
+        # THE REASON IS IN THE OUTPUT; SAY IT. A failed build came back with
+        # no `error`, the MCP layer filled in "the call failed without
+        # stating a reason", and the evidence panel showed that over a plain
+        # tsc error naming the file and line.
+        out["error"] = (_failure_lines(out["stdout"] + chr(10) + out["stderr"])
+                        or f"`npm run {script}` exited {got.returncode}")
+    return out
+
+
+def _failure_lines(text: str, limit: int = 3) -> str:
+    """The first few error lines of a failed npm script, or ''."""
+    hits = [ln.strip() for ln in text.splitlines()
+            if re.search(r"error|✗|×|FAIL|failed", ln, re.I) and ln.strip()]
+    return " | ".join(hits[:limit])[:600]
 
 
 def check_project(project_dir: str, timeout: int = 300) -> dict:
@@ -448,6 +464,21 @@ def build(project_dir: str, timeout: int = 600,
 # ---------------------------------------------------------------------------
 # The browser
 # ---------------------------------------------------------------------------
+def _system_channel() -> str:
+    """'msedge' or 'chrome' when that browser is installed, else ''."""
+    pf = [os.environ.get(k, "") for k in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")]
+    found = {
+        "msedge": [Path(b) / "Microsoft" / "Edge" / "Application" / "msedge.exe" for b in pf if b]
+        + [Path("/usr/bin/microsoft-edge"), Path("/Applications/Microsoft Edge.app")],
+        "chrome": [Path(b) / "Google" / "Chrome" / "Application" / "chrome.exe" for b in pf if b]
+        + [Path("/usr/bin/google-chrome"), Path("/Applications/Google Chrome.app")],
+    }
+    for channel, paths in found.items():
+        if any(p.exists() for p in paths):
+            return channel
+    return ""
+
+
 def browser_available() -> dict:
     """Is Playwright usable, BOTH the package and a browser build?
 
@@ -472,6 +503,13 @@ def browser_available() -> dict:
         return {"available": False, "package": True, "browser": False,
                 "reason": f"playwright could not start: {exc}"}
     if not exe or not Path(exe).exists():
+        # AN INSTALLED EDGE OR CHROME IS A BROWSER. Windows 11 ships Edge, and
+        # Playwright drives it through `channel` with nothing downloaded, so a
+        # missing bundled Chromium is not "no screenshots" on this machine.
+        channel = _system_channel()
+        if channel:
+            return {"available": True, "package": True, "browser": True,
+                    "channel": channel, "path": ""}
         return {"available": False, "package": True, "browser": False,
                 "path": exe or "",
                 "reason": "the playwright package is installed but its browser "
@@ -521,7 +559,9 @@ def screenshot(url: str, out_path: str, *, at: float = 1.0,
     started = time.monotonic()
     try:
         with sync_playwright() as play:
-            browser = play.chromium.launch()
+            channel = probe.get("channel") or None
+            browser = (play.chromium.launch(channel=channel) if channel
+                       else play.chromium.launch())
             try:
                 page = browser.new_page(
                     viewport={"width": width, "height": height})
@@ -683,7 +723,66 @@ def dev_status(project_dir: str | os.PathLike[str]) -> dict:
     return {"running": True, **got}
 
 
+def _port_taken(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((_HOST, port))
+        except OSError:
+            return True
+    return False
+
+
+class _StartLock:
+    """One dev_start at a time per project, across processes.
+
+    MEASURED (dungeon-weaver, 2026-10-03): two agents photographed the game at
+    once. Both saw no pidfile, both spawned vite on 5173 with --strictPort,
+    the second died on "port already in use", the shared log was truncated
+    by it, and the first caller timed out reporting the second's error. No
+    screenshot reached the evidence panel. The second caller now waits here
+    and then finds the first one's server running."""
+
+    def __init__(self, root: Path, wait: float):
+        self.path = Path(root) / ".bgate_web_dev.lock"
+        self.wait = wait
+        self.held = False
+
+    def __enter__(self):
+        deadline = time.monotonic() + self.wait
+        while True:
+            try:
+                fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                self.held = True
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - self.path.stat().st_mtime > self.wait + 30:
+                        self.path.unlink()       # a holder that died mid-start
+                        continue
+                except OSError:
+                    continue
+                if time.monotonic() >= deadline:
+                    return self
+                time.sleep(0.25)
+
+    def __exit__(self, *exc):
+        if self.held:
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+
 def dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
+    with _StartLock(Path(project_dir), wait=timeout + 15):
+        return _dev_start(project_dir, port, timeout)
+
+
+def _dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
     """Start the project's dev server and wait until it actually answers.
 
     RETURNS ONLY ONCE THE PORT ANSWERS, or fails saying why. Returning as soon
@@ -702,6 +801,12 @@ def dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
     already = dev_status(root)
     if already.get("running"):
         return {"ok": True, "already_running": True, **already}
+    # A PORT SOMETHING ELSE HOLDS IS SKIPPED, not fought over: another
+    # project's vite, or one an agent ran by hand, owns 5173 and --strictPort
+    # would only die on it.
+    wanted = port
+    while _port_taken(port) and port < wanted + 25:
+        port += 1
 
     url = f"http://{_HOST}:{port}/"
     log_path = _logfile(root)
@@ -719,8 +824,8 @@ def dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
         proc = subprocess.Popen(
             [_npm(), "run", "dev", "--",
              "--host", _HOST, "--port", str(port), "--strictPort"],
-            cwd=str(root), stdout=log, stderr=subprocess.STDOUT,
-            creationflags=_NO_WINDOW)
+            cwd=str(root), stdin=subprocess.DEVNULL, stdout=log,
+            stderr=subprocess.STDOUT, creationflags=_NO_WINDOW)
     except NodeNotFound as exc:
         log.close()
         return {"ok": False, "error": str(exc)}

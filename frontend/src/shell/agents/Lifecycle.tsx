@@ -144,7 +144,7 @@ export function Lifecycle({ active = true }: { active?: boolean }) {
       {graph?.__error && <div className="bgl-err">could not read the board — {graph.__error}</div>}
       {mode === "pipeline"
         ? <MapBody nodes={view.ordered} pick={pick} onPick={setPick} />
-        : <MergeOrder active={active} seat={seatFilter} pick={pick} onPick={setPick} />}
+        : <MergeOrder active={active} seat={seatFilter} pick={pick} onPick={setPick} hours={hours} />}
       {selected && <Detail n={selected} byId={byId} onClose={() => setPick(null)} onChanged={load} />}
     </div>
   );

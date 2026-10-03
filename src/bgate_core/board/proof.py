@@ -190,7 +190,12 @@ def proof(root, item_id: int) -> dict:
     item = _queue.get(root, int(item_id))
     ids = _related(root, int(item_id))
     found_checks, images = checks(root, ids)
-    return {"item_id": int(item_id), "related": ids,
+    shots = [s for s in harness_shots(root, int(item_id))
+             if (Path(root) / s.get("path", "")).is_file()]
+    images = [s["path"] for s in shots] + [i for i in images
+                                           if i not in {s["path"] for s in shots}]
+    return {"item_id": int(item_id), "related": ids, "shots": shots,
+            "visible": str(item.get("seat") or "") in VISIBLE_SEATS,
             "commits": commits(root, int(item_id)),
             "tests": tests(root, ids),
             "checks": found_checks, "images": images,
@@ -216,3 +221,52 @@ def image_path(root, rel: str) -> Path:
     if p.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif") or not p.is_file():
         raise LookupError("no such image")
     return p
+
+
+#: Seats whose work shows up on screen; their finished tickets get a frame.
+VISIBLE_SEATS = frozenset({"gameplay", "level", "ui", "art", "cinematic"})
+
+
+def _shots_file(root, item_id: int) -> Path:
+    return Path(root) / ".bgate" / "proof" / f"item-{int(item_id)}.json"
+
+
+def harness_shots(root, item_id: int) -> list[dict]:
+    try:
+        got = json.loads(_shots_file(root, item_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [s for s in got if isinstance(s, dict)] if isinstance(got, list) else []
+
+
+def capture(root, item_id: int, by: str = "harness") -> dict:
+    """Photograph the running game NOW and file the frame against a ticket.
+
+    Taken by the harness, not by the agent: it boots the project's own dev
+    server and screenshots the page, so the picture is of what is actually
+    on disk. Web projects only for now; anything else says so."""
+    import time
+
+    from bgate_adapters import web as _web
+    from bgate_core.runtime import enginetests as _et
+
+    base = _et._web_dir(root)
+    if base is None:
+        return {"ok": False, "error": "harness screenshots cover web projects only so far"}
+    started = _web.dev_start(str(base), timeout=60)
+    if not started.get("ok"):
+        return {"ok": False, "error": "dev server: " + str(started.get("error") or "")}
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    out = Path(root) / ".bgate" / "proof" / f"item-{int(item_id)}-{stamp}.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    got = _web.screenshot(str(started.get("url") or ""), str(out), at=2.5)
+    if not got.get("ok"):
+        return {"ok": False, "error": str(got.get("error") or "screenshot failed"),
+                "console": got.get("console")}
+    rel = Path(got.get("path") or out).resolve().relative_to(Path(root).resolve()).as_posix()
+    shots = harness_shots(root, item_id)
+    shots.append({"path": rel, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "by": by,
+                  "errors": [str(e)[:200] for e in (got.get("console_errors")
+                                                   or got.get("errors") or [])][:5]})
+    _shots_file(root, item_id).write_text(json.dumps(shots), encoding="utf-8")
+    return {"ok": True, "path": rel}

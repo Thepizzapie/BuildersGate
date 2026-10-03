@@ -11,5 +11,6 @@ dist/
 .bgate_out/
 .bgate_web_dev.json
 .bgate_web_dev.log
+.bgate_web_dev.lock
 .env
 # --- end builders gate ---

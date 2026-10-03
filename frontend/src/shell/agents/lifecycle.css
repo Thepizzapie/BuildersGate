@@ -208,3 +208,14 @@
 .bgp-claim { margin-top: 8px; font: 400 11px/1.5 var(--sans); color: var(--text-3) }
 .bgp-claim summary { cursor: pointer }
 .bgp-claim div { white-space: pre-wrap; font-family: var(--mono); margin-top: 4px }
+
+/* History in the order view: landed rows above, a divider, then what lands next. */
+.bgo-row.landed .bgo-t { color: var(--text-2) }
+.bgo-row.landed .bgo-rank { color: #4fd18b }
+.bgo-wh.now { border-top: 1px dashed var(--accent); align-items: center; height: 16px }
+.bgo-wh.now .bgo-goal { color: var(--accent); font: 600 10px var(--mono); letter-spacing: .06em; text-transform: uppercase }
+.bgo-chores { all: unset; cursor: pointer; color: var(--text-3); text-decoration: underline dotted }
+.bgo-chores:hover { color: var(--text) }
+
+.bgp-fig { margin: 0; display: flex; flex-direction: column; gap: 2px }
+.bgp-fig figcaption { font-size: 10px }

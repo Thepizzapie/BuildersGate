@@ -230,3 +230,88 @@ def brief_block(root: str | os.PathLike[str], seat: str) -> dict:
                  "one you could unblock, say so in your result; never land work "
                  "that a higher-ranked open item will rewrite."),
     }
+
+
+def history(root: str | os.PathLike[str], hours: float = 0, seat: str = "",
+            limit: int = 500) -> dict:
+    """What already LANDED, in the order it landed, with its commits.
+
+    The order view showed only open work, so a board that had finished sixty
+    tickets read as three running rows. This is the rest of the log: every
+    finished ticket in the window, oldest first so it flows into the open
+    order below it, each with the harness commits that carried it (one
+    ``git log`` for all of them) and its dependencies on other landed work.
+    ``hours`` 0 means all of it."""
+    import re
+    from . import gitwork as _git
+
+    conn = db.connect(root)
+    done = {int(r["id"]): dict(r) for r in rows(conn.execute(
+        "SELECT id, seat, title, status, source, depends_on, attempts, updated_at "
+        "FROM work_item WHERE status = 'done'"))}
+    commits: dict[int, list[dict]] = {}
+    ok, out, _ = _git._run(root, ["log", "--reverse", "--grep=^bgate: item",
+                                  "--shortstat", "--format=\x1e%H\x1f%cI\x1f%s"],
+                           timeout=30)
+    if ok:
+        for chunk in out.split("\x1e"):
+            lines = [x for x in chunk.strip("\n").splitlines() if x.strip()]
+            if not lines or "\x1f" not in lines[0]:
+                continue
+            sha, at, subject = lines[0].split("\x1f", 2)
+            head = subject.split("[", 1)[0]
+            files = re.search(r"(\d+) files? changed", lines[1]) if len(lines) > 1 else None
+            for n in re.findall(r"#(\d+)", head):
+                commits.setdefault(int(n), []).append(
+                    {"sha": sha[:8], "at": at, "files": int(files.group(1)) if files else 0})
+    ups: dict[int, set[int]] = {i: set() for i in done}
+    for i, it in done.items():
+        if it.get("depends_on") and int(it["depends_on"]) in done:
+            ups[i].add(int(it["depends_on"]))
+    try:
+        for r in conn.execute("SELECT item_id, depends_on FROM work_item_dep "
+                              "WHERE cut_at IS NULL OR cut_at = ''"):
+            a, b = int(r["item_id"]), int(r["depends_on"])
+            if a in done and b in done:
+                ups[a].add(b)
+    except Exception:                                             # noqa: BLE001
+        pass
+
+    def landed_at(i: int) -> str:
+        made = commits.get(i)
+        if made:
+            return made[0]["at"]
+        return str(done[i].get("updated_at") or "").replace(" ", "T") + "Z"
+
+    from datetime import datetime, timedelta, timezone
+
+    def parse(s: str):
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=float(hours))) if hours else None
+    picked = []
+    for i in done:
+        t = parse(landed_at(i))
+        if cutoff and t and t < cutoff:
+            continue
+        if seat and done[i]["seat"] != seat:
+            continue
+        picked.append((t or datetime.min.replace(tzinfo=timezone.utc), i))
+    picked.sort()
+    picked = picked[-int(limit):]
+    keep = {i for _, i in picked}
+    out_rows = []
+    for t, i in picked:
+        it = done[i]
+        out_rows.append({
+            "id": i, "title": str(it["title"])[:140], "seat": it["seat"],
+            "landed_at": landed_at(i), "commits": commits.get(i, []),
+            "after": sorted(p for p in ups[i] if p in keep),
+            "runs": int(it.get("attempts") or 0) + 1,
+            "human": it.get("source") == HUMAN_SOURCE,
+            "qa": str(it["title"]).startswith("QA gate"),
+        })
+    return {"landed": out_rows, "count": len(out_rows)}
