@@ -2073,19 +2073,24 @@ def _land_finished(root: str, limit: int = 40) -> bool:
         return False
     rows.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=True)
     from bgate_core.store import provenance as _prov
+    last = _last_writers(root)
     landed = False
     for row in rows[:limit]:
         dirty = set(_git.dirty(root).get("paths") or [])
         if not dirty:
             break
         item_id = int(row["id"])
-        # ONLY what the hook saw this run write or a tool registered against
-        # it - never the seat-lane fallback, which would sweep a human's own
-        # edit in that lane into the newest finished item.
+        owner = f"item-{item_id}"
+        # ONLY what the hook saw THIS item write LAST, or a tool registered
+        # against it that no hook-observed run touched since. Never the
+        # seat-lane fallback (a human's edit in the lane), and never a file
+        # some later run rewrote: MEASURED, #13 (live) edited tunables.ts and
+        # it landed as "item #8" because #8 had written it an hour before.
         try:
             declared = _prov._with_sidecars(
-                _prov._writelog_paths(root, f"item-{item_id}")
-                | _prov._artifact_paths(root, work_item_id=item_id))
+                {p for p, who in last.items() if who == owner}
+                | {p for p in _prov._artifact_paths(root, work_item_id=item_id)
+                   if p not in last})
         except Exception:
             continue
         mine = sorted(p for p in dirty
@@ -2099,6 +2104,21 @@ def _land_finished(root: str, limit: int = 40) -> bool:
             + " - landed by the harness after its run lost its watchdog")
         landed = landed or bool(made.get("ok"))
     return landed
+
+
+def _last_writers(root: str) -> dict[str, str]:
+    """path -> the owner whose hook-observed write to it is the newest."""
+    from bgate_core.store import provenance as _prov, writelog as _wl
+    newest: dict[str, tuple[str, str]] = {}
+    folder = _wl.path_for(root, "x").parent
+    for log in folder.glob("*.jsonl") if folder.is_dir() else []:
+        owner = log.stem
+        for rec in _wl.entries(root, owner):
+            rel = _prov._norm(rec.get("path"))
+            stamp = str(rec.get("t") or "")
+            if rel and stamp >= newest.get(rel, ("", ""))[0]:
+                newest[rel] = (stamp, owner)
+    return {p: who for p, (_, who) in newest.items()}
 
 
 def _auto_commit(root: str, item_id: int, entry: dict) -> None:

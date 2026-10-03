@@ -6,6 +6,7 @@ import { askText, mutate, readJSON, toast } from "../../bridge";
 import { useEvents } from "../../hooks";
 import { MergeOrder } from "./MergeOrder";
 import { Pipeline } from "./Pipeline";
+import { Proof } from "./Proof";
 import "./lifecycle.css";
 
 /* LIFECYCLE — the board as a source-control history.
@@ -216,6 +217,7 @@ function Detail({ n, byId, onClose, onChanged }: {
   n: Node; byId: Map<number, Node>; onClose: () => void; onChanged: () => void;
 }) {
   const [covers, setCovers] = useState<Covers["covers"] | null>(null);
+  const [openCover, setOpenCover] = useState<number | null>(null);
   useEffect(() => {
     setCovers(null);
     if (!n.checkpoint) return;
@@ -296,11 +298,18 @@ function Detail({ n, byId, onClose, onChanged }: {
       {covers && covers.length > 0 && (
         <div className="bgl-covers">
           <b>Approving signs off {covers.length} ticket{covers.length === 1 ? "" : "s"} since the last checkpoint</b>
-          {covers.map((c) => <div key={c.id}>#{c.id} <span style={{ color: color(c.seat) }}>{c.seat}</span> {c.title}
-            <i> {c.status}{c.runs > 1 ? `, ${c.runs} runs` : ""}</i></div>)}
+          {covers.map((c) => <div key={c.id}>
+            <button className="bgl-cover" onClick={() => setOpenCover(openCover === c.id ? null : c.id)}>
+              <Ti name={openCover === c.id ? "chevron-down" : "chevron-right"} size={11} />
+              #{c.id} <span style={{ color: color(c.seat) }}>{c.seat}</span> {c.title}
+              <i> {c.status}{c.runs > 1 ? `, ${c.runs} runs` : ""}</i></button>
+            {openCover === c.id && <Proof id={c.id} compact />}
+          </div>)}
         </div>
       )}
-      {n.result && <div className="bgl-dline result">{n.result}</div>}
+      {n.id > 0 && n.source !== "human-task"
+        ? <Proof id={n.id} />
+        : n.result && <div className="bgl-dline result">{n.result}</div>}
       {n.state === "question" && (
         <div className="bgl-dline warn">An agent asked you this. Answer it in Needs attention; the asker keeps working meanwhile.</div>
       )}

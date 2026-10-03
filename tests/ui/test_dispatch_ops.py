@@ -684,9 +684,8 @@ class TestLandFinished:
         queue.set_status(root, item["id"], "done")
         (root / "src" / "kit.ts").write_text("made by the run\n", encoding="utf-8")
         (root / "src" / "keep.ts").write_text("human edit\n", encoding="utf-8")
-        monkeypatch.setattr(provenance, "_writelog_paths",
-                            lambda r, owner: {"src/kit.ts"}
-                            if owner == f"item-{item['id']}" else set())
+        from bgate_core.store import writelog
+        writelog.record(root, "src/kit.ts", "tech", f"item-{item['id']}")
         monkeypatch.setattr(provenance, "_artifact_paths", lambda r, **k: set())
         dispatch._live.clear()
 
@@ -694,3 +693,20 @@ class TestLandFinished:
         left = gitwork.dirty(root)["paths"]
         assert "src/kit.ts" not in left
         assert "src/keep.ts" in left
+
+    def test_a_file_a_later_run_rewrote_is_not_landed(self, root, monkeypatch):
+        from bgate_core.store import provenance, writelog
+        (root / "src").mkdir()
+        (root / "src" / "tunables.ts").write_text("base" + chr(10), encoding="utf-8")
+        _git_repo(root)
+        old = queue.add(root, "gameplay", "turn_combat")
+        queue.set_status(root, old["id"], "done")
+        writelog.record(root, "src/tunables.ts", "gameplay", f"item-{old['id']}")
+        time.sleep(1.1)
+        writelog.record(root, "src/tunables.ts", "gameplay", "item-999")
+        (root / "src" / "tunables.ts").write_text("live run's edit" + chr(10), encoding="utf-8")
+        monkeypatch.setattr(provenance, "_artifact_paths", lambda r, **k: set())
+        dispatch._live.clear()
+
+        assert dispatch._land_finished(str(root)) is False
+        assert "src/tunables.ts" in gitwork.dirty(root)["paths"]
