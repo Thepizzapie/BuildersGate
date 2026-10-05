@@ -84,6 +84,46 @@ MAX_ROUNDS = 3
 
 ESCALATION_SOURCE = "qa-gate-escalation"
 
+# WHICH ITEMS GET A REVIEWER AT ALL. ``all`` is the shipped behaviour: one QA
+# round per completed maker item. MEASURED (sunder, 2026-10-04): 13 of the
+# first 27 agent runs on a fresh board were QA gates, one of them a full Godot
+# boot and screenshot to verify a 22-word text card - half the slots went to
+# reviewing, not building. ``chains`` reviews only the LAST link of a chain
+# (one verdict per feature instead of one per step) and leaves single items to
+# the per-frame rule and the human's sign-off; ``none`` files no automatic
+# round. The live value is ``qa.gate``; this tuple is the vocabulary.
+GATE_SCOPES = ("all", "chains", "none")
+DEFAULT_GATE_SCOPE = "all"
+
+
+def gate_scope(root: str | os.PathLike[str]) -> str:
+    """all | chains | none for THIS project, read per call."""
+    try:
+        got = str(_settings.get(root, "qa.gate") or "").strip().lower()
+    except Exception:
+        return DEFAULT_GATE_SCOPE
+    return got if got in GATE_SCOPES else DEFAULT_GATE_SCOPE
+
+
+def is_chain_end(root: str | os.PathLike[str], item: dict) -> bool:
+    """True when ``item`` is the last link of its chain.
+
+    A single item (no chain_id) is not a chain end: in ``chains`` scope it is
+    exactly the kind of small, self-verified item the scope exists to stop
+    spending a reviewer on.
+    """
+    chain = str(item.get("chain_id") or "").strip()
+    if not chain:
+        return False
+    try:
+        row = db.connect(root).execute(
+            "SELECT MAX(chain_pos) AS top FROM work_item WHERE chain_id = ?",
+            (chain,)).fetchone()
+    except Exception:
+        return True
+    top = int((row["top"] if row else 0) or 0)
+    return int(item.get("chain_pos") or 0) >= top
+
 # How far back the backstop sweep looks. The sweep exists because
 # ``events.emit`` is best-effort — a completion that hit a locked database writes
 # no event, so the cursor-driven path never sees it — and it is WINDOWED because

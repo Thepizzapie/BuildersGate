@@ -280,7 +280,8 @@ _BREADTH_MAX_CHARS = 900
 _BREADTH_MAX_LANES = 2
 
 
-def brief_breadth(brief: str) -> dict:
+def brief_breadth(brief: str, max_chars: Optional[int] = None,
+                  max_lanes: Optional[int] = None) -> dict:
     """Score how BROAD a brief reads, and say why. Pure — no DB, no seat
     lookup — so a caller (queue_add's warning, a test) can grade a brief
     before or after it is ever filed.
@@ -293,6 +294,12 @@ def brief_breadth(brief: str) -> dict:
     text = str(brief or "")
     reasons: list[str] = []
     score = 0
+    # The budgets are the module guideline unless the caller hands in the
+    # project's own (``board.brief_chars`` / ``board.brief_lanes`` via
+    # scope_grade): a studio that wants one agent to own a whole feature
+    # raises them per project instead of editing this file.
+    limit_chars = int(max_chars or _BREADTH_MAX_CHARS)
+    limit_lanes = int(max_lanes or _BREADTH_MAX_LANES)
 
     chain_hits = _BREADTH_CHAIN_RE.findall(text)
     if chain_hits:
@@ -308,10 +315,10 @@ def brief_breadth(brief: str) -> dict:
             f"lists {len(bullets)} separate bullet deliverables — file the "
             "extras as their own items")
 
-    if len(text) > _BREADTH_MAX_CHARS:
+    if len(text) > limit_chars:
         score += 1
         reasons.append(
-            f"brief is {len(text)} characters, over the {_BREADTH_MAX_CHARS} "
+            f"brief is {len(text)} characters, over the {limit_chars} "
             "guideline for a single deliverable")
 
     lanes_touched = set()
@@ -335,11 +342,11 @@ def brief_breadth(brief: str) -> dict:
             if prefix:
                 owners.setdefault(prefix, set()).add(seat_name)
     for prefix, seats_ in owners.items():
-        if len(seats_) > _BREADTH_MAX_LANES:
+        if len(seats_) > limit_lanes:
             continue
         if re.search(r"(?<![\w./-])" + re.escape(prefix), text):
             lanes_touched |= seats_
-    if len(lanes_touched) > _BREADTH_MAX_LANES:
+    if len(lanes_touched) > limit_lanes:
         score += 1
         reasons.append(
             f"names paths in {len(lanes_touched)} lanes "
@@ -365,8 +372,22 @@ def acceptance_breadth(acceptance: str) -> dict:
     return {"score": 0, "reasons": []}
 
 
+def brief_budget(root: str | os.PathLike[str] | None) -> tuple[int, int]:
+    """(max_chars, max_lanes) for this project, the module guideline without one."""
+    chars, lanes = _BREADTH_MAX_CHARS, _BREADTH_MAX_LANES
+    if root is None:
+        return chars, lanes
+    try:
+        from ..store import settings as _settings
+        chars = int(_settings.get(root, "board.brief_chars") or chars)
+        lanes = int(_settings.get(root, "board.brief_lanes") or lanes)
+    except Exception:
+        pass
+    return max(1, chars), max(1, lanes)
+
+
 def scope_grade(brief: str, acceptance: str = "", size: str = "medium",
-                title: str = "") -> dict:
+                title: str = "", root: str | os.PathLike[str] | None = None) -> dict:
     """Everything the filing paths know about whether this is ONE deliverable.
 
     brief_breadth + acceptance_breadth + the size: a 'large' item is graded
@@ -374,7 +395,8 @@ def scope_grade(brief: str, acceptance: str = "", size: str = "medium",
     is really several items. Score >= 2 is refused for every filer (the
     director included) unless the call carries an explicit allow_broad reason.
     """
-    got = brief_breadth(brief)
+    max_chars, max_lanes = brief_budget(root)
+    got = brief_breadth(brief, max_chars=max_chars, max_lanes=max_lanes)
     acc = acceptance_breadth(acceptance)
     score = got["score"] + acc["score"]
     reasons = list(got["reasons"]) + list(acc["reasons"])

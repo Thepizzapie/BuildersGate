@@ -228,6 +228,9 @@ def load_settings(root: str | os.PathLike[str]) -> dict:
         # mean "review nothing".
         "gated_seats": tuple(_get("qa.gated_seats", _qa_gate.GATED_SEATS)
                              or _qa_gate.GATED_SEATS),
+        # all | chains | none - how many of those completions get a reviewer.
+        "qa_gate": (str(_get("qa.gate", _qa_gate.DEFAULT_GATE_SCOPE) or "")
+                    .strip().lower() or _qa_gate.DEFAULT_GATE_SCOPE),
         "notify_kinds": list(_get("notify.kinds", ()) or ()),
         "in_app": bool(_get("notify.in_app", True)),
         "webhook": str(_get("notify.webhook", "") or ""),
@@ -392,6 +395,7 @@ def snapshot(root: str | os.PathLike[str], batch: Iterable[dict], *,
             "open": _qa_gate._open_gate_exists(root, ref),
             "last": _qa_gate._latest_gate_created(root, ref),
             "escalated": _qa_gate.escalated(root, ref),
+            "chain_end": _qa_gate.is_chain_end(root, item),
         }
         board["successors"][item_id] = [
             {"id": int(s["id"]), "seat": s.get("seat") or "",
@@ -870,13 +874,22 @@ def _branch_qa(ev: dict, item: dict, settings: dict, board: dict) -> list[dict]:
     if int(item.get("gate_skip") or 0):
         return []          # a human closed this by hand; see queue.complete
     item_id = int(item["id"])
+    qa = (board.get("qa") or {}).get(item_id) or {}
+    scope = str(settings.get("qa_gate") or _qa_gate.DEFAULT_GATE_SCOPE)
+    if scope == "none":
+        return [_action("skip", 2, ev, f"qa-gate:{item_id}",
+                        "qa.gate is 'none' - no automatic review on this board")]
+    if scope == "chains" and not qa.get("chain_end"):
+        # One reviewer per feature: the chain's last link carries the verdict
+        # for everything the earlier links built. A single item gets none.
+        return [_action("skip", 2, ev, f"qa-gate:{item_id}",
+                        "qa.gate is 'chains' and this is not a chain's last link")]
     if _qa_gate.needs_per_frame_verdict(item):
         # ITEM 9b — do not spend a QA round on a claim nobody can check yet.
         return [_action(
             "reopen_unverified", 2, ev, f"item:{item_id}:no-per-frame",
             f"#{item_id}'s result names no per-frame verdict - reopened "
             "instead of QA'd", item=item_id, updated_at=str(item.get("updated_at") or ""))]
-    qa = (board.get("qa") or {}).get(item_id) or {}
     cap = int(settings.get("max_rounds") or _qa_gate.MAX_ROUNDS)
     rounds = int(item.get("attempts") or 0) + 1
     if rounds > cap:
