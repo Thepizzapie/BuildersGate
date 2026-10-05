@@ -365,6 +365,9 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
     seats = gated_seats(root)
     if not seats:
         return                      # every seat opted out; nothing to review
+    scope = gate_scope(root)
+    if scope == "none":
+        return                      # qa.gate is 'none': no automatic rounds
     marks = ", ".join("?" * len(seats))
     # gate_skip: an item a HUMAN closed by hand. The gate reviews state at
     # close, so reviewing one of those dispatches a reviewer against a result
@@ -425,6 +428,8 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
                 activity.log(root, "qa-gate", f"#{item['id']}: {exc}",
                              seat="qa", ref=str(item["id"]))
             continue
+        if scope == "chains" and not is_chain_end(root, item):
+            continue                # one reviewer per chain, at its last link
         opened = open_round(root, item)
         if opened.get("ok"):
             _dispatch.dispatch(root, int(opened["gate"]))
