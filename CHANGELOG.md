@@ -10,6 +10,20 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **The fast track: a known loop skips the graybox, and the QA gate and
+  brief budget are settings.** Measured on a fresh twin-stick roguelite
+  board: the first hours were a capsule on a grey tray because the stage
+  machine held every art seat until a loop everyone has played was proved in
+  primitives, 13 of the first 27 agent runs were QA gates (one a Godot boot
+  to verify a 22-word text card), and the 900-character brief guideline
+  split every feature into five items that each paid the same boot, probe
+  and screenshot tax. `greenlight_fast_track(why)` (human/director only)
+  records a graybox pass with the director's sentence as evidence and
+  advances straight to slice; nothing past slice is skipped. `qa.gate`
+  (all | chains | none) says which completions get a reviewer: `chains`
+  reviews only the last link of a chain. `board.brief_chars` and
+  `board.brief_lanes` make the breadth budget per project, so one agent can
+  own a feature. Defaults keep every existing behaviour.
 - **Pre-production research: what the games this one is like got right and
   wrong, before the thesis is written.** A project started from the pitch
   alone, and "which games is this like, and what did they learn the hard

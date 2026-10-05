@@ -162,6 +162,9 @@ LABELS: dict[str, str] = {
     "qa.require_evidence": "Require render evidence for scenes",
     "qa.max_rounds": "Automatic QA round limit",
     "qa.gated_seats": "Seats reviewed by QA",
+    "qa.gate": "Automatic QA scope",
+    "board.brief_chars": "Brief length budget",
+    "board.brief_lanes": "Brief lane budget",
     "signoff.hours": "Sign-off reminder duration",
     # Art
     "art.style_source": "Project style input",
@@ -257,6 +260,9 @@ DESCRIPTIONS: dict[str, str] = {
     "qa.require_evidence": "Require a screenshot or render before scene changes can finish.",
     "qa.max_rounds": "Maximum automatic review and revision rounds before asking you.",
     "qa.gated_seats": "Worker seats whose completed items are sent to QA.",
+    "qa.gate": "Review every completed item, only the last link of each chain, or nothing automatically.",
+    "board.brief_chars": "How long a work-item brief may be before it is graded as more than one deliverable.",
+    "board.brief_lanes": "How many seats' folders a brief may name before it is graded as more than one deliverable.",
     "signoff.hours": "How long completed items remain highlighted for your sign-off.",
     "art.style_source": "Use pinned references directly or a trained LoRA for project style.",
     "art.style_dataset": "Choose which approved images are used to train project style.",
@@ -648,6 +654,34 @@ SETTINGS: tuple[Setting, ...] = (
              "cinematic completions closing on the agent's word alone, which "
              "made quality structurally uneven by seat. director and qa are "
              "never gated: that is recursion, not review."),
+    Setting(
+        key="qa.gate", group="Gates", kind=ENUM, default="all",
+        choices=("all", "chains", "none"), store=("registry", "qa.gate"),
+        human_only=True,
+        help="How many completed items get an automatic QA reviewer. all: one "
+             "round per completed maker item (the original behaviour). "
+             "chains: only the last link of a chain, so a feature filed as a "
+             "chain gets one verdict instead of one per step and a single "
+             "small item gets none. none: no automatic rounds; the human's "
+             "sign-off and the per-frame rule are the only gates. Measured "
+             "on a fresh board: 13 of the first 27 agent runs were QA gates, "
+             "one of them a Godot boot to verify a 22-word text card."),
+    Setting(
+        key="board.brief_chars", group="Gates", kind=INT, default=900,
+        minimum=300, maximum=6000, store=("registry", "board.brief_chars"),
+        advanced=True,
+        help="The brief length past which queue_add grades an item as too "
+             "broad (one of four breadth signals; two refuse the filing). "
+             "Raise it to let one agent own a whole feature with a brief that "
+             "says everything it needs; the default is the guideline for a "
+             "single deliverable."),
+    Setting(
+        key="board.brief_lanes", group="Gates", kind=INT, default=2,
+        minimum=1, maximum=8, store=("registry", "board.brief_lanes"),
+        advanced=True,
+        help="How many seats' write lanes a brief may name by path before it "
+             "counts as too broad. A feature that genuinely crosses scripts, "
+             "scenes and design needs 3."),
     Setting(
         key="signoff.hours", group="Gates", kind=INT, default=8, advanced=True,
         minimum=1, maximum=168, store=("registry", "signoff.hours"),

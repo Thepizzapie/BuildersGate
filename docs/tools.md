@@ -3392,6 +3392,28 @@ incomplete presentation QA. Call greenlight_status('presentation') for the
 outstanding list.
 ```
 
+## greenlight_fast_track
+
+```text
+Skip the graybox hold: the director declares the loop KNOWN and the project
+goes straight to the slice stage with every seat released.
+
+For a genre whose loop needs no proving (a twin-stick arena, a run-and-gun
+boss rush) the graybox stage costs hours of primitives and a verdict on a
+loop everyone has played before. This records a graybox pass on the canon
+world with `why` as the whole evidence, on the record in greenlight_status
+forever (the `fast_track` block), and advances to slice. It takes no waiver
+past slice: the slice check and the key risks still gate production, and
+the presentation gate still binds release. Human or director only; a seated
+agent is refused. It needs a settled thesis: even a known loop names the
+decision the player repeats.
+
+Pairs with two settings for a fast board: `qa.gate` = `chains` (one QA
+verdict per chain instead of one per item; `none` for no automatic rounds)
+and `board.brief_chars` / `board.brief_lanes` (the breadth budget, so one
+agent can own a whole feature with a brief that says everything).
+```
+
 ## greenlight_status
 
 ```text

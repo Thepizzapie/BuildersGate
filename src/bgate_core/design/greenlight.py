@@ -737,6 +737,66 @@ def advance(root: str | os.PathLike[str], to: str, by: str = "") -> dict:
     return state(root)
 
 
+def fast_track(root: str | os.PathLike[str], why: str, by: str = "") -> dict:
+    """The director declares the loop KNOWN: skip the graybox and open the slice.
+
+    MEASURED (sunder, 2026-10-04): a twin-stick arena roguelite spent its
+    first hours as a blue capsule on a grey tray because the stage machine
+    insisted a loop every player has played be proved in primitives and
+    ruled on before any art seat could start. For a known genre the graybox
+    stage is pure ceremony. This records a graybox pass whose evidence is the
+    director's sentence, visible in greenlight_status forever, and advances
+    straight to the slice. Nothing past slice is skipped: the slice check and
+    the key risks still gate production, the presentation gate still binds
+    release.
+
+    Requires a settled thesis - the one thing a known loop still has to name
+    is the decision the player repeats - and a sentence of ``why``.
+    """
+    why = " ".join(str(why or "").split())[:MAX_TEXT]
+    if len(why) < 20:
+        raise ValueError(
+            "say why in a sentence: which known loop this is and why proving "
+            "it in primitives would teach nothing")
+    if not thesis(root):
+        raise StageRefused(
+            "no mechanical thesis is settled - even a known loop names the "
+            "decision the player repeats (greenlight_thesis_set) before the "
+            "fast track opens")
+    at = stage(root)
+    if STAGES.index(at) >= STAGES.index(SLICE):
+        raise StageRefused(
+            f"the project is already at {at!r}; the fast track only skips "
+            "the graybox")
+    actor = by or activity.current_actor()
+    doc = _doc(root)
+    scene = ""
+    try:
+        from ..board import canon as _canon
+        scene = str(_canon.world(root) or "")
+    except Exception:
+        scene = ""
+    doc["graybox"] = {
+        "scene": scene or "(fast track: no graybox scene)",
+        "evidence": [f"FAST TRACK: {why}"],
+        "notes": "graybox skipped by the director: the loop is a known genre",
+        "by": actor, "at": _now(),
+        "verdict": "pass", "interesting": True,
+        "verdict_notes": f"FAST TRACK: {why}",
+        "verdict_by": actor, "verdict_at": _now(),
+    }
+    doc["fast_track"] = {"why": why, "by": actor, "at": _now(), "from": at}
+    doc["stage"] = SLICE
+    doc["stage_since"] = _now()
+    doc["stage_by"] = actor
+    _save(root, doc)
+    activity.log(root, "greenlight",
+                 f"FAST TRACK {at} -> {SLICE}: {why[:120]}", seat=SEAT)
+    _events.emit(root, "greenlight.stage", ref=SLICE,
+                 payload={"from": at, "to": SLICE, "fast_track": True})
+    return state(root)
+
+
 # ── feature lock and content lock ───────────────────────────────────────────
 # Alpha and beta. After feature lock no new FEATURE is filed; after content
 # lock no new CONTENT either, and the board orders fixes first. Scope creep is
@@ -1282,6 +1342,8 @@ def state(root: str | os.PathLike[str]) -> dict:
         "risks": risks(root),
         "locks": locks(root),
         "held_seats": list(held_seats(root)),
+        "fast_track": (_doc(root).get("fast_track")
+                       if isinstance(_doc(root).get("fast_track"), dict) else None),
         "next": nxt,
         "blockers": blockers(root, nxt) if nxt else [],
         "since": str(_doc(root).get("stage_since") or ""),
