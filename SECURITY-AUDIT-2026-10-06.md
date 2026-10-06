@@ -124,36 +124,81 @@ stating plainly before the gaps:
   `foreign_keys = ON`, and forward-only migrations made transactional to fix a
   documented real-world wedging bug.
 
-### Finding Q1 — The frontend is the repo's systematic blind spot (high)
+### Finding Q1 — Two critical RCE advisories in the scaffold templates shipped to users (critical)
 
-Three independent gaps all land on the same 31,327 lines of TypeScript/React:
+**This is the most serious finding in the audit, and it is in the product
+surface rather than the repo's own build.**
 
-1. **Tests.** 105 source files are covered by a single `frontend/e2e/critical.spec.ts`
-   (153 lines, 4 tests). No unit tests at all. Python gets 86k lines of tests;
-   the UI gets four.
-2. **Static analysis.** `security.yml` runs CodeQL with `languages: python`.
-   The entire JS/TS tree is unanalysed.
-3. **Dependency updates.** `.github/dependabot.yml` declares `pip` and
-   `github-actions` ecosystems only — **no `npm` entry** — so `frontend/` has
-   no automated update path.
+`bgate init --engine web` scaffolds a user's new game from
+`src/templates/web/2d/package.json` or `src/templates/web/3d/package.json`.
+Both pin `vite: ^5.4.0` and `vitest: ^2.1.0`, and **neither ships a
+lockfile** — so every scaffolded project resolves fresh and inherits whatever
+those ranges give. Today that is `vite@5.4.21` and `vitest@2.1.9`, and
+`npm audit` on each template reports **6 vulnerabilities (2 critical, 1 high,
+3 moderate)**:
 
-Gap 3 is why Q2 exists.
+| Severity | Package | Advisory |
+|---|---|---|
+| **CRITICAL** | `tinypool` ≤2.1.1 (via `vitest@2.1.9`) | Prototype pollution gadget in worker options → **RCE** — GHSA-5gmw-xhrv-c9v3 |
+| **CRITICAL** | `tinypool` ≤2.1.1 (via `vitest@2.1.9`) | Prototype pollution gadget to RCE in `run()` options — GHSA-85c8-ppgw-ccpr |
+| high/moderate | `esbuild` (via `vite` ≤6.4.2) | **Any website can send requests to the dev server and read the response** — GHSA-67mh-4wv8-2f99 |
 
-### Finding Q2 — High-severity vulnerability in a frontend dependency (high)
+The esbuild advisory deserves particular weight *in this product's context*:
+Builders Gate exists to run a dev server for playtesting and actively
+instructs the user to start one. "Any website you have open can read responses
+from your dev server" is a materially worse property here than in a generic
+web project.
+
+The telling detail is that **the repo's own `frontend/` runs `vite@6.4.3` —
+exactly one patch release above the vulnerable `≤6.4.2` range.** The toolchain
+was moved past this advisory in one place and the templates were left behind.
+There is no migration cost to fixing them either: a scaffold has no existing
+code to break, and the project already demonstrably runs vite 6.
+
+Current safe targets: `vite` ≥6.4.3 (latest 8.3.3), `vitest` ≥5.0.3 (which is
+what pulls `tinypool` to 2.2.0), and `three` ^0.186 (pinned at `^0.169.0`,
+resolving to 0.169.0 — no advisory, just 17 minor versions stale).
+
+### Finding Q2 — Moderate vulnerability in the repo's own frontend (low)
+
+`frontend/package-lock.json` carries one advisory:
 
 ```
-source-map-js  1.2.1   HIGH   GHSA-68fv-2mgg-jv7q
+source-map-js 1.2.1   HIGH (nominal)   GHSA-68fv-2mgg-jv7q
   event-loop denial of service via indexed source-map section offsets
-  path: vite → postcss@8.5.26 → source-map-js ^1.2.1
+  path: vite@6.4.3 -> postcss@8.5.26 -> source-map-js ^1.2.1
 ```
 
-Real severity in context is lower than "high" suggests — it is a build-time
-dev dependency, not shipped to users. But `postcss` requires `^1.2.1`, so the
-patched release satisfies the existing range: `npm audit fix` resolves it with
-a **lockfile-only bump, no breaking change**. Nothing in CI would ever have
-reported it.
+Real severity in context is well below the nominal rating — it is a build-time
+dev dependency, not shipped to users, and the impact is a slow build rather
+than a compromise. `postcss` requires `^1.2.1`, so the patched release
+satisfies the existing range: `npm audit fix` resolves it with a
+**lockfile-only bump, no breaking change.**
 
-### Finding Q3 — `src/bgate_mcp/server.py` is an 11,064-line module (medium)
+### Finding Q3 — The frontend is excluded from three CI controls (high)
+
+Three independent gaps all land on JavaScript/TypeScript, and together they
+are why Q1 went unnoticed:
+
+1. **Dependency *updates*.** `.github/dependabot.yml` declares `pip` and
+   `github-actions` only. There is **no `npm` ecosystem entry at all**, so
+   neither `frontend/` nor either template directory has an automated update
+   path. (Dependabot *alerts* are a separate, repo-wide feature and are
+   working — GitHub currently reports 10 alerts on the default branch,
+   2 critical. The alerts fired; nothing turned them into a pull request or a
+   failing build.)
+2. **CI gating.** `security.yml` runs `pip-audit` thoroughly — against both the
+   resolved tree *and* the declared floors pinned exactly, which is better than
+   most projects manage. **No equivalent `npm audit` step exists**, so no build
+   has ever failed on a JS advisory.
+3. **Static analysis.** CodeQL is configured `languages: python`. All 31,327
+   lines of TypeScript across 105 files are unanalysed.
+
+**Tests** compound it: those 105 source files are covered by a single
+`frontend/e2e/critical.spec.ts` (153 lines, 4 tests) with no unit tests
+anywhere. The Python side has ~86k lines of tests across 315 files.
+
+### Finding Q4 — `src/bgate_mcp/server.py` is an 11,064-line module (medium)
 
 Nearly 3× the next-largest file (`blender.py`, 6,458). It is the MCP tool
 surface — the single most-edited file in an agent-driven project and the
@@ -161,7 +206,7 @@ hardest to review, merge or navigate. The `tools_level.py` split (2,477 lines)
 shows the extraction pattern already exists; it just hasn't been applied to the
 bulk.
 
-### Finding Q4 — Repository weight (low)
+### Finding Q5 — Repository weight (low)
 
 `.git` is **170 MB** for a project whose working tree is ~70 MB.
 
@@ -193,46 +238,65 @@ time becomes a complaint.
 
 Prioritized by impact per unit of effort.
 
-**1. Add `npm` to Dependabot and run `npm audit` in CI — security, ~10 minutes.**
-A six-line addition to `.github/dependabot.yml` (`package-ecosystem: "npm"`,
-`directory: "/frontend"`) plus an `npm audit --audit-level=high` step in
-`security.yml`. This closes the hole that let Q2 through and prevents the next
-one. Do this one first — it is the cheapest item on the list and the only one
-that is purely preventive.
+**1. Bump the scaffold templates off vite 5 / vitest 2 — security, ~15 minutes.**
+This is the only item that affects *users* rather than contributors. In both
+`src/templates/web/2d/package.json` and `src/templates/web/3d/package.json`,
+move `vite` to `^8` (anything ≥6.4.3 clears the esbuild advisory), `vitest` to
+`^5` (clears both `tinypool` criticals), and `three` to `^0.186`. A scaffold
+has no existing code to break and the repo's own frontend already runs vite 6,
+so the usual "major bump = migration project" objection does not apply here.
+Consider also committing a lockfile with the templates, or having `init` run
+`npm install` and commit the result — an unlocked scaffold silently inherits
+whatever the range resolves to on the day the user runs it, which is exactly
+how this drifted.
 
-**2. Fix the vulnerability and the broken ignore rule — security, ~5 minutes.**
-`npm audit fix` in `frontend/` (lockfile only), then `git rm --cached
-.github/instructions/codacy.instructions.md` and correct `.gitignore:54` to use
-forward slashes. Two unrelated one-liners, both trivially verifiable.
+**2. Add the three `npm` directories to Dependabot and gate on `npm audit` — security, ~15 minutes.**
+`.github/dependabot.yml` needs `package-ecosystem: "npm"` entries for
+`/frontend`, `/src/templates/web/2d` and `/src/templates/web/3d`, plus an
+`npm audit --audit-level=high` step in `security.yml` alongside the existing
+`pip-audit` jobs. Alerts already fire today; what is missing is anything that
+turns an alert into a pull request or a red build. Pair this with
+`npm audit fix` in `frontend/` for the `source-map-js` lockfile bump. Doing
+this is what stops item 1 from recurring, so it is worth doing in the same
+sitting rather than after.
 
-**3. Close the PII loop — privacy, ~15 minutes.**
+**3. Fix the broken ignore rule — hygiene, ~2 minutes.**
+`git rm --cached .github/instructions/codacy.instructions.md` and rewrite
+`.gitignore:54` with forward slashes. One line, trivially verifiable.
+
+**4. Close the PII loop — privacy, ~15 minutes.**
 Set `git config --global user.email` to the GitHub `noreply` alias on every
-development machine. Confirm the historical key from P2 was rotated
-and that secret scanning with push protection is on. Ask the external
-contributor whether they want their corporate address kept.
+development machine. Confirm the credential referenced in P2 was rotated and
+that secret scanning with push protection is enabled. Ask the external
+contributor whether they want their corporate address kept in the history.
 
-**4. Extend CodeQL to JavaScript/TypeScript — security + maintainability, ~30 minutes.**
-Add `javascript-typescript` to the CodeQL language matrix. Use the default
-suite, for exactly the reason security.yml already documents about the 277-alert
+**5. Extend CodeQL to TypeScript, and start splitting `server.py` — maintainability, ongoing.**
+Add `javascript-typescript` to the CodeQL matrix, using the **default** suite
+for exactly the reason `security.yml` already documents about the 277-alert
 `security-and-quality` run: a gate nobody can make green is a gate everyone
-ignores. 31k lines of UI code that renders agent output and handles user paths
-deserves the same analysis the Python already gets.
-
-**5. Start splitting `server.py`, and add frontend unit tests alongside — maintainability, ongoing.**
-Extract tool groups from the 11k-line module following the `tools_level.py`
-precedent, one group per PR so review stays tractable. In parallel, add Vitest
-unit coverage for the UI's pure logic (state reducers, path handling,
-formatting) — the parts where four e2e tests give the least protection and
-where a unit test is cheapest to write.
-
----
+learns to ignore. Separately, extract tool groups from the 11k-line
+`server.py` following the existing `tools_level.py` precedent, one group per
+PR so review stays tractable, and add Vitest unit coverage for the UI's pure
+logic (state reducers, path handling, formatting) where four e2e tests give
+the least protection.
 
 ### Bottom line
 
 **No secrets, in the working tree or anywhere in 588 commits of history** —
-and the project has a real redaction layer and a documented security posture
-behind that result. The genuine issues are a third party's corporate email in
-commit metadata, one high-severity (build-time) npm vulnerability, a
-`.gitignore` rule silently broken by Windows path separators, and a frontend
-that is excluded from testing, static analysis and dependency management alike.
-Items 1–3 are under half an hour of work combined.
+and the project has a purpose-built redaction layer and a documented security
+posture behind that result. The Python engineering is genuinely strong: lint
+clean, zero unused imports across 183k lines, one TODO, a 1:1 test ratio, and
+a `pip-audit` setup that checks declared floors as well as resolved versions.
+
+The real problem is that none of that rigour reaches JavaScript. The scaffold
+templates handed to every `--engine web` user still pin `vite ^5.4.0` and
+`vitest ^2.1.0`, carrying **two critical prototype-pollution-to-RCE advisories
+and a dev-server read advisory** — while the repo's own frontend sits one patch
+release above the vulnerable range, which is the clearest possible sign this
+was an oversight rather than a decision. Dependabot has been reporting it;
+nothing converted those alerts into a pull request or a failing build, because
+`dependabot.yml` has no npm entry, `security.yml` has no `npm audit` step, and
+CodeQL is python-only.
+
+Items 1–3 are roughly half an hour and close everything that is actually
+exploitable.
