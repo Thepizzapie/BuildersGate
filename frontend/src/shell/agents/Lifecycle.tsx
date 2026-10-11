@@ -262,6 +262,14 @@ function Detail({ n, byId, onClose, onChanged }: {
     toast(r.ok ? `#${n.id} now waits on your step` : r.error || "refused", r.ok ? "ok" : undefined);
     if (r.ok) onChanged();
   }
+  /* START WAS ONLY ON THE BOARD. The detail panel offered checkpoint and
+     human-step controls for a ready ticket but no way to run it, so the one
+     thing a ready ticket is waiting for meant switching panes. */
+  async function start() {
+    const r = await mutate(`/api/queue/${n.id}/dispatch`, { quiet: true });
+    toast(r.ok ? `#${n.id} started` : r.error || "refused", r.ok ? "ok" : undefined);
+    if (r.ok) onChanged();
+  }
   const open = !["done", "cancelled"].includes(n.status) && n.id > 0;
   async function reject() {
     const reason = await askText({ title: `send #${n.id} back`,
@@ -315,6 +323,8 @@ function Detail({ n, byId, onClose, onChanged }: {
         <div className="bgl-dline warn">An agent asked you this. Answer it in Needs attention; the asker keeps working meanwhile.</div>
       )}
       <div className="bgl-actions">
+        {n.state === "ready" && n.source !== "human-task" &&
+          <button className="bgs-btn" onClick={start}><Ti name="player-play" size={13} /> Start</button>}
         {n.status === "review" && <>
           <button className="bgs-btn" onClick={approve}><Ti name="check" size={13} /> Approve</button>
           <button className="bgs-btn" onClick={reject}><Ti name="arrow-back-up" size={13} /> Send back</button>
