@@ -1496,6 +1496,17 @@ _USAGE_RESUME_RE = re.compile(
 _CODEX_USAGE_PCT_RE = re.compile(
     r"usage[:\s]+(\d{1,3})\s*%|(\d{1,3})\s*%\s+of\s+(?:your\s+)?usage", re.I)
 CODEX_USAGE_PCT_FLOOR = 90
+# A LOGGED-OUT CLI IS THE SAME SHAPE OF PROBLEM: the work never ran, every
+# other dispatch will hit the same wall, and only a human can clear it (log
+# the CLI back in). Measured HARDCOVER 2026-10-11: six agents failed at launch
+# on "OAuth session expired", each auto-retried, and five escalations landed
+# on the director for work that was never attempted.
+_AUTH_FAILURE_PATTERNS = (
+    re.compile(r"failed to authenticate", re.I),
+    re.compile(r"oauth (?:session|token) (?:has )?expired", re.I),
+    re.compile(r"invalid api key", re.I),
+    re.compile(r"please run /login", re.I),
+)
 
 
 def detect_usage_limit(text: str, *, runner: str = "") -> Optional[dict]:
@@ -1509,6 +1520,10 @@ def detect_usage_limit(text: str, *, runner: str = "") -> Optional[dict]:
     said = str(text or "")
     if not said.strip():
         return None
+    for pattern in _AUTH_FAILURE_PATTERNS:
+        if pattern.search(said):
+            return {"raw": said[:300], "runner": runner, "resumes_at": "",
+                    "kind": "auth"}
     for pattern in _USAGE_LIMIT_PATTERNS:
         hit = pattern.search(said)
         if hit:
@@ -2397,7 +2412,9 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
             if usage:
                 _queue.set_status(
                     root, item_id, "queued",
-                    result=("USAGE LIMIT — not failed, requeued: " + usage["raw"]))
+                    result=(("LOGGED OUT" if usage.get("kind") == "auth"
+                             else "USAGE LIMIT")
+                            + " — not failed, requeued: " + usage["raw"]))
             else:
                 try:
                     chaos = (entry.get("worktree") and
@@ -2416,7 +2433,7 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
             from bgate_ui.agents import autodeploy as _auto
 
             _auto.note_usage_limit(root, usage["runner"], usage.get("resumes_at") or "",
-                                   usage["raw"])
+                                   usage["raw"], kind=usage.get("kind") or "usage")
         except Exception:
             pass
     # CLAIMS DIE WITH THE RUN, BUT THE WORK DOES NOT. An item the agent claimed

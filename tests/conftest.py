@@ -123,7 +123,7 @@ def _no_provider_keys(monkeypatch):
     monkeypatch.setenv, which layers on top of this cleanly.
     """
     for var in ("OPENAI_API_KEY", "KREA_API_KEY", "KIE_API_KEY",
-                "DEEPGRAM_API_KEY"):
+                "DEEPGRAM_API_KEY", "TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY"):
         monkeypatch.delenv(var, raising=False)
 
 

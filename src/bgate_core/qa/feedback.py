@@ -241,3 +241,88 @@ def extract(segments: list[dict], max_gap: float = THOUGHT_GAP) -> list[dict]:
             "scores": scores,
         })
     return items
+
+
+# --- decision-model triage ---------------------------------------------------
+# THE LEXICAL PASS ABOVE IS A FIRST PASS AND SAYS SO. "It's like making my ears
+# bleed" carries no KIND_RULES word at all and lands as a 'note'; "the music is
+# fine but the guy keeps shooting me" routes to audio on its first noun. A
+# decision model (Jev, bgate_adapters.jev) answers exactly these two questions -
+# which kind, which seat - with a probability per option, for about a
+# hundredth of a cent a thought. It REFINES, never replaces: no key, a failed
+# call, or a pick below TRIAGE_MIN_CONFIDENCE keeps the lexical answer, and
+# the item records which classifier spoke.
+TRIAGE_KINDS = {
+    "fix": "something is broken, wrong, unpleasant or hurts to play",
+    "change": "it works but a value or behaviour should be tuned",
+    "add": "something is missing and should be added",
+    "like": "praise: keep this as it is",
+    "question": "the player is confused or asking how something works",
+    "note": "an observation with nothing to act on",
+}
+TRIAGE_SEATS = {
+    "gameplay": "controls, movement, combat, enemies, difficulty, game feel",
+    "level": "layout, pacing, platforms, pits, where things are placed",
+    "art": "how it looks: sprites, colours, readability, animation",
+    "audio": "sound effects, music, volume, mix",
+    "tech": "performance, crashes, loading, frame rate, bugs in the engine",
+    "narrative": "story, dialogue, text, characters' words",
+    "unassigned": "none of the above",
+}
+TRIAGE_MIN_CONFIDENCE = 0.5
+#: One call per spoken thought; a session past this many thoughts keeps the
+#: lexical answer for the rest rather than spending without a ceiling.
+TRIAGE_MAX_ITEMS = 200
+
+
+def triage(items: list[dict], root=None, *, workers: int = 6) -> list[dict]:
+    """Refine extract()'s kind and seat with the decision model, in place.
+
+    Each item gains ``classifier`` ('jev' or 'lexical') and, when Jev spoke,
+    ``triage`` {kind, seat, confidence, probabilities}. Returns ``items``."""
+    try:
+        from bgate_adapters import jev
+        if not items or not jev.available(root)["available"]:
+            for it in items:
+                it.setdefault("classifier", "lexical")
+            return items
+    except Exception:                                            # noqa: BLE001
+        return items
+
+    questions = {
+        "kind": {"type": "choice", "criteria": TRIAGE_KINDS,
+                 "instructions": "A playtester said this out loud while "
+                                 "playing a video game. What kind of feedback "
+                                 "is it?"},
+        "seat": {"type": "choice", "criteria": TRIAGE_SEATS,
+                 "instructions": "Which game-dev discipline owns the fix?"},
+    }
+
+    def one(it: dict) -> None:
+        it["classifier"] = "lexical"
+        try:
+            got = jev.decide(f'Playtester said: "{it["text"]}"', questions,
+                             root=root, timeout=10.0)
+        except Exception:                                        # noqa: BLE001
+            return
+        kind = got["answers"].get("kind") or {}
+        seat = got["answers"].get("seat") or {}
+        it["triage"] = {"kind": kind.get("choice"), "seat": seat.get("choice"),
+                        "kind_confidence": kind.get("confidence"),
+                        "seat_confidence": seat.get("confidence"),
+                        "usd": got.get("usd")}
+        if (kind.get("confidence") or 0) >= TRIAGE_MIN_CONFIDENCE \
+                and kind.get("choice") in TRIAGE_KINDS:
+            it["kind"] = kind["choice"]
+            it["classifier"] = "jev"
+        if (seat.get("confidence") or 0) >= TRIAGE_MIN_CONFIDENCE \
+                and seat.get("choice") in TRIAGE_SEATS:
+            it["seat"] = seat["choice"]
+            it["classifier"] = "jev"
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        list(pool.map(one, items[:TRIAGE_MAX_ITEMS]))
+    for it in items[TRIAGE_MAX_ITEMS:]:
+        it["classifier"] = "lexical"
+    return items

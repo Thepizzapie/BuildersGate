@@ -14,6 +14,7 @@ config/icon="res://icon.svg"
 
 BGateTelemetry="*res://addons/bgate/bgate_telemetry.gd"
 BGateTuner="*res://addons/bgate/bgate_tuner.gd"
+BGateAgent="*res://addons/bgate/bgate_agent.gd"
 
 [display]
 

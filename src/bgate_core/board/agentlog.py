@@ -216,6 +216,12 @@ def fold_event(state: dict, ev: dict, max_steps: int = 0) -> None:
         # is the deliverable sentence; the cap only stops a runaway result
         # from pinning memory.
         state["final"] = {"subtype": ev.get("subtype"),
+                          # KEPT: the CLI reports an expired login as
+                          # subtype 'success' WITH is_error true. Dropping the
+                          # flag here is what let five auth-failed agents sit
+                          # 25 minutes each until the silence watchdog fired
+                          # (HARDCOVER, 2026-10-11).
+                          "is_error": ev.get("is_error"),
                           "text": str(ev.get("result", ""))[:20000],
                           "cost": ev.get("total_cost_usd"),
                           "turns": ev.get("num_turns"),

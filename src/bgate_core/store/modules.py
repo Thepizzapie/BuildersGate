@@ -356,6 +356,9 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # filing it under `image` would hide it from the audio seat whose
         # music path is kie-only.
         "kie_status",
+        # THE DECISION MODEL. A typed answer over a state, for any seat that
+        # would otherwise guess a yes/no or a pick from a list.
+        "decide",
         # THE SHARED ASSET LIBRARY. Publish and import are per-project
         # copies any seat may need: art publishes what it made, gameplay
         # imports what a level needs, audio the same for a stem. Search
