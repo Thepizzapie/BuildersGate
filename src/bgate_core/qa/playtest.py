@@ -921,6 +921,9 @@ def transcribe_session(root: str | os.PathLike[str], session_id: int, *,
             seg["id"] = int(cur.lastrowid)
 
     items = feedback.extract(segments)
+    # Kind and seat refined by the decision model when a key is set; the
+    # lexical answer stands otherwise (feedback.triage).
+    feedback.triage(items, root)
 
     # A frame per item is what an agent actually "sees". Only for real items -
     # extracting one per segment would burn minutes on filler.

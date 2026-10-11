@@ -5994,3 +5994,63 @@ overrides, imports and resources are the shipped ones. Use it for the
 release gate and after any delivery whose evidence came from an editor run.
 headless=False opens a window so the script can save a viewport image.
 ```
+
+## decide
+
+Ask a decision model (Jev, TypeSafe AI) typed questions about a state. It does
+not write: each question comes back as a `noul` probability, a `choice` with a
+probability per option and a confidence, or a `score` on a 2-10 level scale.
+About 250 ms and $0.000015 for a 300-token state.
+
+```
+decide(state="Player at hp 1, two enemies ahead, a health pack 40 px left",
+       questions='{"next": {"type": "choice", "instructions": "Best move?",
+                            "criteria": {"heal": "grab the pack", "fight": "attack"}}}')
+```
+
+Key: `bgate key set typesafe --global` (TYPESAFE_API_KEY), or a Vercel AI
+Gateway key (`bgate key set ai_gateway`) for the same model. TypeSafe's own
+key wins when both are set.
+
+## playtest_agent_run
+
+A decision model plays the game. Godot only. The run installs
+`addons/bgate/bgate_agent.gd` (autoload `BGateAgent`, inert unless the run
+sets `BGATE_AGENT_URL`), starts a loopback relay that holds the key, and
+launches the game. Every `decide_every` physics frames the game sends its
+state and options; the relay asks Jev; the game holds the pick. `lockstep`
+pauses the tree while a decision is in flight, so model latency costs wall
+time, not game time. `policy="random"` needs no key and proves the wiring.
+
+What the bot sees decides how well it plays. A node in group
+`bgate_observer` with `bgate_observe() -> {state, options, goal}` owns it;
+without one the bot gets a generic view (player, nearby enemy/boss/hazard
+nodes, visible labels and buttons, one option per input action).
+
+Measured on HARDCOVER (The Feed, 45 s, 10 decisions/s):
+
+| state sent as | mean confidence | what it did |
+| --- | --- | --- |
+| raw JSON with velocities | 0.32 | 90% one option (dash_left), died in phase 1 |
+| English lines with "WILL HIT in 0.2s" precomputed | 0.48 | 146 boss hits, parried, reached phase 2, retried itself |
+
+So write the observer as sentences, and do the physics for it: closest
+approach, time to impact, which side. Options should be combinations a
+player would actually hold ("advance right while firing"), not single
+buttons.
+
+Offer an option only when it can do something. Measured: an always-on
+`enter_door` was picked 673 times in a row from the middle of the overworld,
+and an always-on `parry` 77 times at shots 160 px away. The model reads the
+option list as a hint about what matters now; an option that is always there
+says "this is always relevant".
+
+Output in `.bgate/agentplay/<stamp>/`: `decisions.jsonl` (state, choice,
+probabilities, latency, cost per decision), `telemetry.jsonl`, `game.log`,
+`summary.json` (choice mix, confidence, latency, telemetry event counts,
+the last events, errors, USD).
+
+## playtest_agent_install
+
+Install or refresh the `BGateAgent` autoload without running anything. New
+projects from `bgate init` already have it.

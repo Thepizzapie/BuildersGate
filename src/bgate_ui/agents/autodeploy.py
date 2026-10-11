@@ -164,7 +164,8 @@ def _parse_resume_time(text: str, now_wall: Optional[float] = None) -> Optional[
     return None
 
 
-def note_usage_limit(root, runner: str, resumes_at_text: str, raw: str) -> None:
+def note_usage_limit(root, runner: str, resumes_at_text: str, raw: str,
+                     kind: str = "usage") -> None:
     """A run's own words said it hit the account's usage limit.
 
     Floors dispatch (the same mechanism dirty_tree/concurrency use) rather
@@ -185,9 +186,13 @@ def note_usage_limit(root, runner: str, resumes_at_text: str, raw: str) -> None:
         hold_s = max(60.0, resume_wall - time.time())
     else:
         hold_s = USAGE_LIMIT_DEFAULT_S
-    entry = {"item_id": None, "code": "usage_limit",
-             "message": f"{runner} hit its usage limit: {raw}"
-                       + (f" — resumes ~{resumes_at_text}" if resumes_at_text else ""),
+    message = (f"{runner} is logged out: {raw} - a human must log the CLI "
+               f"back in (`{runner} /login`); dispatch is paused, nothing failed"
+               if kind == "auth" else
+               f"{runner} hit its usage limit: {raw}"
+               + (f" — resumes ~{resumes_at_text}" if resumes_at_text else ""))
+    entry = {"item_id": None, "code": "logged_out" if kind == "auth" else "usage_limit",
+             "message": message,
              "at": time.strftime("%H:%M:%S"), "runner": runner,
              "resumes_at": resumes_at_text or ""}
     already_noted = bool(mem.get("usage_limit_noted"))
@@ -201,7 +206,7 @@ def note_usage_limit(root, runner: str, resumes_at_text: str, raw: str) -> None:
             from bgate_core.store import events as _events
 
             _events.emit(root, "dispatch.blocked", ref=runner,
-                         payload={"code": "usage_limit", "runner": runner,
+                         payload={"code": entry["code"], "runner": runner,
                                   "resumes_at": resumes_at_text or "",
                                   "whole_board": True, "reason": entry["message"]})
         except Exception:

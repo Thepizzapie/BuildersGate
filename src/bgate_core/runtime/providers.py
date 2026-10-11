@@ -65,6 +65,11 @@ CAPABILITIES: dict[str, str] = {
     # Twitch token would report that it can write prompts and brainstorm, which
     # is false, and the first thing to notice would be a generation failing.
     "chat": "live-stream chat (community feedback)",
+    # DECISION IS NOT `text`. A decision model writes nothing: it returns a
+    # typed answer (a choice, a score, a probability) over a state. It is
+    # what a bot uses to play the game in a playtest and what a seat uses to
+    # ask a yes/no it would otherwise guess. Generates no art.
+    "decision": "typed decisions (bots that play the game)",
 }
 
 # WHICH CAPABILITIES ARE ART GENERATION. doctor's `art_key` row asks "is ANY art
@@ -125,6 +130,13 @@ def _probe_retrodiffusion(root: Any = None) -> dict:
 def _probe_deepgram(root: Any = None) -> dict:
     from bgate_adapters import deepgram
     return dict(deepgram.available(root))
+
+
+def _probe_jev(route: str) -> Callable[[Any], dict]:
+    def probe(root: Any = None) -> dict:
+        from bgate_adapters import jev
+        return dict(jev.available(root, route=route))
+    return probe
 
 
 def _probe_imageto3d(backend: str) -> Callable[[Any], dict]:
@@ -312,6 +324,34 @@ PROVIDERS: tuple[Provider, ...] = (
              "the minute listened ($0.0048/min) and per character spoken "
              "($0.030/1k). Generates no art and no game audio.",
         probe=_probe_deepgram,
+    ),
+    # THE DECISION MODEL, TWO DOORS TO ONE MODEL. TypeSafe's own API and
+    # Vercel's AI Gateway take the identical /v1/systemone body and return the
+    # identical answers; only the base URL, the key and the model id differ.
+    # Either key makes `decide` and playtest bots work; the adapter prefers
+    # TypeSafe's own when both are set.
+    Provider(
+        id="typesafe",
+        label="TypeSafe Jev",
+        env="TYPESAFE_API_KEY",
+        powers=("decision",),
+        key_url="https://console.typesafe.ai/",
+        help="Jev, a decision model: given a game state and the legal inputs "
+             "it picks one, with probabilities, in about 150 ms. Drives the "
+             "bots that play the game in playtest_agent_run and answers the "
+             "`decide` tool. $0.042 per million input tokens, output free.",
+        probe=_probe_jev("typesafe"),
+    ),
+    Provider(
+        id="ai_gateway",
+        label="Vercel AI Gateway (Jev)",
+        env="AI_GATEWAY_API_KEY",
+        powers=("decision",),
+        key_url="https://vercel.com/docs/ai-gateway",
+        help="The same Jev decision model through Vercel's AI Gateway "
+             "(typesafe-ai/jev), billed to the Vercel account. Used only when "
+             "no TYPESAFE_API_KEY is set.",
+        probe=_probe_jev("ai_gateway"),
     ),
     # LAST, AND OPTIONAL IN A WAY NOTHING ELSE HERE IS. Every other row is a key
     # without which its capability does not exist. This one is a key without

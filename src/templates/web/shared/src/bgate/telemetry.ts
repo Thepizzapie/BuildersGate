@@ -87,9 +87,14 @@ class Telemetry {
     try {
       const res = await fetch("/api/playtest/status", { cache: "no-store" });
       if (!res.ok) return;
-      const got = (await res.json()) as { id?: number; status?: string };
-      if (typeof got.id === "number" && got.id >= 0 && got.status === "recording") {
-        this.session = got.id;
+      // The route answers {recording: {id, native, ...} | null, processing};
+      // a native recording owns its own file and must not be reported into.
+      const got = (await res.json()) as {
+        recording?: { id?: number; native?: boolean } | null;
+      };
+      const rec = got.recording;
+      if (rec && typeof rec.id === "number" && rec.id >= 0 && !rec.native) {
+        this.session = rec.id;
       }
     } catch {
       // Not served by the dashboard, or offline. Both mean "nobody is

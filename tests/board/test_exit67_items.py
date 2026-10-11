@@ -180,6 +180,67 @@ class TestItem26Parked:
 # --------------------------------------------------------------------------
 # ITEM 32 — auto-commit names every item the run carried.
 # --------------------------------------------------------------------------
+class TestLoggedOutCli:
+    """HARDCOVER 2026-10-11: six agents failed at launch on an expired CLI
+    login, each sat 25 minutes, auto-retried, and escalated to the director."""
+
+    def test_auth_failure_is_detected_as_its_own_kind(self):
+        hit = dispatch.detect_usage_limit(
+            "Failed to authenticate: OAuth session expired and could not be "
+            "refreshed", runner="claude")
+        assert hit and hit["kind"] == "auth"
+
+    def test_final_event_keeps_is_error(self):
+        from bgate_core.board import agentlog
+        state = {"final": None, "steps": [], "step_count": 0}
+        agentlog.fold_event(state, {"type": "result", "subtype": "success",
+                                    "is_error": True,
+                                    "result": "Failed to authenticate"})
+        assert state["final"]["is_error"] is True
+
+    def test_terminal_error_trips_on_success_subtype_with_is_error(
+            self, root, monkeypatch):
+        monkeypatch.setattr(dispatch, "_final_event", lambda r, i: {
+            "subtype": "success", "is_error": True,
+            "text": "Failed to authenticate: OAuth session expired"})
+        assert "Failed to authenticate" in dispatch._terminal_error(root, 1)
+
+    def test_logged_out_run_is_requeued_and_says_why(self, root, monkeypatch):
+        item = queue.add(root, "tech", "victim of the logout", brief="x")
+        queue.set_status(root, item["id"], "dispatched")
+
+        class _FakeProc:
+            pid = 43
+
+            def poll(self):
+                return 1
+
+        monkeypatch.setattr(dispatch, "_final_event", lambda r, i: {
+            "text": "Failed to authenticate: OAuth session expired"})
+        monkeypatch.setattr(dispatch, "_finalize", lambda *a, **k: None)
+        noted = {}
+        monkeypatch.setattr(
+            "bgate_ui.agents.autodeploy.note_usage_limit",
+            lambda root_, runner, resumes, raw, **k: noted.update(k))
+        dispatch._reap(root, item["id"], {"proc": _FakeProc(), "log": "",
+                                          "runner": "claude"}, 1)
+        got = queue.get(root, item["id"])
+        assert got["status"] == "queued"
+        assert got["result"].startswith("LOGGED OUT")
+        assert noted.get("kind") == "auth"
+
+    def test_note_logged_out_emits_its_own_code(self, root, monkeypatch):
+        autodeploy.reset(root)
+        emitted = []
+        monkeypatch.setattr(
+            "bgate_core.store.events.emit",
+            lambda root_, kind, ref="", payload=None: emitted.append(payload))
+        autodeploy.note_usage_limit(root, "claude", "", "Failed to authenticate",
+                                    kind="auth")
+        assert emitted[0]["code"] == "logged_out"
+        assert "/login" in emitted[0]["reason"]
+
+
 class TestItem32CommitAttribution:
     def test_commit_message_names_every_claimed_item_not_just_the_first(
         self, root, monkeypatch
@@ -283,8 +344,8 @@ class TestItem28UsageLimit:
         noted = {}
         monkeypatch.setattr(
             "bgate_ui.agents.autodeploy.note_usage_limit",
-            lambda root_, runner, resumes, raw: noted.update(
-                runner=runner, resumes=resumes, raw=raw))
+            lambda root_, runner, resumes, raw, **k: noted.update(
+                runner=runner, resumes=resumes, raw=raw, **k))
         entry = {"proc": _FakeProc(), "log": "", "runner": "claude"}
 
         dispatch._reap(root, item["id"], entry, 1)
