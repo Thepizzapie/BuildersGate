@@ -243,6 +243,8 @@
      it rather than sitting in a panel behind nine empty nav items. -->
 <div class="firstrun" id="firstrun" hidden>
   <div class="fr-card">
+    <button type="button" id="fr-close" class="fr-close" hidden aria-label="Close"
+            onclick="closeFirstRun()">&times;</button>
     <div class="fr-mark" data-icon="logo" data-icon-size="40"></div>
     <!-- REACT ISLAND, frontend/src/views/FirstRun.tsx. It owns the card's two
          ways in: open one of the registered projects, or scaffold a new one.
@@ -791,13 +793,34 @@ function showFirstRun(hint){
   // later change.
   window.__bgFirstRun = { hint: hint || "" };
   window.dispatchEvent(new CustomEvent("bgate:firstrun", { detail:{ hint } }));
+  // ASKED FOR, NOT DECIDED. The project switcher opens this card with "new" or
+  // "adopt" while a project is active, and every pollState() (each board event,
+  // every 30 s) then saw a project and hid it, mid-typing, back to the old game.
+  // An asked-for card stays up until the user closes it or creates/opens one.
+  if (hint === "new" || hint === "adopt") {
+    firstRunAsked = true;
+    const close = document.getElementById("fr-close");
+    if (close) close.hidden = false;
+  }
   if (!box.hidden) return;
   box.hidden = false;
 }
+let firstRunAsked = false;
 function hideFirstRun(){
+  if (firstRunAsked) return;
   const box = document.getElementById("firstrun");
   if (box && !box.hidden) box.hidden = true;
 }
+function closeFirstRun(){
+  firstRunAsked = false;
+  const close = document.getElementById("fr-close");
+  if (close) close.hidden = true;
+  hideFirstRun();
+  pollState();
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && firstRunAsked) closeFirstRun();
+});
 
 async function pollState(){
   try{

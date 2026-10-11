@@ -404,7 +404,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "greenlight_graybox_submit", "greenlight_graybox_verdict",
         "greenlight_advance", "greenlight_waive", "greenlight_supersede",
         "greenlight_risks_set", "greenlight_risk_retire",
-        "greenlight_lock", "greenlight_unlock",
+        "greenlight_lock", "greenlight_unlock", "greenlight_fast_track",
         "encounter_design_set", "scale_contract_set",
         "lore_add", "lore_brief", "lore_fact", "lore_link", "lore_list",
         "lore_update", "not_building_add", "not_building_list",
@@ -478,7 +478,7 @@ DIRECTOR_ONLY: frozenset[str] = frozenset({
     # note. greenlight_status stays open to every seat (it is the answer to
     # "why am I held"); these four are the arbitration.
     "greenlight_thesis_set", "greenlight_graybox_verdict",
-    "greenlight_advance", "greenlight_waive",
+    "greenlight_advance", "greenlight_waive", "greenlight_fast_track",
     # RETRACTING A GATE FINDING IS ARBITRATION. A seat that could withdraw the
     # row blocking its own work has not been gated, it has been asked nicely -
     # the same reduction the four above exist to prevent. The evidence for a

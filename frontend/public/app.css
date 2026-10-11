@@ -3714,8 +3714,12 @@
        not, which is the behaviour centring was there for. */
     align-items:flex-start;
   }
-  .fr-card{margin:auto}
+  .fr-card{margin:auto; position:relative}
   .firstrun[hidden]{display:none}
+  .fr-close{position:absolute; top:16px; right:16px; background:none; border:0;
+    color:var(--text-3); font-size:24px; line-height:1; cursor:pointer}
+  .fr-close[hidden]{display:none}
+  .fr-close:hover{color:var(--text)}
   .fr-card{
     width:min(560px,100%); background:var(--solid-2); border:1px solid var(--line);
     border-radius:var(--r-xl); padding:var(--s-9); box-shadow:var(--shadow-4);

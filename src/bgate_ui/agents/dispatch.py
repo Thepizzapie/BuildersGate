@@ -35,6 +35,7 @@ from bgate_core.board import agentreg as _agentreg
 from bgate_core.store import assets as _assets
 from bgate_core.board import gates as _gates
 from bgate_core.board import gitwork as _git
+from bgate_core.board import links as _links
 from bgate_core.board import queue as _queue
 from bgate_core.board import seats as _seatmod
 from bgate_core.store import settings as _settings
@@ -680,7 +681,7 @@ def _prompt_for(root: str, item: dict, native_images: bool = False,
                "Use that exact project_dir on every Builders Gate tool call.")),
         "canon_block": _canon_block(root),
         "ruling_block": _ruling_block(root, seat),
-        "current_block": _current_block(root),
+        "current_block": _current_block(root) + _links.block(root, item),
         "seat_rule_block": (seat_rule + "\n\n") if seat_rule else "",
         "policy_block": (policy + "\n\n") if policy else "",
         "verify_rule": _verify_rule(root),
@@ -1081,6 +1082,8 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     if state["available"] and state["dirty"] and not allow_dirty:
         if _land_finished(root):
             state = _git.dirty(root)
+    if state["available"] and state["dirty"] and not allow_dirty:
+        state = _without_live_writes(root, state)
     if state["available"] and state["dirty"] and not allow_dirty:
         # ANNOUNCED, not merely returned. This is a FLOOR refusal: it stops the
         # WHOLE board, not one item, and it was pull-only - board_digest.blocked
@@ -2133,6 +2136,31 @@ def _land_finished(root: str, limit: int = 40) -> bool:
             + " - landed by the harness after its run lost its watchdog")
         landed = landed or bool(made.get("ok"))
     return landed
+
+
+def _without_live_writes(root: str, state: dict) -> dict:
+    """The dirty-tree state minus files a STILL-RUNNING item wrote last.
+
+    MEASURED (adoore-island, 2026-10-02): three agents started on a clean
+    tree, the narrative run wrote design/dm/ and content/, and from that
+    second every other ready ticket was reserved and released on each tick,
+    "dispatch refused after reserve", until that one run finished. A live
+    run's own files are attributable (the hook logged the write) and land
+    in that run's commit when it settles, which is exactly the separation
+    the refusal exists to protect. Anything else dirty, a human's edit, a
+    file no hook saw, still stops the board.
+    """
+    try:
+        with _lock:
+            live = {f"item-{i}" for i, e in _live.items()
+                    if e["proc"].poll() is None}
+        if not live:
+            return state
+        last = _last_writers(root)
+    except Exception:
+        return state
+    rest = [p for p in state["paths"] if last.get(p) not in live]
+    return {**state, "paths": rest, "dirty": bool(rest)}
 
 
 def _last_writers(root: str) -> dict[str, str]:

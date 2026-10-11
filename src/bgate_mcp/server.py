@@ -8765,7 +8765,7 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     # The director is the top-level session: no BGATE_SEAT, no work item.
     # Keying on BGATE_SEAT == "director" refused the human's own queue_add.
     is_director = (_seat() or "") == "director" or not _caller_is_agent()
-    breadth = _q.scope_grade(brief, acceptance, size, title)
+    breadth = _q.scope_grade(brief, acceptance, size, title, root=_root())
     # THE DIRECTOR IS NOT EXEMPT. Measured: a seat stuck in run after run on
     # one ticket was nearly always a director brief several deliverables
     # wide; the warning it used to get was read and filed past.
@@ -8918,7 +8918,7 @@ def queue_add_chain(links: list, chain_id: str = "",
         grade = _q.scope_grade(str(link.get("brief") or ""),
                                str(link.get("acceptance") or ""),
                                str(link.get("size") or "medium"),
-                               str(link.get("title") or ""))
+                               str(link.get("title") or ""), root=_root())
         if (grade["score"] >= 2
                 and len(str(link.get("allow_broad") or "").strip()) < 20):
             return {"ok": False, "refused": "too_broad", "link": i,
@@ -9441,6 +9441,28 @@ def greenlight_advance(stage: str) -> dict:
 
 
 @_tool
+def greenlight_fast_track(why: str) -> dict:
+    """Skip the graybox hold: the director declares the loop KNOWN and the
+    project goes straight to the slice stage with every seat released.
+
+    For a genre whose loop needs no proving (a twin-stick arena, a run-and-gun
+    boss rush) the graybox stage costs hours of primitives and a verdict on a
+    loop everyone has played before. This records a graybox pass on the canon
+    world with ``why`` as the whole evidence, on the record in
+    greenlight_status forever, and advances to slice. It takes no waiver
+    past slice: the slice check and the key risks still gate production.
+    Human or director only; a seated agent is refused.
+    """
+    from bgate_core.design import greenlight as _gl
+
+    if _caller_is_agent() and (_seat() or "") != "director":
+        return _fail(PermissionError(
+            "only the human or the director fast-tracks a project - skipping "
+            "the proof of the loop is the human's call"))
+    return _gl.fast_track(_root(), why, by=_actor())
+
+
+@_tool
 def greenlight_waive(seat: str, reason: str, withdraw: bool = False) -> dict:
     """Let ONE seat through the current stage hold, on the record.
 
@@ -9642,7 +9664,15 @@ def queue_claim_next() -> dict:
                         "your current item and finish."}
     _log("queue", f"claimed #{item['id']} to continue after "
                   f"item {origin}", ref=str(item["id"]))
-    return {**item, "claimed": True,
+    # The same BUILDS ON / WAITS ON YOU block a fresh dispatch prints under the
+    # item: a claimed ticket otherwise arrives as a bare brief, and "depends on"
+    # degrades back to "starts after".
+    try:
+        from bgate_core.board import links as _links
+        foundation = _links.block(_root(), item).strip()
+    except Exception:                                             # noqa: BLE001
+        foundation = ""
+    return {**item, "claimed": True, "foundation": foundation,
             "note": (f"item #{item['id']} is yours. queue_complete your "
                      f"current item (#{origin}) first, then work this one "
                      "under the same lanes and rules, and queue_complete "
