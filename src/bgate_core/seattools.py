@@ -66,7 +66,7 @@ CORE: tuple[str, ...] = (
     "not_building_list", "recall", "ask_human",
     "asset_status", "asset_lock", "asset_release", "asset_track", "asset_verify",
     "asset_untrack",
-    "agent_activity", "provider_status", "bgate_doctor", "decide",
+    "agent_activity", "provider_status", "bgate_doctor", "decide", "copy_check",
     # EVERY SEAT PLANS ITS OWN DISCIPLINE. The domain plan is the end state
     # the seat builds toward; a seat that cannot read or revise it is back
     # to building against a feature list. plan_promote stays director-only.

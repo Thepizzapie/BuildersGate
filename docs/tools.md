@@ -6060,3 +6060,22 @@ boss with 0 deaths, measured telegraphs, traversal proofs and look audits, and
 the human's first verdict on playing it was "a flat just hold click game".
 Every gate asked whether the game could be cleared; none asked whether the
 player's decisions changed anything.
+
+## copy_check
+
+Is the game's text corny? Agent-written game text drifts into writer's-room
+zingers: twist endings ("I have rotated my confidence, not the key"), meta
+("I committed to the bit"), taglines ("Prod is watching."), accusatory tags
+("Root cause: you"). The human's word for it was "corny".
+
+The rule every writing seat now gets in its brief: write what the depicted
+thing really says, the way it really says it, played straight. The joke is the
+situation the player sees, never a line that announces it. At most one line in
+twenty is an outright gag.
+
+`copy_check(lines)` checks text you are about to write; `copy_check()` scans
+the project (prose string literals in src/ and scripts/, text values in
+content/ and dialogue/ JSON). Lexical tells always; with a Jev key, a "trying
+to be funny" score per line (>= 0.6 flags). Measured on Vibe Coder: the
+zingers scored 0.62-0.87, sincere lines 0.03-0.09. A project passes with at
+most 5% of lines flagged, and the release gate runs the same check.

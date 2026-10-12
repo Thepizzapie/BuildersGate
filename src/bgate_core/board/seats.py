@@ -673,9 +673,19 @@ def dispatch_rules(root: str | os.PathLike[str], seat: str) -> str:
         pass
     # The seat's OWN rules stay last, so an override file's text is the final
     # word on the prompt; the project's geometry route is a setting above it.
+    # EVERY SEAT THAT WRITES WORDS A PLAYER READS gets the voice rules: the
+    # human called agent-written game text "so corny" (vibe-coder, 2026-10-12).
+    voice = ""
+    if seat in VOICE_SEATS:
+        from ..design import voice as _voice
+        voice = _voice.RULES
     return "\n\n".join(part for part in
                         (OWNERSHIP_RULE, PRODUCTION_ROUTE_RULE, mesh_route,
-                         stop_and_ask, own) if part)
+                         stop_and_ask, voice, own) if part)
+
+
+#: Seats that write player-facing text (dialogue, UI copy, chat lines, cards).
+VOICE_SEATS = frozenset({"narrative", "gameplay", "director", "cinematic"})
 
 
 # ---------------------------------------------------------------------------
