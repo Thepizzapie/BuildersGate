@@ -117,3 +117,27 @@ def playtest_agent_install() -> dict:
         return {"ok": True, **_agentplay.install(_root())}
     except RuntimeError as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@_tool
+def copy_check(lines: list = None, paths: list = None, context: str = "") -> dict:
+    """Is this game text CORNY? Flags lines that are trying to be funny -
+    zingers, twist endings ('X, not Y'), winks, taglines, accusatory tags -
+    instead of sounding like the real thing the game depicts.
+
+    Pass `lines` to check text you are about to write, or nothing to scan the
+    project's own text (string literals that read as prose in src/ and
+    scripts/, text values in content/ and dialogue/ JSON; `paths` are globs to
+    scan instead). `context` names who is speaking ('an AI coding assistant's
+    chat replies'). Lexical tells always; the decision model's 'trying to be
+    funny' score (>= 0.6 flags) when a Jev key is set. A project passes with at
+    most 5% of its lines flagged. Built after the human called agent-written
+    game text "so corny". The rules every writing seat follows are in the
+    result's `rules`."""
+    from bgate_core.design import voice as _voice
+
+    spent = _budget()
+    if not spent.get("ok"):
+        return spent
+    found = list(lines or []) or _voice.scan(_root(), paths or ())
+    return _voice.check(found, context=context, root=_root())

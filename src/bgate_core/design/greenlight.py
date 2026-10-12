@@ -754,7 +754,7 @@ def presentation_check(root: str | os.PathLike[str]) -> dict:
                      ("rooms", _rooms_unmet), ("scale", _scale_unmet),
                      ("audio", _audio_unmet), ("board", _board_unmet),
                      ("golden_path", _golden_path_unmet),
-                     ("feel", _feel_unmet)):
+                     ("feel", _feel_unmet), ("copy", _copy_unmet)):
         try:
             found = list(fn(root) or [])
         except Exception as exc:                                  # noqa: BLE001
@@ -1038,6 +1038,30 @@ def _board_unmet(root) -> list[dict]:
                 clears_by="triage it: queue_update(severity=showstopper|"
                           "major|minor)"))
     return out
+
+
+def _copy_unmet(root) -> list[dict]:
+    """The game's text reads as the real thing, not as zingers
+    (:mod:`bgate_core.design.voice`)."""
+    from ..board import findings as _findings
+    from . import voice as _voice
+
+    lines = _voice.scan(root)
+    if not lines:
+        return []
+    got = _voice.check(lines, root=root)
+    if got["ok"]:
+        return []
+    sample = "; ".join(f['line'][:80] for f in got["flagged"][:5])
+    return [_findings.make(
+        gate="copy", key="copy:corny", kind=_findings.BLOCKING,
+        claim=(f"{len(got['flagged'])} of {got['checked']} lines of game text "
+               f"read as try-hard jokes ({got['flagged_share']:.0%}, budget "
+               f"{_voice.GAG_BUDGET:.0%}): {sample}"),
+        tool="voice.check",
+        clears_by="rewrite the flagged lines so they say what the real thing "
+                  "would say, played straight (copy_check lists them and the "
+                  "rules), then run copy_check again")]
 
 
 def _feel_unmet(root) -> list[dict]:

@@ -360,6 +360,8 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # THE DECISION MODEL. A typed answer over a state, for any seat that
         # would otherwise guess a yes/no or a pick from a list.
         "decide",
+        # The corny-copy check: every seat that writes player-facing text.
+        "copy_check",
         # THE SHARED ASSET LIBRARY. Publish and import are per-project
         # copies any seat may need: art publishes what it made, gameplay
         # imports what a level needs, audio the same for a stem. Search
