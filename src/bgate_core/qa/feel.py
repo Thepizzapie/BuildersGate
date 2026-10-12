@@ -56,8 +56,18 @@ def feel_dir(root: Any) -> Path:
     return Path(root) / ".bgate" / "feel"
 
 
+#: Every spelling of "the page/scene the game boots into" is ONE scene.
+#: Measured (vibe-coder): QA checked '' and then 'index.html', the gate kept
+#: two records for one game, and two director items filed the same three
+#: fixes twice.
+_BOOT_ALIASES = {"", "/", "index.html", "/index.html", "./index.html"}
+
+
 def _slug(scene: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(scene).lower()).strip("_") or "boot"
+    raw = str(scene or "").strip().lower()
+    if raw in _BOOT_ALIASES:
+        return "boot"
+    return re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "boot"
 
 
 def measure(run_dir: str | Path) -> dict:
