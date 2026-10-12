@@ -18,7 +18,9 @@ extends Node
 ## Dictionary` owns the answer:
 ##     {"state": String or Dictionary,      # what the player can see
 ##      "options": {name: "description"}    # press the action called `name`
-##              or {name: {"press": ["move_right", "shoot"], "desc": "..."}},
+##              or {name: {"press": ["move_right", "shoot"], "tap": ["jump"], "desc": "..."}},
+##              (an action chosen again stays HELD; one listed under "tap" is released
+##               and pressed again, for a fresh jump/parry/dash edge)
 ##      "goal": "beat the boss"}            # optional, overrides the run's goal
 ## Without one it builds a generic view: the scene, the node in group "player",
 ## the nearest nodes in groups enemy/boss/hazard/parryable/pickup/
@@ -66,8 +68,9 @@ func _ready() -> void:
 func _physics_process(_delta: float) -> void:
 	if not _pending.is_empty():
 		for a in _pending:
-			_send(a, true)
-		_held = _pending
+			if not _held.has(a):
+				_send(a, true)
+				_held.append(a)
 		_pending = []
 	if _inflight:
 		return
@@ -114,18 +117,25 @@ func _on_done(_result: int, code: int, _headers: PackedStringArray,
 	if typeof(got) != TYPE_DICTIONARY:
 		return
 	var choice: String = str(got.get("choice", ""))
-	for a in _held:
-		_send(a, false)
-	_held = []
 	var opt: Dictionary = _options.get(choice, {})
+	# HOLD WHAT IS CHOSEN AGAIN, RELEASE THE REST. Measured (HARDCOVER pit at
+	# x=3100): releasing every action between decisions cut a variable-height
+	# jump at its first 0.1 s, so every jump_right was a hop into the pit. An
+	# action the option lists under "tap" is released and pressed again next
+	# frame instead, which is how a fresh jump/parry/dash edge is asked for.
+	var keep: Array = opt.get("press", [])
+	var tap: Array = opt.get("tap", [])
+	for a in _held.duplicate():
+		if not keep.has(a) or tap.has(a):
+			_send(a, false)
+			_held.erase(a)
 	if opt.has("button"):
 		var b = opt["button"]
 		if is_instance_valid(b) and b.is_visible_in_tree() and not b.disabled:
 			b.emit_signal("pressed")
-	# Pressed on the NEXT physics frame, so a repeated choice still makes an
-	# edge: just_pressed fires again for jump and parry, and a held move loses
-	# one frame in six.
-	_pending = opt.get("press", [])
+	# Pressed on the NEXT physics frame, so a released "tap" action makes a
+	# fresh edge (just_pressed fires again).
+	_pending = keep.duplicate()
 	var tel := get_node_or_null("/root/BGateTelemetry")
 	if tel != null and tel.has_method("emit_event"):
 		tel.emit_event("agent_decision", {"choice": choice,
@@ -158,7 +168,8 @@ func _normalise(raw) -> Dictionary:
 	for k in raw:
 		var v = raw[k]
 		if typeof(v) == TYPE_DICTIONARY:
-			out[str(k)] = {"press": v.get("press", [str(k)]), "desc": str(v.get("desc", ""))}
+			out[str(k)] = {"press": v.get("press", [str(k)]), "tap": v.get("tap", []),
+					"desc": str(v.get("desc", ""))}
 		else:
 			out[str(k)] = {"press": [str(k)], "desc": str(v)}
 	return out
