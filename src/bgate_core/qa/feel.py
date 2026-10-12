@@ -93,6 +93,11 @@ def measure(run_dir: str | Path) -> dict:
 def verdict(smart: dict, base: dict) -> dict:
     """The verdicts two runs earn, each with the number that earned it."""
     fails: dict[str, str] = {}
+    # A progress that never leaves 0 over a real run is a broken measurement,
+    # not a stationary player (measured: comment_section read 0.0 for a run that
+    # reached x=4856 because its FightSession had no stage_length).
+    if smart.get("progress_max") == 0 and (smart.get("decisions") or 0) >= 50:
+        smart = {**smart, "progress_max": None}
     if smart.get("progress_max") is None or smart.get("danger_share") is None:
         missing = [k for k in ("progress", "danger")
                    if smart.get(f"{k}_max" if k == "progress" else f"{k}_share") is None]

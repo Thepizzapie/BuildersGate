@@ -107,3 +107,12 @@ def test_gate_blocks_until_a_scene_passes(tmp_path):
 
 def test_gate_is_silent_where_no_bot_can_play(tmp_path):
     assert feel.blockers(tmp_path) == []
+
+
+def test_progress_stuck_at_zero_is_unmeasured_not_trivial_flat(tmp_path):
+    rows = [{"choice": c, "ts": 1000 + i, "progress": 0.0, "danger": i % 2 == 0}
+            for i, c in enumerate(["shoot", "jump", "dash"] * 30)]
+    smart = feel.measure(_run(tmp_path, "s", rows))
+    base = feel.measure(_run(tmp_path, "b", rows))
+    fails = feel.verdict(smart, base)["fails"]
+    assert "UNMEASURED" in fails and "FLAT" not in fails
