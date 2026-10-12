@@ -216,7 +216,8 @@ def escalate(root: Any, result: dict) -> dict:
     lines = [f"- {k}: {v}\n  change: {REMEDY.get(k, '')}"
              for k, v in fails.items()]
     brief = (
-        f"The feel check FAILED on {result.get('scene')} ({result.get('at')}). "
+        f"The feel check FAILED on {result.get('scene') or 'the boot scene'} "
+        f"({result.get('at')}). "
         "This is DESIGN work: the scene can be cleared but the player's "
         "decisions do not carry it. Do not answer it with art or polish; "
         "polish and content are held for this project until it passes.\n\n"
@@ -236,7 +237,8 @@ def escalate(root: Any, result: dict) -> dict:
         "pass closes this item by itself.")
     item = _queue.add(
         root, "director",
-        f"FEEL FAIL: {result.get('scene')} - " + ", ".join(fails)[:120],
+        f"FEEL FAIL: {result.get('scene') or 'the boot scene'} - "
+        + ", ".join(fails)[:120],
         brief=brief, priority=10, source=FEEL_SOURCE, source_ref=ref,
         kind="fix", severity="major", size="small",
         acceptance="design changes filed to gameplay/level with a feel "
