@@ -69,14 +69,37 @@ class Relay:
         self.max_usd = float(max_usd or 0.0)
         self.exhausted = ""
         self._t0 = time.time()
+        # A web game posts its telemetry here and says when its run is over
+        # (src/bgate/agent.ts); a Godot game writes its own file instead.
+        self.telemetry_path = out_dir / "telemetry.jsonl"
+        self.done = False
         relay = self
 
         class Handler(BaseHTTPRequestHandler):
+            def _cors(self) -> None:
+                # The browser page is served by the game's dev server, a
+                # different origin than this loopback relay.
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+
+            def do_OPTIONS(self) -> None:                        # noqa: N802
+                self.send_response(204)
+                self._cors()
+                self.end_headers()
+
             def do_POST(self) -> None:                           # noqa: N802
                 try:
                     size = int(self.headers.get("Content-Length") or 0)
                     body = json.loads(self.rfile.read(size) or b"{}")
-                    out = relay.decide(body)
+                    path = self.path.split("?", 1)[0]
+                    if path == "/events":
+                        out = relay.events(body.get("events") or [])
+                    elif path == "/done":
+                        relay.done = True
+                        out = {"ok": True}
+                    else:
+                        out = relay.decide(body)
                     code = 200
                 except Exception as exc:                         # noqa: BLE001
                     out, code = {"error": str(exc)}, 500
@@ -84,6 +107,7 @@ class Relay:
                         relay.errors.append(str(exc))
                 raw = json.dumps(out).encode("utf-8")
                 self.send_response(code)
+                self._cors()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
@@ -97,6 +121,14 @@ class Relay:
         self._thread = threading.Thread(target=self.server.serve_forever,
                                         daemon=True)
         self._thread.start()
+
+    def events(self, events: list) -> dict:
+        """Telemetry a web game forwards, in the telemetry.jsonl shape."""
+        with self._lock, open(self.telemetry_path, "a", encoding="utf-8") as f:
+            for e in events[:500]:
+                if isinstance(e, dict) and e.get("kind"):
+                    f.write(json.dumps(e) + "\n")
+        return {"ok": True}
 
     def decide(self, body: dict) -> dict:
         with self._lock:
@@ -235,14 +267,15 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
     ``decide_every``), ``max_usd`` to ten cents (a measured 45 s run is about
     1.5 cents). Hitting either kills the game and says which in the summary."""
     from bgate_adapters import godot
-    from .playtest import _godot_project_dir
+    from .playtest import _godot_project_dir, _web_project_dir
 
     if policy == "jev":
         from bgate_adapters import jev
         ok = jev.available(root)
         if not ok["available"]:
             raise RuntimeError(ok["reason"])
-    installed = install(root)
+    web_dir = _web_project_dir(root)
+    installed = install_web(web_dir) if web_dir is not None else install(root)
     game = _godot_project_dir(root)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = Path(root) / ".bgate" / "agentplay" / stamp
@@ -251,6 +284,14 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
         max_decisions = int(float(seconds) * 60 / max(1, int(decide_every)) * 1.5) + 20
     relay = Relay(root, out, goal=goal, policy=policy, model=model, seed=seed,
                   max_decisions=max_decisions, max_usd=max_usd)
+    if web_dir is not None:
+        t0 = time.time()
+        exit_code, timed_out = _play_web(web_dir, relay, out, seconds=seconds,
+                                         every_s=max(1, int(decide_every)) / 60.0,
+                                         scene=scene, headless=headless)
+        return _finish(relay, out, t0, timed_out, exit_code, policy=policy,
+                       goal=goal, seconds=seconds, max_usd=max_usd,
+                       max_decisions=max_decisions, installed=installed)
     telemetry = out / "telemetry.jsonl"
     args = [godot.find_godot(), "--path", str(game)]
     if headless:
@@ -283,19 +324,95 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
                     timed_out = True
                     kill_tree(proc)
                     break
+    return _finish(relay, out, t0, timed_out, proc.returncode, policy=policy,
+                   goal=goal, seconds=seconds, max_usd=max_usd,
+                   max_decisions=max_decisions, installed=installed)
+
+
+def _finish(relay: "Relay", out: Path, t0: float, timed_out: bool,
+            exit_code: Any, *, policy: str, goal: str, seconds: float,
+            max_usd: float, max_decisions: int, installed: dict) -> dict:
     relay.close()
     summary = summarize(out)
     summary.update({
         "ok": relay.count > 0 and not timed_out and not relay.exhausted,
         "policy": policy, "goal": goal, "game_seconds": seconds,
         "wall_seconds": round(time.time() - t0, 1), "timed_out": timed_out,
-        "exit_code": proc.returncode, "relay_errors": relay.errors[:5],
+        "exit_code": exit_code, "relay_errors": relay.errors[:5],
         "capped": relay.exhausted, "max_usd": max_usd,
         "max_decisions": max_decisions,
         "usd": round(relay.usd, 6), "install": installed, "dir": str(out)})
     (out / "summary.json").write_text(json.dumps(summary, indent=2),
                                       encoding="utf-8")
     return summary
+
+
+WEB_TEMPLATE = (Path(__file__).resolve().parents[2] / "templates" / "web"
+                / "shared" / "src" / "bgate" / "agent.ts")
+
+
+def install_web(web_dir: Path) -> dict:
+    """Put src/bgate/agent.ts in a web game. The game wires agent.tick and
+    agent.isPaused into its own loop - that part is the game's, by design."""
+    dest = Path(web_dir) / "src" / "bgate" / "agent.ts"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    copied = (not dest.is_file()
+              or dest.read_bytes() != WEB_TEMPLATE.read_bytes())
+    if copied:
+        shutil.copyfile(WEB_TEMPLATE, dest)
+    wired = any("agent.tick" in f.read_text(encoding="utf-8", errors="replace")
+                for f in (Path(web_dir) / "src").rglob("*.ts")
+                if f.name != "agent.ts")
+    return {"script": str(dest), "script_updated": copied, "wired": wired}
+
+
+def _play_web(web_dir: Path, relay: "Relay", out: Path, *, seconds: float,
+              every_s: float, scene: str, headless: bool) -> tuple:
+    """Serve the game, open it in a browser with the agent switched on, and
+    wait for the page's own end-of-run signal, a cap, or the wall clock.
+
+    ``scene`` is appended to the page URL as given (a path or a query the
+    game reads, e.g. "?shift=3")."""
+    from urllib.parse import urlencode
+
+    from bgate_adapters import web
+
+    dev = web.dev_start(str(web_dir))
+    if not dev.get("ok"):
+        raise RuntimeError(f"the dev server would not start: {dev.get('error')}")
+    url = dev["url"].rstrip("/") + "/" + str(scene or "").lstrip("/")
+    sep = "&" if "?" in url else "?"
+    url += sep + urlencode({"bgate_agent": relay.url, "bgate_seconds": seconds,
+                            "bgate_every": round(every_s, 4)})
+    from playwright.sync_api import sync_playwright
+
+    wall_cap = float(seconds) * 10 + 60
+    t0 = time.time()
+    timed_out = False
+    with open(out / "game.log", "w", encoding="utf-8") as log, \
+            sync_playwright() as play:
+        channel = web._system_channel() or None
+        browser = (play.chromium.launch(channel=channel, headless=headless)
+                   if channel else play.chromium.launch(headless=headless))
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 720})
+            page.on("console", lambda m: log.write(
+                f"{m.type.upper()}: {m.text[:500]}\n"))
+            page.on("pageerror", lambda e: log.write(f"ERROR: {e}\n"))
+            page.goto(url, wait_until="load")
+            while not relay.done and not relay.exhausted:
+                if time.time() - t0 > wall_cap:
+                    timed_out = True
+                    break
+                page.wait_for_timeout(500)
+            # A run that never decided anything usually means the game never
+            # calls agent.tick - say so instead of reporting an empty run.
+            if relay.count == 0:
+                log.write("ERROR: no decision was requested - is agent.tick "
+                          "called from the game loop?\n")
+        finally:
+            browser.close()
+    return (0 if relay.done else None), timed_out
 
 
 def summarize(out: Path) -> dict:
