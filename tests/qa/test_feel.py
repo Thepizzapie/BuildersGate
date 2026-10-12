@@ -167,3 +167,8 @@ def test_a_run_end_with_a_losing_status_is_a_death(tmp_path):
     won = feel.measure(_run(tmp_path, "w", rows, [
         {"kind": "run_end", "ts": 1030.5, "data": {"status": "shipped"}}]))
     assert lost["deaths"] == 1 and won["deaths"] == 0
+
+
+def test_every_spelling_of_the_boot_page_is_one_scene():
+    assert {feel._slug(x) for x in ("", "/", "index.html", "/index.html")} == {"boot"}
+    assert feel._slug("scenes/levels/arena.tscn") == "scenes_levels_arena_tscn"
