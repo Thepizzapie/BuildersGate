@@ -21,7 +21,11 @@ extends Node
 ##              or {name: {"press": ["move_right", "shoot"], "tap": ["jump"], "desc": "..."}},
 ##              (an action chosen again stays HELD; one listed under "tap" is released
 ##               and pressed again, for a fresh jump/parry/dash edge)
-##      "goal": "beat the boss"}            # optional, overrides the run's goal
+##      "goal": "beat the boss",            # optional, overrides the run's goal
+##      "progress": 0.42,                   # optional 0..1, how far through the scene
+##      "danger": true}                     # optional, something will hit the player soon
+## progress and danger are what playtest_feel_check measures; without them it
+## reports the scene unmeasured instead of passing it.
 ## Without one it builds a generic view: the scene, the node in group "player",
 ## the nearest nodes in groups enemy/boss/hazard/parryable/pickup/
 ## bgate_observable relative to it, visible label text, and one option per
@@ -93,6 +97,11 @@ func _physics_process(_delta: float) -> void:
 			"hold_s": float(_every) / float(Engine.physics_ticks_per_second)}
 	if obs.has("goal"):
 		body["goal"] = obs["goal"]
+	# The feel check's two measurements (bgate_core.qa.feel): how far through the
+	# scene the player is (0..1) and whether something is about to hurt them now.
+	for key in ["progress", "danger"]:
+		if obs.has(key):
+			body[key] = obs[key]
 	_inflight = true
 	_sent_msec = Time.get_ticks_msec()
 	var err := _req.request(_url, ["Content-Type: application/json"],

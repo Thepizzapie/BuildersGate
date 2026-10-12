@@ -6054,3 +6054,28 @@ the last events, errors, USD).
 
 Install or refresh the `BGateAgent` autoload without running anything. New
 projects from `bgate init` already have it.
+
+## playtest_feel_check
+
+Is a scene fun, or only clearable? A Jev bot plays the scene, then a bot that
+holds the Jev bot's most-used option for the whole run plays it again.
+
+| verdict | fails when |
+| --- | --- |
+| ONE_BUTTON | one option is over 60% of the smart bot's decisions |
+| FLAT | the hold-one-option bot reaches 85% or more of the smart bot's progress |
+| NO_PRESSURE | the hold-one-option bot is threatened on under 20% of decisions (a good player avoids danger, so the passive run is the honest measure) |
+| TRIVIAL | neither bot dies |
+| UNFAIR | 3 or more smart-bot deaths inside the same 5% of the scene |
+| UNMEASURED | the observer reports no `progress` (0..1) or no `danger` (bool) |
+
+Leaving the slice stage and the release gate both require every feel-checked
+scene to pass, and at least one to have been checked, on any project a bot can
+play (Godot today). The latest result per scene is in
+`.bgate/feel/<scene>.json`; a re-run replaces it.
+
+Why: HARDCOVER passed the slice check, a golden-path bot that cleared every
+boss with 0 deaths, measured telegraphs, traversal proofs and look audits, and
+the human's first verdict on playing it was "a flat just hold click game".
+Every gate asked whether the game could be cleared; none asked whether the
+player's decisions changed anything.

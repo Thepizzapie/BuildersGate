@@ -9,6 +9,7 @@ import json as _json
 
 from bgate_core.board import queue as _queue
 from bgate_core.qa import agentplay as _agentplay
+from bgate_core.qa import feel as _feel
 from bgate_mcp.server import _root, _tool, _work_item_id  # noqa: F401
 
 
@@ -81,6 +82,28 @@ def playtest_agent_run(goal: str, seconds: float = 60.0,
                               policy=policy, model=model, headless=headless,
                               scene=scene,
                               max_usd=min(cap, 1.0))
+    except (RuntimeError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@_tool
+def playtest_feel_check(scene: str, goal: str, seconds: float = 90.0) -> dict:
+    """Is this scene FUN or only clearable? Races a Jev bot against a bot that
+    holds the Jev bot's most-used option the whole run.
+
+    FAILS (any of): ONE_BUTTON (one option > 60% of decisions), FLAT (the
+    hold-one-option bot reaches >= 85% of the Jev bot's progress), NO_PRESSURE
+    (the hold-one-option bot is threatened on < 20% of decisions), TRIVIAL (neither bot dies), UNFAIR (3+
+    deaths in one 5% of the scene), UNMEASURED (the game's bgate_observe()
+    reports no `progress` 0..1 or `danger` bool). Leaving the slice and the
+    release gate both require every checked scene to pass. Built after
+    HARDCOVER passed every clearability gate and the human called it "a flat
+    just hold click game". Two runs of `seconds` game time; about $0.03."""
+    spent = _budget()
+    if not spent.get("ok"):
+        return spent
+    try:
+        return _feel.check(_root(), scene=scene, goal=goal, seconds=seconds)
     except (RuntimeError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
 
