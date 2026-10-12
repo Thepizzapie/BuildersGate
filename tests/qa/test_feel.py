@@ -158,3 +158,12 @@ def test_polish_and_content_wait_while_a_scene_fails(root):
     # control: once the scene passes, the polish is free again
     (d / "a.json").write_text(json.dumps({**_failing(), "verdict": "PASS"}))
     assert polish["id"] in {int(r["id"]) for r in queue.ready(root, limit=50)}
+
+
+def test_a_run_end_with_a_losing_status_is_a_death(tmp_path):
+    rows = _decisions(["accept", "reject", "scroll"] * 20)
+    lost = feel.measure(_run(tmp_path, "s", rows, [
+        {"kind": "run_end", "ts": 1030.5, "data": {"status": "fired"}}]))
+    won = feel.measure(_run(tmp_path, "w", rows, [
+        {"kind": "run_end", "ts": 1030.5, "data": {"status": "shipped"}}]))
+    assert lost["deaths"] == 1 and won["deaths"] == 0

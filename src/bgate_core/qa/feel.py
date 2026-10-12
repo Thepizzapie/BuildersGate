@@ -44,7 +44,11 @@ FLAT_RATIO = 0.85
 PRESSURE_MIN = 0.20
 UNFAIR_DEATHS = 3
 UNFAIR_BUCKET = 0.05
-DEATH_KIND = re.compile(r"death|died|dead|knocked", re.I)
+DEATH_KIND = re.compile(r"death|died|dead|knocked|fired|game_?over|lost|defeat", re.I)
+#: A run-ending event whose status says the player lost counts as a death too:
+#: measured on vibe-coder, losing was {"kind": "run_end", "data": {"status":
+#: "fired"}}, and a name-only match called a fired bot's run TRIVIAL.
+LOSS_STATUS = re.compile(r"fired|dead|died|lost|lose|game_?over|failed|defeat", re.I)
 FAILS = ("ONE_BUTTON", "FLAT", "NO_PRESSURE", "TRIVIAL", "UNFAIR", "UNMEASURED")
 
 
@@ -68,7 +72,12 @@ def measure(run_dir: str | Path) -> dict:
     danger = [bool(r["danger"]) for r in rows if r.get("danger") is not None]
     deaths = []
     for e in events:
-        if not DEATH_KIND.search(str(e.get("kind") or "")):
+        data = e.get("data") if isinstance(e.get("data"), dict) else {}
+        status = " ".join(str(data.get(k) or "") for k in
+                          ("status", "result", "outcome", "reason"))
+        ended = re.search(r"end|over|finish", str(e.get("kind") or ""), re.I)
+        if not (DEATH_KIND.search(str(e.get("kind") or ""))
+                or (ended and LOSS_STATUS.search(status))):
             continue
         ts = e.get("ts")
         at = None

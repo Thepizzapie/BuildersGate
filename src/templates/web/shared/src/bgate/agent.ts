@@ -62,10 +62,12 @@ let pending: string[] = [];
 let outbox: Record<string, unknown>[] = [];
 let flushAt = 0;
 
+// ONE dispatch, on document: it bubbles to window, so listeners on either see
+// the key exactly once. Measured (vibe-coder): dispatching on window AND
+// document delivered every key twice to window listeners, so "R" opened the
+// reject prompt and closed it again, and not one bot reject ever registered.
 function send(code: string, down: boolean): void {
   const type = down ? "keydown" : "keyup";
-  const ev = new KeyboardEvent(type, { code, key: code, bubbles: true });
-  window.dispatchEvent(ev);
   document.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true }));
 }
 
