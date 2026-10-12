@@ -1,6 +1,7 @@
 /** Wiring only: canvas, keys, the frame loop, and telemetry out. */
 import { draw, initialState, step, WORLD_H, WORLD_W, type Input } from "./game";
 import { telemetry } from "./bgate/telemetry";
+import { agent, type Observation } from "./bgate/agent";
 import { tunables } from "./tunables";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game");
@@ -37,12 +38,37 @@ telemetry.start();
 // into the physics step cannot be recovered from a video three weeks later.
 telemetry.emit("tunables", { ...tunables });
 
+// WHAT A BOT SEES (playtest_agent_run / playtest_feel_check). Sentences, the
+// arithmetic done, and only the options that can act right now. Replace this
+// with your game's own view as soon as there is more than a ledge to describe.
+function observe(): Observation {
+  const opts: Observation["options"] = {
+    left: { keys: ["KeyA"], desc: "run left" },
+    right: { keys: ["KeyD"], desc: "run right" },
+  };
+  if (state.grounded) {
+    opts.jump_right = { keys: ["Space", "KeyD"], tap: ["Space"], desc: "jump to the right" };
+  }
+  return {
+    state: `Player at x=${Math.round(state.x)} of ${WORLD_W}, ` +
+      (state.grounded ? "on the ground." : "in the air."),
+    options: opts,
+    goal: "reach the right edge",
+    progress: Math.min(1, Math.max(0, state.x / WORLD_W)),
+    danger: false,
+  };
+}
+
 let last = performance.now();
 function frame(now: number): void {
   const dt = (now - last) / 1000;
   last = now;
-  for (const event of step(state, input(), dt)) {
-    telemetry.emit(event.kind, event.data);
+  agent.tick(dt, observe);
+  // Lockstep: while a bot's decision is in flight the world holds still.
+  if (!agent.isPaused()) {
+    for (const event of step(state, input(), dt)) {
+      telemetry.emit(event.kind, event.data);
+    }
   }
   draw(ctx!, state);
   requestAnimationFrame(frame);

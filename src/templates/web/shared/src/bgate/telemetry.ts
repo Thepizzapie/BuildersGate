@@ -22,6 +22,8 @@
  *     telemetry.emit("jump", { air_time: 0.92, peak_h: 2.4 });
  */
 
+import { agent, report } from "./agent";
+
 export const SCHEMA_VERSION = 1;
 
 const FLUSH_INTERVAL_MS = 1000;
@@ -49,6 +51,9 @@ class Telemetry {
   start(): void {
     if (this.timer !== null) return;
     if (typeof fetch !== "function") return; // node test runner, not a browser
+    // A bot playtest sends every event to its relay (agent.ts); polling the
+    // dashboard as well only fills the console with failed requests.
+    if (agent.active) return;
     this.timer = setInterval(() => {
       void this.tick();
     }, Math.min(FLUSH_INTERVAL_MS, POLL_INTERVAL_MS));
@@ -60,6 +65,8 @@ class Telemetry {
   }
 
   emit(kind: string, data: Record<string, unknown> = {}): void {
+    // A bot playtest (bgate agent) gets every event too; a no-op otherwise.
+    report(kind, data);
     const now = Date.now();
     this.buffer.push({
       schema: SCHEMA_VERSION,

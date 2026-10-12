@@ -2,6 +2,7 @@
 import * as THREE from "three";
 import { cameraTarget, initialState, PROPS, GROUND_HALF, step, type Input } from "./game";
 import { telemetry } from "./bgate/telemetry";
+import { agent, type Observation } from "./bgate/agent";
 import { tunables } from "./tunables";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#game");
@@ -94,13 +95,39 @@ camera.position.set(0, tunables.camera_height, tunables.camera_distance);
 telemetry.start();
 telemetry.emit("tunables", { ...tunables });
 
+// WHAT A BOT SEES (playtest_agent_run / playtest_feel_check). Sentences, the
+// arithmetic done, only the options that can act now. Replace with the game's
+// own view once there is more than a yard of props to describe.
+function observe(): Observation {
+  const opts: Observation["options"] = {
+    forward: { keys: ["KeyW"], desc: "walk forward" },
+    back: { keys: ["KeyS"], desc: "walk back" },
+    left: { keys: ["KeyA"], desc: "strafe left" },
+    right: { keys: ["KeyD"], desc: "strafe right" },
+  };
+  if (state.grounded) opts.jump = { keys: ["Space"], tap: ["Space"], desc: "jump" };
+  const p = state.pos;
+  return {
+    state: `Player at x=${p.x.toFixed(1)} z=${p.z.toFixed(1)}, ` +
+      (state.grounded ? "on the ground." : "in the air."),
+    options: opts,
+    goal: "explore the yard",
+    progress: 0,
+    danger: false,
+  };
+}
+
 let last = performance.now();
 function frame(now: number): void {
   const dt = (now - last) / 1000;
   last = now;
 
-  for (const event of step(state, input(), dt)) {
-    telemetry.emit(event.kind, event.data);
+  agent.tick(dt, observe);
+  // Lockstep: while a bot's decision is in flight the world holds still.
+  if (!agent.isPaused()) {
+    for (const event of step(state, input(), dt)) {
+      telemetry.emit(event.kind, event.data);
+    }
   }
 
   player.position.set(state.pos.x, state.pos.y, state.pos.z);
