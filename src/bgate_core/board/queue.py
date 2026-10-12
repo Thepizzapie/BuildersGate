@@ -1374,8 +1374,25 @@ def release_dependents(root: str | os.PathLike[str], item_id: int,
     except Exception:
         left = ""
     released: list[int] = []
+    # A ticket PARKED FOR A SPLIT is not dead: its work is about to come back
+    # as smaller items. Measured (vibe-coder, 2026-10-12): the corpus item was
+    # parked for a split, its QA feel check lost the wait, dispatched against
+    # a half-written corpus and a blind observer. Dependents move to the split
+    # item instead, and the split's brief tells the director to hand them on.
+    split_row = db.connect(root).execute(
+        "SELECT id FROM work_item WHERE split_of = ? AND source = ? AND "
+        "status IN ('queued','dispatched','review','parked')",
+        (int(item_id), DECOMPOSE_SOURCE)).fetchone()
     for succ in successors(root, int(item_id)):
         if str(succ.get("status")) != "queued":
+            continue
+        if split_row is not None:
+            try:
+                add_dependency(root, int(succ["id"]), int(split_row["id"]))
+                cut_dependency(root, int(succ["id"]), int(item_id),
+                               by="autopilot")
+            except (LookupError, ValueError):
+                pass
             continue
         try:
             cut_dependency(root, int(succ["id"]), int(item_id), by="autopilot")
@@ -2258,10 +2275,16 @@ def request_split(root: str | os.PathLike[str], item_id: int,
         (int(item_id), DECOMPOSE_SOURCE)).fetchone()
     if item["status"] in ("done", "cancelled"):
         set_status(root, item_id, "queued", result="held for a split")
-    if get(root, item_id)["status"] != "parked":
-        park(root, item_id, f"split requested after {runs_of(item)} run(s): "
-                            f"{reason[:200]}")
+
+    def _park() -> None:
+        # AFTER the split item exists: parking releases dependents, and they
+        # are handed to the split item only if there is one to hand them to.
+        if get(root, item_id)["status"] != "parked":
+            park(root, item_id, f"split requested after {runs_of(item)} "
+                                f"run(s): {reason[:200]}")
+
     if existing:
+        _park()
         return {**get(root, item_id), "split_requested": int(existing["id"])}
     history = re.findall(r"--- REOPENED \(attempt \d+\) ---\n(.{0,300})",
                          item.get("brief") or "", re.S)
@@ -2290,13 +2313,18 @@ def request_split(root: str | os.PathLike[str], item_id: int,
         f"3. queue_cancel #{item_id} with 'split into #a-#b'. If it truly is "
         f"one deliverable, queue_unpark #{item_id} instead and say what "
         "changes about the next run - another identical run is not an "
-        "option.")
+        "option.\n"
+        f"4. Items that waited on #{item_id} now wait on THIS item. Before you "
+        "complete, make each of them wait on your LAST new link too "
+        "(queue_add_dependency), or they dispatch the moment this item "
+        "closes, ahead of the work they need.")
     split = add(root, "director", f"SPLIT #{item_id}: {item['title'][:80]}",
                 brief=brief, priority=9, source=DECOMPOSE_SOURCE,
                 source_ref=str(item_id), size="small",
                 acceptance=f"#{item_id} is cancelled or unparked and its work "
                            "is on the board as single-deliverable items",
                 split_of=int(item_id))
+    _park()
     activity.log(root, "queue", f"#{item_id} parked for a split after "
                                 f"{runs_of(item)} run(s) - #{split['id']}",
                  seat=item["seat"], ref=str(item_id))

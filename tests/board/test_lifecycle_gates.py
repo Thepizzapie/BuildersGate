@@ -142,3 +142,19 @@ def test_lanes_are_named_by_paths_not_by_words():
     wide = queue.brief_breadth("touch game/scripts/a.gd, game/assets/x.png, "
                                "game/levels/z.tscn and design/levels/l.md")
     assert any("lanes" in r for r in wide["reasons"])
+
+
+def test_a_split_hands_dependents_to_the_split_item_instead_of_cutting_them(root):
+    """vibe-coder 2026-10-12: a corpus item parked for a split released its
+    QA item, which then dispatched against half-written work."""
+    from bgate_core.board import queue
+
+    work = queue.add(root, "narrative", "write the corpus", brief="x")
+    check = queue.add(root, "qa", "check it", brief="x", depends_on=work["id"])
+    got = queue.request_split(root, work["id"], "too broad")
+    split_id = got["split_requested"]
+    parents = {int(r["depends_on"]) for r in db.connect(root).execute(
+        "SELECT depends_on FROM work_item_dep WHERE item_id = ? AND "
+        "(cut_at IS NULL OR cut_at = '')", (check["id"],))}
+    assert split_id in parents and work["id"] not in parents
+    assert queue.blocker(root, check["id"]) is not None
