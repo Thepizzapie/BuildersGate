@@ -116,3 +116,45 @@ def test_progress_stuck_at_zero_is_unmeasured_not_trivial_flat(tmp_path):
     base = feel.measure(_run(tmp_path, "b", rows))
     fails = feel.verdict(smart, base)["fails"]
     assert "UNMEASURED" in fails and "FLAT" not in fails
+
+
+# --- the board ---------------------------------------------------------------
+
+def _failing(scene="scenes/a.tscn", fails=None):
+    return {"scene": scene, "verdict": "FAIL", "at": "now",
+            "fails": fails or {"FLAT": "hold-shoot matched the smart bot"},
+            "smart": {"decisions": 900, "top_choice": "shoot",
+                      "progress_max": 0.5},
+            "baseline": {"progress_max": 0.48, "danger_share": 0.1},
+            "runs": {}}
+
+
+def test_a_failure_files_one_director_item_and_a_pass_closes_it(root):
+    from bgate_core.board import queue
+
+    got = feel.escalate(root, _failing())
+    item = queue.get(root, got["filed"])
+    assert item["seat"] == "director" and item["source"] == feel.FEEL_SOURCE
+    assert "FLAT" in item["title"] and "make the hold-one-input" in item["brief"]
+    # a second failing run of the same scene files nothing new
+    assert feel.escalate(root, _failing()) == {"open": got["filed"]}
+    passed = {**_failing(), "verdict": "PASS", "fails": {}}
+    assert feel.escalate(root, passed) == {"closed": [got["filed"]]}
+    assert queue.get(root, got["filed"])["status"] == "done"
+
+
+def test_polish_and_content_wait_while_a_scene_fails(root):
+    from bgate_core.board import queue
+
+    polish = queue.add(root, "art", "shinier boss", brief="x", kind="polish")
+    fix = queue.add(root, "gameplay", "give firing a heat cost", brief="x",
+                    kind="feature")
+    d = feel.feel_dir(root)
+    d.mkdir(parents=True)
+    (d / "a.json").write_text(json.dumps(_failing()))
+    ready_ids = {int(r["id"]) for r in queue.ready(root, limit=50)}
+    assert polish["id"] not in ready_ids and fix["id"] in ready_ids
+    assert "feel check is failing" in queue.slice_hold_reason(root, polish)
+    # control: once the scene passes, the polish is free again
+    (d / "a.json").write_text(json.dumps({**_failing(), "verdict": "PASS"}))
+    assert polish["id"] in {int(r["id"]) for r in queue.ready(root, limit=50)}
