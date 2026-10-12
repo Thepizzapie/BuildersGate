@@ -403,12 +403,11 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "consistency_check", "decision_add", "decision_list",
         "decision_settle",
         # greenlight_status is the answer to "why will my item not dispatch";
-        # the writers are DIRECTOR_ONLY, graybox_submit is gameplay's move.
+        # the writers are DIRECTOR_ONLY.
         "greenlight_status", "greenlight_thesis_set",
-        "greenlight_graybox_submit", "greenlight_graybox_verdict",
         "greenlight_advance", "greenlight_waive", "greenlight_supersede",
         "greenlight_risks_set", "greenlight_risk_retire",
-        "greenlight_lock", "greenlight_unlock", "greenlight_fast_track",
+        "greenlight_lock", "greenlight_unlock",
         "encounter_design_set", "scale_contract_set",
         "lore_add", "lore_brief", "lore_fact", "lore_link", "lore_list",
         "lore_update", "not_building_add", "not_building_list",
@@ -477,12 +476,12 @@ DIRECTOR_ONLY: frozenset[str] = frozenset({
     # director never opened.
     "project_set_dimension", "project_set_engine", "seat_configure",
     # THE STAGE IS THE DIRECTOR'S TO MOVE. A dispatched seat that could pass
-    # its own graybox, waive its own hold, or advance the project past the
+    # its own thesis, waive its own hold, or advance the project past the
     # gate holding it is not gated at all, the whole mechanism reduces to a
     # note. greenlight_status stays open to every seat (it is the answer to
-    # "why am I held"); these four are the arbitration.
-    "greenlight_thesis_set", "greenlight_graybox_verdict",
-    "greenlight_advance", "greenlight_waive", "greenlight_fast_track",
+    # "why am I held"); these three are the arbitration.
+    "greenlight_thesis_set",
+    "greenlight_advance", "greenlight_waive",
     # RETRACTING A GATE FINDING IS ARBITRATION. A seat that could withdraw the
     # row blocking its own work has not been gated, it has been asked nicely -
     # the same reduction the four above exist to prevent. The evidence for a

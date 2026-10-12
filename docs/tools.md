@@ -3355,31 +3355,33 @@ and record nothing, so an agent's runs were invisible to the QA seat.
 ## greenlight_advance
 
 ```text
-FUN, THEN FUNCTIONAL, THEN PRETTY. Only the HUMAN moves a project forward a
-stage; an agent asking for graybox -> production is refused (backward is
-open to anyone). And while the project is at thesis or graybox, every PAID
-generation refuses for everyone - the director included: image_generate,
-image_sprites, character_generate, blender_generate, cutout_kit_generate,
-music, video, speech all answer stage="greenlight" with the way through.
-Primitives, blockouts and placeholder sprites never touch a provider and are
-what a graybox is built from. greenlight_waive(seat, reason) is the one
-door for a thing that truly cannot wait, on the record.
+Only the HUMAN moves a project forward a stage; an agent asking for
+thesis -> slice is refused (backward is open to anyone). And while the
+project is at thesis, every PAID generation refuses for everyone - the
+director included: image_generate, image_sprites, character_generate,
+blender_generate, cutout_kit_generate, music, video, speech all answer
+stage="greenlight" with the way through. Primitives, blockouts and
+placeholder sprites never touch a provider and stay open.
+greenlight_waive(seat, reason) is the one door for a thing that truly
+cannot wait, on the record.
 ```
 
 ```text
 Move the project to the next production stage, or learn why it cannot.
 
-thesis -> graybox -> slice -> production -> release. Moving BACKWARD is
-always allowed and is not a failure: a project that discovers in production
-that its loop does not hold should drop to graybox and say so.
+thesis -> slice -> production -> release. Moving BACKWARD is always
+allowed and is not a failure: a project that discovers in production that
+its loop does not hold should drop to the slice and say so.
 
 Forward, each boundary asks for something real:
-  graybox      a settled mechanical thesis
-  slice        a graybox the director passed, plus an enemy roster that
-               is interactions rather than isolated state machines and an
-               objective list that is more than one commitment shape
+  slice        a settled mechanical thesis, plus (where declared) an enemy
+               roster that is interactions rather than isolated state
+               machines and an objective list that is more than one
+               commitment shape
   production   a vertical slice (slice rows exist), a SLICE CHECK that
-               ended 'VERDICT: PASS', and every key risk retired
+               ended 'VERDICT: PASS', a passing bot feel check
+               (playtest_feel_check) on every checked scene, and every key
+               risk retired
   release      the presentation gate: every room reviewed as a WHOLE room,
                every delivered asset measured at game scale, every wired
                audio cue heard in a gameplay capture, no open showstopper
@@ -3392,43 +3394,22 @@ incomplete presentation QA. Call greenlight_status('presentation') for the
 outstanding list.
 ```
 
-## greenlight_fast_track
-
-```text
-Skip the graybox hold: the director declares the loop KNOWN and the project
-goes straight to the slice stage with every seat released.
-
-For a genre whose loop needs no proving (a twin-stick arena, a run-and-gun
-boss rush) the graybox stage costs hours of primitives and a verdict on a
-loop everyone has played before. This records a graybox pass on the canon
-world with `why` as the whole evidence, on the record in greenlight_status
-forever (the `fast_track` block), and advances to slice. It takes no waiver
-past slice: the slice check and the key risks still gate production, and
-the presentation gate still binds release. Human or director only; a seated
-agent is refused. It needs a settled thesis: even a known loop names the
-decision the player repeats.
-
-Pairs with two settings for a fast board: `qa.gate` = `chains` (one QA
-verdict per chain instead of one per item; `none` for no automatic rounds)
-and `board.brief_chars` / `board.brief_lanes` (the breadth budget, so one
-agent can own a whole feature with a brief that says everything).
-```
-
 ## greenlight_status
 
 ```text
 WHAT STAGE IS THIS PROJECT AT, and what is it holding.
 
 THE FIRST TOOL TO CALL WHEN A QUEUED ITEM WILL NOT DISPATCH. Builders Gate
-holds whole SEATS until the work ahead of them is real: art, audio and
-cinematic do not start until gameplay has proved the core loop in one ugly
-graybox room and the director has ruled that the interaction is actually
-interesting. That hold is enforced in the readiness rule itself, so a held
+holds whole SEATS until the work ahead of them is real: at the thesis stage
+only director, narrative and qa dispatch until a mechanical thesis is
+settled, and at the slice stage only slice work dispatches. The loop is
+proven by the bot feel check (playtest_feel_check), which gates leaving the
+slice. That hold is enforced in the readiness rule itself, so a held
 item looks exactly like a blocked one from the board and this is where the
 reason lives.
 
 `section` narrows the read, because the whole thing is four gates:
-  ''            stage, thesis, graybox, held seats, what blocks the next
+  ''            stage, thesis, held seats, what blocks the next
                 stage, the default, and what a director wants
   'encounter'   the enemy roster and objective shapes, with their findings
   'scale'       the reference scale contract and anything unmeasured

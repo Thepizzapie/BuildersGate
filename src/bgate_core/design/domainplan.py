@@ -93,7 +93,7 @@ DOMAINS: dict[str, dict] = {
         "asks": [
             "At the game's camera and resolution, what must read at a glance - player, threat, pickup, hazard?",
             "What is the style anchor (pinned ref) every asset is judged against?",
-            "Which assets are in the slice, and which can stay graybox until production?",
+            "Which assets are in the slice, and which can stay placeholder until production?",
             "What is the palette and value structure that keeps the player readable on every background?",
         ],
     },

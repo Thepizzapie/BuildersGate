@@ -23,7 +23,7 @@ So this module holds two declarations and grades both:
                 vocabulary, and what that shape takes away from the player.
 
 :func:`production_blockers` is what the stage machine calls — a project does not
-leave graybox for production with a roster of isolated machines or a task list
+leave the thesis for the slice with a roster of isolated machines or a task list
 that is one shape eight times.
 
 WHY A FIXED SHAPE VOCABULARY. Free text would let "stand in the marked circle"
@@ -308,7 +308,7 @@ def objectives(root: str | os.PathLike[str]) -> list[dict]:
 # ── the gate ────────────────────────────────────────────────────────────────
 
 def production_blockers(root: str | os.PathLike[str]) -> list[str]:
-    """What this module holds against leaving graybox. Empty means go.
+    """What this module holds against leaving the thesis. Empty means go.
 
     A project with NEITHER a roster nor objectives declared is not blocked:
     plenty of games have no enemies and no quota tasks, and a gate that

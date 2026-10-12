@@ -1,62 +1,16 @@
-"""The fast track, the QA gate scope and the brief budget.
+"""The QA gate scope and the brief budget.
 
-Three levers for a board that is spending its slots on ceremony: a known
-loop skips the graybox, a chain gets one reviewer instead of one per link,
-and a brief may be as long as the feature needs.
+Two levers for a board that is spending its slots on ceremony: a chain gets
+one reviewer instead of one per link, and a brief may be as long as the
+feature needs.
 """
 from __future__ import annotations
 
 import pytest
 
 from bgate_core.board import queue
-from bgate_core.design import greenlight
 from bgate_core.store import settings
 from bgate_ui.agents import followup, qa_gate
-
-
-THESIS = {
-    "sentence": "At every gate the player chooses whether to risk the Trial "
-                "room for an epic sigil or take the Passage for a common one.",
-    "options": ["Trial", "Passage"],
-    "stakes": "HP does not regenerate between rooms, so a Trial at low HP ends the run.",
-    "tension": "greed against survival every ninety seconds",
-    "dominant_strategy": "always Passage; countered by boss HP that assumes two epics",
-    "cadence": "a room a minute, five rooms a realm, three realms",
-}
-
-
-def _at_thesis(root):
-    greenlight.advance(root, "thesis")
-    greenlight.set_thesis(root, THESIS, by="tester")
-
-
-class TestFastTrack:
-    def test_known_loop_skips_graybox_to_slice(self, root):
-        _at_thesis(root)
-        assert greenlight.held_seats(root)
-        state = greenlight.fast_track(
-            root, "a twin-stick arena roguelite; the loop needs no proving",
-            by="director")
-        assert state["stage"] == "slice"
-        assert state["fast_track"]["by"] == "director"
-        assert state["graybox"]["verdict"] == "pass"
-        assert state["graybox"]["evidence"][0].startswith("FAST TRACK")
-        assert "art" not in state["held_seats"]
-
-    def test_fast_track_needs_a_thesis(self, root):
-        greenlight.advance(root, "thesis")
-        with pytest.raises(greenlight.StageRefused):
-            greenlight.fast_track(root, "the loop is a known run-and-gun boss rush")
-
-    def test_fast_track_needs_a_reason(self, root):
-        _at_thesis(root)
-        with pytest.raises(ValueError):
-            greenlight.fast_track(root, "known")
-
-    def test_fast_track_only_skips_the_graybox(self, root):
-        # The fixture stamps production; there is nothing left to skip.
-        with pytest.raises(greenlight.StageRefused):
-            greenlight.fast_track(root, "the loop is known and production is open already")
 
 
 class TestQaGateScope:

@@ -12,10 +12,12 @@ The fix is a stage the whole board reads:
 
     thesis      Nobody produces anything. The director owes ONE SENTENCE naming
                 the decision the player repeatedly makes, plus what makes that
-                decision non-obvious. A feature list does not pass.
-    graybox     Gameplay (and tech) prove the loop in one ugly test room. No art
-                seat, no audio seat, no cinematic seat — those are HELD, by the
-                readiness rule itself, not by a convention agents can forget.
+                decision non-obvious. A feature list does not pass. Every
+                seat but director, narrative and qa is HELD, by the readiness
+                rule itself, not by a convention agents can forget.
+    slice       Every discipline works, but only on the vertical slice. The loop
+                is proven by the bot feel check (:mod:`bgate_core.qa.feel`,
+                ``playtest_feel_check``), which gates leaving the slice.
     production  The specialist fan-out the old pipeline started with.
     release     Production plus a presentation gate a release candidate cannot
                 close around.
@@ -27,10 +29,8 @@ with a queue full of dispatchable work gets ignored. Holding is enforced in
 :func:`bgate_core.board.queue.ready`, THE one copy of the readiness rule, so a held
 item is not dispatchable by either dispatcher and no third path exists.
 
-WHAT IS AND IS NOT BYPASSABLE. The graybox hold takes a director WAIVER, because
-a human who has already played the thing should not have to satisfy a checklist
-about it — the waiver is per-seat, recorded with its reason, and shows up in
-``state()``. The RELEASE gate takes no waiver of that kind: see
+WHAT IS AND IS NOT BYPASSABLE. The thesis hold takes a director WAIVER — the
+waiver is per-seat, recorded with its reason, and shows up in ``state()``. The RELEASE gate takes no waiver of that kind: see
 :func:`presentation_check`. The distinction is deliberate and it is the whole
 lesson from Night Shift, where a blocked presentation gate was routed around and
 the build shipped anyway.
@@ -52,16 +52,17 @@ SEAT = "director"
 DOC_KEY = "greenlight"
 
 THESIS = "thesis"
+#: LEGACY ONLY. The graybox stage is gone; a project stored at it reads as
+#: SLICE (see :func:`stage`). Never a member of STAGES.
 GRAYBOX = "graybox"
 SLICE = "slice"
 PRODUCTION = "production"
 RELEASE = "release"
-# THE SLICE STAGE sits between a proven loop and the content fan-out: every
+# THE SLICE STAGE sits between the thesis and the content fan-out: every
 # discipline works, but only on the vertical slice - one sequence at ship
-# quality - until a slice check passes and the key risks are retired. Studios
-# call it the last practical moment to cancel; production opening every seat
-# the moment the graybox passed was phase contamination by default.
-STAGES = (THESIS, GRAYBOX, SLICE, PRODUCTION, RELEASE)
+# quality - until a slice check passes, the feel check passes and the key
+# risks are retired. Studios call it the last practical moment to cancel.
+STAGES = (THESIS, SLICE, PRODUCTION, RELEASE)
 
 #: What a project is at before anybody says otherwise. Starting at ``thesis``
 #: rather than ``production`` is the change: an unconfigured project used to be
@@ -70,7 +71,6 @@ DEFAULT = THESIS
 
 STAGE_LABELS = {
     THESIS: "thesis — name the repeated decision before anything is built",
-    GRAYBOX: "graybox — prove the loop in one ugly room",
     SLICE: "slice — one sequence at ship quality, every discipline, nothing else",
     PRODUCTION: "production — specialist fan-out is open",
     RELEASE: "release — presentation QA binds on close",
@@ -79,12 +79,10 @@ STAGE_LABELS = {
 #: Which seats may be dispatched at each stage. A seat absent from the tuple is
 #: HELD: its queued items stay queued and say why in ``queue_list``.
 #:
-#: ``qa`` runs at every stage on purpose — the gate that verifies the graybox is
-#: itself a seat, and holding it would deadlock the stage it is meant to clear.
-#: An empty tuple means every seat, which is what production and release are.
+#: Only the thesis holds seats. An empty tuple means every seat, which is
+#: what slice, production and release are.
 STAGE_SEATS: dict[str, tuple[str, ...]] = {
     THESIS: ("director", "narrative", "qa"),
-    GRAYBOX: ("director", "narrative", "gameplay", "level", "tech", "qa"),
     # Every seat - and queue.ready() admits only slice work. See SLICE.
     SLICE: (),
     PRODUCTION: (),
@@ -159,6 +157,10 @@ def stage(root: str | os.PathLike[str]) -> str:
     the moment the first item lands.
     """
     got = str(_doc(root).get("stage") or "").strip()
+    if got == GRAYBOX:
+        # The graybox stage was removed; a project stored there is past its
+        # thesis, which is what the slice is. Read, never rewritten.
+        return SLICE
     if got in STAGES:
         return got
     return PRODUCTION if _already_building(root) else DEFAULT
@@ -202,30 +204,11 @@ def allows(root: str | os.PathLike[str], seat: str) -> tuple[bool, str]:
     held = waivers(root).get(seat)
     if isinstance(held, dict) and held.get("reason"):
         return True, ""
-    # A SUBMITTED GRAYBOX LIFTS THE HOLD. The hold exists so no asset is made
-    # for a loop nobody has played; once gameplay has submitted a graybox with
-    # evidence, the loop has been played. The human's verdict is a REVIEW of
-    # that loop, and a fail puts the hold back - it is not a padlock the board
-    # waits on. USER DIRECTIVE (2026-09-22): "if there is work to be done the
-    # work should be worked on, not hard stopped" - fourteen items sat held
-    # behind an unruled verdict for an hour.
-    if at == GRAYBOX:
-        got = _doc(root).get("graybox")
-        if (isinstance(got, dict) and got.get("scene")
-                and str(got.get("verdict") or "").strip().lower() != "fail"):
-            return True, ""
-    if at == THESIS:
-        return False, (
-            f"held: the project is at the {at!r} stage — no mechanical thesis "
-            f"has been settled, so there is nothing for the {seat} seat to be "
-            "producing against. Settle one with greenlight_thesis_set, then "
-            "greenlight_advance('graybox').")
     return False, (
-        f"held: the project is at the {at!r} stage — gameplay has not yet "
-        f"proved the core loop in a test room, so {seat} work would be "
-        "producing assets for a loop nobody has played. Submit the graybox "
-        "(greenlight_graybox_submit), have the director rule on it "
-        "(greenlight_graybox_verdict), then greenlight_advance('production'). "
+        f"held: the project is at the {at!r} stage — no mechanical thesis "
+        f"has been settled, so there is nothing for the {seat} seat to be "
+        "producing against. Settle one with greenlight_thesis_set, then "
+        "greenlight_advance('slice'). "
         f"If this particular {seat} item genuinely has to run first, "
         f"greenlight_waive('{seat}', reason) says so on the record.")
 
@@ -237,16 +220,15 @@ def held_seats(root: str | os.PathLike[str]) -> tuple[str, ...]:
     return tuple(s for s in _seats.DEFAULT_SEATS if not allows(root, s)[0])
 
 
-# FUN, THEN FUNCTIONAL, THEN PRETTY. Holding the art seat kept art ITEMS off
-# the board; it did not stop the director, or a gameplay agent with a prompt
-# in hand, from calling image_sprites at the graybox stage. Every paid
-# generation passes one gate (the server's provider preflight), so the stage
-# is read there too: while the project has not proved its loop, the
-# capability's owning seat is held and the call is refused, whoever makes it.
-# Primitives, blockouts and placeholder sprites never touch a provider and
-# stay open by construction - that is what a graybox is made of. The human's
-# way through is the same as for a seat: greenlight_graybox_verdict then
-# greenlight_advance('production'), or greenlight_waive(seat) on the record.
+# NOTHING IS BOUGHT BEFORE THE THESIS. Holding the art seat kept art ITEMS off
+# the board; it did not stop the director, or an agent with a prompt in hand,
+# from calling image_sprites at the thesis stage. Every paid generation passes
+# one gate (the server's provider preflight), so the stage is read there too:
+# while the thesis is unsettled the capability's owning seat is held and the
+# call is refused, whoever makes it. Primitives, blockouts and placeholder
+# sprites never touch a provider and stay open by construction. The way
+# through is the same as for a seat: greenlight_thesis_set then
+# greenlight_advance('slice'), or greenlight_waive(seat) on the record.
 GENERATION_SEAT: dict[str, str] = {
     "image": "art", "3d": "art", "animate": "art",
     "video": "cinematic",
@@ -282,13 +264,11 @@ def generation_allows(root: str | os.PathLike[str], capability: str,
     at = stage(root)
     return False, (
         f"held: {what or capability + ' generation'} is a {seat} deliverable "
-        f"and the project is at the {at!r} stage - fun, then functional, "
-        "then pretty. Nothing is painted, sung or modelled by a provider "
-        "until the human has played the graybox and said the loop is worth "
-        "it: build it from primitives, blockouts and placeholder sprites "
-        "(those never touch a provider and are open now). The way through: "
-        "greenlight_graybox_submit, the human rules with "
-        "greenlight_graybox_verdict and greenlight_advance('production'); "
+        f"and the project is at the {at!r} stage - no mechanical thesis is "
+        "settled, so nothing is painted, sung or modelled by a provider yet. "
+        "Primitives, blockouts and placeholder sprites never touch a provider "
+        "and are open now. The way through: greenlight_thesis_set, then "
+        "greenlight_advance('slice'); "
         f"or greenlight_waive('{seat}', reason) for the one thing that truly "
         "cannot wait, on the record.")
 
@@ -472,155 +452,6 @@ def set_thesis(root: str | os.PathLike[str], raw: Any, by: str = "") -> dict:
     return clean
 
 
-# ── the graybox ─────────────────────────────────────────────────────────────
-
-def graybox(root: str | os.PathLike[str]) -> dict:
-    got = _doc(root).get("graybox")
-    return got if isinstance(got, dict) else {}
-
-
-def _under_project(root: str | os.PathLike[str], scene: str) -> bool:
-    """Does ``scene`` name a real file in this project?
-
-    Accepts a Godot ``res://`` path, a project-relative path, or one already
-    prefixed with the ``game/`` subdirectory, because all three are what the
-    seats actually type.
-    """
-    base = os.fspath(root)
-    bare = scene[len("res://"):] if scene.startswith("res://") else scene
-    bare = bare.replace("/", os.sep).lstrip(os.sep)
-    return any(os.path.exists(os.path.join(base, part))
-               for part in (bare, os.path.join("game", bare)))
-
-
-def graybox_submit(root: str | os.PathLike[str], *, scene: str,
-                   evidence: list[str] | None = None, notes: str = "",
-                   by: str = "") -> dict:
-    """Gameplay says the loop is playable in an ugly room. Evidence required.
-
-    ``scene`` must exist on disk under the project. That check is the point:
-    the failure this replaces is a seat reporting a loop as proven with nothing
-    runnable behind the claim, which the sign-off gate could not catch because
-    what it reviewed was prose.
-    """
-    scene = str(scene or "").strip()
-    if not scene:
-        raise ValueError("a graybox submission names the scene that holds it")
-    if not _under_project(root, scene):
-        raise ValueError(
-            f"{scene!r} is not a file under this project — a graybox that "
-            "cannot be opened is a claim, and this gate exists because claims "
-            "were what got reviewed last time")
-    shots = [str(e).strip()[:400] for e in (evidence or []) if str(e).strip()]
-    if not shots:
-        raise ValueError(
-            "a graybox submission needs evidence: a playtest recording, a "
-            "screenshot, or telemetry from an actual run. The director is "
-            "being asked whether the interaction is interesting, and cannot "
-            "answer that from a scene path.")
-    doc = _doc(root)
-    got = {
-        "scene": scene, "evidence": shots,
-        "notes": str(notes or "").strip()[:MAX_TEXT],
-        "by": by or activity.current_actor(), "at": _now(),
-        "verdict": "", "verdict_notes": "", "verdict_by": "", "verdict_at": "",
-    }
-    doc["graybox"] = got
-    _save(root, doc)
-    activity.log(root, "greenlight", f"graybox submitted from {scene}",
-                 seat="gameplay")
-    _events.emit(root, "greenlight.graybox", ref=scene,
-                 payload={"stage": stage(root), "evidence": len(shots)})
-    ask_for_verdict(root)
-    return got
-
-
-VERDICT_QUESTION = ("GRAYBOX VERDICT NEEDED: the graybox is submitted and only "
-                    "you can rule on it (greenlight_graybox_verdict pass|fail). "
-                    "Until you do, art, audio and cinematic stay held and the "
-                    "board idles. Evidence: greenlight_status.")
-
-
-def verdict_pending(root: str | os.PathLike[str]) -> bool:
-    """A graybox is submitted and nobody has ruled on it."""
-    try:
-        got = _doc(root).get("graybox")
-    except Exception:
-        return False
-    return (isinstance(got, dict) and bool(got.get("scene"))
-            and not str(got.get("verdict") or "").strip()
-            and stage(root) == "graybox")
-
-
-def ask_for_verdict(root: str | os.PathLike[str]) -> bool:
-    """Put the graybox verdict in front of the human, once.
-
-    THE GATE IS HUMAN-ONLY BY DESIGN, so nothing on the board can clear it.
-    MEASURED (exit-67-r2, 2026-09-22): the gate passed, a director item was
-    filed to "call greenlight_graybox_verdict", ran three times into the
-    permission refusal, hit its run cap and the whole board sat behind a
-    decision the human was never asked. Returns True when a question was
-    recorded; False when one is already open or nothing is pending.
-    """
-    if not verdict_pending(root):
-        return False
-    try:
-        from ..board import steerbox as _steerbox
-        if any(VERDICT_QUESTION[:24] in str(q.get("question") or "")
-               for q in _steerbox.open_questions(root)):
-            return False
-        _steerbox.ask(root, VERDICT_QUESTION, refs=["greenlight_status"],
-                      seat=SEAT, by="greenlight",
-                      options=["PASS: the loop is interesting, open production",
-                               "FAIL: attack + dodge + hold interact, send gameplay back",
-                               "I will play it first"])
-    except Exception:
-        return False
-    activity.log(root, "greenlight",
-                 "graybox verdict is the human's: asked", seat=SEAT)
-    return True
-
-
-def graybox_verdict(root: str | os.PathLike[str], *, verdict: str,
-                    interesting: bool, why: str, by: str = "") -> dict:
-    """The director rules on whether the interaction is actually interesting.
-
-    ``why`` is mandatory in BOTH directions. A pass with no reason is the
-    rubber stamp this gate exists to stop; a fail with no reason sends gameplay
-    back with nothing to change.
-    """
-    verdict = str(verdict or "").strip().lower()
-    if verdict not in ("pass", "fail"):
-        raise ValueError("verdict is 'pass' or 'fail'")
-    why = " ".join(str(why or "").split())[:MAX_TEXT]
-    if len(why) < 20:
-        raise ValueError(
-            "say why in a sentence. A pass with no reason is the rubber stamp "
-            "this gate exists to stop, and a fail with no reason sends "
-            "gameplay back with nothing to change.")
-    if verdict == "pass" and not interesting:
-        raise ValueError(
-            "a pass that says the interaction is not interesting is the "
-            "contradiction this gate is for — fail it, or say what makes it "
-            "interesting")
-    doc = _doc(root)
-    got = doc.get("graybox")
-    if not isinstance(got, dict) or not got.get("scene"):
-        raise StageRefused(
-            "there is no graybox to rule on — greenlight_graybox_submit first")
-    got.update({"verdict": verdict, "interesting": bool(interesting),
-                "verdict_notes": why,
-                "verdict_by": by or activity.current_actor(),
-                "verdict_at": _now()})
-    doc["graybox"] = got
-    _save(root, doc)
-    activity.log(root, "greenlight", f"graybox {verdict}: {why[:120]}",
-                 seat=SEAT)
-    _events.emit(root, "greenlight.graybox", ref=str(got.get("scene") or ""),
-                 payload={"verdict": verdict, "interesting": bool(interesting)})
-    return got
-
-
 # ── advancing ───────────────────────────────────────────────────────────────
 
 def blockers(root: str | os.PathLike[str], to: str) -> list[str]:
@@ -637,23 +468,12 @@ def blockers(root: str | os.PathLike[str], to: str) -> list[str]:
     if STAGES.index(to) <= STAGES.index(at):
         return []                        # going back, or standing still
     out: list[str] = []
-    if STAGES.index(to) >= STAGES.index(GRAYBOX) and not thesis(root):
+    if STAGES.index(to) >= STAGES.index(SLICE) and not thesis(root):
         out.append(
             "no mechanical thesis is settled — greenlight_thesis_set. One "
             "sentence: what decision is the player repeatedly making that "
             "makes this game interesting?")
     if STAGES.index(to) >= STAGES.index(SLICE):
-        got = graybox(root)
-        if not got.get("scene"):
-            out.append(
-                "no graybox has been submitted — gameplay proves the loop in "
-                "one ugly test room first (greenlight_graybox_submit)")
-        elif got.get("verdict") != "pass":
-            ruled = got.get("verdict") or "unruled"
-            out.append(
-                f"the graybox verdict is {ruled!r}, not 'pass' — the director "
-                "rules on whether the interaction is actually interesting "
-                "(greenlight_graybox_verdict)")
         from ..level import encounter as _enc
 
         out.extend(_enc.production_blockers(root))
@@ -727,7 +547,7 @@ def advance(root: str | os.PathLike[str], to: str, by: str = "") -> dict:
 
     Moving BACKWARD is always allowed and is not an error: a project that
     discovers in production that its loop does not hold should be able to drop
-    to graybox without arguing with a state machine.
+    to the slice without arguing with a state machine.
     """
     to = str(to or "").strip().lower()
     if to not in STAGES:
@@ -744,66 +564,6 @@ def advance(root: str | os.PathLike[str], to: str, by: str = "") -> dict:
     _save(root, doc)
     activity.log(root, "greenlight", f"stage {at} -> {to}", seat=SEAT)
     _events.emit(root, "greenlight.stage", ref=to, payload={"from": at, "to": to})
-    return state(root)
-
-
-def fast_track(root: str | os.PathLike[str], why: str, by: str = "") -> dict:
-    """The director declares the loop KNOWN: skip the graybox and open the slice.
-
-    MEASURED (sunder, 2026-10-04): a twin-stick arena roguelite spent its
-    first hours as a blue capsule on a grey tray because the stage machine
-    insisted a loop every player has played be proved in primitives and
-    ruled on before any art seat could start. For a known genre the graybox
-    stage is pure ceremony. This records a graybox pass whose evidence is the
-    director's sentence, visible in greenlight_status forever, and advances
-    straight to the slice. Nothing past slice is skipped: the slice check and
-    the key risks still gate production, the presentation gate still binds
-    release.
-
-    Requires a settled thesis - the one thing a known loop still has to name
-    is the decision the player repeats - and a sentence of ``why``.
-    """
-    why = " ".join(str(why or "").split())[:MAX_TEXT]
-    if len(why) < 20:
-        raise ValueError(
-            "say why in a sentence: which known loop this is and why proving "
-            "it in primitives would teach nothing")
-    if not thesis(root):
-        raise StageRefused(
-            "no mechanical thesis is settled - even a known loop names the "
-            "decision the player repeats (greenlight_thesis_set) before the "
-            "fast track opens")
-    at = stage(root)
-    if STAGES.index(at) >= STAGES.index(SLICE):
-        raise StageRefused(
-            f"the project is already at {at!r}; the fast track only skips "
-            "the graybox")
-    actor = by or activity.current_actor()
-    doc = _doc(root)
-    scene = ""
-    try:
-        from ..board import canon as _canon
-        scene = str(_canon.world(root) or "")
-    except Exception:
-        scene = ""
-    doc["graybox"] = {
-        "scene": scene or "(fast track: no graybox scene)",
-        "evidence": [f"FAST TRACK: {why}"],
-        "notes": "graybox skipped by the director: the loop is a known genre",
-        "by": actor, "at": _now(),
-        "verdict": "pass", "interesting": True,
-        "verdict_notes": f"FAST TRACK: {why}",
-        "verdict_by": actor, "verdict_at": _now(),
-    }
-    doc["fast_track"] = {"why": why, "by": actor, "at": _now(), "from": at}
-    doc["stage"] = SLICE
-    doc["stage_since"] = _now()
-    doc["stage_by"] = actor
-    _save(root, doc)
-    activity.log(root, "greenlight",
-                 f"FAST TRACK {at} -> {SLICE}: {why[:120]}", seat=SEAT)
-    _events.emit(root, "greenlight.stage", ref=SLICE,
-                 payload={"from": at, "to": SLICE, "fast_track": True})
     return state(root)
 
 
@@ -897,8 +657,8 @@ def waive(root: str | os.PathLike[str], seat: str, reason: str,
 
     NOT AVAILABLE FOR THE RELEASE GATE, which takes no waiver — see
     :func:`presentation_check`. This is the escape hatch for the true case (a
-    tech seat building the graybox's own tooling, an art seat making the
-    graybox's placeholder blocks) and it costs a sentence, which is the price
+    tech seat building tooling before the thesis settles, an art seat making
+    placeholder blocks) and it costs a sentence, which is the price
     that keeps it from becoming the default route.
     """
     from ..board import seats as _seats
@@ -1364,13 +1124,10 @@ def state(root: str | os.PathLike[str]) -> dict:
         "label": STAGE_LABELS[at],
         "stages": list(STAGES),
         "thesis": thesis(root),
-        "graybox": graybox(root),
         "waivers": waivers(root),
         "risks": risks(root),
         "locks": locks(root),
         "held_seats": list(held_seats(root)),
-        "fast_track": (_doc(root).get("fast_track")
-                       if isinstance(_doc(root).get("fast_track"), dict) else None),
         "next": nxt,
         "blockers": blockers(root, nxt) if nxt else [],
         "since": str(_doc(root).get("stage_since") or ""),

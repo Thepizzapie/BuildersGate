@@ -1,9 +1,8 @@
-"""Fun, then functional, then pretty: no provider paints, models or scores
-anything until the human has played the graybox and said so.
+"""No provider paints, models or scores anything before the thesis settles.
 
 Holding the ART SEAT kept art items off the board. It did not stop the
-director, or a gameplay agent holding a prompt, from calling image_sprites
-at the graybox stage - the seat hold only ever reached dispatch. Every paid
+director, or an agent holding a prompt, from calling image_sprites at the
+thesis stage - the seat hold only ever reached dispatch. Every paid
 generation passes the server's provider preflight, so the stage is read
 there too, for every caller. These tests are the gate firing, the two
 honest ways through, and the rule that only the human opens the next stage.
@@ -22,8 +21,9 @@ class TestGenerationIsHeld:
     def test_image_generation_is_held_at_thesis(self, fresh_root):
         ok, why = greenlight.generation_allows(fresh_root, "image", "a portrait")
         assert ok is False
-        assert "fun, then functional, then pretty" in why
-        assert "greenlight_graybox_verdict" in why and "greenlight_waive('art'" in why
+        assert "no mechanical thesis" in why
+        assert "greenlight_thesis_set" in why and "greenlight_waive('art'" in why
+        assert "graybox" not in why
 
     @pytest.mark.parametrize("capability,seat", [
         ("image", "art"), ("3d", "art"), ("animate", "art"),
@@ -85,17 +85,9 @@ def wired(fresh_root, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_an_agent_may_not_rule_on_the_graybox(wired, monkeypatch):
-    monkeypatch.setenv("BGATE_SEAT", "gameplay")
-    got = await call("greenlight_graybox_verdict", verdict="pass", interesting=True,
-                     why="the loop is interesting because the choice is real")
-    assert "error" in got and "only the human" in got["error"]
-
-
-@pytest.mark.anyio
 async def test_an_agent_may_not_move_a_project_forward(wired, monkeypatch):
     monkeypatch.setenv("BGATE_SEAT", "gameplay")
-    got = await call("greenlight_advance", stage="graybox")
+    got = await call("greenlight_advance", stage="slice")
     assert "error" in got and "only the human" in got["error"]
     # Backward stays open to any seat: the refusal is about opening, not closing.
     got = await call("greenlight_advance", stage="thesis")

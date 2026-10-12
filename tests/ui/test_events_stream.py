@@ -125,7 +125,7 @@ class TestResume:
         for that name, so a kind the hello did not list must be announced
         before it is sent or the browser drops it on the floor."""
         events.emit(root, "item.done", ref="1")
-        _emit_later(root, "greenlight.stage", "graybox")
+        _emit_later(root, "greenlight.stage", "slice")
         got = _stream(client, "/api/events/stream?limit=1")
         assert "greenlight.stage" not in got[0]["data"]["kinds"]
         assert got[1]["event"] == "vocabulary"

@@ -158,7 +158,7 @@ LABELS: dict[str, str] = {
     # Gates
     "enforcement.profile": "Enforcement level",
     "gate.mode": "Completion approval",
-    "greenlight.generation_hold": "Hold generation until the graybox passes",
+    "greenlight.generation_hold": "Hold generation until the thesis is settled",
     "qa.require_evidence": "Require render evidence for scenes",
     "qa.max_rounds": "Automatic QA round limit",
     "qa.gated_seats": "Seats reviewed by QA",
@@ -256,7 +256,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.split_after_runs": "After this many runs an agent's reopen becomes a director split with the failure history. 0 is off.",
     "enforcement.profile": "Sets the default strictness for lanes, project boundaries, and approvals.",
     "gate.mode": "Choose whether completion needs no review, QA review, or your approval.",
-    "greenlight.generation_hold": "No paid art, 3D, music or video until you have played the graybox and advanced the stage. Off for a game whose art is the loop.",
+    "greenlight.generation_hold": "No paid art, 3D, music or video until the mechanical thesis is settled and the project has left the thesis stage. Off for a game whose art is the loop.",
     "qa.require_evidence": "Require a screenshot or render before scene changes can finish.",
     "qa.max_rounds": "Maximum automatic review and revision rounds before asking you.",
     "qa.gated_seats": "Worker seats whose completed items are sent to QA.",
@@ -604,11 +604,11 @@ SETTINGS: tuple[Setting, ...] = (
         store=("workspace", "director", "greenlight_hold", "on"),
         human_only=True,
         help="On (the default for a new project): while the project is at "
-             "thesis or graybox, every paid generation - image, 3D, animation, "
+             "the thesis stage, every paid generation - image, 3D, animation, "
              "music, video, speech - refuses for EVERY caller, the director "
-             "included, and the loop is built from primitives, blockouts and "
-             "placeholder sprites until you have played it and advanced the "
-             "stage. It is one route, not the only one: a game whose art is "
+             "included, until a mechanical thesis is settled and the project "
+             "advances to the slice. Primitives, blockouts and placeholder "
+             "sprites stay open. It is one route, not the only one: a game whose art is "
              "the mechanic (a drawing game, a photo game, a look-first jam) "
              "turns this off and keeps the seat holds and waivers as they "
              "were."),
