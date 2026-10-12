@@ -415,14 +415,9 @@ def rooms(root: str | os.PathLike[str]) -> list[str]:
 
     Derived rather than registered: a registry is a second list to keep in step
     with the filesystem, and the one that drifts is always the registry. A room
-    is a ``.tscn`` under a levels/rooms/scenes directory that is not the
-    graybox.
+    is a ``.tscn`` under a levels/rooms/scenes directory.
     """
-    from ..design import greenlight as _gl
-
     base = Path(root)
-    graybox = str((_gl.graybox(root) or {}).get("scene") or "")
-    graybox_tail = graybox.rsplit("/", 1)[-1].lower()
     out: list[str] = []
     for folder in ("game/levels", "game/rooms", "game/scenes/levels",
                    "levels", "rooms"):
@@ -431,8 +426,6 @@ def rooms(root: str | os.PathLike[str]) -> list[str]:
             continue
         for path in sorted(here.rglob("*.tscn")):
             rel = str(path.relative_to(base)).replace("\\", "/")
-            if graybox_tail and rel.lower().endswith(graybox_tail):
-                continue
             out.append(rel)
     return out
 

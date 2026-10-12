@@ -8014,8 +8014,8 @@ def decision_add(title: str, acceptance: str, leaves_dark: str,
 @_tool
 def board_focus_set(focus: str) -> dict:
     """ITEM 36 — set/clear board.focus, the ONE biome/vertical slice the board
-    works to shippable before a second opens (a graybox-verdict-and-after
-    rule; nothing before it). Free text, e.g. "Canal vertical slice"; "" clears
+    works to shippable before a second opens (a slice-and-after rule;
+    nothing before it). Free text, e.g. "Canal vertical slice"; "" clears
     it. Same authority as decision_add(state='settled') - a dispatched agent
     narrowing its OWN scope authorises its own work, so this is a director/
     human call, not a seat's. queue_add warns (never refuses) when a brief
@@ -9183,10 +9183,12 @@ def plan_status() -> dict:
 def greenlight_status(section: str = "") -> dict:
     """WHAT STAGE IS THIS PROJECT AT, and what is it holding.
 
-    THE FIRST TOOL TO CALL WHEN A QUEUED ITEM WILL NOT DISPATCH: whole SEATS
-    (art, audio, cinematic) are held until gameplay proves the core loop in a
-    graybox and the director rules on it, and a held item looks blocked from
-    the board. `section`: '' (stage, thesis, graybox, held seats), 'encounter',
+    THE FIRST TOOL TO CALL WHEN A QUEUED ITEM WILL NOT DISPATCH: at the
+    thesis stage every seat but director, narrative and qa is held until a
+    mechanical thesis is settled, and at the slice stage only slice work
+    dispatches; a held item looks blocked from the board. Ladder: thesis ->
+    slice -> production -> release; the bot feel check (playtest_feel_check)
+    proves the loop. `section`: '' (stage, thesis, held seats), 'encounter',
     'scale', 'rooms', 'presentation' (what a release candidate still owes;
     takes no waiver).
     Full notes: docs/tools.md#greenlight_status
@@ -9396,61 +9398,15 @@ def queue_accept_known_issue(item_id: int, why: str) -> dict:
 
 
 @_tool
-def greenlight_graybox_submit(scene: str, evidence: list,
-                              notes: str = "") -> dict:
-    """Say the core loop is PLAYABLE in one ugly test room, with proof.
-
-    The gameplay seat's move at the graybox stage. `scene` must be a real file
-    under the project and `evidence` must be something a person can look at -
-    a playtest recording, a screenshot, telemetry from an actual run. The
-    director is about to be asked whether the interaction is interesting and
-    cannot answer that from a scene path.
-
-    Untextured is the point. Do not wait for art; art is what this gate exists
-    to hold back until the answer is yes.
-    """
-    from bgate_core.design import greenlight as _gl
-
-    return _gl.graybox_submit(_root(), scene=scene,
-                              evidence=list(evidence or []), notes=notes,
-                              by=_actor())
-
-
-@_tool
-def greenlight_graybox_verdict(verdict: str, interesting: bool,
-                               why: str) -> dict:
-    """Rule on the graybox: is the interaction actually interesting?
-
-    THE DIRECTOR'S CALL, and the one that decides whether a whole production
-    run happens. Play it. If the loop reduces to attack + dodge + hold
-    interact, fail it and say so, that is a cheap no now and an expensive one
-    after the assets exist.
-
-    `why` is required in both directions. A pass with no reason is the rubber
-    stamp this gate exists to stop; a fail with no reason sends gameplay back
-    with nothing to change.
-    """
-    from bgate_core.design import greenlight as _gl
-
-    if _caller_is_agent():
-        return _fail(PermissionError(
-            "only the human rules on the graybox. An agent that passes its own "
-            "loop opens production for itself; submit it with "
-            "greenlight_graybox_submit and ask_human to play it."))
-    return _gl.graybox_verdict(_root(), verdict=verdict,
-                               interesting=bool(interesting), why=why,
-                               by=_actor())
-
-
-@_tool
 def greenlight_advance(stage: str) -> dict:
     """Move the project to the next production stage, or learn why it cannot.
 
-    thesis -> graybox -> slice -> production -> release. Moving BACKWARD is
-    always allowed. Forward: graybox needs a settled thesis; slice needs a
-    graybox the director passed plus an enemy roster of interactions and more
-    than one objective shape; production needs a passed slice check and every
-    key risk retired; release needs the presentation gate (every room
+    thesis -> slice -> production -> release. Moving BACKWARD is always
+    allowed. Forward: slice needs a settled thesis (plus, where declared, an
+    enemy roster of interactions and more than one objective shape);
+    production needs a passed slice check, a passing bot feel check
+    (playtest_feel_check) and every key risk retired; release needs the
+    presentation gate (every room
     reviewed whole, every asset measured, every audio cue heard). THE RELEASE
     BOUNDARY TAKES NO WAIVER - greenlight_status('presentation') lists what is
     owed.
@@ -9466,42 +9422,19 @@ def greenlight_advance(stage: str) -> dict:
             forward = True
         if forward:
             return _fail(PermissionError(
-                "only the human moves a project forward a stage - fun, then "
-                "functional, then pretty is the human's call to make. Moving "
+                "only the human moves a project forward a stage. Moving "
                 "backward is open to any seat."))
     return _gl.advance(_root(), stage, by=_actor())
-
-
-@_tool
-def greenlight_fast_track(why: str) -> dict:
-    """Skip the graybox hold: the director declares the loop KNOWN and the
-    project goes straight to the slice stage with every seat released.
-
-    For a genre whose loop needs no proving (a twin-stick arena, a run-and-gun
-    boss rush) the graybox stage costs hours of primitives and a verdict on a
-    loop everyone has played before. This records a graybox pass on the canon
-    world with ``why`` as the whole evidence, on the record in
-    greenlight_status forever, and advances to slice. It takes no waiver
-    past slice: the slice check and the key risks still gate production.
-    Human or director only; a seated agent is refused.
-    """
-    from bgate_core.design import greenlight as _gl
-
-    if _caller_is_agent() and (_seat() or "") != "director":
-        return _fail(PermissionError(
-            "only the human or the director fast-tracks a project - skipping "
-            "the proof of the loop is the human's call"))
-    return _gl.fast_track(_root(), why, by=_actor())
 
 
 @_tool
 def greenlight_waive(seat: str, reason: str, withdraw: bool = False) -> dict:
     """Let ONE seat through the current stage hold, on the record.
 
-    For the true case, a tech seat building the graybox's own tooling, an art
-    seat making its placeholder blocks, not as the route around the gate. It
-    costs a sentence naming what this seat has to do before the loop is proven
-    and why it cannot wait, and the waiver shows in greenlight_status forever.
+    For the true case, a tech seat building tooling before the thesis
+    settles, an art seat making placeholder blocks, not as the route around
+    the gate. It costs a sentence naming what this seat has to do now and why
+    it cannot wait, and the waiver shows in greenlight_status forever.
 
     `withdraw=True` takes it back. There is no waiver for the release gate.
     """

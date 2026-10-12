@@ -1,4 +1,4 @@
-"""The production stage: thesis, graybox, seat holds, and the release gate."""
+"""The production stage: thesis, slice, seat holds, and the release gate."""
 from __future__ import annotations
 
 import pytest
@@ -66,25 +66,23 @@ class TestSeatHolds:
         # Holding qa would deadlock the gate qa exists to clear.
         assert greenlight.allows(fresh_root, "qa")[0]
 
-    def test_gameplay_runs_at_graybox(self, fresh_root):
+    def test_every_seat_runs_at_slice(self, fresh_root):
         greenlight.set_thesis(fresh_root, _thesis())
-        greenlight.advance(fresh_root, greenlight.GRAYBOX)
-        assert greenlight.allows(fresh_root, "gameplay")[0]
-        assert not greenlight.allows(fresh_root, "art")[0]
+        greenlight.advance(fresh_root, greenlight.SLICE)
+        from bgate_core.board import seats
+        for seat in seats.DEFAULT_SEATS:
+            assert greenlight.allows(fresh_root, seat)[0], seat
+        assert greenlight.held_seats(fresh_root) == ()
 
     def test_ready_does_not_dispatch_a_held_seat(self, fresh_root):
         art = queue.add(fresh_root, "art", "paint the lobby")
-        gameplay = queue.add(fresh_root, "gameplay", "prove the loop")
-        greenlight.set_thesis(fresh_root, _thesis())
-        greenlight.advance(fresh_root, greenlight.GRAYBOX)
+        narrative = queue.add(fresh_root, "narrative", "write the pitch")
         ready = {int(r["id"]) for r in queue.ready(fresh_root)}
-        assert int(gameplay["id"]) in ready
+        assert int(narrative["id"]) in ready
         assert int(art["id"]) not in ready
 
     def test_a_waiver_releases_one_seat_and_only_that_seat(self, fresh_root):
-        greenlight.set_thesis(fresh_root, _thesis())
-        greenlight.advance(fresh_root, greenlight.GRAYBOX)
-        greenlight.waive(fresh_root, "art", "the graybox needs its placeholder "
+        greenlight.waive(fresh_root, "art", "the test room needs its placeholder "
                                       "blocks and nobody else can make them")
         assert greenlight.allows(fresh_root, "art")[0]
         assert not greenlight.allows(fresh_root, "audio")[0]
@@ -94,7 +92,7 @@ class TestSeatHolds:
             greenlight.waive(fresh_root, "art", "later")
 
     def test_a_waiver_can_be_withdrawn(self, fresh_root):
-        greenlight.waive(fresh_root, "art", "the graybox needs placeholder blocks "
+        greenlight.waive(fresh_root, "art", "the test room needs placeholder blocks "
                                       "and art is the only seat that makes them")
         greenlight.unwaive(fresh_root, "art")
         assert not greenlight.allows(fresh_root, "art")[0]
@@ -104,71 +102,44 @@ class TestSeatHolds:
         assert greenlight.held_seats(fresh_root) == ()
 
 
-class TestGraybox:
-    def test_a_scene_that_does_not_exist_is_a_claim(self, fresh_root):
-        with pytest.raises(ValueError, match="not a file under this project"):
-            greenlight.graybox_submit(fresh_root, scene="game/scenes/ghost.tscn",
-                                      evidence=["shot.png"])
+class TestLegacyGrayboxStage:
+    def test_a_project_stored_at_graybox_reads_as_slice(self, fresh_root):
+        from bgate_core.store import workspace
+        workspace.set(fresh_root, greenlight.SEAT, greenlight.DOC_KEY,
+                      {"stage": "graybox"})
+        assert greenlight.stage(fresh_root) == greenlight.SLICE
+        assert greenlight.state(fresh_root)["stage"] == "slice"
+        assert greenlight.held_seats(fresh_root) == ()
 
-    def test_evidence_is_required(self, fresh_root, tmp_path):
-        _write_scene(fresh_root)
-        with pytest.raises(ValueError, match="needs evidence"):
-            greenlight.graybox_submit(fresh_root, scene="game/scenes/graybox.tscn",
-                                      evidence=[])
+    def test_graybox_is_not_a_stage(self, fresh_root):
+        assert "graybox" not in greenlight.STAGES
+        with pytest.raises(ValueError):
+            greenlight.advance(fresh_root, "graybox")
 
-    def test_a_verdict_needs_a_reason_even_to_pass(self, fresh_root):
-        _submit(fresh_root)
-        with pytest.raises(ValueError, match="say why"):
-            greenlight.graybox_verdict(fresh_root, verdict="pass", interesting=True,
-                                       why="ok")
-
-    def test_a_pass_cannot_say_it_is_not_interesting(self, fresh_root):
-        _submit(fresh_root)
-        with pytest.raises(ValueError, match="contradiction"):
-            greenlight.graybox_verdict(
-                fresh_root, verdict="pass", interesting=False,
-                why="it is attack, dodge and hold interact, but ship it")
-
-    def test_there_is_nothing_to_rule_on_before_a_submission(self, fresh_root):
-        with pytest.raises(greenlight.StageRefused, match="no graybox"):
-            greenlight.graybox_verdict(
-                fresh_root, verdict="pass", interesting=True,
-                why="the light decision holds up over four rooms")
+    def test_state_has_no_graybox_keys(self, fresh_root):
+        got = greenlight.state(fresh_root)
+        assert "graybox" not in got and "fast_track" not in got
 
 
 class TestAdvance:
-    def test_graybox_needs_a_thesis(self, fresh_root):
+    def test_slice_needs_a_thesis(self, fresh_root):
         with pytest.raises(greenlight.StageRefused,
                            match="no mechanical thesis"):
-            greenlight.advance(fresh_root, greenlight.GRAYBOX)
+            greenlight.advance(fresh_root, greenlight.SLICE)
 
-    def test_production_needs_a_passed_graybox(self, fresh_root):
+    def test_thesis_straight_to_slice_needs_only_a_thesis(self, fresh_root):
         greenlight.set_thesis(fresh_root, _thesis())
-        greenlight.advance(fresh_root, greenlight.GRAYBOX)
-        with pytest.raises(greenlight.StageRefused, match="no graybox"):
-            greenlight.advance(fresh_root, greenlight.PRODUCTION)
-
-    def test_a_failed_graybox_does_not_open_production(self, fresh_root):
-        greenlight.set_thesis(fresh_root, _thesis())
-        greenlight.advance(fresh_root, greenlight.GRAYBOX)
-        _submit(fresh_root)
-        greenlight.graybox_verdict(
-            fresh_root, verdict="fail", interesting=False,
-            why="it reduces to attack, dodge and hold interact — the light "
-                "never actually changes what you do")
-        with pytest.raises(greenlight.StageRefused, match="not 'pass'"):
-            greenlight.advance(fresh_root, greenlight.PRODUCTION)
+        assert greenlight.blockers(fresh_root, greenlight.SLICE) == []
+        greenlight.advance(fresh_root, greenlight.SLICE)
+        assert greenlight.stage(fresh_root) == greenlight.SLICE
 
     def test_going_backward_is_allowed(self, fresh_root):
         _reach_production(fresh_root)
-        greenlight.advance(fresh_root, greenlight.GRAYBOX)
-        assert greenlight.stage(fresh_root) == greenlight.GRAYBOX
+        greenlight.advance(fresh_root, greenlight.SLICE)
+        assert greenlight.stage(fresh_root) == greenlight.SLICE
 
-    def test_an_isolated_enemy_roster_blocks_production(self, fresh_root):
+    def test_an_isolated_enemy_roster_blocks_the_slice(self, fresh_root):
         greenlight.set_thesis(fresh_root, _thesis())
-        greenlight.advance(fresh_root, greenlight.GRAYBOX)
-        _submit(fresh_root)
-        _pass(fresh_root)
         encounter.set_roster(fresh_root, [
             {"name": "Shambler", "role": "melee",
              "pressure": "closes the distance and forces you to move"},
@@ -176,7 +147,7 @@ class TestAdvance:
              "pressure": "punishes you for standing still in the open"},
         ])
         with pytest.raises(greenlight.StageRefused, match="enemy design"):
-            greenlight.advance(fresh_root, greenlight.PRODUCTION)
+            greenlight.advance(fresh_root, greenlight.SLICE)
 
 
 class TestReleaseGate:
@@ -204,31 +175,8 @@ class TestReleaseGate:
             greenlight.advance(fresh_root, greenlight.RELEASE)
 
 
-def _write_scene(fresh_root):
-    scene = fresh_root / "game" / "scenes"
-    scene.mkdir(parents=True, exist_ok=True)
-    (scene / "graybox.tscn").write_text("[gd_scene format=3]\n", encoding="utf-8")
-    (fresh_root / "shot.png").write_bytes(b"not really a png")
-
-
-def _submit(fresh_root):
-    _write_scene(fresh_root)
-    return greenlight.graybox_submit(
-        fresh_root, scene="game/scenes/graybox.tscn", evidence=["shot.png"])
-
-
-def _pass(fresh_root):
-    return greenlight.graybox_verdict(
-        fresh_root, verdict="pass", interesting=True,
-        why="over four rooms the light decision kept changing what I did — "
-            "twice I crossed blind and regretted it")
-
-
 def _reach_production(fresh_root):
     greenlight.set_thesis(fresh_root, _thesis())
-    greenlight.advance(fresh_root, greenlight.GRAYBOX)
-    _submit(fresh_root)
-    _pass(fresh_root)
     greenlight.advance(fresh_root, greenlight.SLICE)
     clear_slice(fresh_root)
     greenlight.advance(fresh_root, greenlight.PRODUCTION)

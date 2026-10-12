@@ -1109,7 +1109,7 @@ def _with_chain_state(root: Path, row: dict) -> dict:
         return row
 
     # THE PRODUCTION STAGE HOLDS WHOLE SEATS, and it holds them ahead of any
-    # dependency — an art item at the graybox stage will not dispatch however
+    # dependency — an art item at the thesis stage will not dispatch however
     # clean its predecessors are. Reported first for that reason: showing the
     # dependency instead sends somebody to fix the wrong thing.
     if status == "queued":

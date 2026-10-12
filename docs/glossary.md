@@ -161,11 +161,13 @@ the change lands in the activity ledger and on the bus.
 ## Design and story
 
 **Production stage**
-Which of four things this project is allowed to be doing: `thesis`, `graybox`,
-`production`, `release`. Stages hold whole **seats** — at `graybox`, art, audio
-and cinematic do not dispatch at all — and the hold is enforced in the readiness
-rule itself, not as advice (`src/bgate_core/design/greenlight.py`). A project that has
-never stored a stage is read from its board: one with work already dispatched is
+Which of four things this project is allowed to be doing: `thesis`, `slice`,
+`production`, `release`. Stages hold whole **seats** — at `thesis`, only
+director, narrative and qa dispatch — and the hold is enforced in the readiness
+rule itself, not as advice (`src/bgate_core/design/greenlight.py`). At `slice`
+every seat works, but only on the vertical slice; the bot feel check
+(`playtest_feel_check`) proves the loop and gates leaving it. A project stored
+at the retired `graybox` stage reads as `slice`. A project that has never stored a stage is read from its board: one with work already dispatched is
 at `production`; a new one starts at `thesis`. `greenlight_status` is the read.
 
 **Mechanical thesis**
@@ -177,12 +179,6 @@ decision, and the cadence. A premise is not a thesis and is refused as one —
 the sentence has to name an act of choosing. It travels in every seat brief,
 because a feature list is buildable and a decision structure is not derivable
 from one.
-
-**Graybox**
-One ugly test room in which gameplay proves the core loop, submitted with
-evidence a person can look at and ruled on by the director: *is the interaction
-actually interesting?* A fail here is a cheap no. The same no after the
-specialist fan-out costs every asset already made.
 
 **Commitment shape**
 What an objective takes away from the player for its duration, from a closed

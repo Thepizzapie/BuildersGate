@@ -2359,7 +2359,7 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
     # A RE-RUN BEHIND A FIX IS NOT A RE-ROLL. The run cap stops the same brief
     # being bought again and again; a gate that fails on a defect, gets the
     # defect fixed by another item and re-runs behind it is the loop working
-    # (the graybox gate found a wall per run and was told "no more runs" on
+    # (a gate item found a wall per run and was told "no more runs" on
     # the fourth). `after` names the fix; the reopen hangs behind it and does
     # not count against the cap.
     if after is None and at_attempt_cap(root, item):
@@ -2613,8 +2613,8 @@ def ready(root: str | os.PathLike[str], seat: str = "",
     where the reason surfaces.
 
     THE PRODUCTION STAGE IS APPLIED HERE, and here is the only place it could
-    have been. greenlight holds whole SEATS - art, audio and cinematic do not
-    dispatch until gameplay has proved the loop in a graybox - and the advisory
+    have been. greenlight holds whole SEATS - only director, narrative and qa
+    dispatch until a mechanical thesis is settled - and the advisory
     version of that rule (a line in the director's brief) lost every time it
     competed with a queue full of dispatchable work. A seat held by the stage
     is filtered out exactly like a blocked successor, for the same reason: this
@@ -2656,7 +2656,8 @@ def ready(root: str | os.PathLike[str], seat: str = "",
     # PLAN FIRST. Once a project writes any domain plan, a seat whose own
     # discipline has none is held - except for the planning item itself,
     # which is how the hold ends. The planning item also passes the STAGE
-    # hold: planning art during graybox is exactly when it should happen.
+    # hold: planning art before the thesis settles is exactly when it should
+    # happen.
     try:
         from ..design import domainplan as _domainplan
         unplanned = _domainplan.planning_held(root)

@@ -232,26 +232,23 @@ thesis      Write the ONE SENTENCE: what decision is the player repeatedly
             A premise ("a tense horror game about surviving the night shift")
             is refused. It is not a decision.
 
-graybox     Gameplay proves that loop in ONE UGLY ROOM.  No art, no audio, no
-            cinematic, those seats do not dispatch at this stage, at all, and
-            no provider paints, models or scores anything for ANY caller
+            Until it is settled only director, narrative and qa dispatch,
+            and no provider paints, models or scores anything for ANY caller
             (greenlight.generation_hold, on by default; turn it off for a
-            game whose art is the mechanic). Primitives, blockouts and
-            placeholder sprites are what the room is built from.
-            greenlight_graybox_submit with a scene and evidence somebody can
-            look at; greenlight_graybox_verdict is the director playing it and
-            saying whether the interaction is actually interesting.
-            If it reduces to attack + dodge + hold interact, fail it here.
+            game whose art is the mechanic).
 
 slice       ONE SEQUENCE AT SHIP QUALITY, every discipline on it and nothing
-            else. To get here the graybox has to have PASSED, a declared
+            else. To get here the thesis has to be settled, a declared
             enemy roster has to be interactions rather than isolated state
             machines, and a declared objective list has to be more than one
             commitment shape wearing several names. Every seat dispatches,
             but only work on a vertical-slice plan row, fixes and gates.
+            The loop is proven by the bot feel check (playtest_feel_check):
+            a decision-model bot has to beat a hold-one-button bot.
 
 production   The specialist fan-out. To get here a SLICE CHECK has to have
-            passed (filed automatically once every slice row is built) and
+            passed (filed automatically once every slice row is built), the
+            feel check has to pass on every checked scene, and
             every key risk on the thesis (greenlight_risks_set) has to be
             retired: confirmed or modified with evidence, or accepted by you.
             Inside production, greenlight_lock('feature') is alpha (no new

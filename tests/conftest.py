@@ -181,8 +181,8 @@ def root(tmp_path, _seed_project):
 
     THE STAGE IS STAMPED TO 'production' HERE, and it is the fixture's job
     rather than each test's. A real new project starts at `thesis`, where
-    greenlight holds the art, audio and cinematic seats until a graybox has
-    been proved — which is the point of the whole mechanism and is exercised
+    greenlight holds every seat but director, narrative and qa until a
+    mechanical thesis is settled — which is the point of the whole mechanism and is exercised
     in tests/level/test_greenlight.py against `fresh_root` below. Every OTHER test in
     this suite is about something else and was written against a board with no
     stage on it; making 1,600 of them settle a mechanical thesis first would
