@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from bgate_core import assets, db
+from bgate_core.store import assets, db
 
 
 @pytest.fixture()
@@ -137,7 +137,7 @@ def test_a_superseded_artifact_is_not_reported_as_an_orphan(root):
     Found on two raw synthesis sources whose processed siblings are what the
     game loads.
     """
-    from bgate_core import artifacts
+    from bgate_core.store import artifacts
 
     _make(root, "assets/audio/hum_raw.wav")
     artifacts.register(root, "sfx_hum_raw", "assets/audio/hum_raw.wav",
@@ -160,7 +160,7 @@ def test_a_superseded_artifact_is_not_reported_as_an_orphan(root):
 
 def test_an_ordinary_orphan_is_still_reported(root):
     """CONTROL: the filter must not swallow orphans that ARE a problem."""
-    from bgate_core import artifacts
+    from bgate_core.store import artifacts
 
     _make(root, "assets/audio/forgotten.wav")
     artifacts.register(root, "sfx_forgotten", "assets/audio/forgotten.wav",
