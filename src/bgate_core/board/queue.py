@@ -154,7 +154,7 @@ SEVERITIES = ("showstopper", "major", "minor")
 #: Sources whose items are repairs by construction.
 FIX_SOURCES = frozenset({
     "playtest", "playtest-triage", "playtest-repro", "qa-gate-escalation",
-    FAILURE_ESCALATION_SOURCE, "unblock",
+    FAILURE_ESCALATION_SOURCE, "unblock", "feel-check",
 })
 #: Process work: it reviews or plans the game rather than changing it. Never
 #: held by the slice stage and never refused by a lock.
@@ -2640,10 +2640,15 @@ def ready(root: str | os.PathLike[str], seat: str = "",
     # and offering it to a dispatcher is how it gets re-run for free while a
     # director item about it sits unread. Cleared by reopen(), which is the
     # explicit action.
+    # FUN BEFORE FINISH. While a feel check is failing, polish and content
+    # wait: dressing a scene whose decisions do not matter is the work that
+    # made HARDCOVER look finished and play flat (bgate_core.qa.feel).
+    feel_failing = _feel_failing(root)
     out = [c for c in candidates
            if (c["source"] == planning
                or (c["seat"] not in held and c["seat"] not in unplanned))
            and (not in_slice or _admitted_in_slice(c, slice_items))
+           and not (feel_failing and _feel_holds(c))
            and not c.get("exhausted_at")
            and not over_attempt_cap(root, c)
            and blocker(root, int(c["id"])) is None]
@@ -2685,8 +2690,39 @@ def _admitted_in_slice(item: dict, slice_items: set[int]) -> bool:
             or item.get("source") == "domain-plan")
 
 
+def _feel_failing(root: str | os.PathLike[str]) -> list[str]:
+    try:
+        from ..qa import feel as _feel
+        return [str(r.get("scene")) for r in _feel.results(root)
+                if r.get("verdict") != "PASS"]
+    except Exception:                                             # noqa: BLE001
+        return []
+
+
+def _feel_holds(item: dict) -> bool:
+    return (str(item.get("kind") or "") in ("polish", "content")
+            and item.get("source") not in FIX_SOURCES
+            and item.get("source") not in PROCESS_SOURCES)
+
+
+def feel_hold_reason(root: str | os.PathLike[str], item: dict) -> str:
+    """Why a failing feel check is holding this item, or ''."""
+    if not _feel_holds(item):
+        return ""
+    failing = _feel_failing(root)
+    if not failing:
+        return ""
+    return ("held: the feel check is failing on " + ", ".join(failing[:3])
+            + " - polish and content wait until the design passes "
+            "(playtest_feel_check); the director's feel-check item says what "
+            "to change")
+
+
 def slice_hold_reason(root: str | os.PathLike[str], item: dict) -> str:
-    """Why the slice stage is holding this item, or ''."""
+    """Why the slice stage (or a failing feel check) is holding this item, or ''."""
+    why = feel_hold_reason(root, item)
+    if why:
+        return why
     from ..design import greenlight as _greenlight
     try:
         if _greenlight.stage(root) != _greenlight.SLICE:

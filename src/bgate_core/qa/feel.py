@@ -157,7 +157,91 @@ def check(root: Any, *, scene: str, goal: str, seconds: float = 90.0,
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{_slug(scene)}.json").write_text(json.dumps(out, indent=2),
                                            encoding="utf-8")
+    try:
+        out["board"] = escalate(root, out)
+    except Exception as exc:                                     # noqa: BLE001
+        out["board"] = {"error": f"{type(exc).__name__}: {exc}"}
     return out
+
+
+FEEL_SOURCE = "feel-check"
+#: What each verdict asks the director for. DESIGN, not polish: the fix for a
+#: scene whose decisions do not matter is never a better texture.
+REMEDY = {
+    "ONE_BUTTON": "give the dominant input a cost or a reason to stop: heat or "
+                  "overheat, ammo with a reload, a second weapon that trades "
+                  "range for damage, enemies that must be ducked or aimed at",
+    "FLAT": "make the hold-one-input strategy lose: attacks aimed at where the "
+            "player stands, enemies that punish standing still, gaps and "
+            "set pieces that force movement and timing",
+    "NO_PRESSURE": "raise the threats per second a passive player faces: more "
+                   "and faster attacks, attacks that track the player, "
+                   "enemies arriving from behind and above",
+    "TRIVIAL": "raise difficulty until a decent run dies sometimes: tighter "
+               "telegraphs, more health on enemies, fewer safe spots",
+    "UNFAIR": "fix the one spot where deaths pile up: geometry, an unreadable "
+              "attack, or a hazard with no room to avoid it",
+    "UNMEASURED": "fix the game's bgate_observe(): it must report progress "
+                  "(0..1) and danger (bool) or the check cannot judge",
+}
+
+
+def escalate(root: Any, result: dict) -> dict:
+    """Put a failing scene on the director's desk; close it when it passes.
+
+    One open item per scene (source feel-check, source_ref the scene slug). A
+    re-run that still fails files nothing new; a pass closes the open item
+    with the passing numbers."""
+    from ..board import queue as _queue
+    from ..store import db
+    from ..store.util import rows as _rows
+
+    ref = _slug(result.get("scene") or "")
+    open_items = _rows(db.connect(root).execute(
+        "SELECT id FROM work_item WHERE source = ? AND source_ref = ? AND "
+        "status IN ('queued','dispatched','review','parked')",
+        (FEEL_SOURCE, ref)))
+    if result.get("verdict") == "PASS":
+        for it in open_items:
+            _queue.complete(root, int(it["id"]), skip_gate=True, result=(
+                f"feel check PASSED on {result.get('scene')} at "
+                f"{result.get('at')}: smart bot progress "
+                f"{(result.get('smart') or {}).get('progress_max')}, hold bot "
+                f"{(result.get('baseline') or {}).get('progress_max')}"))
+        return {"closed": [int(it["id"]) for it in open_items]}
+    if open_items:
+        return {"open": int(open_items[0]["id"])}
+    fails = result.get("fails") or {}
+    s, b = result.get("smart") or {}, result.get("baseline") or {}
+    lines = [f"- {k}: {v}\n  change: {REMEDY.get(k, '')}"
+             for k, v in fails.items()]
+    brief = (
+        f"The feel check FAILED on {result.get('scene')} ({result.get('at')}). "
+        "This is DESIGN work: the scene can be cleared but the player's "
+        "decisions do not carry it. Do not answer it with art or polish; "
+        "polish and content are held for this project until it passes.\n\n"
+        + "\n".join(lines) + "\n\n"
+        f"Numbers: smart bot {s.get('decisions')} decisions, choices "
+        f"{s.get('choices')}, progress {s.get('progress_max')}, deaths "
+        f"{s.get('deaths')} at {s.get('death_progress')}; hold-"
+        f"'{s.get('top_choice')}' bot progress {b.get('progress_max')}, "
+        f"threatened on {b.get('danger_share')} of decisions, deaths "
+        f"{b.get('deaths')}. Runs: {result.get('runs')}. Read a few decision "
+        "lines from the smart run's decisions.jsonl to see the scene the way "
+        "the bot saw it.\n\n"
+        "Do: decide the two or three changes that move these numbers, file "
+        "each as kind=feature or fix to the gameplay or level seat with an "
+        "acceptance naming the metric it should move, then file a qa item "
+        "depending on them that re-runs playtest_feel_check on this scene. A "
+        "pass closes this item by itself.")
+    item = _queue.add(
+        root, "director",
+        f"FEEL FAIL: {result.get('scene')} - " + ", ".join(fails)[:120],
+        brief=brief, priority=10, source=FEEL_SOURCE, source_ref=ref,
+        kind="fix", severity="major", size="small",
+        acceptance="design changes filed to gameplay/level with a feel "
+                   "re-check depending on them")
+    return {"filed": int(item["id"])}
 
 
 def results(root: Any) -> list[dict]:
