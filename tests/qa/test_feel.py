@@ -172,3 +172,15 @@ def test_a_run_end_with_a_losing_status_is_a_death(tmp_path):
 def test_every_spelling_of_the_boot_page_is_one_scene():
     assert {feel._slug(x) for x in ("", "/", "index.html", "/index.html")} == {"boot"}
     assert feel._slug("scenes/levels/arena.tscn") == "scenes_levels_arena_tscn"
+
+
+def test_a_run_whose_code_changed_mid_run_files_nothing(tmp_path, monkeypatch):
+    run_dir = _run(tmp_path, "s", _decisions(["shoot"] * 60))
+    monkeypatch.setattr(feel.agentplay, "run",
+                        lambda root, **k: {"dir": str(run_dir), "usd": 0.0})
+    versions = iter(["abc", "def"])
+    monkeypatch.setattr(feel, "_code_version", lambda root: next(versions))
+    filed = []
+    monkeypatch.setattr(feel, "escalate", lambda root, out: filed.append(out))
+    got = feel.check(tmp_path, scene="", goal="x", seconds=1)
+    assert got["stale"] is True and "skipped" in got["board"] and not filed

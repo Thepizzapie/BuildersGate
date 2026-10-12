@@ -158,6 +158,7 @@ def check(root: Any, *, scene: str, goal: str, seconds: float = 90.0,
           decide_every: int = 6, headless: bool = True,
           max_usd: float = 0.10) -> dict:
     """Race the smart bot against a hold-one-option bot on ``scene``."""
+    head_before = _code_version(root)
     smart = agentplay.run(root, goal=goal, seconds=seconds, scene=scene,
                           decide_every=decide_every, policy="jev",
                           headless=headless, max_usd=max_usd)
@@ -167,7 +168,9 @@ def check(root: Any, *, scene: str, goal: str, seconds: float = 90.0,
                          policy=f"hold:{smart_m['top_choice'] or ''}",
                          headless=headless)
     base_m = measure(base["dir"])
+    head_after = _code_version(root)
     out = {"scene": scene, "goal": goal, "seconds": seconds,
+           "code": head_before, "stale": head_before != head_after,
            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
            "smart": smart_m, "baseline": base_m,
            "runs": {"smart": smart["dir"], "baseline": base["dir"]},
@@ -176,6 +179,13 @@ def check(root: Any, *, scene: str, goal: str, seconds: float = 90.0,
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{_slug(scene)}.json").write_text(json.dumps(out, indent=2),
                                            encoding="utf-8")
+    # STALE RUNS FILE NOTHING. Measured (vibe-coder): a QA run that started
+    # before three fixes landed finished after them, and its director item
+    # filed two more fixes for a build that no longer existed.
+    if out["stale"]:
+        out["board"] = {"skipped": "the game's code changed while the bots "
+                                   "played; re-run the check on the new build"}
+        return out
     try:
         out["board"] = escalate(root, out)
     except Exception as exc:                                     # noqa: BLE001
@@ -263,6 +273,20 @@ def escalate(root: Any, result: dict) -> dict:
         acceptance="design changes filed to gameplay/level with a feel "
                    "re-check depending on them")
     return {"filed": int(item["id"])}
+
+
+def _code_version(root: Any) -> str:
+    """The game repo's HEAD plus whether the tree is dirty, or '' without git."""
+    import subprocess
+    try:
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=10).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(root), "status", "--porcelain",
+                                "--untracked-files=no"], capture_output=True,
+                               text=True, timeout=10).stdout.strip()
+        return head + ("+dirty:" + str(hash(dirty)) if dirty else "")
+    except Exception:                                            # noqa: BLE001
+        return ""
 
 
 def results(root: Any) -> list[dict]:
