@@ -700,6 +700,16 @@ def _slice_blockers(root: str | os.PathLike[str]) -> list[str]:
                 "a SLICE CHECK (filed automatically) that boots the game and "
                 "ends 'VERDICT: PASS'"
                 + (f"; the last one (#{last['id']}) did not" if last else ""))
+    # FUN, NOT ONLY CLEARABLE. HARDCOVER left the slice on a golden-path bot
+    # that cleared everything, and the human's first word on playing it was
+    # "a flat just hold click game". Content does not fan out over a slice
+    # whose decisions a hold-one-button bot matches (bgate_core.qa.feel).
+    try:
+        from ..qa import feel as _feel
+        out.extend(_feel.blockers(root))
+    except Exception as exc:                                      # noqa: BLE001
+        out.append(f"the feel check could not run ({type(exc).__name__}: "
+                   f"{exc}) - an unrunnable gate is a fail, not a skip")
     named = risks(root)
     if not named:
         out.append("no key risks are named - greenlight_risks_set with the top "
@@ -983,7 +993,8 @@ def presentation_check(root: str | os.PathLike[str]) -> dict:
                      ("assets", _assets_unmet),
                      ("rooms", _rooms_unmet), ("scale", _scale_unmet),
                      ("audio", _audio_unmet), ("board", _board_unmet),
-                     ("golden_path", _golden_path_unmet)):
+                     ("golden_path", _golden_path_unmet),
+                     ("feel", _feel_unmet)):
         try:
             found = list(fn(root) or [])
         except Exception as exc:                                  # noqa: BLE001
@@ -1267,6 +1278,22 @@ def _board_unmet(root) -> list[dict]:
                 clears_by="triage it: queue_update(severity=showstopper|"
                           "major|minor)"))
     return out
+
+
+def _feel_unmet(root) -> list[dict]:
+    """Every feel-checked scene passes, re-measured on the shipping build's
+    scenes - see :mod:`bgate_core.qa.feel`."""
+    from ..board import findings as _findings
+    from ..qa import feel as _feel
+
+    return [_findings.make(
+        gate="feel", key=f"feel:{i}", kind=_findings.BLOCKING, claim=line,
+        tool="feel.blockers",
+        clears_by=("change the design until playtest_feel_check passes: give "
+                   "holding one input a cost, make threats force movement, and "
+                   "re-run it; a feel result is replaced by the next run on the "
+                   "same scene"))
+        for i, line in enumerate(_feel.blockers(root))]
 
 
 def _golden_path_unmet(root) -> list[dict]:

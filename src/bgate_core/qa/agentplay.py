@@ -35,7 +35,9 @@ from ..runtime.proc import kill_tree, popen as _popen
 AGENT_AUTOLOAD = ("BGateAgent", "res://addons/bgate/bgate_agent.gd")
 TEMPLATE = (Path(__file__).resolve().parents[2] / "templates" / "godot"
             / "shared" / "addons" / "bgate" / "bgate_agent.gd")
-POLICIES = ("jev", "random")
+#: "hold:<option>" always picks that option when it is offered (else the
+#: first offered one) - the do-nothing-clever baseline the feel check races.
+POLICIES = ("jev", "random", "hold")
 #: Three, not more: measured on HARDCOVER, a longer history let one early
 #: choice (dash_left) reinforce itself into 90% of 511 decisions.
 HISTORY = 3
@@ -49,8 +51,9 @@ class Relay:
     def __init__(self, root: Any, out_dir: Path, *, goal: str, policy: str,
                  model: str = "", seed: int = 0, max_decisions: int = 0,
                  max_usd: float = 0.0) -> None:
-        if policy not in POLICIES:
-            raise ValueError(f"policy must be one of {POLICIES}")
+        if policy.split(":", 1)[0] not in POLICIES:
+            raise ValueError(f"policy must be one of {POLICIES} "
+                             "(hold as 'hold:<option>')")
         self.root, self.goal, self.policy, self.model = root, goal, policy, model
         self.log_path = out_dir / "decisions.jsonl"
         self._log = open(self.log_path, "a", encoding="utf-8")
@@ -118,7 +121,12 @@ class Relay:
                 f"RECENT CHOICES (oldest first): {', '.join(recent) or 'none'}\n"
                 f"STATE: {state[:STATE_MAX_CHARS]}")
         t0 = time.perf_counter()
-        if self.policy == "random" or len(options) == 1:
+        if self.policy.startswith("hold"):
+            want = self.policy.split(":", 1)[1] if ":" in self.policy else ""
+            choice = want if want in options else sorted(options)[0]
+            answer = {"choice": choice, "confidence": 0.0, "probabilities": {}}
+            usd, model = 0.0, self.policy
+        elif self.policy == "random" or len(options) == 1:
             choice = self._rng.choice(sorted(options))
             answer = {"choice": choice, "confidence": 0.0, "probabilities": {}}
             usd, model = 0.0, "random"
@@ -144,7 +152,8 @@ class Relay:
             self.count += 1
             self.usd += usd
             self._log.write(json.dumps({
-                "t": round(time.time() - self._t0, 3),
+                "t": round(time.time() - self._t0, 3), "ts": time.time(),
+                "progress": body.get("progress"), "danger": body.get("danger"),
                 "frame": body.get("frame"), "choice": choice,
                 "confidence": answer.get("confidence"),
                 "probabilities": answer.get("probabilities"),
