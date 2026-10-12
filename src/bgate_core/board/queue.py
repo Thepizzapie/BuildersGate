@@ -2712,6 +2712,15 @@ def _slice_item_ids(root: str | os.PathLike[str]) -> set[int]:
 
 
 def _admitted_in_slice(item: dict, slice_items: set[int]) -> bool:
+    # A slice item's OWN follow-up is slice work. Measured (vibe-coder): the
+    # wallpaper and the UI sounds were delivered by slice rows, the art and
+    # audio seats filed "wire it in" items as they should, and the stage held
+    # both - the slice could not finish because its integration was not on a
+    # plan row.
+    ref = str(item.get("source_ref") or "")
+    if ((item.get("depends_on") and int(item["depends_on"]) in slice_items)
+            or (ref.isdigit() and int(ref) in slice_items)):
+        return True
     return (int(item["id"]) in slice_items
             or (item.get("kind") or "") == "fix"
             or item.get("source") in PROCESS_SOURCES

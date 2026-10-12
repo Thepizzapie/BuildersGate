@@ -158,3 +158,13 @@ def test_a_split_hands_dependents_to_the_split_item_instead_of_cutting_them(root
         "(cut_at IS NULL OR cut_at = '')", (check["id"],))}
     assert split_id in parents and work["id"] not in parents
     assert queue.blocker(root, check["id"]) is not None
+
+
+def test_a_slice_items_follow_up_is_admitted_at_the_slice_stage():
+    from bgate_core.board.queue import _admitted_in_slice
+    follow_up = {"id": 59, "kind": "", "source": "seat:art", "source_ref": "46",
+                 "depends_on": 46}
+    stray = {"id": 60, "kind": "", "source": "seat:art", "source_ref": "",
+             "depends_on": None}
+    assert _admitted_in_slice(follow_up, {46})
+    assert not _admitted_in_slice(stray, {46})
