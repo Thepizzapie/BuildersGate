@@ -266,7 +266,9 @@ class TestPlayRoute:
     def test_no_build_is_a_clear_404(self, client):
         got = client.get("/play/")
         assert got.status_code == 404
-        assert "export" in got.json()["error"]["message"]
+        # The message has to name the way out, not the directory: a web project
+        # has no `export/` to point at, so Rebuild is what both engines offer.
+        assert "Rebuild" in got.json()["error"]["message"]
 
 
 class TestStaleBuildGuard:
