@@ -2385,11 +2385,10 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str, *,
         from ..store import writelog
         observed = writelog.summary(root, f"item-{item_id}")
         if observed:
-            already = ("\n\nALREADY ON DISK from the previous attempt — the "
-                       "harness observed these writes itself, so this is not a "
-                       "claim by the agent that made them. READ THEM BEFORE "
-                       "WRITING ANYTHING: continue from what is there, and "
-                       "regenerate only what is actually wrong.\n" + observed)
+            # Once: the salvage block in the reason may already list them.
+            if "ALREADY ON DISK" not in reason:
+                already = ("\n\nALREADY ON DISK from the previous attempt (seen by "
+                           "the harness); read before writing:\n" + observed)
     except Exception:
         already = ""
     verdict_text = ""

@@ -37,6 +37,16 @@ def test_the_prompt_names_the_seat_the_item_and_the_project(root, seat):
         assert rule in text
 
 
+def test_the_prompt_is_lean_and_carries_the_brief_inline(root):
+    """2026-10-12: the dispatch prompt was ~15 KB and every run then spent turns
+    on seat_brief. The prompt now carries the short brief itself."""
+    item = _item(root, "art")
+    text = dispatch._prompt_for(str(root), item)
+    assert "YOUR SEAT:" in text and "Lanes:" in text
+    assert "seat_brief for your role, ONCE" not in text
+    assert len(text) < 6000, len(text)
+
+
 def test_a_chained_item_carries_its_chain_and_a_lone_item_does_not(root):
     chained = dispatch._prompt_for(str(root), _item(root, chain_id="chain-7", chain_pos=2))
     lone = dispatch._prompt_for(str(root), _item(root))
