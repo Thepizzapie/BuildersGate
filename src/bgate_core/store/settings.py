@@ -256,7 +256,7 @@ DESCRIPTIONS: dict[str, str] = {
     "dispatch.split_after_runs": "After this many runs an agent's reopen becomes a director split with the failure history. 0 is off.",
     "enforcement.profile": "Sets the default strictness for lanes, project boundaries, and approvals.",
     "gate.mode": "Choose whether completion needs no review, QA review, or your approval.",
-    "greenlight.generation_hold": "No paid art, 3D, music or video until the mechanical thesis is settled and the project has left the thesis stage. Off for a game whose art is the loop.",
+    "greenlight.generation_hold": "No paid art, 3D, music or video until the mechanical thesis is settled and the project leaves the thesis stage. Off when art is the loop.",
     "qa.require_evidence": "Require a screenshot or render before scene changes can finish.",
     "qa.max_rounds": "Maximum automatic review and revision rounds before asking you.",
     "qa.gated_seats": "Worker seats whose completed items are sent to QA.",

@@ -790,8 +790,7 @@ class TestSalvageBeforeRetry:
         note = salvage.brief_note(root, item_id)
         assert "DO NOT REGENERATE" in note
         assert "game/cat.glb" in note
-        assert "not a claim the dead agent made about itself" in note
-        assert "paying twice" in note
+        assert "seen by the harness" in note
 
     def test_a_run_that_wrote_nothing_is_honestly_a_regenerate(self, root):
         item = _item(root, "art")

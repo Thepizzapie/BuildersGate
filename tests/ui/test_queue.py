@@ -123,7 +123,7 @@ class TestQueueApi:
         first_msg = json.loads(captured["proc"].stdin.getvalue().decode("utf-8"))
         assert first_msg["type"] == "user"
         prompt = first_msg["message"]["content"][0]["text"]
-        assert "queue_complete" in prompt and "progress/item-" in prompt
+        assert "queue_complete" in prompt and f"WORK ITEM #{item['id']}" in prompt
         assert queue.get(root, item["id"])["status"] == "dispatched"
         dispatch._live.clear()
 

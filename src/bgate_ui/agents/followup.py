@@ -762,17 +762,18 @@ def _branch_failed(ev: dict, item: dict, settings: dict,
                  "It is a lead, not an order: if reading the failure below shows "
                  "it is wrong, say so in your result and do the better thing."
                  "\n\n" if nxt else "")
-                + "AUTO-REOPENED by the follow-up router — the previous attempt "
-                f"reported FAILED (attempt {rounds}; automatic retry "
-                f"{auto + 1} of {auto_cap + bonus}, and there is no further "
-                "chance: if this fails again the item goes to the director "
-                "instead of being run again).\n\nREAD THE FAILURE BEFORE YOU START. If it "
-                "names something you cannot fix from this seat — a missing key, "
-                "a credit block, an asset that does not exist, a path this seat "
-                "cannot write to — do NOT repeat the run. Say so in your result "
-                "note and fail fast; a second identical failure is the cheapest "
-                "outcome available at that point.\n\nWhat it said:\n\n"
-                + (str(item.get("result") or "(no result note)")[:1200])))]
+                + f"RETRY {auto + 1} of {auto_cap + bonus} (attempt {rounds} "
+                "failed; a further failure goes to the director). If the failure "
+                "is a hard block you cannot fix from this seat, fail fast and say "
+                "so. It said:\n\n"
+                + _strip_writes(str(item.get("result") or "(no result note)"))[:1200]))]
+
+
+def _strip_writes(text: str) -> str:
+    """The result note with its FILES WRITTEN block removed: the reopen adds the
+    harness's own list once, and the brief carried it two or three times."""
+    cut = text.find("FILES WRITTEN (observed")
+    return text[:cut].rstrip() if cut >= 0 else text
 
 
 def _escalate_actions(ev: dict, item: dict, settings: dict, board: dict,

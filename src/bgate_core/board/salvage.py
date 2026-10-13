@@ -154,12 +154,8 @@ def brief_note(root: str | os.PathLike[str], item_id: int,
     if not on_disk and not artifacts:
         return ""
     lines = [
-        "ALREADY DELIVERED BY THE PREVIOUS RUN — DO NOT REGENERATE IT.",
-        "",
-        "The previous attempt was killed by a ceiling AFTER doing this work, "
-        "not before. The harness OBSERVED these writes itself, so this is not "
-        "a claim the dead agent made about itself:",
-        "",
+        "ALREADY ON DISK FROM THE PREVIOUS RUN (seen by the harness) - DO NOT "
+        "REGENERATE IT. Read these first; keep what is correct, fix what is not:",
     ]
     for rel in (on_disk or [])[:40]:
         lines.append(f"  {rel}")
@@ -173,17 +169,7 @@ def brief_note(root: str | os.PathLike[str], item_id: int,
         for row in artifacts[:20]:
             mark = "" if row.get("on_disk") else "  (MISSING FROM DISK)"
             lines.append(f"  {row['path']} [{row['status']}]{mark}")
-    lines += [
-        "",
-        "READ THESE FIRST. Continue from what is there: finish what is "
-        "unfinished, fix what is wrong, and leave what is correct alone. "
-        "Regenerating a delivered asset because the run that produced it died "
-        "afterwards is paying twice for the same file — measured at $33 across "
-        "three agents for work that was ~95% complete after the first.",
-        "",
-        "If everything the brief asks for is already present and correct, say "
-        "so and close the item. That is a legitimate and cheap outcome.",
-    ]
+    lines.append("If it is all present and correct, say so and close the item.")
     return "\n".join(lines)
 
 

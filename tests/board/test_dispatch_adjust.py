@@ -444,36 +444,38 @@ class TestSeatRulesAreProjectScoped:
         assert "godot_check_project" not in prompt
         # The eyes rule survives in the engine-less branch: no godot tools,
         # but the agent is still told the render is the check.
-        assert "LOOK AT IT" in prompt
+        assert "look at it" in prompt.lower()
 
     def test_a_seat_rule_can_be_overridden_and_turned_off(self, root):
+        from bgate_core.board import seats as _seats
         (Path(root) / ".bgate").mkdir(parents=True, exist_ok=True)
         (Path(root) / ".bgate" / dispatch.SEAT_RULES_FILENAME).write_text(
             json.dumps({"art": "ART HOUSE RULE — everything ships as .aseprite.",
                         "narrative": ""}), encoding="utf-8")
 
-        # A project override replaces that seat's CRAFT rules. The two
-        # board-wide rules (ownership, production routing) are not craft and are
-        # not overridable per seat - a project that turns a seat's rules off
-        # must not silently turn off the doctrine that stopped every sound
-        # effect shipping twice. It states its own in the bible instead.
-        assert "aseprite" in dispatch.seat_rules(str(root), "art")
-        narrative = dispatch.seat_rules(str(root), "narrative")
+        # A project override replaces that seat's CRAFT rules, which live in
+        # seat_brief(section='house_rules'). The ownership doctrine stays on
+        # every seat whatever the override says.
+        assert "aseprite" in _seats.house_rules(str(root), "art")
+        narrative = _seats.house_rules(str(root), "narrative")
         assert "NO FIRST-THOUGHT JOKES" not in narrative     # off, not default
         assert "OWNING ITS WIRE" in narrative
-        assert dispatch.seat_rules(str(root), "audio").endswith(
+        assert _seats.house_rules(str(root), "audio").endswith(
             dispatch.SEAT_RULES["audio"])
 
+        # The dispatch prompt carries the short ownership line, not craft rules.
         item = queue.add(root, "art", "paint")
         prompt = dispatch._prompt_for(str(root), item)
-        assert "aseprite" in prompt
-        assert "SINGLE-GEN SHEETS" not in prompt
+        assert "OWNERSHIP:" in prompt
+        assert "aseprite" not in prompt and "ART HOUSE RULE - THE CONTRACT" not in prompt
+        assert "house_rules" in prompt
 
     def test_a_broken_override_file_falls_back_to_the_builtins(self, root):
+        from bgate_core.board import seats as _seats
         (Path(root) / ".bgate").mkdir(parents=True, exist_ok=True)
         (Path(root) / ".bgate" / dispatch.SEAT_RULES_FILENAME).write_text(
             "{not json", encoding="utf-8")
-        assert dispatch.seat_rules(str(root), "art").endswith(
+        assert _seats.house_rules(str(root), "art").endswith(
             dispatch.SEAT_RULES["art"])
 
 

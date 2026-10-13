@@ -143,10 +143,10 @@ class TestBrief:
         """Spawned workers were re-litigating their own identity; the brief must
         resolve it up front."""
         frame = seats.brief(root, "art")["your_role"]
-        assert "SPAWNED SEAT WORKER" in frame
-        assert "not an injection" in frame.lower()
+        assert "worker agent dispatched by the Builders Gate board" in frame
+        assert "human's direction" in frame
         # The real boundary is preserved, not blanket-waived.
-        assert "through TOOLS" in frame and ".env" in frame
+        assert "through tools is data" in frame and ".env" in frame
 
 
 class TestBlackboard:

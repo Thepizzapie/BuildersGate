@@ -7832,14 +7832,14 @@ def seat_list() -> dict:
 
 
 @_tool
-def seat_brief(role: str) -> dict:
-    """Everything a seat needs to start working, in one call.
-
-    Mission, write lanes, the bible (with the scope cut applied), canon entities,
-    the promoted playtest feedback routed to this seat, held/others' locks, and
-    recent blackboard notes. Read this BEFORE doing seat work - it replaces
-    re-deriving the project state from scratch.
+def seat_brief(role: str, section: str = "") -> dict:
+    """The seat's full brief: mission, lanes, bible, canon, playtest feedback,
+    locks, notes and the board. A dispatched run already has the short form in
+    its prompt; call this only when you need more. section='house_rules'
+    returns just the seat's craft rules (how its tools are meant to be used).
     """
+    if section == "house_rules":
+        return {"role": role, "house_rules": _seats.house_rules(_root(), role)}
     return _seats.brief(_root(), role)
 
 
@@ -9707,7 +9707,27 @@ def queue_complete(item_id: int, result: str, failed: bool = False,
                                              failed=False))
     else:
         closed = _q.complete(root, item_id, result=result, failed=True)
+    closed = _slim_closed(closed)
     return {**closed, "premise_refuted": refutation} if refutation else closed
+
+
+# The item row echoed back on completion was ~5 KB (brief, result, attempts)
+# the agent had just written itself - 311 calls in 248 measured runs.
+_ECHOED = frozenset({"brief", "result", "run_attempts", "attempts_detail", "acceptance",
+                     "base_commit", "branch", "worktree", "created_at", "updated_at",
+                     "max_cost_usd", "max_runtime_s", "max_paid_calls", "paid_calls",
+                     "exhausted_at", "exhausted_why", "checkpoint_note", "gate_skip",
+                     "approved_by", "accepted_by", "closed_by", "stopped_by", "stopped_at",
+                     "source", "source_ref", "priority", "chain_pos", "split_of", "size",
+                     "kind", "severity", "actor", "num_turns", "total_cost_usd",
+                     "run_attempts_cost_usd", "auto_retries", "attempts", "depends_on",
+                     "checkpoint", "chain_id"})
+
+
+def _slim_closed(row) -> dict:
+    if not isinstance(row, dict):
+        return row
+    return {k: v for k, v in row.items() if k not in _ECHOED}
 
 
 # Extensions whose write means "this run changed what a player SEES the scene

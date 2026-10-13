@@ -361,13 +361,9 @@ def _verify_rule(root: str) -> str:
     # be. Every number was true and the scene was broken. Stats, tree dumps,
     # byte inspection and passing checks are ONE check; for anything a player
     # sees, the check that counts is a RENDER IN FRONT OF YOUR EYES.
-    eyes = ("IF THE DELIVERABLE IS VISIBLE, LOOK AT IT: render it "
-            "(godot_screenshot for a scene, the produced image file for art - "
-            "the Read tool shows you images) and judge the PICTURE, before "
-            "you claim done. Geometry stats, node counts, file sizes and "
-            "green checks are supporting evidence, never the verdict; an "
-            "agent that reports numbers about an image it never opened is "
-            "the single most common way broken work gets marked done")
+    eyes = ("If the deliverable is visible, look at it once: "
+            "godot_screenshot for a scene, Read for an image file. Judge the "
+            "picture, not the stats")
     if unity:
         unity_eyes = eyes.replace("godot_screenshot for a scene",
                                   "engine_screenshot for a scene, a still "
@@ -472,14 +468,11 @@ def _toolchain_rule() -> str:
     """The one line that stops an agent going looking for a binary."""
     resolved = _toolchain_env()
     if not resolved:
-        return ("- Never search the filesystem for a program. bgate_doctor "
-                "reports every dependency, with its path, in ONE call.\n")
+        return ("- Never search the disk for a program; bgate_doctor lists every "
+                "tool path in one call.\n")
     names = ", ".join("$" + var for var in sorted(resolved))
-    return ("- The toolchain is ALREADY RESOLVED in your environment: "
-            f"{names}. Never search for a binary - no `find /`, no drive-wide "
-            "glob. One of those ran for 22 minutes, outlived the agent, and "
-            "returned nothing to anybody. bgate_doctor reports every "
-            "dependency, with its path, in ONE call.\n")
+    return (f"- Tool paths are in your environment ({names}); never search the "
+            "disk for a binary.\n")
 
 
 def _image_policy(root: str, item: dict, native: bool) -> str:
@@ -657,6 +650,71 @@ def _ruling_block(root: str, seat: str) -> str:
     return ("\n" + block + "\n") if block else ""
 
 
+BRIEF_CHARS = 3500
+
+
+def _brief_block(root: str, seat: str, item_id: int) -> str:
+    """The part of seat_brief a run needs before its first edit, inline.
+
+    Agents used to spend their first turns loading tools and calling
+    seat_brief, a ~29 KB payload that repeated the dispatch rules; measured on
+    248 runs, 128 brief calls and 383 tool loads. This is the short form:
+    mission, lanes, the peers working now, locks held by others, the bible's
+    table of contents, the thesis and this seat's plan, a few traps. Anything
+    longer is one seat_brief or bible_read away."""
+    try:
+        from bgate_core.board import seats as _s
+        b = _s.brief(root, seat, note_limit=0)
+    except Exception:
+        return ""
+    lines = [f"YOUR SEAT: {b.get('mission', '')}".strip()]
+    lanes = b.get("write_lanes") or []
+    if lanes:
+        lines.append("Lanes: " + ", ".join(lanes))
+    peers = [e for e in (b.get("board") or [])
+             if e.get("id") != item_id and e.get("status") == "dispatched"]
+    if peers:
+        lines.append("Working now: " + "; ".join(
+            f"#{e['id']} {e['seat']}: {e['title'][:70]}" for e in peers[:6]))
+    locks = b.get("others_locks") or []
+    if locks:
+        lines.append("Locked by others: " + ", ".join(
+            f"{x['path']} ({x['seat']})" for x in locks[:8]))
+    toc = []
+    for group in (b.get("bible") or {}).values():
+        for sec in (group if isinstance(group, list) else [group]):
+            if isinstance(sec, dict) and sec.get("title"):
+                toc.append(f"#{sec.get('id')} {sec['title']}")
+    if toc:
+        lines.append("Bible (bible_read <id>): " + "; ".join(toc[:12]))
+    stage = b.get("stage") or {}
+    if stage.get("mechanical_thesis"):
+        lines.append(f"Thesis: {stage['mechanical_thesis']}")
+    for plan in ((b.get("domain_plan") or {}).get("plans") or [])[:1]:
+        done = "; ".join(plan.get("done_when") or [])
+        lines.append(f"Plan goal: {plan.get('goal', '')}" + (f" Done when: {done}" if done else ""))
+    refs = [r.get("name") or r.get("path") for r in (b.get("pinned_refs") or []) if isinstance(r, dict)]
+    if refs:
+        lines.append("Pinned refs (ref_list): " + ", ".join(str(r) for r in refs[:6]))
+    traps = b.get("traps") or []
+    try:
+        from bgate_core.store import project as _project
+        engine = str(_project.get(root).get("engine") or "")
+    except Exception:
+        engine = ""
+    if engine and engine != "godot":
+        # traps_for keys on seat and dimension, not engine; a web game's
+        # writer does not need Godot's headless-run traps.
+        godotish = ("godot", "_ready", "class_name", ".tscn", "res://")
+        traps = [t for t in traps if not any(w in t.lower() for w in godotish)]
+    if traps:
+        lines.append("Known traps:\n" + "\n".join(f"- {t[:260]}" for t in traps[:3]))
+    text = "\n".join(lines)
+    if len(text) > BRIEF_CHARS:
+        text = text[:BRIEF_CHARS] + "\n…[seat_brief for the rest]"
+    return "\n" + text + "\n"
+
+
 def _prompt_for(root: str, item: dict, native_images: bool = False,
                 worktree: str = "") -> str:
     from bgate_core.board.seats import SEAT_IDENTITY
@@ -682,6 +740,7 @@ def _prompt_for(root: str, item: dict, native_images: bool = False,
         "canon_block": _canon_block(root),
         "ruling_block": _ruling_block(root, seat),
         "current_block": _current_block(root) + _links.block(root, item),
+        "brief_block": _brief_block(root, seat, int(item["id"])),
         "seat_rule_block": (seat_rule + "\n\n") if seat_rule else "",
         "policy_block": (policy + "\n\n") if policy else "",
         "verify_rule": _verify_rule(root),
