@@ -37,6 +37,16 @@ repository at first publication. There is no earlier release history to record.
   The kie Suno `callBackUrl` default follows the same variable - cosmetic,
   since results are polled, but a request naming the other game's
   dashboard was reported as a bug, reasonably.
+- **provider_status says that "music" is the sound-effects route.** Same
+  project, same afternoon: the audio seat read the listing, saw kie under
+  image / music / video and no "sound" anywhere, concluded its seat had no
+  sound-effects route and gave up - with `sfx_prompt`, which gates on
+  "music", in its own tool list and two clips already produced. The result
+  now carries `capability_serves` and `capability_tools`, every `routing`
+  family carries `serves` and `tools`, and the docstring says it in one
+  line. The table is pinned by a test that reads every `_provider_gate`
+  call in the MCP modules, so a tool cannot gate on a capability it is not
+  listed under.
 
 ### Added
 - **`bgate oneshot NAME --brief FILE`: a brief becomes a running,

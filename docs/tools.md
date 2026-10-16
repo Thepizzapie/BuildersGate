@@ -4755,6 +4755,14 @@ honouring the craft division (sprites/stills mint with kie; motion is
 Retro Diffusion; music/video are kie). `fresh=true` re-probes past the
 2-minute cache - the right call after the human tops an account up.
 
+"MUSIC" IS THE SOUND-EFFECTS ROUTE TOO. sfx_prompt and music_generate both
+gate on it (Suno via kie), so a keyed kie under "music" means sound effects
+are live. The result carries `capability_serves` (what each capability
+covers, in plain words) and `capability_tools` (the tools that walk through
+each gate), and every family in `routing` carries the same `serves` and
+`tools`. Measured: an audio seat read the bare order, saw no "sound" line,
+concluded it had no route and gave up with sfx_prompt in its own tool list.
+
 Keys never appear here, and there is no tool that writes one - a human
 sets keys (bgate key / the Generators panel), deliberately.
 ```

@@ -730,6 +730,11 @@ def routing(root: Optional[str | os.PathLike[str]] = None) -> dict:
             "alternatives": list(picked.get("alternatives") or []),
             "why": picked.get("why", ""),
             "unavailable": unavailable,
+            # What the family SERVES and which tools use it - "music" is the
+            # sound-effects route too, and a listing that did not say so
+            # sent an audio seat to give up (gateway.CAPABILITY_SERVES).
+            "serves": _gateway.CAPABILITY_SERVES.get(capability, ""),
+            "tools": list(_gateway.CAPABILITY_TOOLS.get(capability, ())),
         }
 
     # The one route that does NOT come off the capability table: identity work
