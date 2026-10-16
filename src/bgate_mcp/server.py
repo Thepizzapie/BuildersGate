@@ -322,7 +322,7 @@ _READ_ONLY_TOOLS = frozenset({
     "playtest_devices", "playtest_check", "playtest_telemetry_contract",
     # the board and the seats, read side
     "seat_list", "seat_brief", "seat_can_write", "seat_notes", "handoff_read",
-    "queue_list", "queue_get", "queue_next", "board_digest", "plan_status",
+    "queue_list", "queue_get", "queue_next", "board_digest", "board_wait", "plan_status",
     "domain_plan_template", "domain_plan_status", "domain_plan_draft", "merge_order",
     "pending_decisions", "decision_list", "not_building_list",
     "iteration_status", "asset_status", "canon_status", "canon_audit",
@@ -9129,6 +9129,30 @@ def board_digest(hours: int = 12) -> dict:
         pass
     return _bounded(out, more=f"board_digest(hours={hours})")
 
+
+
+@_tool
+def board_wait(until: str = "attention", item_ids: str = "", timeout_s: int = 600,
+               poll_s: int = 15) -> dict:
+    """WAIT FOR THE BOARD, ONE WAKE - instead of reading it one event at a time.
+
+    Blocks up to ``timeout_s`` (cap 3600) polling the project database every
+    ``poll_s`` seconds, and returns once with ``reason`` and ``since`` (what
+    finished, what started needing you). ``until``: ``attention`` (default:
+    something new needs the director - a director-seat / ask-human /
+    escalation / stage-advance item, a failed, parked or review item, or an
+    open director question), ``clear`` (nothing open), ``change`` (any item
+    finished or anything needing attention), ``items`` (every id in
+    ``item_ids``, comma-separated, is terminal), ``quiet`` (no agent running
+    and nothing dispatched). A clear board ends any wait. Reads only; spends
+    nothing. MEASURED: a director following GNOMEFALL through a per-event
+    monitor woke ~25 times an hour for lines that changed nothing it had to
+    do; this is the replacement. Full notes: docs/tools.md#board_wait
+    """
+    from bgate_core.board import wait as _wait
+
+    return _wait.wait(_root(), until=str(until), item_ids=item_ids or None,
+                      timeout_s=float(timeout_s), poll_s=float(poll_s))
 
 @_tool
 def queue_cut_dependency(item_id: int, depends_on: int) -> dict:

@@ -53,6 +53,7 @@
     bgate hook-uninstall [DIR]  remove it again, leaving your other hooks alone
     bgate un-adopt [DIR] --yes  delete this project's .bgate store; game untouched
     bgate hook-status [DIR]     prove the hook is installed AND biting
+    bgate wait [DIR]            block until the board needs you / is clear (--until, --items, --timeout, --json)
     bgate hook                  (internal) the PreToolUse hook itself
 
 publish options:
@@ -289,6 +290,39 @@ def install_hook(project_dir: str, scope: str = "project") -> dict:
                 "board. `bgate hook-status` proves the first one is biting, "
                 "`bgate session-start --print` shows what the second injects.",
     }
+
+
+def board_wait(project_dir: str = "", *, until: str = "attention", items: str = "",
+               timeout_s: float = 1800.0, poll_s: float = 15.0, as_json: bool = False) -> int:
+    """Block until the board needs a human / director, is clear, or a named
+    item finishes. One line out, then exit: 0 when the condition was met, 2 on
+    timeout. The shell-side twin of the board_wait MCP tool, for a terminal,
+    a Monitor, or a cron that should wake a session exactly once.
+    """
+    import json as _json
+    from bgate_core.board import wait as _wait
+    from bgate_core.store import project as _project
+
+    # A name from `bgate projects` works too, the way the other commands take it.
+    known = _project.known_projects()
+    start = known.get(project_dir, project_dir) if project_dir else None
+    root = str(_project.require_root(start))
+    out = _wait.wait(root, until=until, item_ids=items or None, timeout_s=timeout_s, poll_s=poll_s)
+    if as_json:
+        print(_json.dumps(out, indent=2))
+    else:
+        since = out["since"]
+        bits = [f"{out['reason'].upper()} after {out['waited_s']} s"]
+        if since.get("done"): bits.append(f"done {since['done']}")
+        if since.get("failed"): bits.append(f"failed {since['failed']}")
+        for a in since.get("attention", []):
+            bits.append(f"needs you: #{a['id']} {a['status']} {a['title']}")
+        for q in since.get("questions", []):
+            bits.append(f"question: {q.get('text', '')}")
+        counts = out["snapshot"].get("counts", {})
+        bits.append("open " + ", ".join(f"{k} {v}" for k, v in counts.items() if k in _wait.OPEN) if any(k in _wait.OPEN for k in counts) else "board clear")
+        print(" | ".join(bits))
+    return 0 if out["reason"] != "timeout" else 2
 
 
 def hook_status(project_dir: str = "", as_json: bool = False) -> int:
@@ -1738,6 +1772,13 @@ def main() -> int:
         positional = [a for a in args[1:] if not a.startswith("-")]
         return hook_status(positional[0] if positional else "",
                            as_json="--json" in args)
+
+    if cmd == "wait":
+        positional = [x for x in args[1:] if not x.startswith("-")]
+        opt = lambda flag, default: args[args.index(flag) + 1] if flag in args else default  # noqa: E731
+        return board_wait(positional[0] if positional else "", until=opt("--until", "attention"),
+                          items=opt("--items", ""), timeout_s=float(opt("--timeout", "1800")),
+                          poll_s=float(opt("--poll", "15")), as_json="--json" in args)
 
     if cmd == "serve":
         port = 7788
