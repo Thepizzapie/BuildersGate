@@ -7,6 +7,13 @@
                 [--brief FILE] [--ref IMAGE ...]
                                 point Builders Gate at a game you ALREADY have.
                                 Never scaffolds, never overwrites. (default: .)
+    bgate oneshot NAME --brief FILE [--kind 2d|3d] [--engine godot|web] [--dir DIR]
+                  [--port N] [--concurrency N] [--auto-advance]
+                                a brief becomes a RUNNING board: init + git, hook,
+                                settings, one non-interactive director turn (thesis,
+                                bible, risks, every domain plan, slice), the slice
+                                promoted, `bgate serve` started. --auto-advance moves
+                                the stage on evidence. `bgate oneshot --help` for the steps.
     bgate use [DIR|NAME]        make a project the active one for later commands
     bgate projects [--json]     list known projects and which one is active
     bgate serve [--port 7788]   run the dashboard in your browser
@@ -1531,6 +1538,10 @@ def main() -> int:
                             replace="--replace" in rest,
                             without=opt("--without"),
                             engine=opt("--engine"))
+
+    if cmd == "oneshot":
+        from bgate_cli.oneshot import main as oneshot_main
+        return oneshot_main(args[1:])
 
     if cmd == "adopt":
         rest = args[1:]

@@ -93,13 +93,21 @@ def domain_plan_template(domain: str) -> dict:
 
 
 @_tool
-def domain_plan_set(domain: str, goal: str = "",
+def domain_plan_set(domain: str = "", goal: str = "",
                     done_when: Optional[list[str]] = None,
                     entries: Optional[list[dict]] = None,
                     leaves_dark: Optional[list[str]] = None,
                     open_questions: Optional[list[str]] = None,
-                    merge: bool = True) -> dict:
+                    merge: bool = True,
+                    plans: Optional[dict] = None) -> dict:
     """Write or revise a discipline's plan: its END STATE and deliverables.
+
+    plans: SEVERAL domains in one call, {domain: {goal, done_when, entries,
+    leaves_dark, open_questions}}, validated as a whole before anything is
+    written and filed in dependency order - so a cross-domain depends_on may
+    name a row another plan in the same batch creates, and the caller need
+    not know the filing order. With plans, `domain` and the other fields are
+    ignored.
 
     goal: what this domain's part of the FINISHED game is (>= 40 chars).
     done_when: 1-8 binary checks that settle the whole domain.
@@ -117,6 +125,21 @@ def domain_plan_set(domain: str, goal: str = "",
     """
     try:
         seat = _seat() if _caller_is_agent() else ""
+        if plans is not None:
+            if not isinstance(plans, dict) or not plans:
+                return {"ok": False, "error": "plans is {domain: plan} with at "
+                                              "least one domain"}
+            foreign = [d for d in plans if d in _dp.DOMAINS
+                       and not _dp.may_write(seat, d)]
+            if foreign:
+                return {"ok": False, "refused": "not_your_domain",
+                        "error": f"the {', '.join(foreign)} plan(s) belong to "
+                                 "other seats (or the director). Say what they "
+                                 "should change in your result note."}
+            return _dp.set_plans(_root(), plans, by=_actor() or seat,
+                                 merge=bool(merge))
+        if not domain:
+            return {"ok": False, "error": "name a domain, or pass plans={domain: plan}"}
         if not _dp.may_write(seat, domain):
             return {"ok": False, "refused": "not_your_domain",
                     "error": f"the {domain} plan belongs to the "

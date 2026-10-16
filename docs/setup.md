@@ -70,6 +70,25 @@ bgate init emberfall --kind 2d
 This creates a new directory named after the project, under the directory you
 are standing in. It does not scaffold into the current directory.
 
+**If you want the whole thing from a brief, with no director session:**
+
+```bash
+bgate oneshot emberfall --brief brief.md --kind 2d --port 7788 --concurrency 4 --auto-advance
+```
+
+`oneshot` is `init` plus every hand-step the first one-shot game needed: it
+git-inits and commits the scaffold and the brief, installs the lane hook,
+stores the dispatch settings (concurrency, allow-dirty, four attempts, the
+brief budget, a one-hour run limit), switches the narrative and cinematic
+seats off unless the brief names a story, runs the director once through the
+console's own session (thesis, bible, no-list, key risks, scale contract,
+every domain plan, advance to slice; gaps are re-prompted once), promotes the
+slice onto the board, starts `bgate serve` on the port, and confirms the
+first dispatch within a minute. `--auto-advance` turns on
+`autopilot.stage_advance`, so the board moves to production on its own once
+the slice check passes and the feel check has run. It needs the `claude` CLI
+on PATH and the board's API keys set up as for any other project.
+
 To undo an adoption: `bgate un-adopt <dir> --yes` deletes `.bgate/` and leaves
 the game files alone.
 

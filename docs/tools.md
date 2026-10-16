@@ -2393,6 +2393,14 @@ plan grows a piece at a time; merge=False replaces the entry list (rows
 that left it are deleted while spec, reported as dropped_but_on_board
 when the board holds them). Row names are unique across all domains.
 
+plans={domain: {goal, done_when, entries, ...}, ...} writes SEVERAL
+domains in one call. The batch is validated as a whole before anything is
+written - every field, names unique across the batch and the board, every
+depends_on resolved against existing rows plus the batch - and then filed
+in dependency order, so a level space may depend on a gameplay mechanic
+the same call creates. A cross-domain cycle is refused by name. With
+plans, `domain` and the single-plan fields are ignored.
+
 A seat writes its own domains (gameplay: gameplay, level, ui; art: art,
 animation); the director and the human write any. The result carries the
 cross-domain findings for this domain. A revision resolves the plan's open
@@ -3393,6 +3401,22 @@ through a stage hold; nothing lets a release candidate through an
 incomplete presentation QA. Call greenlight_status('presentation') for the
 outstanding list.
 ```
+
+**`bgate oneshot` and `autopilot.stage_advance`.** A board started with
+`bgate oneshot NAME --brief FILE` has no director session to press this
+button: the command runs the director once (thesis, bible, no-list, risks,
+scale contract, every domain plan, advance to slice), promotes the slice
+and starts the dashboard. With `--auto-advance` it also turns on
+`autopilot.stage_advance` (human-only, off by default): when a SLICE CHECK
+lands `VERDICT: PASS` and the feel check has run, the follow-up router
+files ONE director item - `greenlight_risk_retire` each key risk on the
+board's evidence (confirmed or modified, never accepted),
+`greenlight_advance('production')`, `plan_promote` every remaining spec
+row - and hands it to the director session; when the presentation check
+clears at production, the same shape files the release item. One open per
+project, never twice for the same slice check, and held from every
+auto-dispatcher, because a dispatched director-seat agent is refused the
+forward move.
 
 ## greenlight_status
 
