@@ -1382,6 +1382,40 @@ stop the charge - it only throws away the result.
 Spends nothing. Read it at the start of a session before deciding anything.
 ```
 
+## board_wait
+
+```text
+WAIT FOR THE BOARD, ONE WAKE - instead of reading it one event at a time.
+
+Blocks up to timeout_s (cap 3600) polling the project database every poll_s
+seconds, and returns once with `reason` and `since`: what finished and what
+started needing the director while you waited.
+
+until:
+  attention  (default) something NEW needs the director: a director-seat
+             item, an ask-human / human-task / escalation / stage-advance
+             item, a failed, parked or review item, or an open director
+             question. Whatever was already waiting when the call began does
+             not re-fire it.
+  clear      nothing open at all.
+  change     any item finished, or anything that satisfies attention.
+  items      every id in item_ids (comma-separated) is terminal.
+  quiet      no agent running and nothing dispatched - the board stopped
+             moving, whether or not it is empty (a dead dashboard looks like
+             this too, which is the point of asking).
+
+A clear board ends any wait. Reads only, spends nothing.
+
+MEASURED (GNOMEFALL, 2026-10-16): a director session that followed the
+board through a per-event monitor woke about 25 times an hour, mostly for
+"#NNN qa DONE" lines that changed nothing it had to do. The human noticed
+the usage before the director did. Call this instead, with timeout_s at
+what you can afford to be away, and read the result like a digest.
+
+The shell twin is `bgate wait [DIR] --until ... --items ... --timeout ...`
+(exit 0 when met, 2 on timeout), for a terminal, a Monitor, or a cron.
+```
+
 ## brainstorm_close
 
 ```text
