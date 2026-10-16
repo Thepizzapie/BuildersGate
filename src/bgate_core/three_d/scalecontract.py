@@ -266,6 +266,29 @@ def _sprite_cell_height(root: str | os.PathLike[str]) -> int:
         return 0
 
 
+#: The one sentence every unit mistake in set_contract is answered with.
+#: MEASURED (gnomefall kickoff): a director passed the classes as pixel
+#: dicts ({"player": {"px": 40}}) and got a raw TypeError out of float(None)
+#: that named neither field nor unit, so the fix was a guess.
+UNITS = ("classes are player-height ratio bands {low, high}; "
+         "stages are px heights")
+
+
+def _number(value: Any, field: str, kind) -> Any:
+    """``kind(value)`` or a ValueError that names the field and the units.
+
+    A dict, None or a string that is not a number used to escape as a
+    TypeError/ValueError from the bare cast, and the MCP tool surfaced it
+    raw. Every coercion in set_contract goes through here instead.
+    """
+    if isinstance(value, bool) or isinstance(value, (dict, list, tuple, set))             or value is None:
+        raise ValueError(f"{field}: expected a number, got {value!r}. {UNITS}")
+    try:
+        return kind(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field}: expected a number, got {value!r}. {UNITS}") from None
+
+
 def set_contract(root: str | os.PathLike[str], *,
                  player_height_px: Optional[int] = None,
                  tile_px: Optional[int] = None,
@@ -273,13 +296,13 @@ def set_contract(root: str | os.PathLike[str], *,
                  stages: Optional[dict] = None) -> dict:
     doc = _doc(root)
     if player_height_px is not None:
-        height = int(player_height_px)
+        height = _number(player_height_px, "player_height_px", int)
         if height < 4:
             raise ValueError("player_height_px is the player's height in "
                              "pixels; 4 is the smallest thing that could be one")
         doc["player_height_px"] = height
     if tile_px is not None:
-        doc["tile_px"] = int(tile_px)
+        doc["tile_px"] = _number(tile_px, "tile_px", int)
     if stages is not None:
         held = doc.get("stages")
         doc["stages"] = held if isinstance(held, dict) else {}
@@ -290,7 +313,7 @@ def set_contract(root: str | os.PathLike[str], *,
             if height is None:
                 doc["stages"].pop(key, None)
                 continue
-            value = int(height)
+            value = _number(height, f"stages.{key}", int)
             if value < 4:
                 raise ValueError(f"stage {key!r}: the player height is in pixels; "
                                  "4 is the smallest thing that could be one")
@@ -303,9 +326,18 @@ def set_contract(root: str | os.PathLike[str], *,
                 raise ValueError(
                     f"unknown scale class {name!r}; classes are {CLASSES}")
             if not isinstance(band, dict):
-                raise ValueError(f"{name}: a band is {{low, high}}")
-            low = float(band.get("low", DEFAULT_CLASSES[name]["low"]))
-            high = float(band.get("high", DEFAULT_CLASSES[name]["high"]))
+                raise ValueError(f"{name}: a band is {{low, high}}. {UNITS}")
+            stray = sorted(str(k) for k in band if k not in ("low", "high"))
+            if stray:
+                # {"player": {"px": 40}} used to be ACCEPTED, with both
+                # bounds silently defaulted - the pixel field was ignored
+                # and nothing said so.
+                raise ValueError(f"classes.{name}: unknown band field(s) "
+                                 f"{', '.join(stray)}. {UNITS}")
+            low = _number(band.get("low", DEFAULT_CLASSES[name]["low"]),
+                          f"classes.{name}.low", float)
+            high = _number(band.get("high", DEFAULT_CLASSES[name]["high"]),
+                           f"classes.{name}.high", float)
             if not 0 < low < high:
                 raise ValueError(
                     f"{name}: the band must be 0 < low < high, got "

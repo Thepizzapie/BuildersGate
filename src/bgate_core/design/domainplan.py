@@ -461,6 +461,101 @@ def set_plan(root: str | os.PathLike[str], domain: str, plan: Any,
     return out
 
 
+def set_plans(root: str | os.PathLike[str], plans: Any, by: str = "",
+              merge: bool = True) -> dict:
+    """Write SEVERAL domain plans in one call, validated as a whole first.
+
+    THE FILING-ORDER TRAP THIS REMOVES. set_plan refuses a depends_on that
+    names a row no domain has filed yet, which is right for one plan and
+    wrong for eight: a director writing the whole game had to know that
+    level depends on gameplay depends on tech and file in that order, or
+    the fourth call failed on a name the seventh call was about to create.
+    Measured on the gnomefall kickoff, where a human worked the order out
+    by hand.
+
+    ``plans`` is ``{domain: plan}``. Every plan is validated, every name is
+    checked unique across the batch and the board, and every depends_on is
+    resolved against the union of existing rows and the batch; only then is
+    anything written, in an order where each cross-domain dependency is
+    already on the board. A dependency cycle across domains is refused by
+    name. Returns ``{ok, written: [domain...], results: {domain: set_plan's
+    result}}``.
+    """
+    if not isinstance(plans, dict) or not plans:
+        raise ValueError("plans is {domain: plan} with at least one domain")
+    domains = [str(d).strip().lower() for d in plans]
+    for d in domains:
+        _spec(d)
+    if len(set(domains)) != len(domains):
+        raise ValueError("a domain appears twice in the batch")
+    conn = db.connect(root)
+    existing = {r["name"]: r["domain"] for r in conn.execute(
+        "SELECT name, domain FROM plan_row").fetchall()}
+
+    # Validate each plan exactly as set_plan will see it (merge included), so
+    # a refusal here is the refusal the single call would have given.
+    clean: dict[str, dict] = {}
+    owner: dict[str, str] = {}
+    for d in domains:
+        plan = plans[d]
+        prior = get(root, d)
+        if merge and prior and isinstance(plan, dict):
+            combined = dict(prior)
+            for key in ("goal", "done_when", "leaves_dark", "open_questions"):
+                if key in ("leaves_dark", "open_questions") and plan.get(key) == []:
+                    combined[key] = []
+                elif plan.get(key) not in (None, "", []):
+                    combined[key] = plan[key]
+            by_name = {e["name"]: e for e in prior["entries"]}
+            for e in plan.get("entries") or []:
+                if isinstance(e, dict) and e.get("name"):
+                    by_name[str(e["name"]).strip()] = e
+            combined["entries"] = list(by_name.values())
+            plan = combined
+        try:
+            clean[d] = validate(d, plan)
+        except ValueError as exc:
+            raise ValueError(f"{d} plan: {exc}") from None
+        for e in clean[d]["entries"]:
+            held = owner.get(e["name"]) or existing.get(e["name"])
+            if held and held not in ("", d):
+                raise ValueError(f"{d} plan: {e['name']!r} is already a {held} "
+                                 "plan row - names are unique across the whole game")
+            owner[e["name"]] = d
+    for d in domains:
+        for e in clean[d]["entries"]:
+            for dep in e["depends_on"]:
+                if dep not in owner and dep not in existing:
+                    raise ValueError(f"{d} plan: {e['name']!r} depends on {dep!r}, "
+                                     "which is not a plan row in any domain or "
+                                     "in this batch")
+
+    # Order: a domain writes after every domain its rows depend on. Rows
+    # already on the board satisfy a dependency regardless of order.
+    needs: dict[str, set[str]] = {d: set() for d in domains}
+    for d in domains:
+        for e in clean[d]["entries"]:
+            for dep in e["depends_on"]:
+                other = owner.get(dep)
+                if other and other != d and dep not in existing:
+                    needs[d].add(other)
+    ordered: list[str] = []
+    while len(ordered) < len(domains):
+        ready = [d for d in domains if d not in ordered
+                 and needs[d] <= set(ordered)]
+        if not ready:
+            stuck = [d for d in domains if d not in ordered]
+            raise ValueError("domain plans depend on each other in a cycle: "
+                             + " <-> ".join(sorted(stuck))
+                             + " - one of them has to drop a depends_on")
+        ordered.extend(ready)
+
+    results: dict[str, dict] = {}
+    for d in ordered:
+        results[d] = set_plan(root, d, plans[d], by=by, merge=merge)
+    return {"ok": True, "written": ordered, "results": results}
+
+
 def _states(root) -> dict[str, dict]:
     from . import gameplan as _gameplan
     try:

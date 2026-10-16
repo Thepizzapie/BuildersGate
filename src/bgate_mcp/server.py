@@ -9488,13 +9488,20 @@ def scale_contract_set(player_height_px: Optional[int] = None,
     a game whose party is one size in the field and another in the fight;
     scale_check(stage=...) and image_generate(stage=...) grade against it.
     None on a stage removes it. Classes now include boss and player.
+    UNITS: classes are player-height RATIO bands {low, high}; stages are px
+    heights. A pixel dict in `classes` is refused, with that sentence.
     Full notes: docs/tools.md#scale_contract_set
     """
     from bgate_core.three_d import scalecontract as _scale
 
-    return _scale.set_contract(_root(), player_height_px=player_height_px,
-                               tile_px=tile_px, classes=classes, by=_actor(),
-                               stages=stages)
+    try:
+        return _scale.set_contract(_root(), player_height_px=player_height_px,
+                                   tile_px=tile_px, classes=classes, by=_actor(),
+                                   stages=stages)
+    except (ValueError, TypeError) as exc:
+        # The unit mistake is the common failure here, and a raw TypeError
+        # told the caller nothing: the error names the field and the units.
+        return {"ok": False, "error": str(exc), "units": _scale.UNITS}
 
 
 @_tool

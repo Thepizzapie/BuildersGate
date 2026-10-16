@@ -126,6 +126,7 @@ LABELS: dict[str, str] = {
     # Dispatch
     "autopilot.on": "Start queued work automatically",
     "autopilot.scope": "Autopilot scope",
+    "autopilot.stage_advance": "Advance the stage on evidence",
     "dispatch.mode": "Director dispatch mode",
     "dispatch.allow_dirty": "Allow dispatch with uncommitted changes",
     "dispatch.auto_commit": "Commit completed agent work",
@@ -223,6 +224,7 @@ LABELS: dict[str, str] = {
 DESCRIPTIONS: dict[str, str] = {
     "autopilot.on": "Start ready queue items automatically when a slot is available.",
     "autopilot.scope": "Board dispatches anything ready; iteration dispatches only the open iteration's committed work.",
+    "autopilot.stage_advance": "When the slice check passes and the feel check has run, file one Director item that retires the risks and advances the stage.",
     "dispatch.mode": "Structured follows dependencies. Chaos isolates every task and lets the Director merge it.",
     "dispatch.allow_dirty": "Allow dispatch while the main worktree has uncommitted changes. Reverts may be less reliable.",
     "dispatch.auto_commit": "Commit only the files changed by each completed agent run.",
@@ -446,6 +448,19 @@ SETTINGS: tuple[Setting, ...] = (
              "work committed to the open iteration (plus fixes and gates); "
              "an iteration closes on a checked build and the next is opened "
              "from what it taught - the studio sprint, without dates."),
+    Setting(
+        key="autopilot.stage_advance", group="Dispatch", kind=BOOL, default=False,
+        store=("workspace", "director", "autopilot", "stage_advance"),
+        human_only=True, advanced=True,
+        help="Nothing re-entered the director after the slice check: a board "
+             "whose slice check passed sat at 'slice' until a human retired "
+             "the key risks and advanced it by hand. On, the follow-up router "
+             "files ONE director item when a SLICE CHECK lands 'VERDICT: "
+             "PASS' and the feel check has run (and again when the "
+             "presentation check clears at production): retire each risk on "
+             "the board's evidence, greenlight_advance, plan_promote the "
+             "rest. OFF by default; `bgate oneshot --auto-advance` turns it "
+             "on. Human-only: an agent must not grant itself the stage."),
     Setting(
         key="dispatch.mode", group="Dispatch", kind=ENUM, default="structured",
         choices=("structured", "chaos"), store=("registry", "dispatch.mode"),
