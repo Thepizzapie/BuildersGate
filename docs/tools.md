@@ -4880,6 +4880,23 @@ Name what it produced (the file, the function, the scene) rather than saying
 
 Returns {chain_id, items: [...]} in running order. Nothing dispatches until
 `bgate serve` is up, exactly as with queue_add.
+
+A LINK CAN NAME ITS PLAN ROW. Each link takes `plan_row` exactly as
+queue_add does: the row's domain goal is appended to the brief, its
+acceptance fills an empty one, its kind is derived, and the row is pointed
+at the link once the chain lands. At the slice stage that is what admits a
+link to the board; a chain had no way onto a slice row at all, so every
+chain filed there sat held until the rows were pointed at its items by
+hand. A row that is already being built, or named by two links, refuses
+the whole chain before anything lands.
+
+THE FILING SAYS WHAT THE STAGE WILL DO WITH IT. Every returned item carries
+`stage_hold` when the stage machine will not dispatch it as filed (the
+production stage holding its seat, the slice stage holding work that is
+not on a slice row, a discipline with no domain plan yet), and the result
+carries `held` (the ids) and a `note`. queue_add returns the same
+`stage_hold` on its item. Before this, a held item came back as an
+ordinary queued row and the hold was only visible in queue_list.
 ```
 
 ## queue_claim_next
@@ -5026,6 +5043,13 @@ Every queued row also carries `waiting_on`, which now NAMES the blocker:
 "WAITING ON #45 Swap in furniture" rather than "#43 QUEUED". `blocked`
 means a predecessor will never land on its own; `waiting` means the board
 is working.
+
+EVERY ROW CARRIES `depends_on_all`, every parent in running order. The
+`depends_on` column holds ONE parent (the one a chain is built on); the
+rest, added with queue_add_dependency, live in a second table and were
+invisible here. A chain serialised by hand after filing read as a fan to
+anyone who looked at the column, while `waiting_on` (which walks every
+parent) was right all along. Read `depends_on_all`, not the column.
 
 BRIEFS ARE PREVIEWS and the list is PAGED. This used to answer with every
 work item a project had ever had, brief text and all - on a real board that
