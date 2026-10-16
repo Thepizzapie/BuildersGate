@@ -8500,27 +8500,23 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
             item["brief"] = brief[:240]
             item["brief_len"] = len(brief)
             item["result"] = result[:240]
+        # EVERY PARENT, NOT THE COLUMN. `depends_on` holds one parent; the
+        # rest live in work_item_dep (queue_add_dependency). A reader of the
+        # column alone saw a hand-serialised chain as a fan (Turf War,
+        # 2026-10-16) - the dashboard row already carried depends_on_all,
+        # this listing did not.
+        try:
+            item["depends_on_all"] = _q.parents(root, int(item["id"]))
+        except Exception:
+            item["depends_on_all"] = (
+                [int(item["depends_on"])] if item.get("depends_on") else [])
         # WHY IS THIS NOT RUNNING - answered on the row, because a queued
         # item that nothing will ever dispatch used to look exactly like
         # one that is next in line, and the difference lived in three
         # different modules. Best-effort: an unreadable blocker is not a
         # reason to fail the whole listing.
         if item.get("status") == "queued":
-            stage_hold = ""
-            try:
-                from bgate_core.design import greenlight as _gl
-
-                stage_hold = (_gl.allows(root, str(item.get("seat") or ""))[1]
-                              or _q.slice_hold_reason(root, item))
-                if not stage_hold and item.get("source") != "domain-plan":
-                    from bgate_core.design import domainplan as _dpl
-                    if str(item.get("seat") or "") in _dpl.planning_held(root):
-                        stage_hold = ("held: this project plans first - the "
-                                      f"{item.get('seat')} seat's discipline "
-                                      "has no domain plan yet; its PLAN item "
-                                      "dispatches first")
-            except Exception:
-                stage_hold = ""
+            stage_hold = _stage_hold_for(root, item)
             if stage_hold:
                 # The production stage outranks the other reasons on the row:
                 # a seat the stage is holding will not dispatch whatever its
@@ -8876,6 +8872,11 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     focus_warning = _focus_warning(_root(), title, brief)
     if focus_warning:
         item = {**item, "focus_warning": focus_warning}
+    # SAY IT NOW, NOT IN THE LISTING. An item the stage holds looked exactly
+    # like one about to run until somebody opened queue_list.
+    stage_hold = _stage_hold_for(_root(), item)
+    if stage_hold:
+        item = {**item, "stage_hold": stage_hold}
     warnings = list(breadth["reasons"]) if breadth["score"] >= 1 else []
     if warnings:
         item = {**item, "warnings": warnings}
@@ -8900,6 +8901,36 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
                  if waiting else
                  f"#{depends_on} is already done, so #{item['id']} is "
                  "ready now")}}
+
+
+def _stage_hold_for(root, item: dict) -> str:
+    """Why the stage machine will not dispatch this queued item, or ''.
+
+    ONE ANSWER, SAID AT FILING AND IN THE LISTING. queue_list computed this
+    on every row; queue_add and queue_add_chain did not, so an item filed
+    at the slice stage without a plan row came back as an ordinary queued
+    row and sat held with no refusal anywhere (Turf War, 2026-10-16: twice
+    in one afternoon, a hand-filed chain and a QA re-gate). Best-effort on
+    purpose: an unreadable stage doc is not a reason to fail a filing.
+    """
+    if str(item.get("status") or "queued") != "queued":
+        return ""
+    try:
+        from bgate_core.board import queue as _q
+        from bgate_core.design import greenlight as _gl
+
+        hold = (_gl.allows(root, str(item.get("seat") or ""))[1]
+                or _q.slice_hold_reason(root, item))
+        if not hold and item.get("source") != "domain-plan":
+            from bgate_core.design import domainplan as _dpl
+            if str(item.get("seat") or "") in _dpl.planning_held(root):
+                hold = ("held: this project plans first - the "
+                        f"{item.get('seat')} seat's discipline "
+                        "has no domain plan yet; its PLAN item "
+                        "dispatches first")
+        return hold or ""
+    except Exception:
+        return ""
 
 
 def _plan_row_context(name: str) -> dict:
@@ -8936,15 +8967,48 @@ def queue_add_chain(links: list, chain_id: str = "",
     previous", ...); ten same-seat links that do not mention each other are
     ten siblings, dispatched as wide as the caps allow. MEASURED: ten
     independent cutout rigs filed as a ten-deep ladder ran one at a time.
-    mode="linear" is the old strict line. Chains cannot be appended to; hang
-    a follow-up off the board with queue_add(depends_on=...). Returns
-    {chain_id, items} with each item's depends_on.
+    mode="linear" is the old strict line. A link may name `plan_row`, the
+    plan row it builds, exactly as queue_add does: at the slice stage that
+    is what admits it. Chains cannot be appended to; hang a follow-up off
+    the board with queue_add(depends_on=...). Returns {chain_id, items}
+    with each item's depends_on, its plan_row, and a `stage_hold` on any
+    link the stage will not dispatch as filed.
     Full notes: docs/tools.md#queue_add_chain
     """
     from bgate_core.board import queue as _q
+    links = [dict(link) if isinstance(link, dict) else link
+             for link in (links or [])]
+    # A LINK ON A PLAN ROW, the same way queue_add puts an item on one. A
+    # chain had no way onto a slice row at all, so every chain filed at the
+    # slice stage sat held until somebody pointed the rows at its items by
+    # hand (Turf War, 2026-10-16). Checked before anything lands: a row
+    # that is already being built, or named twice, refuses the whole chain.
+    rows_to_link: dict[int, str] = {}
+    for i, link in enumerate(links):
+        if not isinstance(link, dict):
+            continue
+        name = str(link.pop("plan_row", "") or "").strip()
+        if not name:
+            continue
+        if name in rows_to_link.values():
+            return {"ok": False, "refused": "plan_row", "link": i,
+                    "error": f"plan row {name!r} is named by two links; one "
+                             "item builds one row"}
+        planned = _plan_row_context(name)
+        if planned.get("error"):
+            return {"ok": False, "refused": "plan_row", "link": i,
+                    "error": planned["error"]}
+        brief = str(link.get("brief") or "")
+        if planned["goal"] and planned["goal"] not in brief:
+            link["brief"] = (f"{brief}\n\n[{planned['domain']} plan] "
+                             f"DOMAIN GOAL: {planned['goal']}").strip()
+        if not str(link.get("acceptance") or "").strip():
+            link["acceptance"] = planned["acceptance"][:500]
+        link["kind"] = link.get("kind") or _q.kind_for_row(_root(), name)
+        rows_to_link[i] = name
     # EVERY LINK IS ONE DELIVERABLE. A chain of wide links is the same wide
     # ticket in several pieces, each of which then needs several runs.
-    for i, link in enumerate(links or []):
+    for i, link in enumerate(links):
         if not isinstance(link, dict):
             continue
         grade = _q.scope_grade(str(link.get("brief") or ""),
@@ -8966,13 +9030,41 @@ def queue_add_chain(links: list, chain_id: str = "",
                              "the human"}
     rows = _q.add_chain(
         _root(),
-        [dict(link) for link in (links or [])],
+        [dict(link) for link in links],
         chain_id=chain_id, source=f"seat:{_seat() or 'unknown'}",
         mode=mode)
-    return {"chain_id": rows[0]["chain_id"], "count": len(rows),
-            "items": [{"id": r["id"], "seat": r["seat"], "title": r["title"],
-                       "chain_pos": r["chain_pos"],
-                       "depends_on": r["depends_on"]} for r in rows]}
+    plan_row_errors: dict[int, str] = {}
+    if rows_to_link:
+        from bgate_core.design import gameplan as _gameplan
+        for i, name in rows_to_link.items():
+            try:
+                _gameplan.link(_root(), name, int(rows[i]["id"]))
+            except (LookupError, ValueError) as exc:
+                # Pre-checked above, so this is a race with another filer;
+                # the chain landed, say which row did not take.
+                plan_row_errors[int(rows[i]["id"])] = str(exc)
+    items = []
+    for i, r in enumerate(rows):
+        entry = {"id": r["id"], "seat": r["seat"], "title": r["title"],
+                 "chain_pos": r["chain_pos"], "depends_on": r["depends_on"]}
+        if i in rows_to_link and int(r["id"]) not in plan_row_errors:
+            entry["plan_row"] = rows_to_link[i]
+        # SAY WHICH LINKS THE STAGE HOLDS, at filing. The listing said it;
+        # the filing did not, and a held chain read as a queued one.
+        hold = _stage_hold_for(_root(), r)
+        if hold:
+            entry["stage_hold"] = hold
+        items.append(entry)
+    out = {"chain_id": rows[0]["chain_id"], "count": len(rows), "items": items}
+    held = [e["id"] for e in items if e.get("stage_hold")]
+    if held:
+        out["held"] = held
+        out["note"] = (f"{len(held)} of {len(items)} links will not dispatch "
+                       "as filed - each one's stage_hold says why and what "
+                       "admits it")
+    if plan_row_errors:
+        out["plan_row_errors"] = plan_row_errors
+    return out
 
 
 @_tool
