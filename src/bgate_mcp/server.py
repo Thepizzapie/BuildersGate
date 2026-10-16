@@ -1997,8 +1997,12 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
     `balance` (a NUMBER only where exposed - kie and Retro Diffusion; None
     means UNKNOWN and still routable), and `reason` when unkeyed. Pass
     `capability` ("image" | "animate" | "three_d" | "music" | "video") to get
-    `pick`, the provider that job routes to now. `fresh=true` re-probes past
-    the 2-minute cache. Keys never appear here and no tool writes one.
+    `pick`, the provider that job routes to now. "music" IS THE SOUND ROUTE
+    TOO: sfx_prompt (sound effects) and music_generate both gate on it, so
+    a keyed kie under "music" means sound effects are live. `capabilities`
+    says what each one serves and which tools walk through it. `fresh=true`
+    re-probes past the 2-minute cache. Keys never appear here and no tool
+    writes one.
     Full notes: docs/tools.md#provider_status
     """
     from bgate_core.runtime import gateway as _gateway
@@ -2008,10 +2012,18 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
     except LookupError:
         root = None
         _keys()
+    # EACH CAPABILITY SAYS WHAT IT SERVES AND WHICH TOOLS USE IT. The bare
+    # provider order read as the whole story: an audio seat saw kie under
+    # "music" and no "sound" anywhere, concluded it had no sound-effects
+    # route, and gave up with sfx_prompt in its own tool list (Turf War,
+    # 2026-10-16). The order stays where it was; the words are new.
     out = {"ok": True,
            "providers": _gateway.status(root, fresh=bool(fresh)),
            "capabilities": {k: list(v)
-                            for k, v in _gateway.CAPABILITIES.items()}}
+                            for k, v in _gateway.CAPABILITIES.items()},
+           "capability_serves": dict(_gateway.CAPABILITY_SERVES),
+           "capability_tools": {k: list(v)
+                                for k, v in _gateway.CAPABILITY_TOOLS.items()}}
     # WHICH PROVIDER WOULD ACTUALLY BE SELECTED, for every family, without
     # having to ask one capability at a time. `bgate doctor` and this tool were
     # observed answering the same question differently across three benchmark

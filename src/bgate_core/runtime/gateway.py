@@ -51,6 +51,43 @@ CAPABILITIES: dict[str, tuple[str, ...]] = {
 PROVIDERS = ("openai", "krea", "kie", "retrodiffusion",
              "stability", "tripo", "meshy", "rodin")
 
+# WHAT EACH CAPABILITY SERVES, IN THE WORDS AN AGENT LOOKS FOR. The table
+# above names capabilities by their first job ("music") and an agent reads
+# it as the whole job. Measured (Turf War, 2026-10-16): the audio seat read
+# provider_status, saw kie under image / music / video and no "sound" line,
+# concluded its seat had no sound-effects route, and gave up - while
+# sfx_prompt, which gates on "music", sat in its own tool list and had
+# already produced two clips. The listing sent it wrong; the listing says
+# the second job now.
+CAPABILITY_SERVES: dict[str, str] = {
+    "image": "2D images: stills, sprites, sheets, UI, props, storyboards",
+    "animate": "2D animation cycles from an existing sheet",
+    "three_d": "3D models",
+    "music": "music AND sound effects (Suno via kie: music_generate, "
+             "sfx_prompt)",
+    "video": "video clips",
+}
+
+# THE TOOLS THAT WALK THROUGH EACH GATE. Kept here, beside the table they
+# route on, and pinned by a test that reads every _provider_gate call in the
+# MCP modules: a tool that gates on a capability and is not listed under it
+# fails that test, so this cannot drift into the kind of half-truth that
+# sent the audio seat wrong.
+CAPABILITY_TOOLS: dict[str, tuple[str, ...]] = {
+    "image": ("image_generate", "image_edit", "image_sprites",
+              "image_talkhead", "item_generate", "item_variants",
+              "tileset_generate", "vfx_animate", "ui_concept",
+              "cutout_kit_generate", "cutout_part_rerun",
+              "character_generate", "prop_generate", "storyboard_auto",
+              "storyboard_frame_generate"),
+    "animate": ("animation_generate",),
+    # 3D generation routes through provider_for in bgate_core.runtime.providers,
+    # not through _provider_gate; nothing to list here yet.
+    "three_d": (),
+    "music": ("music_generate", "sfx_prompt"),
+    "video": ("kie_video_generate", "cinematic_generate_shot"),
+}
+
 # Balance probes are network calls; a burst of billing failures must not turn
 # into a burst of probes. Per (root, provider), seconds.
 CACHE_S = 120.0
