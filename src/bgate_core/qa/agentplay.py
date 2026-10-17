@@ -228,11 +228,54 @@ def render(value: Any, indent: str = "") -> str:
     return f"{indent}{value}"
 
 
-def install(root: Any) -> dict:
+def _lines(text: str) -> list[str]:
+    return [ln.rstrip() for ln in text.splitlines()]
+
+
+def _place_script(template: Path, dest: Path, *, refresh: bool) -> dict:
+    """Put a template script where the game expects it, without overwriting
+    the game's own copy in silence.
+
+    MEASURED on Turf War (2026-10-17): the game had extended ``agent.ts``
+    with a ``run`` hook, the one way a command-driven game hands the bot a
+    plan. Every feel check copied the template over it because the bytes
+    differed, deleted the hook it depended on, and reported UNMEASURED. So:
+    a missing file is written; an identical one (line endings and trailing
+    whitespace aside) is left; a DIFFERENT one is left as it is and the
+    result says so, with ``script_extends_template`` telling whether the
+    game's copy still carries every template line. ``refresh=True`` is the
+    explicit way to replace it."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    want = template.read_text(encoding="utf-8")
+    out: dict = {"script": str(dest), "script_updated": False,
+                 "script_differs": False}
+    if not dest.is_file():
+        shutil.copyfile(template, dest)
+        return {**out, "script_updated": True}
+    have = dest.read_text(encoding="utf-8", errors="replace")
+    if _lines(have) == _lines(want):
+        return out
+    if refresh:
+        shutil.copyfile(template, dest)
+        return {**out, "script_updated": True,
+                "note": f"{dest.name} differed from the template and was "
+                        "replaced (refresh=True)"}
+    extends = set(ln.strip() for ln in _lines(want) if ln.strip()) \
+        <= set(ln.strip() for ln in _lines(have) if ln.strip())
+    why = ("it carries every line the template has plus the game's own"
+           if extends else
+           f"it lacks lines the template has; diff it against {template}")
+    return {**out, "script_differs": True, "script_extends_template": extends,
+            "note": f"{dest.name} differs from the template and was LEFT AS "
+                    f"IS ({why}); pass refresh=True to replace it"}
+
+
+def install(root: Any, *, refresh: bool = False) -> dict:
     """Put the agent script and its autoload line in the Godot project.
 
     Additive and re-runnable, the same way adopt installs telemetry: the
-    script is refreshed from the template, the autoload merged in beside the
+    script is written when missing, the game's own edits to it are kept
+    (``refresh=True`` replaces them), the autoload merged in beside the
     game's own."""
     from ..store.adopt import _merge_autoloads
     from .playtest import _godot_project_dir
@@ -241,15 +284,10 @@ def install(root: Any) -> dict:
     config = game / "project.godot"
     if not config.is_file():
         raise RuntimeError(f"no project.godot at {game}")
-    dest = game / "addons" / "bgate" / "bgate_agent.gd"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    copied = (not dest.is_file()
-              or dest.read_bytes() != TEMPLATE.read_bytes())
-    if copied:
-        shutil.copyfile(TEMPLATE, dest)
+    placed = _place_script(TEMPLATE, game / "addons" / "bgate" / "bgate_agent.gd",
+                           refresh=refresh)
     merged = _merge_autoloads(config, (AGENT_AUTOLOAD,))
-    return {"script": str(dest), "script_updated": copied,
-            "autoload": merged.get("action")}
+    return {**placed, "autoload": merged.get("action")}
 
 
 def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
@@ -359,19 +397,17 @@ WEB_TEMPLATE = (Path(__file__).resolve().parents[2] / "templates" / "web"
                 / "shared" / "src" / "bgate" / "agent.ts")
 
 
-def install_web(web_dir: Path) -> dict:
+def install_web(web_dir: Path, *, refresh: bool = False) -> dict:
     """Put src/bgate/agent.ts in a web game. The game wires agent.tick and
-    agent.isPaused into its own loop - that part is the game's, by design."""
-    dest = Path(web_dir) / "src" / "bgate" / "agent.ts"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    copied = (not dest.is_file()
-              or dest.read_bytes() != WEB_TEMPLATE.read_bytes())
-    if copied:
-        shutil.copyfile(WEB_TEMPLATE, dest)
+    agent.isPaused into its own loop - that part is the game's, by design -
+    and may extend the file (a ``run`` hook, say); its copy is kept unless
+    ``refresh=True``. See :func:`_place_script`."""
+    placed = _place_script(WEB_TEMPLATE, Path(web_dir) / "src" / "bgate" / "agent.ts",
+                           refresh=refresh)
     wired = any("agent.tick" in f.read_text(encoding="utf-8", errors="replace")
                 for f in (Path(web_dir) / "src").rglob("*.ts")
                 if f.name != "agent.ts")
-    return {"script": str(dest), "script_updated": copied, "wired": wired}
+    return {**placed, "wired": wired}
 
 
 def _play_web(web_dir: Path, relay: "Relay", out: Path, *, seconds: float,

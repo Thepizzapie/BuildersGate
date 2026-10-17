@@ -111,12 +111,14 @@ def playtest_feel_check(scene: str, goal: str, seconds: float = 90.0) -> dict:
 
 
 @_tool
-def playtest_agent_install() -> dict:
-    """Install or refresh the BGateAgent autoload (addons/bgate/bgate_agent.gd)
-    in this Godot project. Inert unless a playtest_agent_run launches the
-    game. Additive: the game's own autoloads are kept."""
+def playtest_agent_install(refresh: bool = False) -> dict:
+    """Install the BGateAgent autoload (addons/bgate/bgate_agent.gd) in this
+    Godot project. Inert unless a playtest_agent_run launches the game.
+    Additive: the game's own autoloads are kept, and so is the game's own
+    copy of the script when it differs from the template (the result says
+    so under `note`); `refresh=True` replaces it with the template."""
     try:
-        return {"ok": True, **_agentplay.install(_root())}
+        return {"ok": True, **_agentplay.install(_root(), refresh=refresh)}
     except RuntimeError as exc:
         return {"ok": False, "error": str(exc)}
 
