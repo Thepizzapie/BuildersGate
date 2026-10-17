@@ -411,7 +411,10 @@ def main():
             # The furniture's datablocks outlive their objects: on 4.2 the
             # factory "Material" stayed in bpy.data.materials, so a grey
             # assembly reported one material and the no_materials gate never
-            # fired. Drop whatever the removal left with no users.
+            # fired. Drop whatever the removal left with no users. A block
+            # that still has a user stays on purpose: force-removing it would
+            # also strip a material the script assigns; the combine report
+            # filters to materials on the scene's objects instead.
             for blocks in (bpy.data.meshes, bpy.data.materials,
                            bpy.data.cameras, bpy.data.lights):
                 for block in list(blocks):

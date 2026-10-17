@@ -102,7 +102,9 @@ jobs:
           $out = "$env:RUNNER_TEMP\mesa3d"
           7z x $arc "-o$out" -y | Out-Null
           $bin = Split-Path $env:BGATE_BLENDER
-          Copy-Item "$out\x64\*.dll" $bin -Force
+          # Only the GL set, so a Mesa DLL never shadows one Blender ships.
+          foreach ($dll in "opengl32.dll", "libgallium_wgl.dll") { Copy-Item "$out\x64\$dll" $bin -Force -ErrorAction Stop }
+          if (Test-Path "$out\x64\libglapi.dll") { Copy-Item "$out\x64\libglapi.dll" $bin -Force }
           "GALLIUM_DRIVER=llvmpipe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Both adapters must see their binary
