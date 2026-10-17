@@ -76,16 +76,40 @@ def test_trivial_is_a_note_not_a_fail_when_no_run_reached_an_end(tmp_path):
     assert got["verdict"] == "PASS", got
     assert "TRIVIAL" not in got["fails"]
     assert "not measurable" in got["notes"]["TRIVIAL"] and "90 s" in got["notes"]["TRIVIAL"]
-    # control: the same runs, BOTH carrying a match_end event, ARE trivial;
-    # one run ending while the other did not is still unjudged
-    end = [{"kind": "match_end", "ts": 1061, "data": {"winner": "home"}}]
+    # control: the same runs, BOTH carrying a match_end the bot survived, ARE
+    # trivial; one run ending while the other did not is still unjudged
+    end = [{"kind": "match_end", "ts": 1061, "data": {"status": "won"}}]
     ended = feel.measure(_run(tmp_path, "s2", _decisions(
         ["shoot", "jump", "dash"] * 20), events=end))
-    assert ended["ended"] is True
+    assert ended["ended"] is True and ended["end_status"] == "won"
     assert "TRIVIAL" not in feel.verdict(ended, base)["fails"]
     base_ended = feel.measure(_run(tmp_path, "b2", _decisions(
         ["shoot"] * 60, progress_to=0.2), events=end))
     assert "TRIVIAL" in feel.verdict(ended, base_ended)["fails"]
+
+
+def test_an_end_event_without_a_status_leaves_trivial_unjudged(tmp_path):
+    """Measured (Turf War, 480 s): `match_end {turn: 23, winner: 1}`, the CPU
+    had knocked out every athlete, and the check read 0 deaths and TRIVIAL."""
+    winner_only = [{"kind": "match_end", "ts": 1061,
+                    "data": {"turn": 23, "winner": 1}}]
+    smart = feel.measure(_run(tmp_path, "s", _decisions(
+        ["shoot", "jump", "dash"] * 20), events=winner_only))
+    base = feel.measure(_run(tmp_path, "b", _decisions(
+        ["shoot"] * 60, progress_to=0.2), events=winner_only))
+    assert smart["ended"] is True and smart["end_status"] == "unknown"
+    got = feel.verdict(smart, base, seconds=480)
+    assert "TRIVIAL" not in got["fails"]
+    assert "no status" in got["notes"]["TRIVIAL"]
+    # controls: a lost status is a death (no TRIVIAL question at all), and a
+    # knocked-out event counts as one too, status or no status
+    lost = feel.measure(_run(tmp_path, "l", _decisions(["shoot"] * 60), events=[
+        {"kind": "match_end", "ts": 1061, "data": {"winner": 1, "status": "lost"}}]))
+    assert lost["deaths"] == 1 and lost["end_status"] == "lost"
+    ko = feel.measure(_run(tmp_path, "k", _decisions(["shoot"] * 60), events=[
+        {"kind": "athlete_knocked_out", "ts": 1030, "data": {"reason": "pit"}},
+        *winner_only]))
+    assert ko["deaths"] == 1
 
 
 def test_one_button_counts_only_frames_that_offered_a_choice(tmp_path):
