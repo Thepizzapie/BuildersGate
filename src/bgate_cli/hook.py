@@ -539,6 +539,126 @@ def _both_readings(command: str, shell: str, bash_reader, ps_reader) -> list[str
     return hits
 
 
+# ---------------------------------------------------------------------------
+# HUMAN-ONLY COMMANDS. Some `bgate <command> <verb>` lines act outside this
+# machine under the ACCOUNT OWNER's name. A dispatched seat is not the account
+# owner and nothing in a brief makes it one, so those lines are refused for a
+# seated session before they run. Which commands those are is not this file's
+# knowledge: the edition that installs such a command writes it to
+# ~/.bgate/hook_policy.json ({"human_only": {"<command>": ["<verb>", ...]}}),
+# and this table starts empty. The top-level human session has no seat and is
+# never gated; a verb that is not listed (a read) passes.
+# ---------------------------------------------------------------------------
+_HUMAN_ONLY_DEFAULT: dict[str, set[str]] = {}
+_HOOK_POLICY_NAME = "hook_policy.json"
+_BGATE_MODULES = {"bgate_cli", "bgate_cli.main"}
+
+
+def human_only_table() -> dict[str, set[str]]:
+    """The human-only commands this machine knows about. Never raises; an
+    unreadable or malformed policy file is an empty table."""
+    try:
+        from bgate_core.store import project
+        path = project.user_dir() / _HOOK_POLICY_NAME
+        if not path.is_file():
+            return dict(_HUMAN_ONLY_DEFAULT)
+        doc = json.loads(path.read_text(encoding="utf-8") or "{}")
+        table = doc.get("human_only") if isinstance(doc, dict) else None
+        out: dict[str, set[str]] = {k: set(v) for k, v in _HUMAN_ONLY_DEFAULT.items()}
+        if isinstance(table, dict):
+            for command, verbs in table.items():
+                if isinstance(command, str) and isinstance(verbs, (list, tuple, set)):
+                    out.setdefault(command.lower(), set()).update(
+                        str(v).lower() for v in verbs if str(v).strip())
+        return out
+    except Exception:                                             # noqa: BLE001
+        return dict(_HUMAN_ONLY_DEFAULT)
+
+
+def _bgate_args(program: str, rest: list[str]) -> list[str]:
+    """The arguments `bgate` itself would see, for `bgate ...`, `bgate.exe
+    ...` and `python -m bgate_cli ...`; [] when this is not bgate."""
+    name = program.lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    if name == "bgate":
+        return rest
+    if _is_python(name):
+        for i, arg in enumerate(rest):
+            if arg == "-m" and i + 1 < len(rest):
+                return rest[i + 2:] if rest[i + 1] in _BGATE_MODULES else []
+            if arg.startswith("-m") and arg[2:] in _BGATE_MODULES:
+                return rest[i + 1:]
+    return []
+
+
+def human_only_hits(command: str, *, _embedded: bool = False,
+                    table: Optional[dict] = None) -> list[str]:
+    """Human-only `bgate <command> <verb>` lines in a command line, through
+    the same wrappers the egress gate reads (sudo/env, bash -c, eval)."""
+    table = human_only_table() if table is None else table
+    if not table:
+        return []
+    hits: list[str] = []
+    names = "|".join(re.escape(c) for c in sorted(table))
+    verbs = "|".join(sorted({re.escape(v) for vs in table.values() for v in vs}))
+    loose = re.compile(rf"\b({names})\s+({verbs})\b", re.I) if names and verbs else None
+    for line, _heredoc in _logical_lines(command):
+        if not line.strip():
+            continue
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            tokens = list(lex)
+        except ValueError:
+            found = loose.search(line) if loose else None
+            if found:
+                hits.append("an unparseable command that names `bgate "
+                            f"{found.group(1).lower()} {found.group(2).lower()}`")
+            continue
+        for segment in _split_segments(_collapse_fd_dups(tokens)):
+            args = [t for t in segment
+                    if t not in _REDIRECT_WRITE and t not in _REDIRECT_READ]
+            program, rest = _program(args)
+            if not program:
+                continue
+            seen = _bgate_args(program, rest)
+            positional = [a for a in seen if not a.startswith("-")]
+            if (len(positional) >= 2 and positional[0].lower() in table
+                    and positional[1].lower() in table[positional[0].lower()]):
+                hits.append(f"bgate {positional[0].lower()} {positional[1].lower()}")
+            if program in _SHELLS or program == "eval":
+                inner = " ".join(rest) if program == "eval" else ""
+                for snippet in ([inner] if inner else _snippets(rest)):
+                    hits.extend(human_only_hits(snippet, _embedded=True, table=table))
+            elif program in ("powershell", "pwsh"):
+                for snippet in _snippets(rest):
+                    hits.extend(human_only_hits(snippet, _embedded=True, table=table))
+    return hits
+
+
+def _judge_human_only(command: str, payload: dict, seat: str,
+                      shell: str = "bash") -> tuple[int, str]:
+    """BLOCK for a seated session running a human-only command; ALLOW else.
+    No override: the egress dial opens installs and the network, not the
+    account owner's name."""
+    if not os.environ.get("BGATE_SEAT", "").strip():
+        return ALLOW, ""
+    hits = human_only_hits(command)
+    if not hits:
+        return ALLOW, ""
+    _log_containment({"verdict": "human_only", "scope": "account",
+                      "reason": "; ".join(hits[:3])}, command[:200], shell,
+                     "block", payload)
+    return BLOCK, (
+        "[builders-gate] refused: " + "; ".join(f"`{h}`" for h in hits[:3])
+        + ". That command acts under the account owner's name, and a "
+        "dispatched seat is not the account owner - there is no override for "
+        "this one. Finish the item and say in queue_complete that it is ready; "
+        "the human runs the command.")
+
+
 def _judge_egress(command: str, payload: dict, seat: str,
                   shell: str = "bash") -> tuple[int, str]:
     """BLOCK for a seated session that installs or reaches out; ALLOW else."""
@@ -1161,14 +1281,19 @@ def decide(payload: dict, seat: str, owner: str = "",
 
 def _decide_shell(command: str, payload: dict, seat: str, owner: str,
                   mode: str, shell: str) -> tuple[int, str]:
-    """The three shell gates in the order their messages should win.
+    """The shell gates in the order their messages should win.
 
-    Egress first: an installer or a network client is refused before anyone
+    Human-only first: a human-only command from a seat is refused with the
+    one sentence that applies, before egress gets to call it a network client.
+    Then egress: an installer or a network client is refused before anyone
     reads where it writes. Then containment/lanes/locks, so a write into
     another project or another seat's file is named as exactly that. Then,
     for a write that WOULD have been allowed, the inline-text gate: a seat
     that echoes or heredocs file content is sent to Write/Edit.
     """
+    code, message = _judge_human_only(command, payload, seat, shell)
+    if code == BLOCK:
+        return code, message
     code, message = _judge_egress(command, payload, seat, shell)
     if code == BLOCK:
         return code, message
