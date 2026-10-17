@@ -630,6 +630,44 @@ _LOGFILE = ".bgate_web_dev.log"
 #: they cannot disagree. See dev_start for what happened when they did.
 _HOST = "127.0.0.1"
 
+# THE DASHBOARD'S PORT REACHES THE DEV SERVER, so the vite proxy in the
+# template can point at THIS project's dashboard rather than at 7788.
+# Measured (Turf War, 2026-10-16): a second web project on one machine ran
+# its dashboard on 7790; the template's proxy still said 7788, which was the
+# first project's dashboard, so /api/health through the dev server answered
+# with the OTHER game's name and every playtest would have been recorded
+# into the other board while both looked healthy. `bgate serve` writes its
+# port to .bgate/ui-port and sets BGATE_PORT; dev_start reads the file (the
+# MCP server is a different process from the dashboard, so the env alone
+# would not reach it), falls back to the env, then to the default.
+DASHBOARD_PORT_ENV = "BGATE_PORT"
+DASHBOARD_PORT_DEFAULT = 7788
+PORT_FILENAME = "ui-port"
+
+
+def dashboard_port(project_dir: str | os.PathLike[str]) -> int:
+    """The port this project's dashboard serves on.
+
+    .bgate/ui-port at the project root (written by `bgate serve`), else
+    BGATE_PORT, else 7788. The walk up stops at the first .bgate directory:
+    that is the project, and a parent project's port is the wrong answer.
+    """
+    here = Path(project_dir).resolve()
+    for d in (here, *here.parents):
+        marker = d / ".bgate"
+        if marker.is_dir():
+            try:
+                raw = (marker / PORT_FILENAME).read_text(encoding="utf-8").strip()
+                if raw.isdigit():
+                    return int(raw)
+            except OSError:
+                pass
+            break
+    raw = os.environ.get(DASHBOARD_PORT_ENV, "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return DASHBOARD_PORT_DEFAULT
+
 
 def _kill_tree(pid: int) -> None:
     """Kill a process and its children. Best-effort; never raises."""
@@ -824,11 +862,15 @@ def _dev_start(project_dir: str, port: int = 5173, timeout: int = 60) -> dict:
         # http://127.0.0.1:<port>/ failed for the full 90s timeout. Binding the
         # address we are about to hand back makes the URL in the result true.
         # It stays loopback, which is the same posture `bgate serve` takes.
+        # BGATE_PORT names this project's dashboard for the vite proxy; see
+        # dashboard_port. Without it the template falls back to 7788, which
+        # on a two-project machine is the other game's board.
+        env = {**os.environ, DASHBOARD_PORT_ENV: str(dashboard_port(root))}
         proc = subprocess.Popen(
             [_npm(), "run", "dev", "--",
              "--host", _HOST, "--port", str(port), "--strictPort"],
             cwd=str(root), stdin=subprocess.DEVNULL, stdout=log,
-            stderr=subprocess.STDOUT, creationflags=_NO_WINDOW)
+            stderr=subprocess.STDOUT, creationflags=_NO_WINDOW, env=env)
     except NodeNotFound as exc:
         log.close()
         return {"ok": False, "error": str(exc)}

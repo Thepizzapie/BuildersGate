@@ -9,6 +9,45 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Fixed
+- **A filing says when the stage will hold it, a chain link can sit on a
+  plan row, and queue_list shows every parent.** Measured on Turf War
+  (2026-10-16), a second web project on one machine: a chain filed at the
+  slice stage, and later a QA re-gate, came back from `queue_add_chain` and
+  `queue_add` as ordinary queued rows and sat held with no refusal
+  anywhere, because only `queue_list` computed the stage hold; a chain had
+  no `plan_row` at all, so the only way onto the slice was pointing the
+  rows at its items by hand; and `queue_list` printed the `depends_on`
+  column alone, so a chain serialised with `queue_add_dependency` read as a
+  fan. Now `queue_add` and every `queue_add_chain` item carry `stage_hold`
+  (and the chain result `held` + a note), a chain link takes `plan_row`
+  with queue_add's semantics and is refused before landing when the row is
+  taken or named twice, and every `queue_list` row carries
+  `depends_on_all`, the same list the dashboard row already had.
+- **The web template's dev-server proxy and the kie callback name THIS
+  project's dashboard, not port 7788.** Same machine, same afternoon: the
+  second project's dashboard was on 7790 (as the port-collision message
+  tells you to do), the stamped `vite.config.ts` still proxied `/api` to
+  7788, and `/api/health` through the dev server answered with the OTHER
+  game's name - its playtests would have been recorded into that board
+  while both looked healthy. `bgate serve` now writes its port to
+  `.bgate/ui-port` and sets `BGATE_PORT`; `dev_start` reads the file (the
+  MCP server is not the dashboard's child), then the env, then 7788, and
+  passes `BGATE_PORT` to the dev server it spawns; the template reads it.
+  The kie Suno `callBackUrl` default follows the same variable - cosmetic,
+  since results are polled, but a request naming the other game's
+  dashboard was reported as a bug, reasonably.
+- **provider_status says that "music" is the sound-effects route.** Same
+  project, same afternoon: the audio seat read the listing, saw kie under
+  image / music / video and no "sound" anywhere, concluded its seat had no
+  sound-effects route and gave up - with `sfx_prompt`, which gates on
+  "music", in its own tool list and two clips already produced. The result
+  now carries `capability_serves` and `capability_tools`, every `routing`
+  family carries `serves` and `tools`, and the docstring says it in one
+  line. The table is pinned by a test that reads every `_provider_gate`
+  call in the MCP modules, so a tool cannot gate on a capability it is not
+  listed under.
+
 ### Added
 - **`bgate oneshot NAME --brief FILE`: a brief becomes a running,
   self-advancing board with no director session to babysit.** Measured on

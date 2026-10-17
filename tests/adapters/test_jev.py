@@ -106,6 +106,111 @@ def test_gateway_route_and_its_cost(nokeys, monkeypatch):
     assert got["usd"] == pytest.approx(0.00002)
 
 
+@pytest.fixture()
+def ollama(nokeys, monkeypatch):
+    """The local route opted in and a fake Ollama answering /v1/systemone the
+    way the real one does (measured on 0.40.5 with laya: Jev's shape, no
+    bearer, usage with input_tokens). ``status``/``body`` let a test make it
+    refuse."""
+    monkeypatch.setenv("BGATE_JEV_OLLAMA_MODEL", "laya")
+    monkeypatch.delenv("BGATE_JEV_LOCAL_MODEL", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    seen = {"calls": [], "status": 200, "body": None}
+
+    def fake(method, url, **kw):
+        seen["calls"].append({"method": method, "url": url, **kw})
+        if seen["status"] != 200:
+            raise _http.ProviderError("refused", provider="jev",
+                                      status=seen["status"], body=seen["body"])
+        body = {"model": "laya",
+                "answers": {"action": {"type": "choice", "choice": "jump",
+                                       "probabilities": {"jump": 0.55,
+                                                         "wait": 0.45},
+                                       "confidence": 0.09}},
+                "usage": {"input_tokens": 108, "output_tokens": 0}}
+        return _http.Response(200, json.dumps(body).encode(), {}, url)
+
+    monkeypatch.setattr(jev._http, "request", fake)
+    return seen
+
+
+def test_ollama_is_the_same_endpoint_with_no_bearer_and_no_cost(ollama):
+    got = jev.decide("a goomba approaches", QS)
+    call = ollama["calls"][0]
+    assert call["url"] == "http://127.0.0.1:11434/v1/systemone"
+    assert "Authorization" not in call["headers"]
+    assert call["json"] == {"model": "laya", "state": "a goomba approaches",
+                            "questions": jev.normalize_questions(QS)}
+    assert call["timeout"] >= jev.OLLAMA_MIN_TIMEOUT
+    assert got["route"] == "ollama" and got["model"] == "laya"
+    assert got["usd"] == 0.0                 # 108 input tokens, still free
+    assert got["usage"]["input_tokens"] == 108
+    assert got["answers"]["action"]["choice"] == "jump"
+
+
+def test_a_hosted_key_still_wins_over_ollama(ollama, monkeypatch):
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw")
+    assert jev.route() == "ai_gateway"
+    jev.decide("s", QS)
+    call = ollama["calls"][0]
+    assert call["url"].startswith("https://ai-gateway.vercel.sh/")
+    assert call["headers"]["Authorization"] == "Bearer gw"
+
+
+def test_ollama_host_and_the_local_alias_are_honoured(ollama, monkeypatch):
+    monkeypatch.delenv("BGATE_JEV_OLLAMA_MODEL")
+    monkeypatch.setenv("BGATE_JEV_LOCAL_MODEL", "nimble")
+    monkeypatch.setenv("OLLAMA_HOST", "gpubox:11435")
+    assert jev.route() == "ollama"
+    jev.decide("s", QS)
+    call = ollama["calls"][0]
+    assert call["url"] == "http://gpubox:11435/v1/systemone"
+    assert call["json"]["model"] == "nimble"
+
+
+def test_a_bare_on_means_the_default_local_model(ollama, monkeypatch):
+    monkeypatch.setenv("BGATE_JEV_OLLAMA_MODEL", "on")
+    jev.decide("s", QS)
+    assert ollama["calls"][0]["json"]["model"] == jev.ROUTES["ollama"][2]
+
+
+def test_warm_pays_the_local_load_and_skips_hosted(ollama, monkeypatch):
+    got = jev.warm()
+    assert got["warmed"] is True and got["route"] == "ollama"
+    sent = ollama["calls"][0]["json"]
+    assert sent["model"] == "laya" and list(sent["questions"]) == ["ready"]
+    assert ollama["calls"][0]["timeout"] >= 120
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts")
+    assert jev.warm() == {"warmed": False, "route": "typesafe",
+                          "reason": "nothing to load"}
+    assert len(ollama["calls"]) == 1            # the hosted route made no call
+
+
+def test_warm_never_raises(ollama):
+    ollama["status"], ollama["body"] = 404, '{"error":"model not found"}'
+    got = jev.warm()
+    assert got["warmed"] is False and "ollama pull laya" in got["reason"]
+
+
+def test_ollama_refusals_say_what_to_pull(ollama):
+    ollama["status"], ollama["body"] = 404, '{"error":"model not found"}'
+    with pytest.raises(jev.JevError, match="ollama pull laya"):
+        jev.decide("s", QS)
+    ollama["status"] = 400
+    ollama["body"] = '{"error":"model \\"qwen2.5:7b\\" is not a llama.cpp decision model"}'
+    with pytest.raises(jev.JevError, match="only a decision model"):
+        jev.decide("s", QS)
+
+
+def test_no_key_still_names_the_local_route(nokeys):
+    got = jev.available()
+    assert got["available"] is False
+    assert "bgate key set typesafe" in got["reason"]
+    assert "BGATE_JEV_OLLAMA_MODEL" in got["reason"]
+    local = jev.available(route="ollama")
+    assert local["available"] is False and "ollama" in local["reason"]
+
+
 def test_render_is_lines_not_json():
     text = agentplay.render({"player": {"hp": 3},
                              "nearby": [{"name": "goomba", "dx": 40}]})
@@ -146,6 +251,31 @@ def test_relay_refuses_a_choice_outside_the_options(tmp_path, monkeypatch):
     finally:
         relay.close()
     assert relay.errors and "teleport" in relay.errors[0]
+
+
+def test_relay_tells_the_model_what_its_last_choice_did(tmp_path, monkeypatch):
+    """Measured (Turf War, 480 s): a deterministic model given the identical
+    state picked walk_left on 423 of 426 decisions while x never moved. The
+    state text now carries the consequence of the last pick."""
+    seen = []
+
+    def fake_decide(text, questions, **kw):
+        seen.append(text)
+        return {"answers": {"action": {"choice": "left"}}, "usd": 0.0}
+
+    monkeypatch.setattr(jev, "decide", fake_decide)
+    relay = agentplay.Relay(tmp_path, tmp_path, goal="win", policy="jev")
+    try:
+        opts = {"left": "", "right": ""}
+        _post(relay.url, {"state": "x 10, blocked", "progress": 0.1, "options": opts})
+        _post(relay.url, {"state": "x 10, blocked", "progress": 0.1, "options": opts})
+        _post(relay.url, {"state": "x 40, open", "progress": 0.2, "options": opts})
+    finally:
+        relay.close()
+    assert "LAST CHOICE" not in seen[0]                 # nothing before the first
+    assert "LAST CHOICE: left -> progress unchanged, state unchanged" in seen[1]
+    assert "LAST CHOICE: left -> progress 0.10 -> 0.20, state changed" in seen[2]
+    assert seen[2].index("LAST CHOICE") < seen[2].index("STATE:")
 
 
 def test_agent_template_is_inert_without_the_url():

@@ -36,7 +36,8 @@
  * out got 0.48-1.0 and sensible play.
  */
 
-type Opt = { keys?: string[]; tap?: string[]; click?: string; desc?: string };
+/** `run` is for games driven by commands rather than keys: called once when the option is chosen. */
+type Opt = { keys?: string[]; tap?: string[]; click?: string; desc?: string; run?: () => void };
 export interface Observation {
   state: string | Record<string, unknown>;
   options: Record<string, Opt | string>;
@@ -123,6 +124,7 @@ async function decide(obs: Observation): Promise<void> {
       }
     }
     pending = keep.filter((k) => !held.includes(k));
+    opt.run?.();
     if (opt.click) (document.querySelector(opt.click) as HTMLElement | null)?.click();
     report("agent_decision", {
       choice, confidence: got?.confidence ?? 0, ms: Math.round(performance.now() - t0), frame,

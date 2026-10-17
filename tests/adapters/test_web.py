@@ -547,3 +547,50 @@ def test_a_web_project_plays_from_its_own_vite_build(tmp_path, monkeypatch):
     page.parent.mkdir(parents=True)
     page.write_text("<html>", encoding="utf-8")
     assert webbuild.status(tmp_path)["stale"] is False
+
+
+class TestTheDevServerKnowsItsDashboard:
+    """The vite proxy points at THIS project's dashboard, not at 7788.
+
+    MEASURED (Turf War, 2026-10-16): the second web project on one machine
+    ran its dashboard on 7790; the stamped vite.config.ts still proxied
+    /api to 7788, the first project's dashboard, so /api/health through the
+    dev server answered with the OTHER game's name and its playtests would
+    have landed on that board while both looked healthy.
+    """
+
+    def test_the_template_reads_the_port_from_the_environment(self):
+        source = (scaffold.TEMPLATES_DIR / "web" / "shared"
+                  / "vite.config.ts").read_text(encoding="utf-8")
+        assert "process.env.BGATE_PORT" in source
+        assert '"http://127.0.0.1:7788"' not in source
+
+    def test_the_port_file_wins_then_the_env_then_the_default(
+            self, tmp_path, monkeypatch):
+        monkeypatch.delenv(web.DASHBOARD_PORT_ENV, raising=False)
+        assert web.dashboard_port(tmp_path) == web.DASHBOARD_PORT_DEFAULT
+        monkeypatch.setenv(web.DASHBOARD_PORT_ENV, "7791")
+        assert web.dashboard_port(tmp_path) == 7791
+        (tmp_path / ".bgate").mkdir()
+        (tmp_path / ".bgate" / web.PORT_FILENAME).write_text("7790\n")
+        assert web.dashboard_port(tmp_path) == 7790
+        # A subdirectory of the project reads the project's file.
+        (tmp_path / "src").mkdir()
+        assert web.dashboard_port(tmp_path / "src") == 7790
+
+    def test_a_parent_project_is_not_this_project(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(web.DASHBOARD_PORT_ENV, raising=False)
+        (tmp_path / ".bgate").mkdir()
+        (tmp_path / ".bgate" / web.PORT_FILENAME).write_text("7790")
+        inner = tmp_path / "games" / "other"
+        (inner / ".bgate").mkdir(parents=True)
+        # The inner project has a .bgate but no port file: the walk stops
+        # there and the parent's 7790 is NOT the answer.
+        assert web.dashboard_port(inner) == web.DASHBOARD_PORT_DEFAULT
+
+    def test_the_dev_server_is_started_with_the_port_in_its_environment(self):
+        import inspect
+
+        source = inspect.getsource(web._dev_start)
+        assert "DASHBOARD_PORT_ENV: str(dashboard_port(root))" in source
+        assert "env=env" in source
