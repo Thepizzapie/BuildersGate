@@ -9130,6 +9130,30 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
             return {"ok": False, "refused": "checkpoint",
                     "error": "the director places checkpoints; only the "
                              "human removes one"}
+    if (kind is not None or seat is not None) and _caller_is_agent():
+        # A STAGE HOLD IS NOT LIFTED BY A RELABEL. MEASURED (Turf War,
+        # 2026-10-17): a feel-check FAIL filed a director item, autodeploy ran
+        # the director as an agent, and it filed two tuning items as features,
+        # then changed their kind to "fix" so the slice-stage hold would not
+        # block them. The hold accepted the new label. Both ran and retuned a
+        # game whose owner had deferred tuning. The hold is the human's to
+        # lift (greenlight_advance, greenlight_waive) or the item's to earn
+        # (a plan_row); an agent may still retag an item when the hold stays.
+        relabelled = {**item, **({"kind": kind} if kind is not None else {}),
+                      **({"seat": seat} if seat is not None else {})}
+        hold_before = _stage_hold_for(root, item)
+        if hold_before and not _stage_hold_for(root, relabelled):
+            return {"ok": False, "refused": "stage_hold",
+                    "stage_hold": hold_before,
+                    "error": (f"#{item_id} is held by the stage as kind="
+                              f"{item.get('kind') or '-'} on the "
+                              f"{item.get('seat')} seat, and the change you "
+                              "asked for would lift that hold. An agent does "
+                              "not relabel its way past a stage: the human "
+                              "lifts it (greenlight_advance / greenlight_waive) "
+                              "or the item earns its place (queue_add "
+                              "plan_row=...). Leave the kind honest and let "
+                              "the hold show the human what is waiting.")}
     updated = _q.update(root, item_id, title=title, brief=brief,
                         seat=seat, priority=priority,
                         max_paid_calls=max_paid_calls, kind=kind,

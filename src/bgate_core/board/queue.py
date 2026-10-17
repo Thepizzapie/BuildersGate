@@ -663,8 +663,15 @@ def update(root: str | os.PathLike[str], item_id: int, *,
     This is how a reviewer enriches a ticket: e.g. the video-watching director
     rewriting a transcript-era brief to add the frames/timestamps/telemetry it
     saw. Only the passed fields change; the rest (status, source, source_ref)
-    are untouched."""
-    get(root, item_id)  # 404 if missing
+    are untouched.
+
+    The activity row names every triage field that changed, old value to
+    new, under the actor who changed it. MEASURED (Turf War, 2026-10-17): an
+    autonomous director relabelled two feature items as fixes "so the
+    slice-stage hold doesn't block them", and the only trace was "item 97
+    edited". Who changed a kind, and from what, is the question the hold has
+    to be able to answer."""
+    before = get(root, item_id)  # 404 if missing
     sets, params = [], []
     if title is not None:
         if not title.strip():
@@ -718,7 +725,12 @@ def update(root: str | os.PathLike[str], item_id: int, *,
             f"UPDATE work_item SET {', '.join(sets)}, updated_at = datetime('now') "
             "WHERE id = ?", params)
     item = get(root, item_id)
-    activity.log(root, "queue", f"item {item_id} edited: {item['title'][:60]}",
+    changed = [f"{f} {before.get(f)!r}->{item.get(f)!r}"
+               for f in ("kind", "severity", "seat", "priority")
+               if before.get(f) != item.get(f)]
+    detail = f" ({', '.join(changed)})" if changed else ""
+    activity.log(root, "queue",
+                 f"item {item_id} edited: {item['title'][:60]}{detail}",
                  seat=item["seat"], ref=str(item_id))
     return item
 

@@ -147,3 +147,40 @@ class TestQueueListCarriesEveryParent:
         assert rows[c["id"]]["depends_on"] == a["id"]
         assert rows[c["id"]]["depends_on_all"] == [a["id"], b["id"]]
         assert rows[a["id"]]["depends_on_all"] == []
+
+
+@pytest.mark.anyio
+class TestARelabelCannotLiftAHold:
+    """MEASURED (Turf War, 2026-10-17): an autonomous director changed two
+    held feature items to kind=fix "so the slice-stage hold doesn't block
+    them", the hold accepted the label, and both ran. The ``wired`` fixture
+    stamps BGATE_SEAT, so the caller here is an agent until a test unsets it."""
+
+    def _held_feature(self, root):
+        item = queue.add(root, "gameplay", "triple the damage",
+                         brief="so an athlete dies in three hits", kind="feature")
+        assert "slice" in server._stage_hold_for(root, item)
+        return item
+
+    async def test_an_agent_cannot_relabel_a_held_feature_as_a_fix(self, at_slice):
+        item = self._held_feature(at_slice)
+        got = await call("queue_update", item_id=item["id"], kind="fix")
+        assert got["ok"] is False and got["refused"] == "stage_hold"
+        assert "greenlight_advance" in got["error"]
+        assert queue.get(at_slice, item["id"])["kind"] == "feature"
+
+    async def test_a_relabel_that_keeps_the_hold_is_an_ordinary_edit(self, at_slice):
+        item = self._held_feature(at_slice)
+        got = await call("queue_update", item_id=item["id"], kind="content")
+        assert got.get("ok", True) is not False and got["kind"] == "content"
+
+    async def test_the_human_may_and_the_change_is_on_the_record(
+            self, at_slice, monkeypatch):
+        from bgate_core.board import activity
+        item = self._held_feature(at_slice)
+        monkeypatch.delenv("BGATE_SEAT")
+        monkeypatch.delenv("BGATE_WORK_ITEM", raising=False)
+        got = await call("queue_update", item_id=item["id"], kind="fix")
+        assert got["kind"] == "fix"
+        summaries = [r["summary"] for r in activity.recent(at_slice, limit=5)]
+        assert any("kind 'feature'->'fix'" in s for s in summaries), summaries
