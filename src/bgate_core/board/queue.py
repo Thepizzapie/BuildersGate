@@ -130,7 +130,12 @@ SATISFIED = ("done",)
 # that failed N rounds needed a PERSON. It needed a decision; the director
 # seat is dispatched for exactly that, and holding it left "QA loop: #5
 # failed 6 rounds" queued for a human who was asleep while the board sat.
-HELD_SOURCES = ("chat", "human-task")
+# The stage-advance item (bgate_core.board.followup_advance) is held too: it
+# is a DECISION for the director session, and a dispatched director-seat
+# AGENT cannot take it - greenlight_advance refuses a forward move from any
+# agent, so dispatching it as one would buy a run that ends in a refusal.
+STAGE_ADVANCE_SOURCE = "stage-advance"
+HELD_SOURCES = ("chat", "human-task", STAGE_ADVANCE_SOURCE)
 
 # A HUMAN STEP: work only a person can do (a call, a playtest, a sign-off that
 # is not a checkpoint on an existing item). It lives on the board as an item

@@ -1437,6 +1437,48 @@ def _hand_to_director_session(root, escalation: dict, failed_item: dict) -> bool
         return False
 
 
+def _stage_advance_sweep(root) -> Optional[dict]:
+    """File the stage-advance item when it is due, and give it to the
+    director session. Returns the filed item, or None."""
+    from bgate_core.board import followup_advance as _advance
+
+    filed = _advance.sweep(root)
+    if not filed:
+        return None
+    _hand_item_to_director_session(root, filed, _advance.prompt_for(root, filed))
+    return filed
+
+
+def _hand_item_to_director_session(root, item: dict, prompt: str) -> bool:
+    """Give a freshly-filed DIRECTOR item (held from every auto-dispatcher) to
+    the console's director session, with the same guards as the failure
+    escalation: only a session this project already uses, only when the CLI
+    is here, and never at the cost of the item - False leaves it held for
+    the dashboard exactly as filed."""
+    try:
+        from bgate_ui.agents import directorsession as _director
+        from bgate_ui.agents import runners as _runners
+
+        known = (_director.status(str(root)).get("live")
+                 or _director._read_sidecar(root).get("cli_session_id"))
+        if not known or not _runners.find_claude():
+            return False
+        item_id = int(item["id"])
+        if not _queue.reserve(root, item_id):
+            return False
+        _director.submit(str(root), item_id, prompt)
+        activity.log(root, LEDGER_KIND,
+                     f"#{item_id} handed to the director session",
+                     seat="director", ref=str(item_id))
+        return True
+    except Exception:
+        try:
+            _queue.release(root, int(item["id"]))
+        except Exception:
+            pass
+        return False
+
+
 def _do_qa_spawn(root, action: dict) -> dict:
     from bgate_ui.agents import dispatch as _dispatch
 
@@ -1945,6 +1987,18 @@ def tick(root: str | os.PathLike[str]) -> dict:
 
     beat = {}
     count = _bump(root)
+    # THE STAGE ADVANCE. Runs when a completion landed in this batch (the
+    # slice check is one) and on the sweep cadence as the backstop for an
+    # event that was never written. Its due-check is idempotent and off
+    # unless autopilot.stage_advance is on, so a project that did not ask
+    # answers "not due" off one setting read.
+    landed = any(str(ev.get("kind") or "") in ("item.done", "item.approved")
+                 for ev in batch.get("events") or [])
+    if landed or count % SWEEP_EVERY == 0:
+        try:
+            _stage_advance_sweep(root)
+        except Exception:
+            pass
     try:
         from bgate_ui.pumps import heartbeat as _heartbeat
 

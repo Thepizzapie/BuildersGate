@@ -112,10 +112,24 @@ def _find_cover(root: Path, game: Optional[Path], override: str = "") -> Optiona
     return None
 
 
-def _build_facts(root: Path) -> dict:
+def _build_facts(root: Path, engine: str = "") -> dict:
+    """Where the playable build is, and whether it is current.
+
+    THIS READ export/web UNCONDITIONALLY, and a web project builds to
+    .bgate_out/play (webbuild.play_dir), so every vite game reported "not
+    built" with a current build on disk. The directory is asked, not assumed.
+    Unity has no exporter here: a WebGL build the human made into export/web
+    counts as built and is never called stale, because nothing can rebuild it.
+    """
     from bgate_ui import webbuild
     status = webbuild.status(root)
-    web = root / "export" / "web"
+    web = webbuild.play_dir(root)
+    page = web / "index.html"
+    if engine == "unity" and status.get("reason") == "no game project":
+        status = ({"built": True, "stale": False, "build_mtime": page.stat().st_mtime,
+                   "reason": ""} if page.is_file()
+                  else {"built": False, "stale": True,
+                        "reason": "no WebGL build in export/web (build one from Unity)"})
     total = 0
     if web.is_dir():
         total = sum(p.stat().st_size for p in web.rglob("*") if p.is_file())
@@ -129,12 +143,31 @@ def _build_facts(root: Path) -> dict:
     }
 
 
+def _controls_override(over: dict) -> list[dict]:
+    """site.json "controls": [{"action": "fire", "keys": ["Space"]}, ...]."""
+    out: list[dict] = []
+    for row in over.get("controls") or []:
+        if not isinstance(row, dict):
+            continue
+        action = str(row.get("action") or "").strip()
+        keys = [str(k).strip() for k in (row.get("keys") or []) if str(k).strip()]
+        if action:
+            out.append({"action": action, "keys": keys})
+    return out
+
+
 def describe(root: str | os.PathLike[str]) -> dict:
     """Everything the site needs about one project. Raises LookupError if the
     path is not a Builders Gate project at all."""
     root = Path(root).resolve()
     meta = project.get(root)          # LookupError if this is not a project
+    # Godot first, as every other caller resolves it; then whichever engine
+    # the files say. A web or Unity project used to read as "no Godot project"
+    # here and was dropped from every publish with a current build on disk.
     game = project.game_dir(root)
+    engine = "godot" if game else ""
+    if game is None:
+        game, engine = project.engine_dir(root)
     over = overrides(root)
 
     slug = str(over.get("slug") or meta.get("slug") or root.name)
@@ -147,18 +180,23 @@ def describe(root: str | os.PathLike[str]) -> dict:
         "description": str(over.get("description") or ""),
         "credits": str(over.get("credits") or ""),
         "dimension": str(meta.get("dimension") or ""),
-        "engine": str(meta.get("engine") or ""),
+        "engine": engine or str(meta.get("engine") or ""),
         "tags": [str(t) for t in over.get("tags", []) if str(t).strip()],
         "hidden": bool(over.get("hidden", False)),
         "order": over.get("order"),
-        "controls": controls.for_project(root) if game else [],
+        # The human's list wins for every engine; Godot's input map is the
+        # fallback, and a web or Unity game has nothing to read.
+        "controls": (_controls_override(over)
+                     or (controls.for_project(root) if engine == "godot" else [])),
     }
-    card.update(_build_facts(root))
-    cover = _find_cover(root, game, str(over.get("cover") or ""))
+    card.update(_build_facts(root, card["engine"]))
+    cover = _find_cover(root, game if engine == "godot" else None,
+                        str(over.get("cover") or ""))
     card["cover"] = str(cover) if cover else ""
     card["publishable"] = bool(game) and not card["hidden"]
     if not game:
-        card["skip_reason"] = "no Godot project (nothing to export)"
+        card["skip_reason"] = ("no Godot project, web game or Unity project "
+                               "(nothing to export)")
     elif card["hidden"]:
         card["skip_reason"] = "hidden: true in .bgate/site.json"
     else:

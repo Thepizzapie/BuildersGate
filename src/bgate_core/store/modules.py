@@ -343,7 +343,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "worktree_integrations", "worktree_merge",
         "asset_lock", "asset_release", "asset_status", "asset_track",
         "asset_untrack",
-        "asset_verify", "bgate_doctor", "board_digest",
+        "asset_verify", "bgate_doctor", "board_digest", "board_wait",
         "godot_run", "godot_screenshot", "godot_status",
         # engine_status and engine_screenshot are the same answers for
         # whichever engine the project records, and belong in core for the same

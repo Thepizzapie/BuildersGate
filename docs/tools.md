@@ -1382,6 +1382,40 @@ stop the charge - it only throws away the result.
 Spends nothing. Read it at the start of a session before deciding anything.
 ```
 
+## board_wait
+
+```text
+WAIT FOR THE BOARD, ONE WAKE - instead of reading it one event at a time.
+
+Blocks up to timeout_s (cap 3600) polling the project database every poll_s
+seconds, and returns once with `reason` and `since`: what finished and what
+started needing the director while you waited.
+
+until:
+  attention  (default) something NEW needs the director: a director-seat
+             item, an ask-human / human-task / escalation / stage-advance
+             item, a failed, parked or review item, or an open director
+             question. Whatever was already waiting when the call began does
+             not re-fire it.
+  clear      nothing open at all.
+  change     any item finished, or anything that satisfies attention.
+  items      every id in item_ids (comma-separated) is terminal.
+  quiet      no agent running and nothing dispatched - the board stopped
+             moving, whether or not it is empty (a dead dashboard looks like
+             this too, which is the point of asking).
+
+A clear board ends any wait. Reads only, spends nothing.
+
+MEASURED (GNOMEFALL, 2026-10-16): a director session that followed the
+board through a per-event monitor woke about 25 times an hour, mostly for
+"#NNN qa DONE" lines that changed nothing it had to do. The human noticed
+the usage before the director did. Call this instead, with timeout_s at
+what you can afford to be away, and read the result like a digest.
+
+The shell twin is `bgate wait [DIR] --until ... --items ... --timeout ...`
+(exit 0 when met, 2 on timeout), for a terminal, a Monitor, or a cron.
+```
+
 ## brainstorm_close
 
 ```text
@@ -2393,6 +2427,14 @@ plan grows a piece at a time; merge=False replaces the entry list (rows
 that left it are deleted while spec, reported as dropped_but_on_board
 when the board holds them). Row names are unique across all domains.
 
+plans={domain: {goal, done_when, entries, ...}, ...} writes SEVERAL
+domains in one call. The batch is validated as a whole before anything is
+written - every field, names unique across the batch and the board, every
+depends_on resolved against existing rows plus the batch - and then filed
+in dependency order, so a level space may depend on a gameplay mechanic
+the same call creates. A cross-domain cycle is refused by name. With
+plans, `domain` and the single-plan fields are ignored.
+
 A seat writes its own domains (gameplay: gameplay, level, ui; art: art,
 animation); the director and the human write any. The result carries the
 cross-domain findings for this domain. A revision resolves the plan's open
@@ -3393,6 +3435,22 @@ through a stage hold; nothing lets a release candidate through an
 incomplete presentation QA. Call greenlight_status('presentation') for the
 outstanding list.
 ```
+
+**`bgate oneshot` and `autopilot.stage_advance`.** A board started with
+`bgate oneshot NAME --brief FILE` has no director session to press this
+button: the command runs the director once (thesis, bible, no-list, risks,
+scale contract, every domain plan, advance to slice), promotes the slice
+and starts the dashboard. With `--auto-advance` it also turns on
+`autopilot.stage_advance` (human-only, off by default): when a SLICE CHECK
+lands `VERDICT: PASS` and the feel check has run, the follow-up router
+files ONE director item - `greenlight_risk_retire` each key risk on the
+board's evidence (confirmed or modified, never accepted),
+`greenlight_advance('production')`, `plan_promote` every remaining spec
+row - and hands it to the director session; when the presentation check
+clears at production, the same shape files the release item. One open per
+project, never twice for the same slice check, and held from every
+auto-dispatcher, because a dispatched director-seat agent is refused the
+forward move.
 
 ## greenlight_status
 

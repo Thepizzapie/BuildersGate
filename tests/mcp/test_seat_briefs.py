@@ -140,6 +140,8 @@ NOT_TOOLS = {
     "ref_strength", "source_ref", "style_note", "style_refs", "task_kind",
     "tileable", "transition_s", "unweighted_verts", "use_pinned",
     "work_item_id", "item_id",
+    # board_wait's wait budget, quoted by name in the director protocol
+    "timeout_s",
     # bible_add's ruling fields, quoted by name in the director protocol
     "stated_by", "binds", "forbids",
     # the sprite contract's standing height, the regeneration gate's reason

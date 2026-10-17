@@ -49,6 +49,46 @@ repository at first publication. There is no earlier release history to record.
   listed under.
 
 ### Added
+- **`bgate oneshot NAME --brief FILE`: a brief becomes a running,
+  self-advancing board with no director session to babysit.** Measured on
+  the first one-shot attempt (a Worms clone, 2026-10-15): every step after
+  `init` still needed a hand - `git init`, the hook, six settings, a
+  console turn for the thesis, bible, no-list, risks, scale contract and
+  eight domain plans (filed in an order worked out from `set_plan`'s
+  refusals), `promote_slice` from a Python prompt, `bgate serve` on a free
+  port - and nothing re-entered the director once the slice check passed.
+  `oneshot` does all of it: init + git-init + first commit, hook, settings
+  (`--concurrency` -> dispatch.max_concurrent, allow_dirty on, max_attempts
+  4, brief budget 3000/4, run limit 3600 s), narrative and cinematic seats
+  off unless the brief names a story, ONE non-interactive director turn
+  through the console's own session (same runner, model and MCP tools) on
+  the kickoff prompt plus a one-shot section, a gap check
+  (`domain_plan_status`, thesis, risks, stage) re-prompted once, the slice
+  promoted, `bgate serve --port N` detached, and the first dispatch
+  confirmed within 60 s. `--auto-advance` turns on the new
+  **`autopilot.stage_advance`** setting (human-only, off by default): when
+  a SLICE CHECK lands `VERDICT: PASS` and the feel check has run, the
+  follow-up router files ONE director item - retire each key risk on the
+  board's evidence (confirmed/modified, never accepted),
+  `greenlight_advance('production')`, `plan_promote` every remaining spec
+  row - and hands it to the director session; the same shape files the
+  production -> release item when the presentation check clears. One open
+  per project, never twice for the same slice check, held from every
+  auto-dispatcher (a director-seat agent cannot advance a stage).
+- **`domain_plan_set(plans={domain: plan, ...})`: every discipline in one
+  call.** Validated as a whole - fields, names unique across the batch and
+  the board, every `depends_on` resolved against the union - before
+  anything is written, then filed in dependency order; a cross-domain
+  cycle is refused by name. The caller no longer has to know that level
+  depends on gameplay depends on tech.
+
+### Fixed
+- **`scale_contract_set` answered a pixel dict in `classes` with a raw
+  `TypeError`** (`float(None)`), naming neither the field nor the unit; a
+  `{"px": 40}` band was accepted outright with both bounds defaulted.
+  Every unit mistake now reads "classes are player-height ratio bands
+  {low, high}; stages are px heights", names the field, and comes back
+  from the tool as `{ok: false, error, units}`.
 - **The fast track: a known loop skips the graybox, and the QA gate and
   brief budget are settings.** Measured on a fresh twin-stick roguelite
   board: the first hours were a capsule on a grey tray because the stage

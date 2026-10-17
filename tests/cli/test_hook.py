@@ -1229,3 +1229,101 @@ class TestPowerShellWrites:
         code, _ = hook.decide(self._ps("Set-Content $p 'x'", root),
                               hook.DIRECTOR_SEAT, "session:x", "block")
         assert code == hook.BLOCK
+
+
+class TestHumanOnly:
+    """A `bgate <command> <verb>` listed in ~/.bgate/hook_policy.json acts under
+    the account owner's name. A seated session is refused the command line;
+    the human's own session (no BGATE_SEAT) is not gated; an unlisted verb (a
+    read) passes; with no policy file nothing is gated at all. The table is
+    the edition's to fill, so these tests use an invented command."""
+
+    @staticmethod
+    def _bash(command, cwd):
+        return {"tool_name": "Bash", "tool_input": {"command": command},
+                "cwd": str(cwd), "session_id": "s1"}
+
+    @pytest.fixture(autouse=True)
+    def _policy(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("BGATE_HOME", str(home))
+        (home / "hook_policy.json").write_text(
+            json.dumps({"human_only": {"ship": ["send", "promote", "rollback"]}}),
+            encoding="utf-8")
+        self.home = home
+
+    @pytest.mark.parametrize("command", [
+        "bgate ship send",
+        "bgate ship send --project ember --staged",
+        "bgate ship promote 01HZX",
+        "bgate ship rollback",
+        "python -m bgate_cli ship send",
+        "python3 -m bgate_cli.main ship promote 01HZX --project x",
+        "PYTHONPATH=src python -m bgate_cli ship send --dry-run",
+        "cd game && bgate ship send",
+        "bash -c 'bgate ship send'",
+        "env BGATE_ROOT=x bgate.exe ship rollback",
+    ])
+    def test_a_seat_is_refused(self, tmp_path, monkeypatch, command):
+        monkeypatch.setenv("BGATE_SEAT", "tech")
+        monkeypatch.setenv("BGATE_ALLOW_EGRESS", "1")   # the egress dial does not open this
+        code, message = hook.decide(self._bash(command, tmp_path), "tech",
+                                    "item-1", "warn")
+        assert code == hook.BLOCK, command
+        assert "bgate ship" in message
+        assert "account owner" in message
+
+    @pytest.mark.parametrize("command", [
+        "bgate ship status",
+        "bgate ship status --json",
+        "bgate publish --dry-run",
+        "bgate doctor",
+        "python -m bgate_cli ship",
+        "echo ship send",
+        "ls ship/send",
+    ])
+    def test_reads_and_other_bgate_commands_pass(self, tmp_path, monkeypatch, command):
+        monkeypatch.setenv("BGATE_SEAT", "tech")
+        code, _ = hook.decide(self._bash(command, tmp_path), "tech",
+                              "item-1", "warn")
+        assert code == hook.ALLOW, command
+
+    @pytest.mark.parametrize("command", [
+        "bgate ship send",
+        "python -m bgate_cli ship promote 01HZX",
+    ])
+    def test_the_human_session_is_not_gated(self, tmp_path, monkeypatch, command):
+        monkeypatch.delenv("BGATE_SEAT", raising=False)
+        code, _ = hook.decide(self._bash(command, tmp_path), hook.DIRECTOR_SEAT,
+                              "session:abc", "collide")
+        assert code == hook.ALLOW
+        code, _ = hook.decide(self._bash(command, tmp_path), hook.DIRECTOR_SEAT,
+                              "session:abc", "block")
+        assert code == hook.ALLOW
+
+    def test_the_powershell_tool_is_gated_too(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BGATE_SEAT", "tech")
+        payload = {"tool_name": "PowerShell",
+                   "tool_input": {"command": "bgate ship send --staged"},
+                   "cwd": str(tmp_path), "session_id": "s1"}
+        code, message = hook.decide(payload, "tech", "item-1", "warn")
+        assert code == hook.BLOCK
+        assert "bgate ship send" in message
+
+    def test_hits_name_the_verb(self):
+        assert hook.human_only_hits("bgate ship send && echo done") == ["bgate ship send"]
+        assert hook.human_only_hits("bgate ship status") == []
+
+    def test_no_policy_file_means_nothing_is_gated(self, tmp_path, monkeypatch):
+        (self.home / "hook_policy.json").unlink()
+        monkeypatch.setenv("BGATE_SEAT", "tech")
+        assert hook.human_only_table() == {}
+        code, _ = hook.decide(self._bash("bgate ship send", tmp_path), "tech", "item-1", "warn")
+        assert code == hook.ALLOW
+
+    def test_a_malformed_policy_file_is_an_empty_table(self, tmp_path, monkeypatch):
+        (self.home / "hook_policy.json").write_text("{not json", encoding="utf-8")
+        assert hook.human_only_table() == {}
+        (self.home / "hook_policy.json").write_text(json.dumps({"human_only": ["nope"]}), encoding="utf-8")
+        assert hook.human_only_table() == {}
