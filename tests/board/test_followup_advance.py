@@ -5,7 +5,6 @@ does, behind a human-only setting that is off by default.
 """
 from __future__ import annotations
 
-import json
 
 import pytest
 
