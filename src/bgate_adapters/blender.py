@@ -1371,9 +1371,14 @@ for part in P["parts"]:
 
 # What the exporter will actually ship. A layer pile that assembled cleanly and
 # carries no material and no image is a grey blob, and it used to report ok.
-materials = sorted({m.name for m in bpy.data.materials if m.users})
+# Only materials an object in the scene carries: bpy.data.materials also holds
+# factory leftovers (4.2 kept a user on its default "Material"), which made an
+# untextured pile look materialled and hid the no_materials gate.
+shipped = {slot.material for obj in bpy.context.scene.objects
+           for slot in getattr(obj, "material_slots", []) if slot.material}
+materials = sorted(m.name for m in shipped)
 images = set()
-for material in bpy.data.materials:
+for material in shipped:
     if not material.use_nodes or material.node_tree is None:
         continue
     for node in material.node_tree.nodes:
