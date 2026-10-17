@@ -6083,13 +6083,14 @@ Key: `bgate key set typesafe --global` (TYPESAFE_API_KEY), or a Vercel AI
 Gateway key (`bgate key set ai_gateway`) for the same model. TypeSafe's own
 key wins when both are set.
 
-No key: `BGATE_JEV_OLLAMA_MODEL=qwen2.5:7b` (any model `ollama list` shows)
-sends the same questions to a local Ollama at `127.0.0.1:11434` (or
-`OLLAMA_HOST`) as one schema-constrained chat call and maps the answer back
-into this shape. A hosted key still wins when set. The local bot is slower
-(a model load of several seconds on the first call, then a few hundred ms)
-and weaker, so a feel-check number from it is not comparable to a hosted
-one; every result says `route`.
+No key: `BGATE_JEV_OLLAMA_MODEL=laya` (or `nimble`, `tev1`; `on` means
+`laya`) sends the same request to a local Ollama 0.40+ at `127.0.0.1:11434`
+(or `OLLAMA_HOST`), which serves `/v1/systemone` natively for its decision
+models, and the answers come back in this same shape at no cost. A hosted key
+still wins when set. A chat model is refused by Ollama, not prompted into
+JSON. The local models are weaker than hosted Jev (Ollama's figures: nimble
+75.7%, tev1 73.3%, Jev 76.0%), so a feel-check number from one is not
+comparable to a hosted one; every result says `route`.
 
 ## playtest_agent_run
 

@@ -108,78 +108,80 @@ def test_gateway_route_and_its_cost(nokeys, monkeypatch):
 
 @pytest.fixture()
 def ollama(nokeys, monkeypatch):
-    """The local route opted in, a fake Ollama that answers whatever the test
-    puts in ``reply``, and the calls it saw."""
-    monkeypatch.setenv("BGATE_JEV_OLLAMA_MODEL", "qwen2.5:7b")
+    """The local route opted in and a fake Ollama answering /v1/systemone the
+    way the real one does (measured on 0.40.5 with laya: Jev's shape, no
+    bearer, usage with input_tokens). ``status``/``body`` let a test make it
+    refuse."""
+    monkeypatch.setenv("BGATE_JEV_OLLAMA_MODEL", "laya")
+    monkeypatch.delenv("BGATE_JEV_LOCAL_MODEL", raising=False)
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    seen = {"calls": [], "reply": {"action": {"choice": "jump", "confidence": 0.8}}}
+    seen = {"calls": [], "status": 200, "body": None}
 
     def fake(method, url, **kw):
         seen["calls"].append({"method": method, "url": url, **kw})
-        body = {"model": "qwen2.5:7b", "done": True,
-                "message": {"role": "assistant",
-                            "content": json.dumps(seen["reply"])},
-                "prompt_eval_count": 120, "eval_count": 15}
+        if seen["status"] != 200:
+            raise _http.ProviderError("refused", provider="jev",
+                                      status=seen["status"], body=seen["body"])
+        body = {"model": "laya",
+                "answers": {"action": {"type": "choice", "choice": "jump",
+                                       "probabilities": {"jump": 0.55,
+                                                         "wait": 0.45},
+                                       "confidence": 0.09}},
+                "usage": {"input_tokens": 108, "output_tokens": 0}}
         return _http.Response(200, json.dumps(body).encode(), {}, url)
 
     monkeypatch.setattr(jev._http, "request", fake)
     return seen
 
 
-def test_ollama_route_is_local_free_and_schema_constrained(ollama):
+def test_ollama_is_the_same_endpoint_with_no_bearer_and_no_cost(ollama):
     got = jev.decide("a goomba approaches", QS)
     call = ollama["calls"][0]
-    assert call["url"] == "http://127.0.0.1:11434/api/chat"
-    assert "Authorization" not in (call.get("headers") or {})
-    sent = call["json"]
-    assert sent["model"] == "qwen2.5:7b" and sent["stream"] is False
-    assert sent["format"]["properties"]["action"]["properties"]["choice"]["enum"] \
-        == ["jump", "wait"]
-    assert "jump" in sent["messages"][1]["content"]
+    assert call["url"] == "http://127.0.0.1:11434/v1/systemone"
+    assert "Authorization" not in call["headers"]
+    assert call["json"] == {"model": "laya", "state": "a goomba approaches",
+                            "questions": jev.normalize_questions(QS)}
     assert call["timeout"] >= jev.OLLAMA_MIN_TIMEOUT
-    assert got["route"] == "ollama" and got["usd"] == 0.0
-    assert got["model"] == "qwen2.5:7b"
-    assert got["usage"] == {"input_tokens": 120, "output_tokens": 15}
-    action = got["answers"]["action"]
-    assert action["choice"] == "jump" and action["confidence"] == 0.8
-    assert action["probabilities"] == {"jump": 0.8, "wait": 0.2}
+    assert got["route"] == "ollama" and got["model"] == "laya"
+    assert got["usd"] == 0.0                 # 108 input tokens, still free
+    assert got["usage"]["input_tokens"] == 108
+    assert got["answers"]["action"]["choice"] == "jump"
 
 
 def test_a_hosted_key_still_wins_over_ollama(ollama, monkeypatch):
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw")
     assert jev.route() == "ai_gateway"
     jev.decide("s", QS)
-    assert ollama["calls"][0]["url"].startswith("https://ai-gateway.vercel.sh/")
+    call = ollama["calls"][0]
+    assert call["url"].startswith("https://ai-gateway.vercel.sh/")
+    assert call["headers"]["Authorization"] == "Bearer gw"
 
 
-def test_ollama_host_is_honoured(ollama, monkeypatch):
+def test_ollama_host_and_the_local_alias_are_honoured(ollama, monkeypatch):
+    monkeypatch.delenv("BGATE_JEV_OLLAMA_MODEL")
+    monkeypatch.setenv("BGATE_JEV_LOCAL_MODEL", "nimble")
     monkeypatch.setenv("OLLAMA_HOST", "gpubox:11435")
+    assert jev.route() == "ollama"
     jev.decide("s", QS)
-    assert ollama["calls"][0]["url"] == "http://gpubox:11435/api/chat"
+    call = ollama["calls"][0]
+    assert call["url"] == "http://gpubox:11435/v1/systemone"
+    assert call["json"]["model"] == "nimble"
 
 
-def test_ollama_pick_outside_the_options_is_refused(ollama):
-    ollama["reply"] = {"action": {"choice": "teleport", "confidence": 0.9}}
-    with pytest.raises(jev.JevError, match="teleport"):
+def test_a_bare_on_means_the_default_local_model(ollama, monkeypatch):
+    monkeypatch.setenv("BGATE_JEV_OLLAMA_MODEL", "on")
+    jev.decide("s", QS)
+    assert ollama["calls"][0]["json"]["model"] == jev.ROUTES["ollama"][2]
+
+
+def test_ollama_refusals_say_what_to_pull(ollama):
+    ollama["status"], ollama["body"] = 404, '{"error":"model not found"}'
+    with pytest.raises(jev.JevError, match="ollama pull laya"):
         jev.decide("s", QS)
-
-
-def test_ollama_maps_noul_and_score_into_jev_shape(ollama):
-    ollama["reply"] = {"danger": {"probability": 0.7},
-                       "quality": {"score": "mid", "confidence": 0.5}}
-    got = jev.decide("s", {
-        "danger": {"type": "noul", "instructions": "about to be hit?"},
-        "quality": {"type": "score", "instructions": "how good",
-                    "criteria": ["low", "mid", "high"]}})
-    assert got["answers"]["danger"]["noul"] == 0.7
-    quality = got["answers"]["quality"]
-    assert quality["score"] == "mid" and quality["confidence"] == 0.5
-    assert sum(quality["probabilities"].values()) == pytest.approx(1.0)
-    assert quality["probabilities"]["mid"] == 0.5
-    sent = ollama["calls"][0]["json"]
-    assert sent["format"]["properties"]["quality"]["properties"]["score"]["enum"] \
-        == ["low", "mid", "high"]
-    assert "levels: low, mid, high" in sent["messages"][1]["content"]
+    ollama["status"] = 400
+    ollama["body"] = '{"error":"model \\"qwen2.5:7b\\" is not a llama.cpp decision model"}'
+    with pytest.raises(jev.JevError, match="only a decision model"):
+        jev.decide("s", QS)
 
 
 def test_no_key_still_names_the_local_route(nokeys):
