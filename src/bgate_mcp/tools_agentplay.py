@@ -33,8 +33,8 @@ def decide(state: str, questions: str, model: str = "") -> dict:
     and judgement over text you already have - it does not write, plan or
     read files. Needs TYPESAFE_API_KEY or AI_GATEWAY_API_KEY
     (`bgate key set typesafe --global`), or BGATE_JEV_OLLAMA_MODEL naming a
-    local Ollama model for a keyless, slower, weaker route; the result's
-    `route` says which answered."""
+    local Ollama decision model (laya, nimble, tev1) for a keyless, weaker
+    route on the same endpoint; the result's `route` says which answered."""
     from bgate_adapters import jev
 
     spent = _budget()
