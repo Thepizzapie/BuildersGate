@@ -95,12 +95,17 @@ def playtest_feel_check(scene: str, goal: str, seconds: float = 90.0) -> dict:
 
     FAILS (any of): ONE_BUTTON (one option > 60% of decisions), FLAT (the
     hold-one-option bot reaches >= 85% of the Jev bot's progress), NO_PRESSURE
-    (the hold-one-option bot is threatened on < 20% of decisions), TRIVIAL (neither bot dies), UNFAIR (3+
+    (the hold-one-option bot is threatened on < 20% of decisions), TRIVIAL
+    (neither bot dies in a run that reached an end; a run that neither died
+    nor ended inside `seconds` is a `notes` entry, not a fail), UNFAIR (3+
     deaths in one 5% of the scene), UNMEASURED (the game's bgate_observe()
-    reports no `progress` 0..1 or `danger` bool). Leaving the slice and the
-    release gate both require every checked scene to pass. Built after
+    reports no `progress` 0..1 or `danger` bool). ONE_BUTTON counts only
+    frames that offered more than one option. Leaving the slice and the
+    release gate both require every checked scene to pass. A FAIL files a
+    director item that WAITS FOR A PERSON; nothing dispatches it. Built after
     HARDCOVER passed every clearability gate and the human called it "a flat
-    just hold click game". Two runs of `seconds` game time; about $0.03."""
+    just hold click game". Two runs of `seconds` game time; about $0.03. For
+    a turn-based game set `seconds` to a whole match or TRIVIAL is unjudged."""
     spent = _budget()
     if not spent.get("ok"):
         return spent
