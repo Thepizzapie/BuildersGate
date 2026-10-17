@@ -28,7 +28,7 @@ import time
 from collections import Counter, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from ..runtime.proc import kill_tree, popen as _popen
 
@@ -269,11 +269,15 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
     from bgate_adapters import godot
     from .playtest import _godot_project_dir, _web_project_dir
 
+    warmed: dict = {}
     if policy == "jev":
         from bgate_adapters import jev
         ok = jev.available(root)
         if not ok["available"]:
             raise RuntimeError(ok["reason"])
+        # a local model loads in seconds; pay that before the clock starts
+        # rather than on the bot's first in-game decision
+        warmed = jev.warm(root, model=model)
     web_dir = _web_project_dir(root)
     installed = install_web(web_dir) if web_dir is not None else install(root)
     game = _godot_project_dir(root)
@@ -291,7 +295,8 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
                                          scene=scene, headless=headless)
         return _finish(relay, out, t0, timed_out, exit_code, policy=policy,
                        goal=goal, seconds=seconds, max_usd=max_usd,
-                       max_decisions=max_decisions, installed=installed)
+                       max_decisions=max_decisions, installed=installed,
+                       warmed=warmed)
     telemetry = out / "telemetry.jsonl"
     args = [godot.find_godot(), "--path", str(game)]
     if headless:
@@ -326,17 +331,20 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
                     break
     return _finish(relay, out, t0, timed_out, proc.returncode, policy=policy,
                    goal=goal, seconds=seconds, max_usd=max_usd,
-                   max_decisions=max_decisions, installed=installed)
+                   max_decisions=max_decisions, installed=installed,
+                       warmed=warmed)
 
 
 def _finish(relay: "Relay", out: Path, t0: float, timed_out: bool,
             exit_code: Any, *, policy: str, goal: str, seconds: float,
-            max_usd: float, max_decisions: int, installed: dict) -> dict:
+            max_usd: float, max_decisions: int, installed: dict,
+            warmed: Optional[dict] = None) -> dict:
     relay.close()
     summary = summarize(out)
     summary.update({
         "ok": relay.count > 0 and not timed_out and not relay.exhausted,
         "policy": policy, "goal": goal, "game_seconds": seconds,
+        "warm": warmed or {},
         "wall_seconds": round(time.time() - t0, 1), "timed_out": timed_out,
         "exit_code": exit_code, "relay_errors": relay.errors[:5],
         "capped": relay.exhausted, "max_usd": max_usd,

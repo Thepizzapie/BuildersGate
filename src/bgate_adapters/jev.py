@@ -48,7 +48,11 @@ ROUTES: dict[str, tuple[str, str, str]] = {
     # The env var holds the MODEL NAME, not a key: Ollama has none. Setting it
     # is the opt-in; "1"/"on" means the default model. OLLAMA_HOST, when set,
     # replaces the base URL.
-    "ollama": ("BGATE_JEV_OLLAMA_MODEL", "http://127.0.0.1:11434", "laya"),
+    # nimble by default: on the same Turf War frame it alone saw the danger
+    # (0.75) and ranked the two right moves first; tev1 stood still under a
+    # ball, laya called danger a coin flip. 106 ms warm, 7.9 s to load, so
+    # warm() before a game launches. Measured 2026-10-17 on an RTX 5090.
+    "ollama": ("BGATE_JEV_OLLAMA_MODEL", "http://127.0.0.1:11434", "nimble"),
 }
 ORDER = ("typesafe", "ai_gateway", "ollama")
 HOSTED = ("typesafe", "ai_gateway")
@@ -85,6 +89,27 @@ def ollama_model(root: Any = None) -> str:
     ``1``/``on``. Empty when the local route is not opted in."""
     raw = _key(ROUTES["ollama"][0], root)
     return ROUTES["ollama"][2] if raw.lower() in _ON else raw
+
+
+WARM_QUESTIONS = {"ready": {"type": "noul",
+                            "instructions": "Is this a warm-up call?"}}
+
+
+def warm(root: Any = None, *, model: str = "", timeout: float = 120.0) -> dict:
+    """Pay the local model's load now, not on the bot's first in-game decision.
+
+    Hosted routes have nothing to load, so this makes no call for them. Never
+    raises: a warm-up that fails is reported, and the first real decision then
+    carries the load (and its own error, if any)."""
+    rid = route(root)
+    if rid != "ollama":
+        return {"warmed": False, "route": rid, "reason": "nothing to load"}
+    try:
+        got = decide("warm-up", WARM_QUESTIONS, root=root, model=model,
+                     timeout=timeout, retries=1)
+    except JevError as exc:
+        return {"warmed": False, "route": rid, "reason": str(exc)}
+    return {"warmed": True, "route": rid, "model": got["model"], "ms": got["ms"]}
 
 
 def ollama_base(root: Any = None) -> str:
@@ -222,7 +247,8 @@ def _ollama_hint(rid: str, status: int, body: str, name: str) -> str:
         return f"; `ollama pull {name}`"
     if status == 400 and "decision model" in (body or ""):
         return ("; only a decision model answers /v1/systemone: "
-                "`ollama pull laya` (421M, fastest) or `ollama pull nimble` (9B)")
+                "`ollama pull nimble` (9B, the default) or `ollama pull laya` "
+                "(421M, fastest)")
     return ""
 
 

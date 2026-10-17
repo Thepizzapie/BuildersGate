@@ -174,6 +174,24 @@ def test_a_bare_on_means_the_default_local_model(ollama, monkeypatch):
     assert ollama["calls"][0]["json"]["model"] == jev.ROUTES["ollama"][2]
 
 
+def test_warm_pays_the_local_load_and_skips_hosted(ollama, monkeypatch):
+    got = jev.warm()
+    assert got["warmed"] is True and got["route"] == "ollama"
+    sent = ollama["calls"][0]["json"]
+    assert sent["model"] == "laya" and list(sent["questions"]) == ["ready"]
+    assert ollama["calls"][0]["timeout"] >= 120
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts")
+    assert jev.warm() == {"warmed": False, "route": "typesafe",
+                          "reason": "nothing to load"}
+    assert len(ollama["calls"]) == 1            # the hosted route made no call
+
+
+def test_warm_never_raises(ollama):
+    ollama["status"], ollama["body"] = 404, '{"error":"model not found"}'
+    got = jev.warm()
+    assert got["warmed"] is False and "ollama pull laya" in got["reason"]
+
+
 def test_ollama_refusals_say_what_to_pull(ollama):
     ollama["status"], ollama["body"] = 404, '{"error":"model not found"}'
     with pytest.raises(jev.JevError, match="ollama pull laya"):
