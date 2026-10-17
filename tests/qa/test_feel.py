@@ -53,7 +53,8 @@ def test_no_pressure_and_trivial(tmp_path):
         events=[{"kind": "run_end", "ts": 1061, "data": {"status": "won"}}]))
     base = feel.measure(_run(tmp_path, "b", _decisions(["shoot"] * 60,
                                                        progress_to=0.2,
-                                                       danger_every=50)))
+                                                       danger_every=50),
+        events=[{"kind": "run_end", "ts": 1061, "data": {"status": "won"}}]))
     fails = feel.verdict(smart, base)["fails"]
     assert "NO_PRESSURE" in fails and "TRIVIAL" in fails
     # control: the same smart run, but the passive bot is threatened half the
@@ -75,12 +76,16 @@ def test_trivial_is_a_note_not_a_fail_when_no_run_reached_an_end(tmp_path):
     assert got["verdict"] == "PASS", got
     assert "TRIVIAL" not in got["fails"]
     assert "not measurable" in got["notes"]["TRIVIAL"] and "90 s" in got["notes"]["TRIVIAL"]
-    # control: the same runs with a match_end event ARE trivial
+    # control: the same runs, BOTH carrying a match_end event, ARE trivial;
+    # one run ending while the other did not is still unjudged
+    end = [{"kind": "match_end", "ts": 1061, "data": {"winner": "home"}}]
     ended = feel.measure(_run(tmp_path, "s2", _decisions(
-        ["shoot", "jump", "dash"] * 20),
-        events=[{"kind": "match_end", "ts": 1061, "data": {"winner": "home"}}]))
+        ["shoot", "jump", "dash"] * 20), events=end))
     assert ended["ended"] is True
-    assert "TRIVIAL" in feel.verdict(ended, base)["fails"]
+    assert "TRIVIAL" not in feel.verdict(ended, base)["fails"]
+    base_ended = feel.measure(_run(tmp_path, "b2", _decisions(
+        ["shoot"] * 60, progress_to=0.2), events=end))
+    assert "TRIVIAL" in feel.verdict(ended, base_ended)["fails"]
 
 
 def test_one_button_counts_only_frames_that_offered_a_choice(tmp_path):
@@ -94,6 +99,7 @@ def test_one_button_counts_only_frames_that_offered_a_choice(tmp_path):
     smart = feel.measure(_run(tmp_path, "s", forced + real,
                               events=[{"kind": "fight_death", "ts": 1070}]))
     assert smart["decisions"] == 80 and smart["forced"] == 50
+    assert smart["decisions_with_choice"] == 30
     assert smart["top_share"] == round(10 / 30, 3)
     base = feel.measure(_run(tmp_path, "b", _decisions(["shoot"] * 60,
                                                        progress_to=0.2)))
@@ -185,8 +191,23 @@ def test_a_failure_files_one_director_item_and_a_pass_closes_it(root):
     assert item["source"] in queue.HELD_SOURCES
     assert item["kind"] != "fix"
     assert "A PERSON files them" in item["brief"]
+    assert "Do not file gameplay or level items" in item["brief"]
     assert "file each as kind=feature or fix" not in item["brief"]
     assert got["filed"] not in {int(r["id"]) for r in queue.ready(root, limit=50)}
+    assert queue.claim_next(root, "director", "agent:item-999") is None
+    # the belt to the braces: work filed FROM the feel item is a feature
+    # unless it names a plan row, whatever its filer called it
+    child = queue.add(root, "gameplay", "triple the damage", brief="x",
+                      source="seat:director", source_ref=str(got["filed"]),
+                      kind="fix")
+    assert child["kind"] == "feature"
+    planned = queue.add(root, "level", "cut the arena", brief="x",
+                        source="seat:director", source_ref=str(got["filed"]),
+                        kind="fix", planned=True)
+    assert planned["kind"] == "fix"
+    other = queue.add(root, "qa", "re-pin the golden hash", brief="x",
+                      source="seat:director", source_ref="12345", kind="fix")
+    assert other["kind"] == "fix"                 # control: no feel parent
     # a second failing run of the same scene files nothing new
     assert feel.escalate(root, _failing()) == {"open": got["filed"]}
     passed = {**_failing(), "verdict": "PASS", "fails": {}}

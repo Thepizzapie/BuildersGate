@@ -96,8 +96,8 @@ def playtest_feel_check(scene: str, goal: str, seconds: float = 90.0) -> dict:
     FAILS (any of): ONE_BUTTON (one option > 60% of decisions), FLAT (the
     hold-one-option bot reaches >= 85% of the Jev bot's progress), NO_PRESSURE
     (the hold-one-option bot is threatened on < 20% of decisions), TRIVIAL
-    (neither bot dies in a run that reached an end; a run that neither died
-    nor ended inside `seconds` is a `notes` entry, not a fail), UNFAIR (3+
+    (neither bot dies, in runs that both reached an end; runs that neither
+    died nor ended inside `seconds` are a `notes` entry, not a fail), UNFAIR (3+
     deaths in one 5% of the scene), UNMEASURED (the game's bgate_observe()
     reports no `progress` 0..1 or `danger` bool). ONE_BUTTON counts only
     frames that offered more than one option. Leaving the slice and the

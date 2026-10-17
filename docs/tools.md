@@ -6145,7 +6145,7 @@ holds the Jev bot's most-used option for the whole run plays it again.
 | ONE_BUTTON | one option is over 60% of the smart bot's decisions, counted over frames that offered more than one option (a frame with a single option was not a decision) |
 | FLAT | the hold-one-option bot reaches 85% or more of the smart bot's progress |
 | NO_PRESSURE | the hold-one-option bot is threatened on under 20% of decisions (a good player avoids danger, so the passive run is the honest measure) |
-| TRIVIAL | neither bot dies, in a run that reached an end (an end/over/finish event). A run that neither died nor ended inside `seconds` is reported under `notes`, not `fails`: 90 s is 3-4 turns of a 6-10 minute match, so set `seconds` to a whole match for a turn-based game |
+| TRIVIAL | neither bot dies, in runs that both reached an end (an end/over/finish event). Runs that neither died nor ended inside `seconds` are reported under `notes`, not `fails`: 90 s is 3-4 turns of a 6-10 minute match, so set `seconds` to a whole match for a turn-based game |
 | UNFAIR | 3 or more smart-bot deaths inside the same 5% of the scene |
 | UNMEASURED | the observer reports no `progress` (0..1) or no `danger` (bool) |
 
@@ -6157,7 +6157,9 @@ play (Godot today). The latest result per scene is in
 A FAIL files one director item per scene that **waits for a person**: its
 source is in `queue.HELD_SOURCES`, so no auto-dispatcher runs it, and its brief
 asks for two or three proposed changes, each naming the metric it would move,
-for the human to file. Measured on Turf War (2026-10-17): while that item was
+for the human to file. Anything an agent files from that item inherits
+`kind=feature` unless it names a plan row, so the slice stage holds it however
+the filer labelled it. Measured on Turf War (2026-10-17): while that item was
 dispatchable and born `kind=fix`, autodeploy ran the director seat as an agent,
 it filed the tuning its brief named, relabelled the items past the slice hold,
 and retuned a game whose owner had deferred tuning from the stands.

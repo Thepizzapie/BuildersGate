@@ -425,6 +425,31 @@ def scope_grade(brief: str, acceptance: str = "", size: str = "medium",
     return {"score": score, "reasons": reasons}
 
 
+FEEL_SOURCE_NAME = "feel-check"
+
+
+def kind_under_feel_parent(root: str | os.PathLike[str], source_ref: str,
+                           kind: str, planned: bool = False) -> str:
+    """Anything filed FROM a feel-check item is design work: kind=feature,
+    unless it names a plan row (then the row's kind stands).
+
+    The belt to HELD_SOURCES' braces. MEASURED (Turf War, 2026-10-17): the
+    director agent dispatched on a feel-check item filed its tuning as fixes,
+    and a fix is admitted at the slice stage by construction. A feel check
+    asks whether the design works; what answers it is a design change, and the
+    slice stage exists to hold those until a person says so."""
+    ref = str(source_ref or "").strip()
+    if planned or kind == "feature" or not ref.isdigit():
+        return kind
+    try:
+        parent = get(root, int(ref))
+    except LookupError:
+        return kind
+    if str(parent.get("source") or "") != FEEL_SOURCE_NAME:
+        return kind
+    return "feature"
+
+
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
         chain_id: str = "", chain_pos: int = 0,
@@ -433,7 +458,7 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         size: str = "medium", acceptance: str = "",
         kind: str = "", severity: str = "",
         checkpoint: bool = False, checkpoint_note: str = "",
-        split_of: Optional[int] = None) -> dict:
+        split_of: Optional[int] = None, planned: bool = False) -> dict:
     # A `scope_tier_id` used to be filed here and run through scope.enforce
     # first — the cut line's one gate. It never refused an item in the product's
     # life: untiered work was deliberately allowed through, and nothing was ever
@@ -453,6 +478,7 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
     kind = str(kind or "").strip().lower() or derive_kind(root, source, source_ref)
     if kind and kind not in KINDS:
         raise ValueError(f"unknown kind {kind!r}; kinds are {KINDS}")
+    kind = kind_under_feel_parent(root, source_ref, kind, planned)
     severity = str(severity or "").strip().lower()
     if severity and severity not in SEVERITIES:
         raise ValueError(f"unknown severity {severity!r}; severities are {SEVERITIES}")
@@ -591,7 +617,8 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
                    acceptance=str(link.get("acceptance") or ""),
                    kind=str(link.get("kind") or ""),
                    checkpoint=bool(link.get("checkpoint")),
-                   checkpoint_note=str(link.get("checkpoint_note") or ""))
+                   checkpoint_note=str(link.get("checkpoint_note") or ""),
+                   planned=bool(link.get("plan_row")))
         if not chain_id:
             chain_id = str(item["chain_id"])
         previous = item
