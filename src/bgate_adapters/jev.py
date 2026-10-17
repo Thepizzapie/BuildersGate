@@ -138,8 +138,9 @@ def available(root: Any = None, *, route: str = "") -> dict:
     if ids == ("ollama",):
         return {"available": False,
                 "reason": f"{ROUTES['ollama'][0]} not set - name a pulled "
-                          "Ollama model, e.g. BGATE_JEV_OLLAMA_MODEL=qwen2.5:7b "
-                          "(`ollama list` shows them)"}
+                          "Ollama DECISION model, e.g. BGATE_JEV_OLLAMA_MODEL="
+                          "nimble (`ollama pull nimble`; laya and tev1 also "
+                          "work, a chat model is refused)"}
     hosted = [r for r in ids if r in HOSTED]
     envs = " or ".join(ROUTES[r][0] for r in hosted)
     reason = f"{envs} not set - run `bgate key set {hosted[0]} --global`"
