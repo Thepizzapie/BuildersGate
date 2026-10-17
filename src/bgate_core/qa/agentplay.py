@@ -58,6 +58,15 @@ class Relay:
         self.log_path = out_dir / "decisions.jsonl"
         self._log = open(self.log_path, "a", encoding="utf-8")
         self._recent: deque = deque(maxlen=HISTORY)
+        # THE LAST MOVE AND WHAT IT DID. Every decision model probed on
+        # 2026-10-17 (nimble, tev1, laya, and Jev's own contract) answers the
+        # identical state identically, to the decimal. So a bot whose state
+        # text does not change between decisions gets the same pick forever:
+        # measured Turf War, walk_left on 423 of 426 decisions with x never
+        # moving, blocked by terrain. The model is told the consequence of
+        # its last choice (progress and state changed or not) so a no-op
+        # reads as a no-op without the harness editing the game's menu.
+        self._last: Optional[dict] = None
         self._rng = random.Random(seed)
         self._lock = threading.Lock()
         self.count = 0
@@ -149,9 +158,11 @@ class Relay:
         hold = float(body.get("hold_s") or 0.1)
         with self._lock:
             recent = list(self._recent)
+            last = self._last
         text = (f"GOAL: {goal}\n"
                 f"RECENT CHOICES (oldest first): {', '.join(recent) or 'none'}\n"
-                f"STATE: {state[:STATE_MAX_CHARS]}")
+                + consequence_line(last, body.get("progress"), state)
+                + f"STATE: {state[:STATE_MAX_CHARS]}")
         t0 = time.perf_counter()
         if self.policy.startswith("hold"):
             want = self.policy.split(":", 1)[1] if ":" in self.policy else ""
@@ -181,6 +192,8 @@ class Relay:
         ms = round((time.perf_counter() - t0) * 1000)
         with self._lock:
             self._recent.append(choice)
+            self._last = {"choice": choice, "progress": body.get("progress"),
+                          "state": state}
             self.count += 1
             self.usd += usd
             self._log.write(json.dumps({
@@ -199,6 +212,25 @@ class Relay:
         self.server.shutdown()
         self.server.server_close()
         self._log.close()
+
+
+def consequence_line(last: Optional[dict], progress: Any, state: str) -> str:
+    """One line on what the previous choice did, or '' before the first.
+
+    ``progress`` compares the observer's number; ``state`` compares the whole
+    text the game sent, so "unchanged" means the game described the exact
+    same situation again, which is what a blocked walk looks like."""
+    if not last:
+        return ""
+    p0, p1 = last.get("progress"), progress
+    if isinstance(p0, (int, float)) and isinstance(p1, (int, float)):
+        moved = ("unchanged" if abs(float(p1) - float(p0)) < 1e-9
+                 else f"{float(p0):.2f} -> {float(p1):.2f}")
+    else:
+        moved = "unknown"
+    same = "unchanged" if state == last.get("state") else "changed"
+    return (f"LAST CHOICE: {last.get('choice')} -> progress {moved}, "
+            f"state {same}\n")
 
 
 def render(value: Any, indent: str = "") -> str:

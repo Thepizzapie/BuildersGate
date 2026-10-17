@@ -253,6 +253,31 @@ def test_relay_refuses_a_choice_outside_the_options(tmp_path, monkeypatch):
     assert relay.errors and "teleport" in relay.errors[0]
 
 
+def test_relay_tells_the_model_what_its_last_choice_did(tmp_path, monkeypatch):
+    """Measured (Turf War, 480 s): a deterministic model given the identical
+    state picked walk_left on 423 of 426 decisions while x never moved. The
+    state text now carries the consequence of the last pick."""
+    seen = []
+
+    def fake_decide(text, questions, **kw):
+        seen.append(text)
+        return {"answers": {"action": {"choice": "left"}}, "usd": 0.0}
+
+    monkeypatch.setattr(jev, "decide", fake_decide)
+    relay = agentplay.Relay(tmp_path, tmp_path, goal="win", policy="jev")
+    try:
+        opts = {"left": "", "right": ""}
+        _post(relay.url, {"state": "x 10, blocked", "progress": 0.1, "options": opts})
+        _post(relay.url, {"state": "x 10, blocked", "progress": 0.1, "options": opts})
+        _post(relay.url, {"state": "x 40, open", "progress": 0.2, "options": opts})
+    finally:
+        relay.close()
+    assert "LAST CHOICE" not in seen[0]                 # nothing before the first
+    assert "LAST CHOICE: left -> progress unchanged, state unchanged" in seen[1]
+    assert "LAST CHOICE: left -> progress 0.10 -> 0.20, state changed" in seen[2]
+    assert seen[2].index("LAST CHOICE") < seen[2].index("STATE:")
+
+
 def test_agent_template_is_inert_without_the_url():
     src = agentplay.TEMPLATE.read_text(encoding="utf-8")
     assert 'OS.get_environment("BGATE_AGENT_URL")' in src
