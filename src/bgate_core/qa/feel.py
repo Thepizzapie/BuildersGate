@@ -25,9 +25,9 @@ VERDICTS (one scene can earn several):
               in retreat/resolve made a turn-based game read as repetitive)
 - FLAT        the hold-one-option bot reaches >= 85% of the smart bot's progress
 - NO_PRESSURE the hold-one-option bot is threatened on under 20% of decisions
-- TRIVIAL     neither bot dies, in a run that reached an end. A run that
-              neither died nor ended inside ``seconds`` says nothing about
-              difficulty (90 s is 3-4 turns of a 6-10 minute match) and is
+- TRIVIAL     neither bot dies, in runs that BOTH reached an end. Runs that
+              neither died nor ended inside ``seconds`` say nothing about
+              difficulty (90 s is 3-4 turns of a 6-10 minute match) and are
               reported under ``notes``, not ``fails``
 - UNFAIR      3+ smart-bot deaths inside the same 5% of the scene
 - UNMEASURED  the observer reports no progress or no danger
@@ -125,6 +125,7 @@ def measure(run_dir: str | Path) -> dict:
         deaths.append(at)
     return {
         "decisions": len(rows),
+        "decisions_with_choice": len(decided),
         "forced": len(rows) - len(decided),
         "ended": ended,
         "top_choice": top,
@@ -176,9 +177,9 @@ def verdict(smart: dict, base: dict, *, seconds: float = 0.0) -> dict:
         # NOBODY DIED IS ONLY A VERDICT IF A RUN REACHED ITS END. Measured
         # (Turf War): 90 s is 3-4 turns of a 6-10 minute match, so no KO was
         # possible in the window, and the FAIL this produced filed tuning work.
-        if smart.get("ended") or base.get("ended"):
-            fails["TRIVIAL"] = ("a run reached its end and neither the smart bot "
-                                "nor the hold-one-option bot died")
+        if smart.get("ended") and base.get("ended"):
+            fails["TRIVIAL"] = ("both runs reached their end and neither the smart "
+                                "bot nor the hold-one-option bot died")
         else:
             window = f"{seconds:.0f} s" if seconds else "the run window"
             notes["TRIVIAL"] = (f"not measurable: neither bot died or reached an "
@@ -314,8 +315,9 @@ def escalate(root: Any, result: dict) -> dict:
         "it, and leave them in this item's result. A PERSON files them: this "
         "item is held from every auto-dispatcher because it changes the "
         "game's design, and the human decides whether the game or the check "
-        "is what needs changing. A passing re-run of playtest_feel_check on "
-        "this scene closes this item by itself.")
+        "is what needs changing. Do not file gameplay or level items from "
+        "this brief. A passing re-run of playtest_feel_check on this scene "
+        "closes this item by itself.")
     item = _queue.add(
         root, "director",
         f"FEEL FAIL: {result.get('scene') or 'the boot scene'} - "

@@ -8874,7 +8874,8 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
                       depends_on=depends_on, size=size, acceptance=acceptance,
                       kind=kind, severity=severity,
                       checkpoint=bool(checkpoint),
-                      checkpoint_note=checkpoint_note)
+                      checkpoint_note=checkpoint_note,
+                      planned=bool(plan_row))
     except PermissionError as exc:
         return {"ok": False, "refused": "locked", "error": str(exc)}
     if plan_row:

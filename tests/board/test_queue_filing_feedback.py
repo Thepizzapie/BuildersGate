@@ -184,3 +184,31 @@ class TestARelabelCannotLiftAHold:
         assert got["kind"] == "fix"
         summaries = [r["summary"] for r in activity.recent(at_slice, limit=5)]
         assert any("kind 'feature'->'fix'" in s for s in summaries), summaries
+
+
+@pytest.mark.anyio
+class TestWorkFiledFromAFeelCheckIsDesign:
+    """The belt to HELD_SOURCES' braces: an agent dispatched on a feel-check
+    item (BGATE_WORK_ITEM) files design work, and design work is a feature
+    the slice stage holds, whatever the filer called it."""
+
+    async def test_a_fix_filed_from_a_feel_item_is_a_held_feature(
+            self, at_slice, monkeypatch):
+        feel_item = queue.add(at_slice, "director", "FEEL FAIL: demo - TRIVIAL",
+                              brief="x", source="feel-check", source_ref="demo")
+        monkeypatch.setenv("BGATE_WORK_ITEM", str(feel_item["id"]))
+        got = await call("queue_add", seat="gameplay", title="triple the damage",
+                         brief="so an athlete dies in three hits", kind="fix",
+                         acceptance="three hits kill")
+        assert got["kind"] == "feature"
+        assert "slice" in got["stage_hold"]
+
+    async def test_a_fix_filed_from_any_other_item_stays_a_fix(
+            self, at_slice, monkeypatch):
+        parent = queue.add(at_slice, "qa", "gate #40", brief="x",
+                           source="seat:qa", source_ref="40")
+        monkeypatch.setenv("BGATE_WORK_ITEM", str(parent["id"]))
+        got = await call("queue_add", seat="gameplay", title="null ref on KO",
+                         brief="fix the crash", kind="fix",
+                         acceptance="no console error on KO")
+        assert got["kind"] == "fix" and "stage_hold" not in got
