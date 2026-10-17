@@ -35,7 +35,7 @@ import re
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from . import agentplay
 

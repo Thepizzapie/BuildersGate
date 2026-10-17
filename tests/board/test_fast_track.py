@@ -6,7 +6,6 @@ feature needs.
 """
 from __future__ import annotations
 
-import pytest
 
 from bgate_core.board import queue
 from bgate_core.store import settings
