@@ -25,10 +25,11 @@ VERDICTS (one scene can earn several):
               in retreat/resolve made a turn-based game read as repetitive)
 - FLAT        the hold-one-option bot reaches >= 85% of the smart bot's progress
 - NO_PRESSURE the hold-one-option bot is threatened on under 20% of decisions
-- TRIVIAL     neither bot dies, in runs that BOTH reached an end. Runs that
-              neither died nor ended inside ``seconds`` say nothing about
-              difficulty (90 s is 3-4 turns of a 6-10 minute match) and are
-              reported under ``notes``, not ``fails``
+- TRIVIAL     neither bot dies, in runs that BOTH reached an end with a
+              readable outcome. Runs that neither died nor ended inside
+              ``seconds`` say nothing about difficulty (90 s is 3-4 turns of
+              a 6-10 minute match); an end event with no won/lost status
+              cannot tell a loss from a win. Both are ``notes``, not ``fails``
 - UNFAIR      3+ smart-bot deaths inside the same 5% of the scene
 - UNMEASURED  the observer reports no progress or no danger
 PASS is none of them. Thresholds are module constants, measured on one game;
@@ -64,6 +65,12 @@ LOSS_STATUS = re.compile(r"fired|dead|died|lost|lose|game_?over|failed|defeat", 
 #: "nobody died" a verdict rather than a short window.
 END_KIND = re.compile(r"(^|_)(end|ended|over|finish|finished|complete|completed|"
                       r"result|victory|win|won)($|_)", re.I)
+#: A run-ending status that says the player came through. An end event with a
+#: status the check cannot read either way (measured Turf War: `match_end
+#: {turn: 23, winner: 1}`, the CPU had knocked out every athlete) is NOT a
+#: win; it is an end whose outcome is unknown, and TRIVIAL stays unjudged.
+WIN_STATUS = re.compile(r"won|win|victory|shipped|cleared|survived|success|"
+                        r"complete|draw|tie", re.I)
 FAILS = ("ONE_BUTTON", "FLAT", "NO_PRESSURE", "TRIVIAL", "UNFAIR", "UNMEASURED")
 
 
@@ -104,6 +111,7 @@ def measure(run_dir: str | Path) -> dict:
     danger = [bool(r["danger"]) for r in rows if r.get("danger") is not None]
     deaths = []
     ended = False
+    end_status = None            # None: never ended; else lost | won | unknown
     for e in events:
         kind = str(e.get("kind") or "")
         data = e.get("data") if isinstance(e.get("data"), dict) else {}
@@ -112,6 +120,10 @@ def measure(run_dir: str | Path) -> dict:
         is_end = re.search(r"end|over|finish", kind, re.I)
         if END_KIND.search(kind):
             ended = True
+            if LOSS_STATUS.search(status):
+                end_status = "lost"
+            elif end_status != "lost":
+                end_status = "won" if WIN_STATUS.search(status) else "unknown"
         if not (DEATH_KIND.search(kind)
                 or (is_end and LOSS_STATUS.search(status))):
             continue
@@ -128,6 +140,7 @@ def measure(run_dir: str | Path) -> dict:
         "decisions_with_choice": len(decided),
         "forced": len(rows) - len(decided),
         "ended": ended,
+        "end_status": end_status,
         "top_choice": top,
         "top_share": round(top_n / len(decided), 3) if decided else None,
         "choices": dict(choices.most_common(8)),
@@ -178,8 +191,17 @@ def verdict(smart: dict, base: dict, *, seconds: float = 0.0) -> dict:
         # (Turf War): 90 s is 3-4 turns of a 6-10 minute match, so no KO was
         # possible in the window, and the FAIL this produced filed tuning work.
         if smart.get("ended") and base.get("ended"):
-            fails["TRIVIAL"] = ("both runs reached their end and neither the smart "
-                                "bot nor the hold-one-option bot died")
+            if "unknown" in (smart.get("end_status"), base.get("end_status")):
+                # MEASURED (Turf War): match_end {turn, winner} with the CPU
+                # as winner and every athlete knocked out read as 0 deaths.
+                notes["TRIVIAL"] = (
+                    "unjudged: a run reached an end whose event carries no "
+                    "status the check can read (won/lost/draw from the bot's "
+                    "seat), so a loss and a win look the same; emit a status "
+                    "on the end event, or a death/knocked-out event per loss")
+            else:
+                fails["TRIVIAL"] = ("both runs reached their end and neither the "
+                                    "smart bot nor the hold-one-option bot died")
         else:
             window = f"{seconds:.0f} s" if seconds else "the run window"
             notes["TRIVIAL"] = (f"not measurable: neither bot died or reached an "
