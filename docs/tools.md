@@ -6142,10 +6142,10 @@ holds the Jev bot's most-used option for the whole run plays it again.
 
 | verdict | fails when |
 | --- | --- |
-| ONE_BUTTON | one option is over 60% of the smart bot's decisions |
+| ONE_BUTTON | one option is over 60% of the smart bot's decisions, counted over frames that offered more than one option (a frame with a single option was not a decision) |
 | FLAT | the hold-one-option bot reaches 85% or more of the smart bot's progress |
 | NO_PRESSURE | the hold-one-option bot is threatened on under 20% of decisions (a good player avoids danger, so the passive run is the honest measure) |
-| TRIVIAL | neither bot dies |
+| TRIVIAL | neither bot dies, in a run that reached an end (an end/over/finish event). A run that neither died nor ended inside `seconds` is reported under `notes`, not `fails`: 90 s is 3-4 turns of a 6-10 minute match, so set `seconds` to a whole match for a turn-based game |
 | UNFAIR | 3 or more smart-bot deaths inside the same 5% of the scene |
 | UNMEASURED | the observer reports no `progress` (0..1) or no `danger` (bool) |
 
@@ -6153,6 +6153,14 @@ Leaving the slice stage and the release gate both require every feel-checked
 scene to pass, and at least one to have been checked, on any project a bot can
 play (Godot today). The latest result per scene is in
 `.bgate/feel/<scene>.json`; a re-run replaces it.
+
+A FAIL files one director item per scene that **waits for a person**: its
+source is in `queue.HELD_SOURCES`, so no auto-dispatcher runs it, and its brief
+asks for two or three proposed changes, each naming the metric it would move,
+for the human to file. Measured on Turf War (2026-10-17): while that item was
+dispatchable and born `kind=fix`, autodeploy ran the director seat as an agent,
+it filed the tuning its brief named, relabelled the items past the slice hold,
+and retuned a game whose owner had deferred tuning from the stands.
 
 Why: HARDCOVER passed the slice check, a golden-path bot that cleared every
 boss with 0 deaths, measured telegraphs, traversal proofs and look audits, and

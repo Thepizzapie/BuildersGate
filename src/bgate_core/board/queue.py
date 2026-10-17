@@ -135,7 +135,13 @@ SATISFIED = ("done",)
 # AGENT cannot take it - greenlight_advance refuses a forward move from any
 # agent, so dispatching it as one would buy a run that ends in a refusal.
 STAGE_ADVANCE_SOURCE = "stage-advance"
-HELD_SOURCES = ("chat", "human-task", STAGE_ADVANCE_SOURCE)
+# A FEEL-CHECK FAIL IS A DESIGN DECISION, NOT A TASK. MEASURED (Turf War,
+# 2026-10-17): the escalation was dispatchable and born kind=fix, autodeploy
+# ran the director seat as an agent, it did what its brief said ("file each
+# as kind=feature or fix") and relabelled its way past the slice hold, and
+# the board retuned a game whose owner had deferred tuning. The item now
+# waits for a person, who decides whether the game or the check is wrong.
+HELD_SOURCES = ("chat", "human-task", STAGE_ADVANCE_SOURCE, "feel-check")
 
 # A HUMAN STEP: work only a person can do (a call, a playtest, a sign-off that
 # is not a checkpoint on an existing item). It lives on the board as an item
@@ -156,10 +162,12 @@ FAILURE_ESCALATION_SOURCE = "failure-escalation"
 KINDS = ("feature", "content", "fix", "polish")
 SEVERITIES = ("showstopper", "major", "minor")
 
-#: Sources whose items are repairs by construction.
+#: Sources whose items are repairs by construction. Not "feel-check": a
+#: failing feel check asks for DESIGN changes, which the slice stage exists to
+#: hold until a person says so (see HELD_SOURCES).
 FIX_SOURCES = frozenset({
     "playtest", "playtest-triage", "playtest-repro", "qa-gate-escalation",
-    FAILURE_ESCALATION_SOURCE, "unblock", "feel-check",
+    FAILURE_ESCALATION_SOURCE, "unblock",
 })
 #: Process work: it reviews or plans the game rather than changing it. Never
 #: held by the slice stage and never refused by a lock.
