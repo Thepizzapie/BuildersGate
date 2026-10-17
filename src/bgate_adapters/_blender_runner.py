@@ -408,6 +408,15 @@ def main():
         if not bpy.data.filepath:
             for obj in list(bpy.data.objects):
                 bpy.data.objects.remove(obj, do_unlink=True)
+            # The furniture's datablocks outlive their objects: on 4.2 the
+            # factory "Material" stayed in bpy.data.materials, so a grey
+            # assembly reported one material and the no_materials gate never
+            # fired. Drop whatever the removal left with no users.
+            for blocks in (bpy.data.meshes, bpy.data.materials,
+                           bpy.data.cameras, bpy.data.lights):
+                for block in list(blocks):
+                    if block.users == 0:
+                        blocks.remove(block)
         with open(script_path, encoding="utf-8") as fh:
             code = compile(fh.read(), "<agent_script>", "exec")
         # Give the script a real module namespace so `import bpy` inside it and
