@@ -50,9 +50,9 @@ class TestRunScript:
     def test_empty_scene_has_no_default_cube(self, tmp_path):
         got = blender.run_script("pass", out_dir=str(tmp_path))
         assert got["ok"] is True
-        # --factory-startup DOES load the default scene; the point is that it's
-        # the known baseline (Cube/Camera/Light), not a user's customized one.
-        assert {o["name"] for o in got["scene"]["objects"]} == {"Cube", "Camera", "Light"}
+        # --factory-startup loads Cube/Camera/Light; run_script clears them so
+        # a script starts from nothing (no default cube in a finished asset).
+        assert {o["name"] for o in got["scene"]["objects"]} == set()
 
     def test_builds_geometry_and_reports_stats(self, tmp_path):
         got = blender.run_script(CUBE, out_dir=str(tmp_path))
@@ -70,9 +70,9 @@ bpy.ops.mesh.primitive_cube_add(size=1, location=(3, 0, 0))
 bpy.context.active_object.name = "Second"
 """
         got = blender.run_script(script, out_dir=str(tmp_path))
-        # Default Cube + TestCube + Second = 3 meshes, 12 tris each.
-        assert got["scene"]["totals"]["meshes"] == 3
-        assert got["scene"]["totals"]["tris"] == 36
+        # TestCube + Second = 2 meshes, 12 tris each (no default cube).
+        assert got["scene"]["totals"]["meshes"] == 2
+        assert got["scene"]["totals"]["tris"] == 24
 
     def test_modifiers_are_evaluated_not_ignored(self, tmp_path):
         """Stats come from the evaluated mesh — a subsurf must change the count."""
@@ -139,6 +139,8 @@ class TestFailures:
 class TestRender:
     def test_render_writes_a_png(self, tmp_path):
         script = CUBE + """
+bpy.ops.object.camera_add(location=(0, -6, 4), rotation=(1.0, 0, 0))
+bpy.context.scene.camera = bpy.context.active_object
 bpy.context.scene.render.resolution_x = 64
 bpy.context.scene.render.resolution_y = 64
 """

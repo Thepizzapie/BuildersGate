@@ -668,6 +668,9 @@ def warmup(engine: str = "BLENDER_EEVEE_NEXT", out_dir: Optional[str] = None) ->
     script = """
 import bpy
 bpy.ops.mesh.primitive_plane_add(size=1)
+# run_script starts from an empty scene, so the render needs its own camera.
+bpy.ops.object.camera_add(location=(0, -3, 2), rotation=(1.0, 0, 0))
+bpy.context.scene.camera = bpy.context.active_object
 bpy.context.scene.render.resolution_x = 32
 bpy.context.scene.render.resolution_y = 32
 """
