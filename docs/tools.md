@@ -6083,8 +6083,8 @@ Key: `bgate key set typesafe --global` (TYPESAFE_API_KEY), or a Vercel AI
 Gateway key (`bgate key set ai_gateway`) for the same model. TypeSafe's own
 key wins when both are set.
 
-No key: `BGATE_JEV_OLLAMA_MODEL=laya` (or `nimble`, `tev1`; `on` means
-`laya`) sends the same request to a local Ollama 0.40+ at `127.0.0.1:11434`
+No key: `BGATE_JEV_OLLAMA_MODEL=nimble` (or `tev1`, `laya`; `on` means
+`nimble`) sends the same request to a local Ollama 0.40+ at `127.0.0.1:11434`
 (or `OLLAMA_HOST`), which serves `/v1/systemone` natively for its decision
 models, and the answers come back in this same shape at no cost. A hosted key
 still wins when set. A chat model is refused by Ollama, not prompted into
