@@ -6083,6 +6083,14 @@ Key: `bgate key set typesafe --global` (TYPESAFE_API_KEY), or a Vercel AI
 Gateway key (`bgate key set ai_gateway`) for the same model. TypeSafe's own
 key wins when both are set.
 
+No key: `BGATE_JEV_OLLAMA_MODEL=qwen2.5:7b` (any model `ollama list` shows)
+sends the same questions to a local Ollama at `127.0.0.1:11434` (or
+`OLLAMA_HOST`) as one schema-constrained chat call and maps the answer back
+into this shape. A hosted key still wins when set. The local bot is slower
+(a model load of several seconds on the first call, then a few hundred ms)
+and weaker, so a feel-check number from it is not comparable to a hosted
+one; every result says `route`.
+
 ## playtest_agent_run
 
 A decision model plays the game. Godot only. The run installs

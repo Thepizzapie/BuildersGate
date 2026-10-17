@@ -32,7 +32,9 @@ def decide(state: str, questions: str, model: str = "") -> dict:
     About 250 ms and a hundredth of a cent a call. Use it for classification
     and judgement over text you already have - it does not write, plan or
     read files. Needs TYPESAFE_API_KEY or AI_GATEWAY_API_KEY
-    (`bgate key set typesafe --global`)."""
+    (`bgate key set typesafe --global`), or BGATE_JEV_OLLAMA_MODEL naming a
+    local Ollama model for a keyless, slower, weaker route; the result's
+    `route` says which answered."""
     from bgate_adapters import jev
 
     spent = _budget()

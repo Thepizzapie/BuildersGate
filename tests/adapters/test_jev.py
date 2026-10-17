@@ -106,6 +106,91 @@ def test_gateway_route_and_its_cost(nokeys, monkeypatch):
     assert got["usd"] == pytest.approx(0.00002)
 
 
+@pytest.fixture()
+def ollama(nokeys, monkeypatch):
+    """The local route opted in, a fake Ollama that answers whatever the test
+    puts in ``reply``, and the calls it saw."""
+    monkeypatch.setenv("BGATE_JEV_OLLAMA_MODEL", "qwen2.5:7b")
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    seen = {"calls": [], "reply": {"action": {"choice": "jump", "confidence": 0.8}}}
+
+    def fake(method, url, **kw):
+        seen["calls"].append({"method": method, "url": url, **kw})
+        body = {"model": "qwen2.5:7b", "done": True,
+                "message": {"role": "assistant",
+                            "content": json.dumps(seen["reply"])},
+                "prompt_eval_count": 120, "eval_count": 15}
+        return _http.Response(200, json.dumps(body).encode(), {}, url)
+
+    monkeypatch.setattr(jev._http, "request", fake)
+    return seen
+
+
+def test_ollama_route_is_local_free_and_schema_constrained(ollama):
+    got = jev.decide("a goomba approaches", QS)
+    call = ollama["calls"][0]
+    assert call["url"] == "http://127.0.0.1:11434/api/chat"
+    assert "Authorization" not in (call.get("headers") or {})
+    sent = call["json"]
+    assert sent["model"] == "qwen2.5:7b" and sent["stream"] is False
+    assert sent["format"]["properties"]["action"]["properties"]["choice"]["enum"] \
+        == ["jump", "wait"]
+    assert "jump" in sent["messages"][1]["content"]
+    assert call["timeout"] >= jev.OLLAMA_MIN_TIMEOUT
+    assert got["route"] == "ollama" and got["usd"] == 0.0
+    assert got["model"] == "qwen2.5:7b"
+    assert got["usage"] == {"input_tokens": 120, "output_tokens": 15}
+    action = got["answers"]["action"]
+    assert action["choice"] == "jump" and action["confidence"] == 0.8
+    assert action["probabilities"] == {"jump": 0.8, "wait": 0.2}
+
+
+def test_a_hosted_key_still_wins_over_ollama(ollama, monkeypatch):
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw")
+    assert jev.route() == "ai_gateway"
+    jev.decide("s", QS)
+    assert ollama["calls"][0]["url"].startswith("https://ai-gateway.vercel.sh/")
+
+
+def test_ollama_host_is_honoured(ollama, monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "gpubox:11435")
+    jev.decide("s", QS)
+    assert ollama["calls"][0]["url"] == "http://gpubox:11435/api/chat"
+
+
+def test_ollama_pick_outside_the_options_is_refused(ollama):
+    ollama["reply"] = {"action": {"choice": "teleport", "confidence": 0.9}}
+    with pytest.raises(jev.JevError, match="teleport"):
+        jev.decide("s", QS)
+
+
+def test_ollama_maps_noul_and_score_into_jev_shape(ollama):
+    ollama["reply"] = {"danger": {"probability": 0.7},
+                       "quality": {"score": "mid", "confidence": 0.5}}
+    got = jev.decide("s", {
+        "danger": {"type": "noul", "instructions": "about to be hit?"},
+        "quality": {"type": "score", "instructions": "how good",
+                    "criteria": ["low", "mid", "high"]}})
+    assert got["answers"]["danger"]["noul"] == 0.7
+    quality = got["answers"]["quality"]
+    assert quality["score"] == "mid" and quality["confidence"] == 0.5
+    assert sum(quality["probabilities"].values()) == pytest.approx(1.0)
+    assert quality["probabilities"]["mid"] == 0.5
+    sent = ollama["calls"][0]["json"]
+    assert sent["format"]["properties"]["quality"]["properties"]["score"]["enum"] \
+        == ["low", "mid", "high"]
+    assert "levels: low, mid, high" in sent["messages"][1]["content"]
+
+
+def test_no_key_still_names_the_local_route(nokeys):
+    got = jev.available()
+    assert got["available"] is False
+    assert "bgate key set typesafe" in got["reason"]
+    assert "BGATE_JEV_OLLAMA_MODEL" in got["reason"]
+    local = jev.available(route="ollama")
+    assert local["available"] is False and "ollama" in local["reason"]
+
+
 def test_render_is_lines_not_json():
     text = agentplay.render({"player": {"hp": 3},
                              "nearby": [{"name": "goomba", "dx": 40}]})
