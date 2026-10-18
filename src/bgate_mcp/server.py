@@ -234,7 +234,7 @@ def _keys(root: Optional[str] = None) -> None:
 # one decision function, no shared state - see that module's docstring for why
 # it is pure.
 # A TOOL BODY THAT NEVER RETURNS IS THE WORST OUTCOME THIS PROCESS CAN
-# PRODUCE. MEASURED on boswell-edition (2026-09-19): animation_generate
+# PRODUCE. MEASURED on a JRPG test game (2026-09-19): animation_generate
 # finished its first Retro Diffusion job in 90 s, wrote the sheet, and then
 # blocked silently - no socket, no CPU, nothing more written - for the rest
 # of a 60-minute item ceiling, three attempts in a row; the server that held
