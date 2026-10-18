@@ -594,9 +594,14 @@ def _inject_settings(html: str) -> str:
     """
     try:
         from bgate_core.store import settings as _settings
-        values = _settings.client(_root())
+        values = dict(_settings.client(_root()) or {})
     except Exception:
-        return html          # no project, no registry: the JS fallbacks stand
+        values = {}          # no project, no registry: the JS fallbacks stand
+    # A packaged build stamps its edition before this module loads; the page
+    # reads it to decide which first-run path to show. Unset means selfhost.
+    edition = os.environ.get("BGATE_EDITION", "").strip()
+    if edition:
+        values["edition"] = edition
     if not values:
         return html
     shim = "<script>window.BGATE_SETTINGS=%s;</script>" % json.dumps(values)
