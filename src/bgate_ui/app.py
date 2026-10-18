@@ -576,6 +576,9 @@ def index() -> str:
     return _inject_identity(_inject_token(_inject_settings(html)))
 
 
+_EDITIONS = ("selfhost", "connected", "builder", "publisher")
+
+
 def _inject_settings(html: str) -> str:
     """Ride the client-side settings into the page as ``window.BGATE_SETTINGS``.
 
@@ -599,8 +602,8 @@ def _inject_settings(html: str) -> str:
         values = {}          # no project, no registry: the JS fallbacks stand
     # A packaged build stamps its edition before this module loads; the page
     # reads it to decide which first-run path to show. Unset means selfhost.
-    edition = os.environ.get("BGATE_EDITION", "").strip()
-    if edition:
+    edition = os.environ.get("BGATE_EDITION", "").strip().lower()
+    if edition in _EDITIONS:
         values["edition"] = edition
     if not values:
         return html
