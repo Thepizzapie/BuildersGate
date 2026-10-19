@@ -131,6 +131,10 @@ def _kit_dir(name: str, engine: str, version: str) -> tuple[Path, str]:
     name only the studio has resolves to its newest version.
     """
     if version:
+        # Both come from the CLI or a hand-editable ledger and become a path.
+        if not _VERSION_RE.match(version) or not _NAME_RE.match(name):
+            raise KitError(f"{name}@{version}: a studio module is a plain name "
+                           "at MAJOR.MINOR.PATCH")
         base = studio_modules_dir(engine)
         if base is None:
             raise KitError(f"{name}@{version} is a studio module and no studio "

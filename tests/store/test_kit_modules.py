@@ -185,6 +185,14 @@ class TestPinAndUpdate:
         with pytest.raises(kits.KitError, match="shipped"):
             kits.update(root, game, "inventory")
 
+    @pytest.mark.parametrize("name,version", [("mod", "../../x"), ("mod", "1.0"),
+                                              ("../mod", "1.0.0")])
+    def test_a_pin_that_is_not_a_plain_version_is_refused(self, tmp_path, studio,
+                                                          name, version):
+        self._two_versions(tmp_path)
+        with pytest.raises(kits.KitError, match="MAJOR.MINOR.PATCH"):
+            kits.load(name, "godot", version)
+
     def test_remove_uses_the_pinned_version(self, tmp_path, studio):
         self._two_versions(tmp_path)
         root, game = tmp_path / "root", _game(tmp_path, "g", {})
