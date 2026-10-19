@@ -49,6 +49,9 @@
                    | import ID... [--dest DIR] | forget ID] [--project DIR]
                                 the machine-wide asset library at ~/.bgate/library:
                                 what one game made, another can take
+    bgate studio [status | init DIR | adopt DIR [--move]] [--json]
+                                one folder for every game and what they share;
+                                once set, `bgate init` puts new games in it
     bgate hook-install [DIR]    wire lane/lock enforcement into a game project
     bgate hook-uninstall [DIR]  remove it again, leaving your other hooks alone
     bgate un-adopt [DIR] --yes  delete this project's .bgate store; game untouched
@@ -397,8 +400,17 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     # Default to a NEW directory under the cwd rather than the cwd itself: a
     # scaffolder that unpacks a game into whatever directory you happened to be
     # standing in is a data-loss bug wearing a feature's hat.
-    root = Path(dest).expanduser().resolve() if dest else (
-        Path.cwd() / slugify(name)).resolve()
+    # A STUDIO, when one is set, is where a new game goes unless --dir says
+    # otherwise: the point of the studio is that the next game is found
+    # beside the last one without anybody remembering to put it there.
+    from bgate_core.store import studio as _studio
+    studio_root = _studio.root()
+    if dest:
+        root = Path(dest).expanduser().resolve()
+    elif studio_root is not None:
+        root = (studio_root / _studio.GAMES_DIRNAME / slugify(name)).resolve()
+    else:
+        root = (Path.cwd() / slugify(name)).resolve()
 
     try:
         made = scaffold.new_project(root, name, kind=kind, force=force,
@@ -411,6 +423,11 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         return 2
 
     project.init(root, name, pitch=pitch, engine=engine, dimension=kind)
+    if studio_root is not None and studio_root in root.parents:
+        try:
+            _studio.add_game(root)
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"warning: not recorded in the studio index: {exc}")
     # A 2D project defaults the 3D pipeline OFF, cutout/sprite work never
     # opens Blender, and the default should match the kind just chosen. A WEB
     # project defaults it off at both dimensions: blender_* delivers .glb into
@@ -1442,6 +1459,77 @@ def _cmd_kit(rest: list) -> int:
     return 2
 
 
+def _cmd_studio(rest: list) -> int:
+    """bgate studio [status | init DIR | adopt DIR [--move]] [--json]
+
+    One folder for every game and what they share. `init` makes it (games/,
+    shared/modules/, shared/assets/, studio.json) and remembers it; `adopt`
+    indexes an existing project where it is, or with --move copies it into
+    games/, checks the copy, and repoints the registry. The original is never
+    deleted.
+    """
+    from bgate_core.store import studio as _studio
+    sub = rest[0] if rest and not rest[0].startswith("-") else "status"
+    positional = [a for a in rest if not a.startswith("-")]
+    as_json = "--json" in rest
+    try:
+        if sub == "init":
+            if len(positional) < 2:
+                print("bgate studio init DIR")
+                return 2
+            got = _studio.init(positional[1])
+            if as_json:
+                print(json.dumps(got, indent=2))
+                return 0
+            print(f"{'created' if got['created'] else 'using'} studio {got['root']}")
+            if got.get("note"):
+                print(f"  {got['note']}")
+            print("  new projects from `bgate init` now land in its games/ folder")
+            return 0
+        if sub == "adopt":
+            if len(positional) < 2:
+                print("bgate studio adopt DIR [--move]")
+                return 2
+            got = _studio.adopt(positional[1], move="--move" in rest)
+            if as_json:
+                print(json.dumps(got, indent=2))
+                return 0
+            if not got["moved"]:
+                print(f"indexed {got['name']} at {got['root']}"
+                      + (f" ({got['note']})" if got.get("note") else ""))
+                return 0
+            print(f"copied {got['name']} into {got['root']} ({got['files']} files, "
+                  "checked)")
+            print("  the registry now points at the copy"
+                  + (", and so does the active project" if got["active_repointed"]
+                     else ""))
+            print("  the original is untouched; remove it when you are satisfied:")
+            print(f"  {got['original']}")
+            return 0
+        if sub == "status":
+            st = _studio.status()
+            if as_json:
+                print(json.dumps(st, indent=2))
+                return 0
+            if not st["set"]:
+                print("no studio set. `bgate studio init DIR` makes one; "
+                      f"{_studio.ENV} overrides it.")
+                return 0
+            if not st["ok"]:
+                print(f"studio {st['root']} (from {st['source']}): {st['error']}")
+                return 1
+            print(f"studio {st['root']} (from {st['source']})")
+            print(f"  {len(st['games'])} game(s), {st['modules']} module(s)")
+            for g in st["games"]:
+                print(f"  {'   ' if g['exists'] else 'GONE'} {g['name']:<24} {g['path']}")
+            return 0
+    except _studio.StudioError as exc:
+        print(f"error: {exc}")
+        return 1
+    print(_cmd_studio.__doc__.splitlines()[0])
+    return 2
+
+
 def _cmd_library(rest: list) -> int:
     """bgate library [list | search TEXT | publish PATH... | import ID... | forget ID] [--project DIR]
 
@@ -1657,6 +1745,9 @@ def main() -> int:
 
     if cmd in ("library", "lib"):
         return _cmd_library(args[1:])
+
+    if cmd == "studio":
+        return _cmd_studio(args[1:])
 
     if cmd == "doctor":
         positional = [a for a in args[1:] if not a.startswith("-")]

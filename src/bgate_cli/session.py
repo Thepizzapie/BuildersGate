@@ -222,6 +222,17 @@ def _lines(root) -> list[str]:
         if row["pitch"]:
             out.append(f"         {row['pitch']}")
     out.append(f"ROOT     {root}")
+    try:
+        from bgate_core.store import studio as _studio
+        st = _studio.status()
+        if st["ok"]:
+            out.append(f"STUDIO   {st['root']}  ({len(st['games'])} game(s), "
+                       f"{st['modules']} shared module(s))")
+        elif st["set"]:
+            out.append(f"STUDIO   {st['root']} is {st['error']}; "
+                       "`bgate studio status`")
+    except Exception:
+        pass
 
     # A .bgate with no project row is a real and common shape: the Builders Gate
     # checkout itself, a directory somebody ran a tool in, a half-finished adopt.
