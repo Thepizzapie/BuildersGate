@@ -45,11 +45,13 @@ class Telemetry {
   private buffer: TelemetryEvent[] = [];
   private polling = false;
   private flushing = false;
+  /** Set by a 404 on the status route: this origin is not the dashboard. */
+  private dead = false;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   /** Begin discovering an active recording. Safe to call more than once. */
   start(): void {
-    if (this.timer !== null) return;
+    if (this.timer !== null || this.dead) return;
     if (typeof fetch !== "function") return; // node test runner, not a browser
     // A bot playtest sends every event to its relay (agent.ts); polling the
     // dashboard as well only fills the console with failed requests.
@@ -93,6 +95,14 @@ class Telemetry {
     this.polling = true;
     try {
       const res = await fetch("/api/playtest/status", { cache: "no-store" });
+      // A 404 IS FINAL. The dashboard always answers this route, so a 404
+      // means a static host, and polling it again only puts a failed request
+      // in the console every tick for the life of the page.
+      if (res.status === 404) {
+        this.dead = true;
+        this.stop();
+        return;
+      }
       if (!res.ok) return;
       // The route answers {recording: {id, native, ...} | null, processing};
       // a native recording owns its own file and must not be reported into.

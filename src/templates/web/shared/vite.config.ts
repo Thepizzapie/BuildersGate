@@ -17,6 +17,10 @@ import { defineConfig } from "vite";
 const dashboardPort = process.env.BGATE_PORT ?? "7788";
 
 export default defineConfig({
+  // RELATIVE ASSET URLS, so the build runs from wherever it is served. Vite's
+  // default "/" writes <script src="/assets/...">, which resolves against the
+  // host's root: a build served from any subpath loads a blank page.
+  base: "./",
   server: {
     port: 5173,
     strictPort: true,
