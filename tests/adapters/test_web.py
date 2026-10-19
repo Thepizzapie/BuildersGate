@@ -301,6 +301,23 @@ class TestScaffold:
         assert "SCHEMA_VERSION = 1" in source
         assert "schema: SCHEMA_VERSION" in source
 
+    def test_a_404_on_the_status_route_stops_polling_for_good(self):
+        """MEASURED: a build on a static host sent a 404
+        to /api/playtest/status every tick for the life of the page.
+
+        The dashboard always answers that route, so a 404 means this origin
+        is not the dashboard, and start() must not bring the poll back.
+        """
+        source = (scaffold.TEMPLATES_DIR / "web" / "shared" / "src" / "bgate"
+                  / "telemetry.ts").read_text(encoding="utf-8")
+        poll = source[source.index("private async poll()"):
+                      source.index("private async flush()")]
+        stop = poll[poll.index("res.status === 404"):poll.index("res.ok")]
+        assert "this.dead = true" in stop
+        assert "this.stop()" in stop
+        start = source[source.index("start(): void"):source.index("stop(): void")]
+        assert "this.dead" in start
+
 
 class TestProjectWiring:
     def test_a_scaffolded_web_project_records_its_engine(self, tmp_path):
@@ -564,6 +581,15 @@ class TestTheDevServerKnowsItsDashboard:
                   / "vite.config.ts").read_text(encoding="utf-8")
         assert "process.env.BGATE_PORT" in source
         assert '"http://127.0.0.1:7788"' not in source
+
+    def test_the_build_uses_relative_asset_urls(self):
+        """Vite's default base "/" writes <script src="/assets/...">, a blank
+        page from any subpath. "./" loads from wherever the build is served.
+        """
+        source = (scaffold.TEMPLATES_DIR / "web" / "shared"
+                  / "vite.config.ts").read_text(encoding="utf-8")
+        assert 'base: "./"' in source
+        assert "arcade" not in source.lower()
 
     def test_the_port_file_wins_then_the_env_then_the_default(
             self, tmp_path, monkeypatch):
