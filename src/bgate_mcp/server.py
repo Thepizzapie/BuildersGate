@@ -1628,6 +1628,12 @@ def project_status() -> dict:
            # WHICH WORLD. The first thing an agent should know about a tree
            # that has carried two of everything.
            "canon": _canon_summary(root)}
+    # THE STUDIO, when one is set: where this machine keeps its games and
+    # what they share, so "is there a module for that" has a place to look.
+    from bgate_core.store import studio as _studio
+    st = _studio.status()
+    if st["set"]:
+        out["studio"] = st
     if missing:
         # ITEM 33 (EXIT 67): a registered path that no longer exists (a Temp
         # scaffold dir, a deleted checkout) used to just be silently dropped
