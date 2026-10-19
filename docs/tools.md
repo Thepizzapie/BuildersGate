@@ -3989,6 +3989,40 @@ unless `force`. Input actions stay: another script may read them by
 now, and an unbound action is a silent no-op, not an error.
 ```
 
+## kit_extract
+
+```text
+PUBLISH PART OF THIS GAME AS A REUSABLE MODULE in the studio's
+shared/modules, so any other game can kit_install it by version.
+
+Layout: <studio>/shared/modules/<engine>/<name>/<version>/kit.json, with
+the files under files/ at the path they install to. The manifest records
+the game and time it was extracted from.
+
+Two calls: first without `confirm` to read back the manifest (what it
+provides and needs; correct it), then with `confirm` to publish. A
+published version is never rewritten, and a version older than the
+newest is refused: a fix is a new version. A web module's files are
+under src/; its `requires.actions` are listed for the person to wire,
+since nothing edits a web game's input map.
+
+On the shelf, a studio module named like a shipped kit is used only when
+a game pins it (kit_install(name, version=...)); a name only the studio
+has resolves to its newest version and is pinned on install.
+```
+
+## kit_update
+
+```text
+MOVE A PINNED MODULE FORWARD to a newer version.
+
+Files unchanged since install are replaced; a file the game has edited
+is `kept` and named, never overwritten. Files the new version dropped
+stay in the game and are listed under `dropped`. Never moves a pin
+backwards, and a shipped kit has no pin to move. kit_list shows `newer`
+on a pinned module when a later version is published.
+```
+
 ## level_plan
 
 ```text
