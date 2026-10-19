@@ -42,9 +42,12 @@
     bgate panic [DIR] [--json]  EMERGENCY STOP: kill every agent on a project,
                                 reap orphans, and turn auto-deploy off.
                                 Works even when the dashboard is gone or wedged.
-    bgate kit [list | install NAME [--force] [--no-bind] | remove NAME [--force]] [--project DIR]
+    bgate kit [list | install NAME [--version V] [--force] [--no-bind] | remove NAME [--force]
+               | extract NAME VERSION FILE... --summary S [--confirm] | update NAME [--version V]]
+               [--project DIR]
                                 reusable systems (controllers, inventory, health)
-                                copied into the active game, never overwriting
+                                copied into the active game, never overwriting;
+                                with a studio set, your own versioned modules too
     bgate library [list | search TEXT | publish PATH... [--tags a,b] [--collection C]
                    | import ID... [--dest DIR] | forget ID] [--project DIR]
                                 the machine-wide asset library at ~/.bgate/library:
@@ -1358,7 +1361,7 @@ def _reuse_root(rest: list):
 
 
 _REUSE_VALUE_FLAGS = ("--project", "--tags", "--collection", "--dest", "--note",
-                      "--kind")
+                      "--kind", "--version", "--summary", "--title", "--dimension")
 
 
 def _reuse_positional(rest: list) -> list:
@@ -1379,12 +1382,14 @@ def _reuse_opt(rest: list, flag: str, default: str = "") -> str:
 
 
 def _cmd_kit(rest: list) -> int:
-    """bgate kit [list | install NAME [--force] [--no-bind] | remove NAME [--force]] [--project DIR]
+    """bgate kit [list | install NAME [--version V] | remove NAME | extract NAME VERSION FILE... | update NAME] [--project DIR]
 
     The same install kit_install performs, from the shell: a kit's scripts
     into scripts/, its missing input actions into project.godot, nothing
     overwritten. `list` says which are already in this game; --all lists
-    kits of every dimension, not only the project's.
+    kits of every dimension, not only the project's. `extract` publishes
+    files from this game as a studio module (a dry run without --confirm);
+    `update` moves a pinned module to --version, or the newest.
     """
     from bgate_core.store import kits as _kits
     from bgate_core.store import project as _project
@@ -1402,8 +1407,10 @@ def _cmd_kit(rest: list) -> int:
         pass
     if "--all" in rest:
         dimension = ""
+    engine = _project.engine_of(root)
+    version = _reuse_opt(rest, "--version")
     if sub == "list":
-        st = _kits.status(root, game, "godot", dimension)
+        st = _kits.status(root, game, engine, dimension)
         print(f"kits for {game} ({st['dimension']})")
         for k in st["kits"]:
             if k.get("error"):
@@ -1412,15 +1419,19 @@ def _cmd_kit(rest: list) -> int:
             mark = {"installed": "OK  ", "absent": "    ", "modified": "MOD ",
                     "partial": "PART"}.get(k["state"], "??  ")
             stale = " (stale: the kit changed since install)" if k.get("stale") else ""
-            print(f"  {mark} {k['name']:<24} {k['dimension']:<4} {k['title']}{stale}")
+            pin = f"@{k['version']}" if k.get("version") else ""
+            newer = f" (newer: {k['newer']})" if k.get("newer") else ""
+            print(f"  {mark} {k['name'] + pin:<24} {k['dimension']:<4} {k['title']}{stale}{newer}")
         return 0
     if sub in ("install", "add"):
         if len(positional) < 2:
             print("bgate kit install NAME [--force] [--no-bind] [--all] [--project DIR]")
             return 2
         try:
-            got = _kits.install(root, game, positional[1], force="--force" in rest,
-                                bind="--no-bind" not in rest, dimension=dimension)
+            got = _kits.install(root, game, positional[1], engine=engine,
+                                force="--force" in rest,
+                                bind="--no-bind" not in rest, dimension=dimension,
+                                version=version)
         except _kits.KitError as exc:
             print(f"error: {exc}")
             return 1
@@ -1446,7 +1457,8 @@ def _cmd_kit(rest: list) -> int:
             print("bgate kit remove NAME [--force] [--project DIR]")
             return 2
         try:
-            got = _kits.remove(root, game, positional[1], force="--force" in rest)
+            got = _kits.remove(root, game, positional[1], engine=engine,
+                               force="--force" in rest)
         except _kits.KitError as exc:
             print(f"error: {exc}")
             return 1
@@ -1455,6 +1467,46 @@ def _cmd_kit(rest: list) -> int:
         for row in got["refused"]:
             print(f"  REFUSED {row['dest']}: {row['reason']}")
         return 0 if got["ok"] else 1
+    if sub == "extract":
+        if len(positional) < 4:
+            print("bgate kit extract NAME VERSION FILE... --summary S [--title T] "
+                  "[--dimension 2d|3d|any] [--confirm] [--project DIR]")
+            return 2
+        try:
+            got = _kits.extract(game, positional[1], positional[2], positional[3:],
+                                engine=engine, summary=_reuse_opt(rest, "--summary"),
+                                title=_reuse_opt(rest, "--title"),
+                                dimension=_reuse_opt(rest, "--dimension", "any"),
+                                confirm="--confirm" in rest)
+        except _kits.KitError as exc:
+            print(f"error: {exc}")
+            return 1
+        print(json.dumps(got["manifest"], indent=2))
+        if got["confirmed"]:
+            print(f"published {positional[1]}@{positional[2]} -> {got['dir']}")
+        else:
+            print(f"dry run: {got['note']} (--confirm)")
+        return 0
+    if sub == "update":
+        if len(positional) < 2:
+            print("bgate kit update NAME [--version V] [--project DIR]")
+            return 2
+        try:
+            got = _kits.update(root, game, positional[1], engine=engine,
+                               version=version)
+        except _kits.KitError as exc:
+            print(f"error: {exc}")
+            return 1
+        print(f"  {positional[1]}: {got['from']} -> {got['to']}")
+        for rel in got["written"]:
+            print(f"  wrote   {rel}")
+        for row in got["kept"]:
+            print(f"  kept    {row['dest']}: {row['reason']}")
+        for rel in got["dropped"]:
+            print(f"  dropped {rel} (left in the game)")
+        if got["note"]:
+            print(f"  {got['note']}")
+        return 0
     print(_cmd_kit.__doc__.splitlines()[0])
     return 2
 

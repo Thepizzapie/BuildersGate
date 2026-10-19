@@ -425,7 +425,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "godot_templates", "godot_test_run",
         # Kits are scene-and-script work: the seats that never touch a
         # .tscn never install a controller either.
-        "kit_list", "kit_install", "kit_remove",
+        "kit_list", "kit_install", "kit_remove", "kit_extract", "kit_update",
         "iteration_record_checks", "iteration_status",
         "iteration_open", "iteration_attach", "iteration_close",
         "scene_attach_script", "scene_node_add", "scene_outline",
