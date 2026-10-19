@@ -272,3 +272,17 @@ class TestStudio:
         got = assetlib.migrate()
         assert got["merged"] == 1 and got["copied"] == 0
         assert assetlib.get("hit.wav")["tags"] == ["new", "old"]
+
+    def test_migrate_leaves_an_entry_whose_bytes_are_gone(self, project, monkeypatch, tmp_path):
+        got = assetlib.publish(project, ["assets/sfx/hit.wav",
+                                         "assets/characters/pm_paladin_idle.png"])
+        hit = next(e for e in got["published"] if e["name"] == "hit.wav")
+        (assetlib.legacy_home() / "blobs" / hit["blob"]).unlink()
+        from bgate_core.store import studio
+        root = tmp_path / "studio"
+        monkeypatch.setattr(studio, "root", lambda: root)
+        monkeypatch.setattr(studio, "assets_dir", lambda: root / "shared" / "assets")
+        out = assetlib.migrate()
+        assert not out["ok"] and out["missing"] == ["hit.wav"] and out["copied"] == 1
+        assert hit["id"] not in assetlib.read_index()["entries"]
+        assert assetlib.get("pm_paladin_idle.png")

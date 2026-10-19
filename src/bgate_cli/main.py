@@ -1680,7 +1680,8 @@ def _cmd_library(rest: list) -> int:
               f"merged {got['merged']} already held, from {got['from']} "
               f"to {got['to']}")
         for name in got["missing"]:
-            print(f"  MISSING {name}: indexed in the old library, not on disk")
+            print(f"  MISSING {name}: indexed in the old library, bytes not on "
+                  "disk; not copied")
         if got["copied"] or got["merged"]:
             print(f"the old library is untouched; remove {got['from']} "
                   "yourself when satisfied")

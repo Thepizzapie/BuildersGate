@@ -7,6 +7,7 @@ version.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -65,3 +66,26 @@ def test_lists_modules_pins_and_assets(client, studio_root, monkeypatch):
     assert mods["relay"]["engine"] == "web" and mods["relay"]["pinned_by"] == []
     assert got["assets"]["home"] == str((studio_root / "shared" / "assets").resolve())
     assert got["assets"]["count"] == 0
+
+
+def test_pins_keep_engines_apart(client, studio_root, monkeypatch):
+    from bgate_core.store import project
+    _module(studio_root, "godot", "health", "1.0.0", "Health")
+    _module(studio_root, "web", "health", "2.0.0", "Health")
+    games = []
+    for name, version in (("ember", "1.0.0"), ("relay", "2.0.0")):
+        game = studio_root / "games" / name
+        (game / ".bgate").mkdir(parents=True)
+        (game / ".bgate" / "kits.json").write_text(
+            json.dumps({"health": {"version": version}}), encoding="utf-8")
+        games.append({"name": name, "path": str(game), "exists": True})
+    engines = {"ember": "godot", "relay": "web"}
+    monkeypatch.setattr(project, "engine_of", lambda p: engines[Path(p).name])
+    monkeypatch.setattr(studio, "status", lambda: {
+        "set": True, "ok": True, "root": str(studio_root), "source": "env",
+        "games": games, "modules": 2})
+
+    got = client.get("/api/studio-index").json()["data"]
+    pins = {m["engine"]: m["pinned_by"] for m in got["modules"]}
+    assert pins == {"godot": [{"game": "ember", "version": "1.0.0"}],
+                    "web": [{"game": "relay", "version": "2.0.0"}]}
