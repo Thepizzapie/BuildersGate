@@ -1,0 +1,21 @@
+.sh-page{max-width:1180px;margin:0 auto;padding:4px 0 28px;color:var(--text)}
+.sh-root{margin:0 0 12px;color:var(--text-3);font:450 11px var(--sans)}
+.sh-root code,.sh-sub code,.sh-rows code,.sh-empty code,.sh-none code{font:450 11px var(--mono);color:var(--text-2)}
+.sh-panel{margin-bottom:12px;border:1px solid var(--line);border-radius:6px;background:var(--solid-1);overflow:hidden}
+.sh-panel h3{display:flex;align-items:center;gap:8px;min-height:43px;margin:0;padding:0 14px;border-bottom:1px solid var(--line);font:560 13px var(--sans)}
+.sh-panel h3 span{color:var(--text-3);font:500 11px var(--mono);font-variant-numeric:tabular-nums}
+.sh-sub{margin:0;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--text-3);font:450 11px var(--sans)}
+.sh-rows{list-style:none;margin:0;padding:0}
+.sh-rows li{display:grid;grid-template-columns:minmax(0,1.2fr) auto minmax(0,.8fr) minmax(0,1fr);align-items:baseline;gap:4px 12px;padding:9px 14px;border-bottom:1px solid var(--line)}
+.sh-rows li:last-child{border-bottom:0}
+.sh-rows b{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:500 12px var(--sans)}
+.sh-rows code{grid-column:2/-1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.sh-rows small{grid-column:1/-1;color:var(--text-3);font:400 11px/1.45 var(--sans)}
+.sh-tag{padding:1px 6px;border:1px solid var(--line);border-radius:4px;color:var(--text-3);font:500 10px var(--mono)}
+.sh-versions{color:var(--text-2);font:450 11px var(--mono)}
+.sh-pins{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--text-3);font:450 11px var(--sans)}
+.sh-bad{color:var(--bad);font:500 11px var(--sans);font-style:normal}
+.sh-none{margin:0;padding:22px 14px;color:var(--text-3);font-size:11px;text-align:center}
+.sh-empty{max-width:640px;margin:48px auto;color:var(--text-3);font-size:12px;line-height:1.6;text-align:center}
+.sh-empty.err{color:var(--bad)}
+@media(max-width:700px){.sh-rows li{grid-template-columns:minmax(0,1fr) auto}.sh-rows code,.sh-versions,.sh-pins{grid-column:1/-1}}
