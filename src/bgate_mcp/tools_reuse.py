@@ -11,7 +11,8 @@ share a file: both are about the boundary between one game and the next.
     ``src/templates/kits/<engine>/``, installed into THIS project one at a
     time, never overwriting. ``bgate_core.store.kits`` is the mechanism.
   * THE LIBRARY is assets: a sprite sheet one game generated, published to
-    ``~/.bgate/library`` and imported into another. Content-addressed, in
+    the studio's ``shared/assets`` (``~/.bgate/library`` with no studio) and
+    imported into another. Content-addressed, in
     no repository, following the person. ``bgate_core.store.assetlib``.
 
 Kits are Godot-only for now (they are GDScript) and register under that
@@ -155,7 +156,8 @@ def library_publish(paths: Annotated[list[str], Field(description="Files or dire
                     collection: Annotated[str, Field(description="A name grouping these entries (a character, a tileset, a prop set). One word a person would say.")] = "",
                     note: Annotated[str, Field(description="What this is and how it was made, for whoever finds it next year.")] = "") -> dict:
     """PUT AN ASSET WHERE THE NEXT GAME CAN FIND IT: copies files out of
-    this project into the machine-wide library at ~/.bgate/library.
+    this project into the shared library: the studio's shared/assets when
+    a studio is set, else ~/.bgate/library.
 
     Content-addressed: the same bytes published twice are stored once and
     come back under `existing` with the new tags merged. Nothing leaves the
