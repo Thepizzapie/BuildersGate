@@ -49,6 +49,21 @@ repository at first publication. There is no earlier release history to record.
   listed under.
 
 ### Added
+- **`bgate studio`: one folder for every game and what they share.**
+  `bgate studio init DIR` lays out `games/`, `shared/modules/<engine>/`,
+  `shared/assets/` and a `studio.json` index, and remembers the folder in
+  `~/.bgate/studio-dir.json` (`BGATE_STUDIO` overrides it). Once a studio
+  is set, `bgate init` puts new games under `games/` unless `--dir` says
+  otherwise. `bgate studio adopt DIR` indexes an existing project where it
+  is; with `--move` it copies the project into `games/`, checks the copy
+  file for file, and only then repoints the registry and the active
+  project. It never deletes the original, and prints its path for the
+  person to remove. Paths inside the studio are stored relative, so the
+  folder can be moved whole. `project_status` and the SessionStart block
+  name the studio. With no studio set, nothing changes. The
+  `bgate_core.store.studio` API (`root`, `games_dir`, `modules_dir`,
+  `assets_dir`, `index`, `save_index`) is what shared modules and the
+  shared asset store build on.
 - **`bgate oneshot NAME --brief FILE`: a brief becomes a running,
   self-advancing board with no director session to babysit.** Measured on
   the first one-shot attempt (a Worms clone, 2026-10-15): every step after

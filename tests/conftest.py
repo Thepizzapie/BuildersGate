@@ -71,6 +71,9 @@ def _isolated_user_dir(tmp_path_factory, monkeypatch):
     """
     monkeypatch.setenv("BGATE_HOME",
                        str(tmp_path_factory.mktemp("bgate_home")))
+    # A developer's BGATE_STUDIO would send every `bgate init` in the suite
+    # into their real studio folder.
+    monkeypatch.delenv("BGATE_STUDIO", raising=False)
 
 
 @pytest.fixture(autouse=True)
