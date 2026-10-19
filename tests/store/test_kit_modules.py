@@ -93,6 +93,26 @@ class TestExtract:
             kits.extract(game, "hp", "1.0.0", ["scripts/hp.gd"])
 
 
+class TestRealStudio:
+    """Through bgate_core.store.studio itself, not the patched directory."""
+
+    def test_extract_lands_in_the_studio_and_its_index(self, tmp_path):
+        from bgate_core.store import studio
+
+        studio.init(tmp_path / "studio")
+        game = _game(tmp_path, "w", {"src/net/relay.ts": "export {}\n"})
+        _publish(game, "relay", "1.0.0", ["src/net/relay.ts"], engine="web")
+        where = studio.modules_dir("web") / "relay" / "1.0.0" / "kit.json"
+        assert where.is_file()
+        assert studio.index()["modules"]["web/relay"]["versions"] == ["1.0.0"]
+        assert [k["name"] for k in kits.list_kits("web")] == ["relay"]
+
+    def test_without_a_studio_only_shipped_kits_show(self):
+        names = {k["name"] for k in kits.list_kits()}
+        assert all(k.get("origin") == "shipped" for k in kits.list_kits())
+        assert "health" in names
+
+
 class TestShelf:
     def test_a_studio_only_module_is_listed_with_its_versions(self, tmp_path, studio):
         game = _game(tmp_path, "a", {"scripts/hp2.gd": "x"})
