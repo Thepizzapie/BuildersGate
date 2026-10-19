@@ -83,6 +83,9 @@ const RAW_AREAS: Area[] = [
     id: "assets", label: "Assets", icon: "stack-2",
     screens: [
       { id: "assets",     label: "Library",       icon: "stack-2",     deck: "assets", count: "assets" },
+      /* The studio's shared modules and assets, across every game. Not
+         "Studio": Build already has a Studio screen (the generator graph). */
+      { id: "shared",     label: "Shared",        icon: "share",       deck: "shared" },
       { id: "spriteedit", label: "Sprite editor", icon: "brush",       deck: "spriteedit" },
       { id: "audiolab",   label: "Audio lab",     icon: "wave-sine",   deck: "audiolab" },
       { id: "modeledit",  label: "3D viewer",     icon: "box",         deck: "modeledit" },
