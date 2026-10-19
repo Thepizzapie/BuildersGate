@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,7 @@ from typing import Optional
 
 from . import db
 from . import project as _project
+from .util import slugify
 
 ENV = "BGATE_STUDIO"
 POINTER_FILENAME = "studio-dir.json"
@@ -49,6 +51,11 @@ GAMES_DIRNAME = "games"
 SHARED_DIRNAME = "shared"
 MODULES_DIRNAME = "modules"
 ASSETS_DIRNAME = "assets"
+
+# A game's name becomes a folder under games/. The slug comes from the
+# project row, which a person can edit by hand, so it is checked rather than
+# trusted: "..\\x" would otherwise put a copy outside the studio.
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 class StudioError(LookupError):
@@ -173,6 +180,20 @@ def _stored_path(studio: Path, game_root: Path) -> str:
         return str(game_root)
 
 
+def _game_name(game_root: Path, name: str = "") -> str:
+    """The project's slug (else its folder name, slugified), refused unless it
+    is a plain folder name."""
+    if not name:
+        try:
+            name = _project.get(game_root)["slug"]
+        except Exception:
+            name = slugify(game_root.name)
+    if not NAME_RE.match(name or ""):
+        raise StudioError(f"refusing game name {name!r}: a studio name must match "
+                          f"{NAME_RE.pattern}. Fix the project's slug and retry.")
+    return name
+
+
 def game_path(entry: dict) -> Path:
     """An index entry's folder, resolved against the studio when relative."""
     raw = Path(str(entry.get("path") or ""))
@@ -221,11 +242,7 @@ def add_game(game_root: str | os.PathLike[str], name: str = "") -> dict:
         raise StudioError(f"{resolved} is not a Builders Gate project (no "
                           f"{db.DB_DIRNAME}/{db.DB_FILENAME}). Run `bgate adopt` "
                           "there first.")
-    if not name:
-        try:
-            name = _project.get(resolved)["slug"]
-        except Exception:
-            name = resolved.name
+    name = _game_name(resolved, name)
     data = index()
     entry = {"path": _stored_path(studio, resolved),
              "added": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
@@ -261,10 +278,7 @@ def adopt(project_dir: str | os.PathLike[str], move: bool = False) -> dict:
         raise StudioError(f"{source} is not a Builders Gate project (no "
                           f"{db.DB_DIRNAME}/{db.DB_FILENAME}). Run `bgate adopt "
                           f"{source}` first.")
-    try:
-        name = _project.get(source)["slug"]
-    except Exception:
-        name = source.name
+    name = _game_name(source)
     if not move:
         return {"name": name, "root": str(source), "moved": False,
                 "entry": add_game(source, name)}

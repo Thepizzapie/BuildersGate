@@ -153,6 +153,20 @@ class TestAdopt:
         assert project.known_projects()["ember-run"] == str(game.resolve())
         assert "ember-run" not in studio.index()["games"]
 
+    @pytest.mark.parametrize("slug", ["..\\x", "../x", "Ember", "", "-x", "a b"])
+    def test_a_hand_edited_slug_cannot_leave_games(self, made, tmp_path, slug):
+        game = _game(tmp_path / "loose")
+        with db.tx(game) as conn:
+            conn.execute("UPDATE project SET slug = ?", (slug,))
+        db.close_all()
+        with pytest.raises(studio.StudioError, match="refusing game name"):
+            studio.adopt(game, move=True)
+        with pytest.raises(studio.StudioError, match="refusing game name"):
+            studio.adopt(game)
+        assert sorted(p.name for p in (made / "games").iterdir()) == []
+        assert not (made / "x").exists() and not (tmp_path / "x").exists()
+        assert studio.index()["games"] == {}
+
     def test_refuses_what_is_not_a_project(self, made, tmp_path):
         (tmp_path / "plain").mkdir()
         with pytest.raises(studio.StudioError, match="not a Builders Gate project"):
