@@ -422,14 +422,20 @@ def migrate() -> dict:
     (dst / BLOBS).mkdir(parents=True, exist_ok=True)
     copied, merged, blobs, missing = 0, 0, 0, []
     for eid, entry in old["entries"].items():
-        names = [entry.get("blob", "")] + [s.get("blob", "")
-                                           for s in entry.get("sidecars") or []]
+        # An entry whose bytes are in neither store would land pointing at
+        # nothing; it stays behind and is named instead.
+        main = entry.get("blob", "")
+        if not main or not ((dst / BLOBS / main).is_file()
+                            or (src / BLOBS / main).is_file()):
+            missing.append(entry.get("name") or eid)
+            continue
+        names = [main] + [s.get("blob", "") for s in entry.get("sidecars") or []]
         for name in filter(None, names):
             have, want = src / BLOBS / name, dst / BLOBS / name
             if want.is_file():
                 continue
             if not have.is_file():
-                missing.append(name)
+                missing.append(f"{entry.get('name') or eid} (sidecar {name})")
                 continue
             shutil.copyfile(have, want)
             blobs += 1

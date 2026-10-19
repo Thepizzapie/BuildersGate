@@ -24,7 +24,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
-from bgate_core.store import assetlib, kits, studio
+from bgate_core.store import assetlib, kits, project, studio
 from bgate_ui import api
 
 router = APIRouter()
@@ -59,12 +59,15 @@ def _modules(root: Path) -> list[dict]:
 
 
 def _attach_pins(modules: list[dict], games: list[dict]) -> None:
-    by_name = {m["name"]: m for m in modules}
+    # Keyed by (engine, name): a godot/health and a web/health are two
+    # modules, and a game only ever installs its own engine's.
+    by_key = {(m["engine"], m["name"]): m for m in modules}
     for game in games:
         if not game.get("exists"):
             continue
+        engine = project.engine_of(game["path"])
         for name, rec in kits.read_ledger(game["path"]).items():
-            mod = by_name.get(name)
+            mod = by_key.get((engine, name))
             if mod is None or not isinstance(rec, dict) or not rec.get("version"):
                 continue
             mod["pinned_by"].append({"game": game["name"],
