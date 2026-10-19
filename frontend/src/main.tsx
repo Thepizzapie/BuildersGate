@@ -61,6 +61,7 @@ const LOADERS: Record<string, IslandLoader> = {
   overview: () => import("./views/Overview").then((m) => m.default),
   firstrun: () => import("./views/FirstRun").then((m) => m.default),
   assets: () => import("./views/assets/Assets").then((m) => m.default),
+  shared: () => import("./views/shared/Shared").then((m) => m.default),
   world: () => import("./views/world/World").then((m) => m.default),
   playtests: () => import("./views/playtests/Playtests").then((m) => m.default),
   floor: () => import("./shell/Floor").then((m) => m.Floor),
