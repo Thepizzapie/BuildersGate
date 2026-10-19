@@ -248,7 +248,16 @@ def _lines(root) -> list[str]:
             pass
 
     # --- the board, and whether it can run anything --------------------------
-    up = _serve_is_up()
+    # THIS project's dashboard port, not 7788. Measured on Turf War (2026-10-17):
+    # its board is on 7790, the probe asked 7788, found monsterhold there, and
+    # told two QA agents dispatched BY the 7790 board that a queue_add would
+    # not dispatch. Both declined to file. Same lookup the dev-server proxy uses.
+    try:
+        from bgate_adapters import web as _web
+        port = _web.dashboard_port(root)
+    except Exception:
+        port = BOARD_PORT
+    up = _serve_is_up(port)
     try:
         queued = _queue.list_items(root, status="queued") or []
         running = _queue.list_items(root, status="dispatched") or []
@@ -260,7 +269,7 @@ def _lines(root) -> list[str]:
                    f"{len(queued)} queued items are parked, not running. "
                    f"Start it with `bgate serve` before delegating, or say so.")
     else:
-        served = _board_root()
+        served = _board_root(port)
         if served and os.path.normcase(os.path.normpath(served)) != \
                 os.path.normcase(os.path.normpath(str(root))):
             out.append(f"BOARD    bgate serve is UP but SERVING ANOTHER ROOT "

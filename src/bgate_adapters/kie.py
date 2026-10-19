@@ -1246,10 +1246,24 @@ SUNO_CALLBACK_NOTE = (
 
 
 def callback_url(explicit: str = "") -> str:
-    """The callBackUrl to send. Never empty — an empty one is a hard 422."""
-    return (str(explicit or "").strip()
-            or os.environ.get(SUNO_CALLBACK_ENV, "").strip()
-            or SUNO_CALLBACK_DEFAULT)
+    """The callBackUrl to send. Never empty — an empty one is a hard 422.
+
+    The loopback default follows BGATE_PORT (the dashboard sets it when it
+    starts) so a second project's dashboard on another port names its own
+    address. Cosmetic in practice — the result is polled, never pushed — but
+    a URL that names the other game's dashboard reads as a bug to anyone who
+    inspects the request, and it was reported as one (Turf War, 2026-10-16).
+    """
+    explicit = str(explicit or "").strip()
+    if explicit:
+        return explicit
+    from_env = os.environ.get(SUNO_CALLBACK_ENV, "").strip()
+    if from_env:
+        return from_env
+    port = os.environ.get("BGATE_PORT", "").strip()
+    if port.isdigit():
+        return f"http://127.0.0.1:{port}/api/music/callback"
+    return SUNO_CALLBACK_DEFAULT
 
 
 # ---------------------------------------------------------------------------

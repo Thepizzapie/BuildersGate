@@ -2365,6 +2365,23 @@ def serve(port: int = 7788, remote: bool = False) -> None:
               f"bgate serve --port {port + 1}")
         raise SystemExit(2)
 
+    # SAY THE PORT TO EVERYTHING THIS DASHBOARD STARTS OR SERVES. The web
+    # template's vite proxy and the kie callback both named 7788 as a
+    # constant; on a machine with two projects that is the other game's
+    # dashboard (bgate_adapters.web.dashboard_port has the measurement).
+    # The env reaches children of this process; the file reaches the MCP
+    # server, which is not one.
+    from bgate_adapters import web as _web
+
+    os.environ[_web.DASHBOARD_PORT_ENV] = str(port)
+    if root is not None:
+        try:
+            marker = Path(root) / ".bgate"
+            marker.mkdir(parents=True, exist_ok=True)
+            (marker / _web.PORT_FILENAME).write_text(str(port), encoding="utf-8")
+        except OSError:
+            pass                   # a read-only tree still gets a dashboard
+
     print(f"builders gate · dashboard on {url}")
     if root is None:
         print("  no project here yet — open the URL and create one, "

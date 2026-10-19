@@ -874,3 +874,16 @@ class TestProbingAnId:
         got = kie.probe_model_id("loose")
         assert got["exists"] is True and got["task_id"] == "task-77"
         assert "may be charged" in got["reason"]
+
+
+def test_the_callback_default_follows_the_dashboard_port(monkeypatch):
+    """Cosmetic (the result is polled) but a request that names the OTHER
+    project's dashboard reads as a bug, and was reported as one."""
+    monkeypatch.delenv(kie.SUNO_CALLBACK_ENV, raising=False)
+    monkeypatch.delenv("BGATE_PORT", raising=False)
+    assert kie.callback_url() == kie.SUNO_CALLBACK_DEFAULT
+    monkeypatch.setenv("BGATE_PORT", "7790")
+    assert kie.callback_url() == "http://127.0.0.1:7790/api/music/callback"
+    # An explicit receiver still beats both.
+    monkeypatch.setenv(kie.SUNO_CALLBACK_ENV, "https://relay.example/cb")
+    assert kie.callback_url() == "https://relay.example/cb"

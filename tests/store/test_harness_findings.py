@@ -322,3 +322,26 @@ def test_add_column_migrations_are_replay_safe(root):
     kept = db._skip_existing_columns(conn, sql)
     assert "closed_by" not in kept
     assert "brand_new" in kept
+
+
+def test_serve_writes_its_port_where_the_dev_server_will_look(
+        root, monkeypatch):
+    """The web template's proxy and the kie callback both said 7788; on a
+    two-project machine that is the other game's dashboard. serve() says
+    its real port in the env (for its children) and in .bgate/ui-port (for
+    the MCP server, which is not its child)."""
+    import os
+
+    import uvicorn
+    from bgate_adapters import web as _web
+    from bgate_ui import app as _app
+
+    monkeypatch.setenv("BGATE_ROOT", str(root))
+    monkeypatch.delenv(_web.DASHBOARD_PORT_ENV, raising=False)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(_app, "_serving_elsewhere", lambda port, root: "")
+    _app.serve(port=7791)
+    assert (Path(root) / ".bgate" / _web.PORT_FILENAME).read_text(
+        encoding="utf-8") == "7791"
+    assert os.environ[_web.DASHBOARD_PORT_ENV] == "7791"
+    assert _web.dashboard_port(root) == 7791

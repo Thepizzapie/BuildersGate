@@ -11,6 +11,18 @@ TWO ROUTES, ONE BODY. TypeSafe's own API and Vercel's AI Gateway take the same
 ``/v1/systemone`` request and return the same answers; only the base URL, the
 key and the model id differ. TypeSafe's own key wins when both are set.
 
+A THIRD ROUTE, LOCAL AND LAST. Ollama 0.40+ serves the SAME ``/v1/systemone``
+natively for its decision models (``laya`` 421M, ``tev1`` 4B, ``nimble`` 9B),
+so ``BGATE_JEV_OLLAMA_MODEL=<model>`` is a table row: same body, same answers,
+``127.0.0.1:11434`` (or ``OLLAMA_HOST``), no key, no cost. Any hosted key still
+wins: the local route is for a machine with no key and no one at the keyboard.
+A chat model is refused by Ollama (400 "not a decision model"), not prompted
+into JSON here: a shim's calibration is not Jev's, and the bots read the
+probabilities. The local models are weaker than hosted Jev (Ollama's own
+figures: nimble 75.7%, tev1 73.3%, Jev 76.0% on the same labelled sets), so
+a feel check run on one is not comparable to one run on the hosted model;
+every result says ``route``, quote it with the number.
+
 THE KEY NEVER LEAVES PYTHON. The game-side agent (``BGateAgent``) talks to a
 loopback relay (``bgate_core.qa.agentplay``), and the relay calls this module.
 A key in a game build is a key in every copy of the game.
@@ -33,8 +45,23 @@ ROUTES: dict[str, tuple[str, str, str]] = {
     "typesafe": ("TYPESAFE_API_KEY", "https://api.typesafe.ai", "jev-latest"),
     "ai_gateway": ("AI_GATEWAY_API_KEY", "https://ai-gateway.vercel.sh/typesafe",
                    "typesafe-ai/jev"),
+    # The env var holds the MODEL NAME, not a key: Ollama has none. Setting it
+    # is the opt-in; "1"/"on" means the default model. OLLAMA_HOST, when set,
+    # replaces the base URL.
+    # nimble by default: on the same Turf War frame it alone saw the danger
+    # (0.75) and ranked the two right moves first; tev1 stood still under a
+    # ball, laya called danger a coin flip. 106 ms warm, 7.9 s to load, so
+    # warm() before a game launches. Measured 2026-10-17 on an RTX 5090.
+    "ollama": ("BGATE_JEV_OLLAMA_MODEL", "http://127.0.0.1:11434", "nimble"),
 }
-ORDER = ("typesafe", "ai_gateway")
+ORDER = ("typesafe", "ai_gateway", "ollama")
+HOSTED = ("typesafe", "ai_gateway")
+#: the other spelling of the opt-in, so a brief that says LOCAL still works
+OLLAMA_MODEL_ALIAS_ENV = "BGATE_JEV_LOCAL_MODEL"
+OLLAMA_HOST_ENV = "OLLAMA_HOST"
+#: a cold model load is seconds, not the 15 s a hosted call is allowed
+OLLAMA_MIN_TIMEOUT = 60.0
+_ON = ("1", "on", "true", "yes")
 USD_PER_INPUT_TOKEN = 0.042 / 1_000_000
 TYPES = ("noul", "choice", "score")
 #: Vercel's own Decision API spells noul "boolean"; accept it on the way in.
@@ -51,7 +78,47 @@ def _key(env: str, root: Any) -> str:
         envfile.load_env(root)
     except Exception:                                            # noqa: BLE001
         pass
-    return (os.environ.get(env) or "").strip()
+    got = (os.environ.get(env) or "").strip()
+    if not got and env == ROUTES["ollama"][0]:
+        got = (os.environ.get(OLLAMA_MODEL_ALIAS_ENV) or "").strip()
+    return got
+
+
+def ollama_model(root: Any = None) -> str:
+    """The local model the opt-in names, or the route's default for a bare
+    ``1``/``on``. Empty when the local route is not opted in."""
+    raw = _key(ROUTES["ollama"][0], root)
+    return ROUTES["ollama"][2] if raw.lower() in _ON else raw
+
+
+WARM_QUESTIONS = {"ready": {"type": "noul",
+                            "instructions": "Is this a warm-up call?"}}
+
+
+def warm(root: Any = None, *, model: str = "", timeout: float = 120.0) -> dict:
+    """Pay the local model's load now, not on the bot's first in-game decision.
+
+    Hosted routes have nothing to load, so this makes no call for them. Never
+    raises: a warm-up that fails is reported, and the first real decision then
+    carries the load (and its own error, if any)."""
+    rid = route(root)
+    if rid != "ollama":
+        return {"warmed": False, "route": rid, "reason": "nothing to load"}
+    try:
+        got = decide("warm-up", WARM_QUESTIONS, root=root, model=model,
+                     timeout=timeout, retries=1)
+    except JevError as exc:
+        return {"warmed": False, "route": rid, "reason": str(exc)}
+    return {"warmed": True, "route": rid, "model": got["model"], "ms": got["ms"]}
+
+
+def ollama_base(root: Any = None) -> str:
+    """Ollama's base URL: ``OLLAMA_HOST`` as the Ollama CLI reads it (host, or
+    host:port, or a full URL), else loopback on the default port."""
+    raw = (os.environ.get(OLLAMA_HOST_ENV) or "").strip() or ROUTES["ollama"][1]
+    if "://" not in raw:
+        raw = "http://" + raw
+    return raw.rstrip("/")
 
 
 def route(root: Any = None) -> Optional[str]:
@@ -68,10 +135,19 @@ def available(root: Any = None, *, route: str = "") -> dict:
     for rid in ids:
         if _key(ROUTES[rid][0], root):
             return {"available": True, "reason": "", "route": rid}
-    envs = " or ".join(ROUTES[r][0] for r in ids)
-    return {"available": False,
-            "reason": f"{envs} not set - run `bgate key set "
-                      f"{ids[0]} --global`"}
+    if ids == ("ollama",):
+        return {"available": False,
+                "reason": f"{ROUTES['ollama'][0]} not set - name a pulled "
+                          "Ollama DECISION model, e.g. BGATE_JEV_OLLAMA_MODEL="
+                          "nimble (`ollama pull nimble`; laya and tev1 also "
+                          "work, a chat model is refused)"}
+    hosted = [r for r in ids if r in HOSTED]
+    envs = " or ".join(ROUTES[r][0] for r in hosted)
+    reason = f"{envs} not set - run `bgate key set {hosted[0]} --global`"
+    if "ollama" in ids:
+        reason += (f"; or set {ROUTES['ollama'][0]} to a pulled Ollama model "
+                   "for a local, slower bot")
+    return {"available": False, "reason": reason}
 
 
 def normalize_questions(questions: dict) -> dict:
@@ -129,29 +205,52 @@ def decide(state: str, questions: dict, *, root: Any = None, model: str = "",
     if rid is None:
         raise JevError(available(root)["reason"], provider="jev")
     env, base, default_model = ROUTES[rid]
+    headers = {"Content-Type": "application/json"}
+    if rid == "ollama":
+        # same body, same answers; a local server, no bearer, a load to wait for
+        base = ollama_base(root)
+        name = model or ollama_model(root)
+        timeout = max(float(timeout), OLLAMA_MIN_TIMEOUT)
+    else:
+        headers["Authorization"] = f"Bearer {_key(env, root)}"
+        name = model or default_model
     t0 = time.perf_counter()
     try:
         got = _http.request(
-            "POST", base + "/v1/systemone",
-            headers={"Authorization": f"Bearer {_key(env, root)}",
-                     "Content-Type": "application/json"},
-            json={"model": model or default_model, "state": str(state),
-                  "questions": qs},
+            "POST", base + "/v1/systemone", headers=headers,
+            json={"model": name, "state": str(state), "questions": qs},
             timeout=timeout, retries=retries, retry_submit=True,
             provider="jev")
     except _http.ProviderError as exc:
         if exc.status == 0:
-            raise JevError(f"Jev unreachable ({rid}): {exc.body}",
+            hint = " - is Ollama running? `ollama serve`" if rid == "ollama" else ""
+            raise JevError(f"Jev unreachable ({rid}): {exc.body}{hint}",
                            provider="jev") from exc
-        raise JevError(f"Jev {rid} -> {exc.status}: {_detail(exc.body)}",
+        raise JevError(f"Jev {rid} -> {exc.status}: {_detail(exc.body)}"
+                       f"{_ollama_hint(rid, exc.status, exc.body, name)}",
                        provider="jev", status=exc.status, body=exc.body,
                        billing=exc.billing) from exc
     ms = round((time.perf_counter() - t0) * 1000)
     body = got.json(provider="jev")
     usage = body.get("usage") or {}
     return {"ok": True, "answers": body.get("answers") or {},
-            "model": body.get("model"), "route": rid, "usage": usage,
-            "usd": _usd(body, got.headers, usage), "ms": ms}
+            "model": body.get("model") or name, "route": rid, "usage": usage,
+            "usd": 0.0 if rid == "ollama" else _usd(body, got.headers, usage),
+            "ms": ms}
+
+
+def _ollama_hint(rid: str, status: int, body: str, name: str) -> str:
+    """What to type next, for the two local refusals worth naming: the model
+    is not pulled, or it is a chat model and Ollama will not decide with it."""
+    if rid != "ollama":
+        return ""
+    if status == 404:
+        return f"; `ollama pull {name}`"
+    if status == 400 and "decision model" in (body or ""):
+        return ("; only a decision model answers /v1/systemone: "
+                "`ollama pull nimble` (9B, the default) or `ollama pull laya` "
+                "(421M, fastest)")
+    return ""
 
 
 def _usd(body: dict, headers: dict, usage: dict) -> float:
