@@ -616,8 +616,27 @@ def extract(game_dir: str | os.PathLike[str], name: str, version: str,
                                       encoding="utf-8")
     staging.rename(target)
     load(name, engine, version)
+    _index_module(engine, name, version, manifest)
     out.update(confirmed=True, note="")
     return out
+
+
+def _index_module(engine: str, name: str, version: str, manifest: dict) -> None:
+    """Record a published version in studio.json. The folder is the truth;
+    the index is what the studio page reads without walking every module."""
+    try:
+        from bgate_core.store import studio
+        data = studio.index()
+    except Exception:                                             # noqa: BLE001
+        return
+    key = f"{engine}/{name}"
+    entry = data["modules"].get(key) if isinstance(data["modules"].get(key), dict) else {}
+    versions = sorted(set(entry.get("versions") or []) | {version}, key=_version_key)
+    data["modules"][key] = {"engine": engine, "name": name, "versions": versions,
+                            "title": manifest["title"],
+                            "summary": manifest["summary"],
+                            "dimension": manifest["dimension"]}
+    studio.save_index(data)
 
 
 def update(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
