@@ -8,8 +8,11 @@ one shared store that existed was ``~/.bgate/animlib``, a CC0 clip pack, and
 it proved the shape: machine-wide, in no repository, following the person
 rather than the game.
 
-WHERE. ``~/.bgate/library/`` (``BGATE_HOME`` moves it, the same override the
-key store and animlib honour). ``blobs/<sha256><ext>`` holds the bytes,
+WHERE. ``<studio>/shared/assets/`` when a studio is set (``bgate studio
+init``), so every game in the studio draws on one store; otherwise
+``~/.bgate/library/`` (``BGATE_HOME`` moves it, the same override the
+key store and animlib honour). ``migrate`` copies a pre-studio library into
+the studio store. ``blobs/<sha256><ext>`` holds the bytes,
 content-addressed so the same file published twice is stored once;
 ``index.json`` holds the entries: name, kind, tags, collection, size and
 image dimensions, and where it came from (project, path, when).
@@ -36,6 +39,7 @@ import time
 from pathlib import Path
 from typing import Iterable, Optional
 
+from . import studio
 from .assets import kind_of
 
 INDEX = "index.json"
@@ -67,11 +71,20 @@ class LibraryError(ValueError):
 # ---------------------------------------------------------------------------
 # Where
 # ---------------------------------------------------------------------------
-def home() -> Path:
-    """``~/.bgate/library``, or under ``BGATE_HOME``."""
+def legacy_home() -> Path:
+    """``~/.bgate/library``, or under ``BGATE_HOME``: the store when no
+    studio is set, and what ``migrate`` copies from."""
     base = os.environ.get("BGATE_HOME") or ""
     root = Path(base).expanduser() if base else Path.home() / ".bgate"
     return root / "library"
+
+
+def home() -> Path:
+    """The studio's ``shared/assets`` when a studio is set, else
+    ``legacy_home()``."""
+    if studio.root() is not None:
+        return studio.assets_dir()
+    return legacy_home()
 
 
 def _index_path() -> Path:
@@ -83,7 +96,11 @@ def _blob_dir() -> Path:
 
 
 def read_index() -> dict:
-    path = _index_path()
+    return _read_index_at(home())
+
+
+def _read_index_at(lib: Path) -> dict:
+    path = lib / INDEX
     if not path.is_file():
         return {"entries": {}}
     try:
@@ -378,6 +395,59 @@ def import_entries(game_dir: str | os.PathLike[str], ids: Iterable[str], *,
                                   for s in row.get("sidecars", [])]})
     return {"ok": not refused, "imported": rows, "refused": refused,
             "dest": dest_path.as_posix(), "game_dir": str(game)}
+
+
+# ---------------------------------------------------------------------------
+# Migrate
+# ---------------------------------------------------------------------------
+def migrate() -> dict:
+    """Copy the pre-studio library into the studio store. Deletes nothing.
+
+    Safe to run twice: blobs already in the studio are not copied again, and
+    an entry the studio already holds gains the old entry's tags and sources
+    rather than being replaced. The old library is left exactly as it was;
+    the person removes it when they are satisfied.
+    """
+    if studio.root() is None:
+        raise LibraryError("no studio is set; bgate studio init DIR first")
+    src, dst = legacy_home(), home()
+    if src.resolve() == dst.resolve():
+        raise LibraryError(f"the library already lives at {dst}")
+    old = _read_index_at(src)
+    if not old["entries"]:
+        return {"ok": True, "from": str(src), "to": str(dst),
+                "copied": 0, "merged": 0, "blobs": 0, "missing": []}
+    index = read_index()
+    entries = index["entries"]
+    (dst / BLOBS).mkdir(parents=True, exist_ok=True)
+    copied, merged, blobs, missing = 0, 0, 0, []
+    for eid, entry in old["entries"].items():
+        names = [entry.get("blob", "")] + [s.get("blob", "")
+                                           for s in entry.get("sidecars") or []]
+        for name in filter(None, names):
+            have, want = src / BLOBS / name, dst / BLOBS / name
+            if want.is_file():
+                continue
+            if not have.is_file():
+                missing.append(name)
+                continue
+            shutil.copyfile(have, want)
+            blobs += 1
+        held = entries.get(eid)
+        if held is None:
+            entries[eid] = entry
+            copied += 1
+            continue
+        held["tags"] = _tags([*held.get("tags", []), *entry.get("tags", [])])
+        sources = held.setdefault("sources", [])
+        for src_row in entry.get("sources") or []:
+            if src_row not in sources:
+                sources.append(src_row)
+        merged += 1
+    _write_index(index)
+    return {"ok": not missing, "from": str(src), "to": str(dst),
+            "copied": copied, "merged": merged, "blobs": blobs,
+            "missing": missing}
 
 
 # ---------------------------------------------------------------------------

@@ -49,9 +49,10 @@
                                 copied into the active game, never overwriting;
                                 with a studio set, your own versioned modules too
     bgate library [list | search TEXT | publish PATH... [--tags a,b] [--collection C]
-                   | import ID... [--dest DIR] | forget ID] [--project DIR]
-                                the machine-wide asset library at ~/.bgate/library:
-                                what one game made, another can take
+                   | import ID... [--dest DIR] | forget ID | migrate] [--project DIR]
+                                the shared asset library (the studio's shared/assets,
+                                else ~/.bgate/library): what one game made, another
+                                can take. migrate copies ~/.bgate/library into the studio
     bgate studio [status | init DIR | adopt DIR [--move]] [--json]
                                 one folder for every game and what they share;
                                 once set, `bgate init` puts new games in it
@@ -1583,9 +1584,11 @@ def _cmd_studio(rest: list) -> int:
 
 
 def _cmd_library(rest: list) -> int:
-    """bgate library [list | search TEXT | publish PATH... | import ID... | forget ID] [--project DIR]
+    """bgate library [list | search TEXT | publish PATH... | import ID... | forget ID | migrate] [--project DIR]
 
-    The machine-wide asset library in ~/.bgate/library. `forget` lives HERE
+    The shared asset library: the studio's shared/assets when a studio is
+    set, else ~/.bgate/library. `migrate` copies the second into the first
+    and deletes nothing. `forget` lives HERE
     and not as an MCP tool on purpose: a store every project shares must not
     be emptiable by an agent.
     """
@@ -1667,6 +1670,21 @@ def _cmd_library(rest: list) -> int:
               + ("" if got["blob_removed"]
                  else "; bytes kept, another entry shares them"))
         return 0
+    if sub == "migrate":
+        try:
+            got = _assetlib.migrate()
+        except _assetlib.LibraryError as exc:
+            print(f"error: {exc}")
+            return 1
+        print(f"copied {got['copied']} entries ({got['blobs']} files), "
+              f"merged {got['merged']} already held, from {got['from']} "
+              f"to {got['to']}")
+        for name in got["missing"]:
+            print(f"  MISSING {name}: indexed in the old library, not on disk")
+        if got["copied"] or got["merged"]:
+            print(f"the old library is untouched; remove {got['from']} "
+                  "yourself when satisfied")
+        return 0 if got["ok"] else 1
     print(_cmd_library.__doc__.splitlines()[0])
     return 2
 
