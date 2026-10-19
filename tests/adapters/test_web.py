@@ -302,7 +302,7 @@ class TestScaffold:
         assert "schema: SCHEMA_VERSION" in source
 
     def test_a_404_on_the_status_route_stops_polling_for_good(self):
-        """MEASURED (Turf War dry run): a build on a static host sent a 404
+        """MEASURED: a build on a static host sent a 404
         to /api/playtest/status every tick for the life of the page.
 
         The dashboard always answers that route, so a 404 means this origin
