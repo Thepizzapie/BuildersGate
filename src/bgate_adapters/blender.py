@@ -668,6 +668,9 @@ def warmup(engine: str = "BLENDER_EEVEE_NEXT", out_dir: Optional[str] = None) ->
     script = """
 import bpy
 bpy.ops.mesh.primitive_plane_add(size=1)
+# run_script starts from an empty scene, so the render needs its own camera.
+bpy.ops.object.camera_add(location=(0, -3, 2), rotation=(1.0, 0, 0))
+bpy.context.scene.camera = bpy.context.active_object
 bpy.context.scene.render.resolution_x = 32
 bpy.context.scene.render.resolution_y = 32
 """
@@ -1368,9 +1371,14 @@ for part in P["parts"]:
 
 # What the exporter will actually ship. A layer pile that assembled cleanly and
 # carries no material and no image is a grey blob, and it used to report ok.
-materials = sorted({m.name for m in bpy.data.materials if m.users})
+# Only materials an object in the scene carries: bpy.data.materials also holds
+# factory leftovers (4.2 kept a user on its default "Material"), which made an
+# untextured pile look materialled and hid the no_materials gate.
+shipped = {slot.material for obj in bpy.context.scene.objects
+           for slot in getattr(obj, "material_slots", []) if slot.material}
+materials = sorted(m.name for m in shipped)
 images = set()
-for material in bpy.data.materials:
+for material in shipped:
     if not material.use_nodes or material.node_tree is None:
         continue
     for node in material.node_tree.nodes:

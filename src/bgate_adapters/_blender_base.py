@@ -1376,6 +1376,10 @@ def bg_weld(obj, *, fraction=0.0006, merge=0.0):
     setting serves a 0.2 m cap and a 2 m figure. Pass `merge` to override with
     an absolute distance.
     """
+    # obj.dimensions is cached until the depsgraph updates: a box built and
+    # welded in the same script read as the previous size (a 2 m box measured
+    # 1 m), so the merge distance was computed for the wrong object.
+    bpy.context.view_layer.update()
     diag = max((sum(d * d for d in obj.dimensions)) ** 0.5, 1e-6)
     used = float(merge) if merge else diag * float(fraction)
     bg_clean(obj, merge=used)
