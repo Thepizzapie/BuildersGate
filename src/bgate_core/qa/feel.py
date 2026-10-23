@@ -341,7 +341,28 @@ def blockers(root: Any) -> list[str]:
                 "its decisions matter"]
     out = []
     for r in got:
+        if r.get("waived"):
+            # THE HUMAN'S CALL, on the record in the verdict file itself: who,
+            # why and against which verdict. A waiver never hides the numbers.
+            continue
         if r.get("verdict") != "PASS":
             why = "; ".join(f"{k}: {v}" for k, v in (r.get("fails") or {}).items())
             out.append(f"feel check FAILED on {r.get('scene')} ({r.get('at')}): {why}")
     return out
+
+
+def waive(root: Any, scene: str, *, by: str, reason: str) -> dict:
+    """Let a FAILED scene through the feel gate on the human's say-so.
+
+    Writes ``waived`` {by, reason, at, verdict, fails} into the scene's verdict
+    file so the numbers it overrides stay visible; the next real run replaces
+    the file and the waiver with it. The human owns this: a seat that calls it
+    is doing the owner's job without the owner.
+    """
+    path = feel_dir(root) / f"{_slug(scene)}.json"
+    r = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"scene": scene}
+    r["waived"] = {"by": by, "reason": reason, "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                   "verdict": r.get("verdict"), "fails": r.get("fails")}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(r, indent=2), encoding="utf-8")
+    return r["waived"]
