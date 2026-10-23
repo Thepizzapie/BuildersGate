@@ -167,14 +167,30 @@ def check(root: Any, *, scene: str, goal: str, seconds: float = 90.0,
                          decide_every=decide_every,
                          policy=f"hold:{smart_m['top_choice'] or ''}",
                          headless=headless)
-    base_m = measure(base["dir"])
+    return finish(root, scene=scene, goal=goal, seconds=seconds,
+                  smart_dir=smart["dir"], base_dir=base["dir"],
+                  code=head_before, usd=smart.get("usd"))
+
+
+def finish(root: Any, *, scene: str, goal: str, seconds: float,
+           smart_dir: str | Path, base_dir: str | Path, code: str = "",
+           usd: Any = None) -> dict:
+    """Measure two finished runs, write the verdict file, escalate.
+
+    Split out of ``check`` so a verdict can still be filed when the MCP call
+    that started the runs was abandoned at the tool ceiling (measured: both
+    bots finished on disk, the tool timed out at 1200 s, and no verdict ever
+    reached .bgate/feel/, so the greenlight gate kept reading the stale one).
+    """
+    smart_m = measure(smart_dir)
+    base_m = measure(base_dir)
     head_after = _code_version(root)
     out = {"scene": scene, "goal": goal, "seconds": seconds,
-           "code": head_before, "stale": head_before != head_after,
+           "code": code, "stale": bool(code) and code != head_after,
            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
            "smart": smart_m, "baseline": base_m,
-           "runs": {"smart": smart["dir"], "baseline": base["dir"]},
-           "usd": smart.get("usd"), **verdict(smart_m, base_m)}
+           "runs": {"smart": str(smart_dir), "baseline": str(base_dir)},
+           "usd": usd, **verdict(smart_m, base_m)}
     d = feel_dir(root)
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{_slug(scene)}.json").write_text(json.dumps(out, indent=2),
