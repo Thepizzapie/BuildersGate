@@ -2735,8 +2735,10 @@ def _admitted_in_slice(item: dict, slice_items: set[int]) -> bool:
 def _feel_failing(root: str | os.PathLike[str]) -> list[str]:
     try:
         from ..qa import feel as _feel
+        # A human waiver in the verdict file (feel.waive) lifts the hold the
+        # same way it lifts the stage gate; the numbers stay on record.
         return [str(r.get("scene")) for r in _feel.results(root)
-                if r.get("verdict") != "PASS"]
+                if r.get("verdict") != "PASS" and not r.get("waived")]
     except Exception:                                             # noqa: BLE001
         return []
 
