@@ -126,9 +126,29 @@ class TestSeatScopedTools:
         assert "image" in modules.hidden_crafts("")
         assert modules.hidden_crafts("mystery-seat") == []
 
-    def test_brainstorm_is_reachable_from_a_seat(self):
-        assert modules.seat_tool_enabled("brainstorm_new", "narrative")
+    def test_brainstorm_is_the_sessions_craft(self):
+        """A room is opened from the human's session; no seat's measured
+        usage reaches for it, so seattools gives it to none."""
+        assert modules.seat_tool_enabled("brainstorm_new", "")
+        assert not modules.seat_tool_enabled("brainstorm_new", "narrative")
         assert not modules.seat_tool_enabled("brainstorm_new", "audio")
+
+    def test_one_seat_table(self):
+        """A dispatched seat's surface is seattools' and nothing else's: the
+        level seat (missing from the old second table) is scoped like any
+        other, and DIRECTOR_ONLY still binds every dispatched seat."""
+        from bgate_core import seattools
+        for name in ("level_generate", "room_build", "queue_get", "cinematic_plan",
+                     "godot_deliver_asset", "art_qa_verdict", "engine_scaffold"):
+            for seat in seattools.SEATS:
+                assert (modules.seat_tool_enabled(name, seat)
+                        == seattools.seat_registers(name, seat)), (name, seat)
+        for seat in seattools.SEATS:
+            assert not modules.seat_tool_enabled("project_select", seat)
+        assert not modules.seat_tool_enabled("godot_deliver_asset", "gameplay")
+        assert modules.seat_tool_enabled("godot_deliver_asset", "art")
+        assert not modules.seat_tool_enabled("art_qa_verdict", "art")
+        assert modules.seat_tool_enabled("art_qa_verdict", "qa")
 
 
 class TestTheSpineSplit:
@@ -144,13 +164,13 @@ class TestTheSpineSplit:
                      "cinematic", ""):
             assert modules.seat_tool_enabled("queue_add", seat)
             assert modules.seat_tool_enabled("bible_read", seat)
-            assert modules.seat_tool_enabled("godot_run", seat)
+            assert modules.seat_tool_enabled("engine_status", seat)
 
     def test_seats_that_never_touch_a_scene_do_not_carry_engine(self):
-        for seat in ("audio", "narrative"):
+        for seat in ("audio", "narrative", "art", "director"):
             assert not modules.seat_tool_enabled("scene_set_property", seat)
-            assert not modules.seat_tool_enabled("godot_test_run", seat)
-        for seat in ("gameplay", "tech", "art", "qa", ""):
+        assert not modules.seat_tool_enabled("godot_test_run", "narrative")
+        for seat in ("gameplay", "tech", "level", ""):
             assert modules.seat_tool_enabled("scene_set_property", seat)
 
     def test_the_server_gate_composes_seat_and_modules(self, monkeypatch):
@@ -368,15 +388,15 @@ class TestEveryToolIsClassified:
     def test_the_tools_p0_reclassified_reach_the_right_seats(self):
         # The specific miscategorisations, asserted by seat rather than by
         # table, because the table is the mechanism and this is the point.
-        assert modules.seat_tool_enabled("sidescroll_generate", "gameplay")
+        assert modules.seat_tool_enabled("sidescroll_generate", "level")
+        assert not modules.seat_tool_enabled("sidescroll_generate", "art")
         assert not modules.seat_tool_enabled("sidescroll_generate", "audio")
         assert modules.seat_tool_enabled("sprite_sheet_check", "art")
-        assert modules.seat_tool_enabled("sprite_sheet_check", "qa")  # verdict
         assert not modules.seat_tool_enabled("sprite_sheet_check", "audio")
         assert modules.seat_tool_enabled("godot_deliver_asset", "art")
         assert modules.seat_tool_enabled("godot_deliver_asset", "tech")
         assert not modules.seat_tool_enabled("godot_deliver_asset", "narrative")
-        assert modules.seat_tool_enabled("causal_chains", "qa")
+        assert modules.seat_tool_enabled("causal_chains", "")
         assert not modules.seat_tool_enabled("causal_chains", "art")
 
     def test_kie_status_stays_universal(self):

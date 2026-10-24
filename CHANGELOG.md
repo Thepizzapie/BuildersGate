@@ -10,6 +10,18 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Fixed
+- **One table decides a dispatched seat's tools.** The registry was the AND
+  of two per-seat tables, `modules.SEAT_CRAFTS` and `seattools.SEATS`, so an
+  edit to either alone did nothing and `level` was scoped by one of them only.
+  `seattools.SEATS` is now the only one; `modules.CRAFTS` still says what a
+  tool is (for `tool_unlock` and Settings > Modules), and the seatless session
+  keeps its crafts as `SESSION_CRAFTS`, unchanged at 220 tools. Every seat
+  loses `engine_scaffold` and `engine_templates`. `kie_status` reaches every
+  seat again, so the audio seat can check the key its music path runs on.
+  The research tools reach the seats whose toolsets already listed them
+  (findings and grid for gameplay, art and narrative; the rest for the
+  director, apart from `research_plan_adopt`, which is the human's), and the
+  research kickoff now opens with `tool_unlock("research")`.
 - **A remembered `tool_unlock` stays with its project.** It was one flat
   file for the whole machine with a 24 h life, so one unlock booted that
   craft into every seatless session in every project: measured, `image`
