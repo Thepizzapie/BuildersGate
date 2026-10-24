@@ -126,11 +126,90 @@ def for_project(root: str | os.PathLike[str]) -> list[dict]:
     """
     path = project_godot(root)
     if path is None:
-        return []
+        web = controls_json(root)
+        if web is None:
+            return []
+        try:
+            return parse_controls_json(web.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            return []
     try:
         return parse_input_map(path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return []
+
+
+# ---------------------------------------------------------------------------
+# A web game's input map: controls.json, DOM codes per action
+# ---------------------------------------------------------------------------
+#
+# A vite game has no project.godot; its bindings are TypeScript tables nobody
+# should parse. It ships `controls.json` instead ({"actions": [{"action":
+# "move_left", "keys": ["KeyA", "ArrowLeft"]}, ...]}) with the DOM
+# KeyboardEvent.code values its own listener reads, in the order the pad
+# should show them. Measured (LAST CALL on the handheld): with no map the
+# companion drew its default arrows-and-Space pad against a WASD game and not
+# one button did anything.
+
+_DOM_NAMED: dict[str, tuple[str, int]] = {
+    "Space": (" ", 32), "Escape": ("Escape", 27), "Enter": ("Enter", 13), "Tab": ("Tab", 9),
+    "Backspace": ("Backspace", 8), "ShiftLeft": ("Shift", 16), "ShiftRight": ("Shift", 16),
+    "ControlLeft": ("Control", 17), "ControlRight": ("Control", 17), "AltLeft": ("Alt", 18),
+    "AltRight": ("Alt", 18), "ArrowLeft": ("ArrowLeft", 37), "ArrowUp": ("ArrowUp", 38),
+    "ArrowRight": ("ArrowRight", 39), "ArrowDown": ("ArrowDown", 40),
+}
+_DOM_NAMED_LABELS = {"Space": "Space", "Escape": "Esc", "Enter": "Enter", "Tab": "Tab",
+                     "Backspace": "Backspace", "ShiftLeft": "Shift", "ShiftRight": "Shift",
+                     "ControlLeft": "Ctrl", "ControlRight": "Ctrl", "AltLeft": "Alt", "AltRight": "Alt",
+                     "ArrowLeft": "\u2190", "ArrowUp": "\u2191", "ArrowRight": "\u2192", "ArrowDown": "\u2193"}
+
+
+def dom_from_code(code: str) -> Optional[dict]:
+    """A DOM KeyboardEvent.code (what a web game binds) as the pad's key fields."""
+    if code in _DOM_NAMED:
+        key, kc = _DOM_NAMED[code]
+        return {"label": _DOM_NAMED_LABELS[code], "code": code, "key": key, "keyCode": kc}
+    m = re.fullmatch(r"Key([A-Z])", code)
+    if m:
+        ch = m.group(1)
+        return {"label": ch, "code": code, "key": ch.lower(), "keyCode": ord(ch)}
+    m = re.fullmatch(r"Digit([0-9])", code)
+    if m:
+        ch = m.group(1)
+        return {"label": ch, "code": code, "key": ch, "keyCode": ord(ch)}
+    by_code = {v: k for k, v in _DOM_PUNCT.items()}  # defined further down the module
+    if code in by_code:
+        n = by_code[code]
+        return {"label": chr(n), "code": code, "key": chr(n), "keyCode": n}
+    return None
+
+
+def controls_json(root: str | os.PathLike[str]) -> Optional[Path]:
+    """A web game's controls.json, wherever the project keeps it."""
+    base = Path(root)
+    for candidate in (base / "controls.json", base / "design" / "controls.json",
+                      base / "game" / "controls.json"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def parse_controls_json(text: str) -> list[dict]:
+    """Every action in a controls.json as ``{action, keys, buttons, codes}``,
+    declaration order kept; ``keys`` are labels like parse_input_map's."""
+    import json as _json
+    doc = _json.loads(text)
+    rows = doc.get("actions") if isinstance(doc, dict) else doc
+    if not isinstance(rows, list):
+        raise ValueError('controls.json: expected {"actions": [...]}')
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("action"):
+            continue
+        codes = [c for c in (row.get("keys") or []) if isinstance(c, str) and dom_from_code(c)]
+        out.append({"action": str(row["action"]), "keys": [dom_from_code(c)["label"] for c in codes],
+                    "buttons": [str(b) for b in (row.get("buttons") or [])], "codes": codes})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -225,18 +304,28 @@ def pad_layout(actions: list[dict]) -> dict:
     cancel, menu, then the project's own actions in declaration order - so
     the thumb learns one layout across projects.
     """
+    return _layout([(a["action"], [k for k in (dom_key(c) for c in a.get("keycodes", [])) if k])
+                    for a in actions])
+
+
+def pad_layout_web(actions: list[dict]) -> dict:
+    """The same pad from parse_controls_json's rows (DOM codes, not keycodes)."""
+    return _layout([(a["action"], [k for k in (dom_from_code(c) for c in a.get("codes", [])) if k])
+                    for a in actions])
+
+
+def _layout(entries: list[tuple[str, list[dict]]]) -> dict:
     dpad: dict[str, dict] = {}
     buttons: list[dict] = []
     seen_codes: set[str] = set()
     seen_roles: set[str] = set()
-    for a in actions:
-        keys = [k for k in (dom_key(c) for c in a.get("keycodes", [])) if k]
+    for action, keys in entries:
         if not keys:
             continue
-        role = _role(a["action"])
+        role = _role(action)
         if role in _DPAD:
             if role not in dpad:
-                dpad[role] = {**keys[0], "action": a["action"]}
+                dpad[role] = {**keys[0], "action": action}
             continue
         # One button per distinct key: ui_accept and "interact" both on Enter
         # would be two buttons that do the same thing.
@@ -246,8 +335,8 @@ def pad_layout(actions: list[dict]) -> dict:
         seen_codes.add(key["code"])
         if role in _BUTTON_LABELS:
             seen_roles.add(role)      # one OK, one Back, one Menu
-        buttons.append({**key, "action": a["action"], "role": role or "action",
-                        "label": _button_label(a["action"], role)})
+        buttons.append({**key, "action": action, "role": role or "action",
+                        "label": _button_label(action, role)})
     order = {"accept": 0, "cancel": 1, "menu": 2}
     buttons.sort(key=lambda b: order.get(b["role"], 3))
     return {"dpad": dpad, "buttons": buttons[:_MAX_BUTTONS],
@@ -257,7 +346,13 @@ def pad_layout(actions: list[dict]) -> dict:
 def pad_for_project(root: str | os.PathLike[str]) -> dict:
     path = project_godot(root)
     if path is None:
-        return {"dpad": {}, "buttons": [], "dropped": []}
+        web = controls_json(root)
+        if web is None:
+            return {"dpad": {}, "buttons": [], "dropped": []}
+        try:
+            return pad_layout_web(parse_controls_json(web.read_text(encoding="utf-8", errors="replace")))
+        except (OSError, ValueError):
+            return {"dpad": {}, "buttons": [], "dropped": []}
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
