@@ -322,6 +322,41 @@ class TestStampedBriefing:
                       "ref_pin", "canon_check", "What NOT to do"):
             assert topic in text, topic
 
+    def test_an_unmarked_init_stamp_is_replaced_not_doubled(self, tmp_path):
+        # 27 projects on one machine carried the briefing as the whole file
+        # with no markers; adopt appended a second one beside it.
+        legacy = ("<!-- Stamped here by Builders Gate (`bgate init`). -->\n\n"
+                  "# Old briefing\n\nlots of old text\n\n"
+                  "## When something is broken\n\n`bgate_doctor` checks it.\n")
+        (tmp_path / "CLAUDE.md").write_text(legacy, encoding="utf-8")
+        result = adopt.stamp_claude_md(tmp_path, "Ember")
+        text = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+        assert result["action"] == "converted"
+        assert "Old briefing" not in text
+        assert text.count(adopt.MD_MARK_START) == 1
+        assert adopt.stamp_claude_md(tmp_path, "Ember")["action"] == "unchanged"
+
+    def test_what_a_person_wrote_below_the_legacy_stamp_is_kept(self, tmp_path):
+        legacy = ("<!-- Stamped here by Builders Gate. -->\n# Old\n\n"
+                  "## When something is broken\n\nrun doctor.\n\n"
+                  "# House rules\nAlways use tabs.\n")
+        (tmp_path / "CLAUDE.md").write_text(legacy, encoding="utf-8")
+        adopt.stamp_claude_md(tmp_path, "Ember")
+        text = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+        assert "Always use tabs." in text
+        assert "run doctor." not in text
+
+    def test_init_then_adopt_leaves_one_briefing(self, tmp_path):
+        from bgate_core.store import scaffold
+
+        dest = tmp_path / "fresh"
+        scaffold.new_project(dest, "Neon Drift", kind="2d")
+        assert adopt.MD_MARK_START in (dest / "CLAUDE.md").read_text(encoding="utf-8")
+        adopt.stamp_claude_md(dest, "Neon Drift")
+        text = (dest / "CLAUDE.md").read_text(encoding="utf-8")
+        assert text.count(adopt.MD_MARK_START) == 1
+        assert text.count("how to work in this project") == 1
+
     def test_scaffolded_projects_get_it_with_the_real_name(self, tmp_path):
         from bgate_core.store import scaffold
 

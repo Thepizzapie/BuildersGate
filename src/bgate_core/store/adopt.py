@@ -320,8 +320,45 @@ def stamp_claude_md(directory: str | os.PathLike[str], name: str = "",
                 "error": f"template missing: {source}"}
     body = source.read_text(encoding="utf-8")
     body = body.replace("__PROJECT_NAME__", name or Path(directory).name)
-    return _merge_block(Path(directory) / "CLAUDE.md", body,
-                        MD_MARK_START, MD_MARK_END)
+    target = Path(directory) / "CLAUDE.md"
+    converted = _convert_legacy_stamp(target, body)
+    if converted:
+        return converted
+    return _merge_block(target, body, MD_MARK_START, MD_MARK_END)
+
+
+# A GODOT PROJECT FROM `bgate init` CARRIES THE BRIEFING UNMARKED. The
+# scaffolder copied the template as the whole file, with no managed-block
+# markers, so a later adopt saw "file without our marker" and appended the
+# current briefing beside the old one. Measured 2026-10-24: 27 projects on one
+# machine held the 13.8k unmarked stamp, every one ending in this section.
+_LEGACY_STAMP_HEAD = "<!-- Stamped here by Builders Gate"
+_LEGACY_STAMP_LAST = "## When something is broken"
+
+
+def _convert_legacy_stamp(target: Path, body: str) -> dict | None:
+    """Replace an unmarked whole-file stamp with the managed block.
+
+    Only when the file opens with the stamp's own header and still holds its
+    final section; the stamp ends at the paragraph after that heading, and
+    anything a person wrote below it is kept under the block. Anything else
+    returns None and takes the ordinary additive path.
+    """
+    if not target.is_file():
+        return None
+    existing = target.read_text(encoding="utf-8", errors="replace")
+    if not existing.startswith(_LEGACY_STAMP_HEAD) or MD_MARK_START in existing:
+        return None
+    last = existing.rfind(_LEGACY_STAMP_LAST)
+    if last < 0:
+        return None
+    heading_end = existing.find("\n\n", last)
+    para_end = existing.find("\n\n", heading_end + 2) if heading_end >= 0 else -1
+    rest = existing[para_end:] if para_end >= 0 else ""
+    block = f"{MD_MARK_START}\n{body.rstrip()}\n{MD_MARK_END}\n"
+    target.write_text(block + ("\n" + rest.lstrip("\n") if rest.strip() else ""),
+                      encoding="utf-8")
+    return {"path": str(target), "action": "converted"}
 
 
 def would_clobber(directory: str | os.PathLike[str]) -> list[str]:
