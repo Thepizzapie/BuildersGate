@@ -175,7 +175,10 @@ def test_a_follow_ups_follow_up_inherits_slice_admission(tmp_path):
     split, is admitted through its lineage rather than a manual kind=fix."""
     from bgate_core.board import queue
     root = tmp_path
-    feel = queue.add(root, "gameplay", "FEEL FAIL: main", "x", source="feel-check")
+    # A playtest row is fix work on its own (feel-check rows are not, since
+    # 15f1a17); its descendants are what this is about.
+    feel = queue.add(root, "gameplay", "PLAYTEST: Sam clips the wall", "x",
+                     source="playtest")
     child = queue.add(root, "gameplay", "Sam hunts", "x", source="seat:director",
                       source_ref=str(feel["id"]))
     link = queue.add(root, "gameplay", "#a keep physics on", "x", source="seat:director")

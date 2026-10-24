@@ -7,16 +7,10 @@ and hand-rolls the asset - placeholder PNGs, procedural stand-ins, a 270-line
 workaround - while a second provider sat fully keyed and funded the whole
 time. One dead key must read as a ROUTING event, not a capability outage.
 
-So this module gives one answer to two questions, from any process:
+So this module gives one answer, from any process:
 
   status(root)            every hosted provider: keyed, reachable, and - where
                           the provider exposes it - the remaining balance.
-  route_note(root, cap)   ONE SENTENCE for an error message: which provider to
-                          use instead, or the honest "nothing is funded, file
-                          the blocker". Appended to billing-shaped failures by
-                          the MCP server's _fail, so the redirect arrives in
-                          the same tool result as the refusal - the exact
-                          moment the agent is deciding to hand-roll.
 
 WHAT IT DELIBERATELY IS NOT. Not a key store (keys stay in .env; there is no
 set_api_key tool, same reasoning as bgate_core.store.settings). It reads; the
@@ -50,6 +44,43 @@ CAPABILITIES: dict[str, tuple[str, ...]] = {
 
 PROVIDERS = ("openai", "krea", "kie", "retrodiffusion",
              "stability", "tripo", "meshy", "rodin")
+
+# WHAT EACH CAPABILITY SERVES, IN THE WORDS AN AGENT LOOKS FOR. The table
+# above names capabilities by their first job ("music") and an agent reads
+# it as the whole job. Measured (Turf War, 2026-10-16): the audio seat read
+# provider_status, saw kie under image / music / video and no "sound" line,
+# concluded its seat had no sound-effects route, and gave up - while
+# sfx_prompt, which gates on "music", sat in its own tool list and had
+# already produced two clips. The listing sent it wrong; the listing says
+# the second job now.
+CAPABILITY_SERVES: dict[str, str] = {
+    "image": "2D images: stills, sprites, sheets, UI, props, storyboards",
+    "animate": "2D animation cycles from an existing sheet",
+    "three_d": "3D models",
+    "music": "music AND sound effects (Suno via kie: music_generate, "
+             "sfx_prompt)",
+    "video": "video clips",
+}
+
+# THE TOOLS THAT WALK THROUGH EACH GATE. Kept here, beside the table they
+# route on, and pinned by a test that reads every _provider_gate call in the
+# MCP modules: a tool that gates on a capability and is not listed under it
+# fails that test, so this cannot drift into the kind of half-truth that
+# sent the audio seat wrong.
+CAPABILITY_TOOLS: dict[str, tuple[str, ...]] = {
+    "image": ("image_generate", "image_edit", "image_sprites",
+              "image_talkhead", "item_generate", "item_variants",
+              "tileset_generate", "vfx_animate", "ui_concept",
+              "cutout_kit_generate", "cutout_part_rerun",
+              "character_generate", "prop_generate", "storyboard_auto",
+              "storyboard_frame_generate"),
+    "animate": ("animation_generate",),
+    # 3D generation routes through provider_for in bgate_core.runtime.providers,
+    # not through _provider_gate; nothing to list here yet.
+    "three_d": (),
+    "music": ("music_generate", "sfx_prompt"),
+    "video": ("kie_video_generate", "cinematic_generate_shot"),
+}
 
 # Balance probes are network calls; a burst of billing failures must not turn
 # into a burst of probes. Per (root, provider), seconds.
@@ -100,7 +131,7 @@ def _probe(provider: str, root) -> dict:
                     bal = rd.balance(root)
                     # PREFER THE USD BALANCE, NOT `credits`. RD's
                     # /inferences/credits returns BOTH, and only `balance` is
-                    # the spendable figure its billing charges against —
+                    # the spendable figure its billing charges against -
                     # `credits` kept reporting 50.0 on an account that was
                     # refusing every call with {'code': 'request_failed',
                     # 'message': 'Not enough balance.'}. Preferring `credits`
@@ -202,24 +233,6 @@ def _balance_phrase(row: dict) -> str:
     if balance is None:
         return " (balance unknown - the call itself is the probe)"
     return f" with {balance:g} {row.get('balance_unit') or 'credits'} left"
-
-
-def route_note(root, capability: str = "image") -> str:
-    """The sentence a billing failure carries so the agent re-routes.
-
-    Written for the agent that just read "no credit" and is about to decide
-    the pipeline is closed: it is not, unless every row here says so too.
-    """
-    routed = pick(root, capability)
-    if routed["provider"]:
-        return (f"THIS IS A ROUTING EVENT, NOT AN OUTAGE: {routed['why']} - "
-                f"re-run the SAME pipeline tool routed at "
-                f"{routed['provider']} (provider_status shows every row). "
-                "Do NOT hand-roll the asset because one account is empty.")
-    return (f"{routed['why']}. Nothing is funded for this, so do not improvise "
-            "a substitute asset: report the drained accounts in your result "
-            "note (provider_status has the rows) and file the top-up as the "
-            "blocker - a human decides which account gets money.")
 
 
 # Error text that means "the account, not the request" - the shapes the

@@ -186,9 +186,6 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
         # a .tscn of Sprite2Ds, and SpriteFrames is a .tres or it is nothing.
         "cutout_assemble", "cutout_equip", "cutout_kit_generate",
         "cutout_part_rerun", "item_to_spriteframes",
-        # Kits are GDScript with project.godot input actions; a web or
-        # Unity project has nothing for them to land in.
-        "kit_list", "kit_install", "kit_remove",
     }),
     "web": frozenset({
         # The adapter surface. `engine_check` and `engine_status` are NOT here:
@@ -224,6 +221,9 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
 #   value and they are engine-free.
 # `room_review` / `scale_check` / `sprite_sheet_check` / `canon_check`: read
 #   images and records, never a scene.
+# `kit_*`, kits exist for godot (GDScript) and web (TypeScript under src/),
+#   and one engine owns each tool here. The store answers a Unity project
+#   with an empty shelf rather than the gate hiding the tools from web.
 
 
 def tool_owner(tool_name: str) -> str:

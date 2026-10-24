@@ -200,6 +200,13 @@
         <div data-react="assets"></div>
       </section>
 
+      <!-- REACT ISLAND: frontend/src/views/shared/Shared.tsx. The studio's
+           games, shared modules and shared assets, read only. -->
+      <section class="deck-view" id="view-shared">
+        <div class="view-heading"><div><span class="eyebrow">Studio</span><h2>Shared</h2></div><p>What every game in the studio can draw on: its games, shared modules and the shared asset store.</p></div>
+        <div data-react="shared"></div>
+      </section>
+
       <section class="deck-view" id="view-world">
         <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible and keep the fiction honest. Everything here is authored by you - the pipeline reads it.</p></div>
         <!-- REACT ISLAND, frontend/src/views/world/. The bible editor, its
@@ -542,7 +549,7 @@ const DECK_CRUMB = {
   seats:"Seat workspaces", playtests:"Playtests", assets:"Assets", atlas:"Atlas",
   world:"World bible",
   spriteedit:"Sprite editor", audiolab:"Audio lab", modeledit:"3D viewer",
-  cutoutedit:"Rig editor",
+  cutoutedit:"Rig editor", shared:"Shared",
 };
 /* Hand the view to whichever module owns it.
  *

@@ -96,6 +96,18 @@ class TestInstructions:
         # whole thing here would spend context repeating what it has been told.
         assert len(text) < len(seats.DIRECTOR_PROTOCOL)
 
+    def test_the_served_instructions_fit_the_client_cut(self):
+        # MEASURED: Claude Code keeps the first 4096 characters of a server's
+        # instructions. The full protocol ran to 14.5k and lost 72% of itself,
+        # rules included. What is served, mission and index appended, fits.
+        assert len(server.mcp.instructions or "") <= seats.INSTRUCTIONS_BUDGET
+
+    def test_the_full_protocol_is_one_call_away(self):
+        assert "seat_brief('director', section='protocol')" in \
+            seats.director_instructions("")
+        result = server.seat_brief.__wrapped__("director", section="protocol")
+        assert result["protocol"] == seats.DIRECTOR_PROTOCOL
+
     def test_the_two_identities_do_not_contradict_each_other(self):
         director = seats.director_instructions("")
         # A seatless session must be able to tell which of the two applies to it,
@@ -112,6 +124,42 @@ async def test_tools_are_registered():
         "lore_add", "lore_update", "lore_brief", "lore_list",
         "lore_link", "lore_fact", "canon_check", "recall",
     } <= names
+
+
+@pytest.mark.anyio
+async def test_a_real_client_gets_lean_schemas_and_the_unknown_argument_refusal():
+    """Over a client session, not the in-process attributes.
+
+    FastMCP binds its protocol handlers at construction, so the overrides were
+    only visible to in-process callers: a client saw pydantic's titles and the
+    stray-argument refusal never fired. This goes through the wire.
+    """
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    async with create_connected_server_and_client_session(
+            server.mcp._mcp_server) as client:
+        listed = (await client.list_tools()).tools
+        text = json.dumps([t.inputSchema for t in listed])
+        assert '"title": "' not in text
+        assert '{"type": "null"}' not in text
+        for tool in listed:
+            assert "description" not in tool.inputSchema["properties"].get(
+                "project_dir", {}), tool.name
+        result = await client.call_tool("tool_index", {"bogus_arg": 1})
+        assert json.loads(result.content[0].text)["refused"] == "unknown_argument"
+
+
+def test_lean_schema_keeps_a_parameter_named_title():
+    schema = {"type": "object", "title": "kit_extractArguments",
+              "properties": {"title": {"type": "string", "title": "Title"},
+                             "requires": {"anyOf": [{"type": "object"},
+                                                    {"type": "null"}],
+                                          "default": None}}}
+    lean = server._lean_schema(schema)
+    assert lean == {"type": "object",
+                    "properties": {"title": {"type": "string"},
+                                   "requires": {"type": "object",
+                                                "default": None}}}
 
 
 @pytest.mark.anyio

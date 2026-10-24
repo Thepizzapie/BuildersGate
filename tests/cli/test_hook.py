@@ -836,6 +836,22 @@ class TestSessionStart:
         monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: True)
         assert "UP" in session.build_context(str(root))
 
+    def test_probes_this_projects_board_port_not_7788(self, root, monkeypatch):
+        """Measured on Turf War: its board was on 7790, the probe asked 7788,
+        found another game there, and told QA agents dispatched BY the 7790
+        board that nothing they filed would dispatch."""
+        (Path(root) / ".bgate" / "ui-port").write_text("7790", encoding="utf-8")
+        asked = []
+        monkeypatch.setattr(session, "_serve_is_up",
+                            lambda port=session.BOARD_PORT: asked.append(port) or True)
+        boards = {7788: r"D:\repos\monsterhold", 7790: str(root)}
+        monkeypatch.setattr(session, "_board_root",
+                            lambda port=session.BOARD_PORT: boards.get(port, ""))
+        text = session.build_context(str(root))
+        assert asked == [7790]
+        assert "UP on this root" in text
+        assert "ANOTHER ROOT" not in text
+
     def test_surfaces_who_else_is_in_a_file(self, root, monkeypatch):
         """THE REGRESSION THIS EXISTS FOR. Two sessions, one module, one
         afternoon, no warning — because nothing ever told either of them that

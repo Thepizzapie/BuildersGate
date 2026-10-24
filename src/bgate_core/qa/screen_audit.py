@@ -6,7 +6,7 @@ texture size behind every sprite and the string width of every label) and
 answers four questions about the FRAME, not the files:
 
   1. Is the party the size the bible says, and are enemies within a sane
-     ratio of it? scale_check measures one asset alone; on boswell the party
+     ratio of it? scale_check measures one asset alone; on a JRPG test game the party
      shipped at ~40px against 200-300px enemies with every asset "in scale".
   2. Does every label's text fit its rect? "El Nino Flood (The Return of"
      was clipped in the enemy window and nothing said so.

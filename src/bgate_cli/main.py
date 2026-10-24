@@ -42,13 +42,20 @@
     bgate panic [DIR] [--json]  EMERGENCY STOP: kill every agent on a project,
                                 reap orphans, and turn auto-deploy off.
                                 Works even when the dashboard is gone or wedged.
-    bgate kit [list | install NAME [--force] [--no-bind] | remove NAME [--force]] [--project DIR]
+    bgate kit [list | install NAME [--version V] [--force] [--no-bind] | remove NAME [--force]
+               | extract NAME VERSION FILE... --summary S [--confirm] | update NAME [--version V]]
+               [--project DIR]
                                 reusable systems (controllers, inventory, health)
-                                copied into the active game, never overwriting
+                                copied into the active game, never overwriting;
+                                with a studio set, your own versioned modules too
     bgate library [list | search TEXT | publish PATH... [--tags a,b] [--collection C]
-                   | import ID... [--dest DIR] | forget ID] [--project DIR]
-                                the machine-wide asset library at ~/.bgate/library:
-                                what one game made, another can take
+                   | import ID... [--dest DIR] | forget ID | migrate] [--project DIR]
+                                the shared asset library (the studio's shared/assets,
+                                else ~/.bgate/library): what one game made, another
+                                can take. migrate copies ~/.bgate/library into the studio
+    bgate studio [status | init DIR | adopt DIR [--move]] [--json]
+                                one folder for every game and what they share;
+                                once set, `bgate init` puts new games in it
     bgate hook-install [DIR]    wire lane/lock enforcement into a game project
     bgate hook-uninstall [DIR]  remove it again, leaving your other hooks alone
     bgate un-adopt [DIR] --yes  delete this project's .bgate store; game untouched
@@ -397,8 +404,17 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     # Default to a NEW directory under the cwd rather than the cwd itself: a
     # scaffolder that unpacks a game into whatever directory you happened to be
     # standing in is a data-loss bug wearing a feature's hat.
-    root = Path(dest).expanduser().resolve() if dest else (
-        Path.cwd() / slugify(name)).resolve()
+    # A STUDIO, when one is set, is where a new game goes unless --dir says
+    # otherwise: the point of the studio is that the next game is found
+    # beside the last one without anybody remembering to put it there.
+    from bgate_core.store import studio as _studio
+    studio_root = _studio.root()
+    if dest:
+        root = Path(dest).expanduser().resolve()
+    elif studio_root is not None:
+        root = (studio_root / _studio.GAMES_DIRNAME / slugify(name)).resolve()
+    else:
+        root = (Path.cwd() / slugify(name)).resolve()
 
     try:
         made = scaffold.new_project(root, name, kind=kind, force=force,
@@ -411,6 +427,11 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         return 2
 
     project.init(root, name, pitch=pitch, engine=engine, dimension=kind)
+    if studio_root is not None and studio_root in root.parents:
+        try:
+            _studio.add_game(root)
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"warning: not recorded in the studio index: {exc}")
     # A 2D project defaults the 3D pipeline OFF, cutout/sprite work never
     # opens Blender, and the default should match the kind just chosen. A WEB
     # project defaults it off at both dimensions: blender_* delivers .glb into
@@ -1341,7 +1362,7 @@ def _reuse_root(rest: list):
 
 
 _REUSE_VALUE_FLAGS = ("--project", "--tags", "--collection", "--dest", "--note",
-                      "--kind")
+                      "--kind", "--version", "--summary", "--title", "--dimension")
 
 
 def _reuse_positional(rest: list) -> list:
@@ -1362,12 +1383,14 @@ def _reuse_opt(rest: list, flag: str, default: str = "") -> str:
 
 
 def _cmd_kit(rest: list) -> int:
-    """bgate kit [list | install NAME [--force] [--no-bind] | remove NAME [--force]] [--project DIR]
+    """bgate kit [list | install NAME [--version V] | remove NAME | extract NAME VERSION FILE... | update NAME] [--project DIR]
 
     The same install kit_install performs, from the shell: a kit's scripts
     into scripts/, its missing input actions into project.godot, nothing
     overwritten. `list` says which are already in this game; --all lists
-    kits of every dimension, not only the project's.
+    kits of every dimension, not only the project's. `extract` publishes
+    files from this game as a studio module (a dry run without --confirm);
+    `update` moves a pinned module to --version, or the newest.
     """
     from bgate_core.store import kits as _kits
     from bgate_core.store import project as _project
@@ -1385,8 +1408,10 @@ def _cmd_kit(rest: list) -> int:
         pass
     if "--all" in rest:
         dimension = ""
+    engine = _project.engine_of(root)
+    version = _reuse_opt(rest, "--version")
     if sub == "list":
-        st = _kits.status(root, game, "godot", dimension)
+        st = _kits.status(root, game, engine, dimension)
         print(f"kits for {game} ({st['dimension']})")
         for k in st["kits"]:
             if k.get("error"):
@@ -1395,15 +1420,19 @@ def _cmd_kit(rest: list) -> int:
             mark = {"installed": "OK  ", "absent": "    ", "modified": "MOD ",
                     "partial": "PART"}.get(k["state"], "??  ")
             stale = " (stale: the kit changed since install)" if k.get("stale") else ""
-            print(f"  {mark} {k['name']:<24} {k['dimension']:<4} {k['title']}{stale}")
+            pin = f"@{k['version']}" if k.get("version") else ""
+            newer = f" (newer: {k['newer']})" if k.get("newer") else ""
+            print(f"  {mark} {k['name'] + pin:<24} {k['dimension']:<4} {k['title']}{stale}{newer}")
         return 0
     if sub in ("install", "add"):
         if len(positional) < 2:
             print("bgate kit install NAME [--force] [--no-bind] [--all] [--project DIR]")
             return 2
         try:
-            got = _kits.install(root, game, positional[1], force="--force" in rest,
-                                bind="--no-bind" not in rest, dimension=dimension)
+            got = _kits.install(root, game, positional[1], engine=engine,
+                                force="--force" in rest,
+                                bind="--no-bind" not in rest, dimension=dimension,
+                                version=version)
         except _kits.KitError as exc:
             print(f"error: {exc}")
             return 1
@@ -1429,7 +1458,8 @@ def _cmd_kit(rest: list) -> int:
             print("bgate kit remove NAME [--force] [--project DIR]")
             return 2
         try:
-            got = _kits.remove(root, game, positional[1], force="--force" in rest)
+            got = _kits.remove(root, game, positional[1], engine=engine,
+                               force="--force" in rest)
         except _kits.KitError as exc:
             print(f"error: {exc}")
             return 1
@@ -1438,14 +1468,127 @@ def _cmd_kit(rest: list) -> int:
         for row in got["refused"]:
             print(f"  REFUSED {row['dest']}: {row['reason']}")
         return 0 if got["ok"] else 1
+    if sub == "extract":
+        if len(positional) < 4:
+            print("bgate kit extract NAME VERSION FILE... --summary S [--title T] "
+                  "[--dimension 2d|3d|any] [--confirm] [--project DIR]")
+            return 2
+        try:
+            got = _kits.extract(game, positional[1], positional[2], positional[3:],
+                                engine=engine, summary=_reuse_opt(rest, "--summary"),
+                                title=_reuse_opt(rest, "--title"),
+                                dimension=_reuse_opt(rest, "--dimension", "any"),
+                                confirm="--confirm" in rest)
+        except _kits.KitError as exc:
+            print(f"error: {exc}")
+            return 1
+        print(json.dumps(got["manifest"], indent=2))
+        if got["confirmed"]:
+            print(f"published {positional[1]}@{positional[2]} -> {got['dir']}")
+        else:
+            print(f"dry run: {got['note']} (--confirm)")
+        return 0
+    if sub == "update":
+        if len(positional) < 2:
+            print("bgate kit update NAME [--version V] [--project DIR]")
+            return 2
+        try:
+            got = _kits.update(root, game, positional[1], engine=engine,
+                               version=version)
+        except _kits.KitError as exc:
+            print(f"error: {exc}")
+            return 1
+        print(f"  {positional[1]}: {got['from']} -> {got['to']}")
+        for rel in got["written"]:
+            print(f"  wrote   {rel}")
+        for row in got["kept"]:
+            print(f"  kept    {row['dest']}: {row['reason']}")
+        for rel in got["dropped"]:
+            print(f"  dropped {rel} (left in the game)")
+        if got["note"]:
+            print(f"  {got['note']}")
+        return 0
     print(_cmd_kit.__doc__.splitlines()[0])
     return 2
 
 
-def _cmd_library(rest: list) -> int:
-    """bgate library [list | search TEXT | publish PATH... | import ID... | forget ID] [--project DIR]
+def _cmd_studio(rest: list) -> int:
+    """bgate studio [status | init DIR | adopt DIR [--move]] [--json]
 
-    The machine-wide asset library in ~/.bgate/library. `forget` lives HERE
+    One folder for every game and what they share. `init` makes it (games/,
+    shared/modules/, shared/assets/, studio.json) and remembers it; `adopt`
+    indexes an existing project where it is, or with --move copies it into
+    games/, checks the copy, and repoints the registry. The original is never
+    deleted.
+    """
+    from bgate_core.store import studio as _studio
+    sub = rest[0] if rest and not rest[0].startswith("-") else "status"
+    positional = [a for a in rest if not a.startswith("-")]
+    as_json = "--json" in rest
+    try:
+        if sub == "init":
+            if len(positional) < 2:
+                print("bgate studio init DIR")
+                return 2
+            got = _studio.init(positional[1])
+            if as_json:
+                print(json.dumps(got, indent=2))
+                return 0
+            print(f"{'created' if got['created'] else 'using'} studio {got['root']}")
+            if got.get("note"):
+                print(f"  {got['note']}")
+            print("  new projects from `bgate init` now land in its games/ folder")
+            return 0
+        if sub == "adopt":
+            if len(positional) < 2:
+                print("bgate studio adopt DIR [--move]")
+                return 2
+            got = _studio.adopt(positional[1], move="--move" in rest)
+            if as_json:
+                print(json.dumps(got, indent=2))
+                return 0
+            if not got["moved"]:
+                print(f"indexed {got['name']} at {got['root']}"
+                      + (f" ({got['note']})" if got.get("note") else ""))
+                return 0
+            print(f"copied {got['name']} into {got['root']} ({got['files']} files, "
+                  "checked)")
+            print("  the registry now points at the copy"
+                  + (", and so does the active project" if got["active_repointed"]
+                     else ""))
+            print("  the original is untouched; remove it when you are satisfied:")
+            print(f"  {got['original']}")
+            return 0
+        if sub == "status":
+            st = _studio.status()
+            if as_json:
+                print(json.dumps(st, indent=2))
+                return 0
+            if not st["set"]:
+                print("no studio set. `bgate studio init DIR` makes one; "
+                      f"{_studio.ENV} overrides it.")
+                return 0
+            if not st["ok"]:
+                print(f"studio {st['root']} (from {st['source']}): {st['error']}")
+                return 1
+            print(f"studio {st['root']} (from {st['source']})")
+            print(f"  {len(st['games'])} game(s), {st['modules']} module(s)")
+            for g in st["games"]:
+                print(f"  {'   ' if g['exists'] else 'GONE'} {g['name']:<24} {g['path']}")
+            return 0
+    except _studio.StudioError as exc:
+        print(f"error: {exc}")
+        return 1
+    print(_cmd_studio.__doc__.splitlines()[0])
+    return 2
+
+
+def _cmd_library(rest: list) -> int:
+    """bgate library [list | search TEXT | publish PATH... | import ID... | forget ID | migrate] [--project DIR]
+
+    The shared asset library: the studio's shared/assets when a studio is
+    set, else ~/.bgate/library. `migrate` copies the second into the first
+    and deletes nothing. `forget` lives HERE
     and not as an MCP tool on purpose: a store every project shares must not
     be emptiable by an agent.
     """
@@ -1527,6 +1670,22 @@ def _cmd_library(rest: list) -> int:
               + ("" if got["blob_removed"]
                  else "; bytes kept, another entry shares them"))
         return 0
+    if sub == "migrate":
+        try:
+            got = _assetlib.migrate()
+        except _assetlib.LibraryError as exc:
+            print(f"error: {exc}")
+            return 1
+        print(f"copied {got['copied']} entries ({got['blobs']} files), "
+              f"merged {got['merged']} already held, from {got['from']} "
+              f"to {got['to']}")
+        for name in got["missing"]:
+            print(f"  MISSING {name}: indexed in the old library, bytes not on "
+                  "disk; not copied")
+        if got["copied"] or got["merged"]:
+            print(f"the old library is untouched; remove {got['from']} "
+                  "yourself when satisfied")
+        return 0 if got["ok"] else 1
     print(_cmd_library.__doc__.splitlines()[0])
     return 2
 
@@ -1657,6 +1816,9 @@ def main() -> int:
 
     if cmd in ("library", "lib"):
         return _cmd_library(args[1:])
+
+    if cmd == "studio":
+        return _cmd_studio(args[1:])
 
     if cmd == "doctor":
         positional = [a for a in args[1:] if not a.startswith("-")]

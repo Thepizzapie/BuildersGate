@@ -8,12 +8,9 @@ switched off, and an audit that fires on nothing was never running.
 """
 from __future__ import annotations
 
-import pytest
+from PIL import Image, ImageDraw
 
 from bgate_core.art import spritekit as kit
-
-PIL = pytest.importorskip("PIL")
-from PIL import Image, ImageDraw  # noqa: E402
 
 
 BACK = (12, 12, 16, 255)

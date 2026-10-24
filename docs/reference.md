@@ -551,13 +551,15 @@ file you edited. Kits are GDScript, so they register for Godot projects only.
 library_search(query="paladin")                        # before generating: what the machine already has
 library_publish(paths=["assets/characters"], tags=["hero"], collection="paladin")
 library_import(ids=["c7e337593980"], dest="assets/library")
-bgate library list | search TEXT | publish PATH... | import ID... | forget ID
+bgate library list | search TEXT | publish PATH... | import ID... | forget ID | migrate
 ```
 
-`~/.bgate/library` (`BGATE_HOME` moves it) is the store one game publishes to
-and the next imports from. It is machine-wide and in no repository, the same
-shape as the key store and `animlib`: the asset follows the person, not the
-game. `blobs/<sha256><ext>` holds the bytes once however many entries share
+With a studio set (`bgate studio init DIR`), the store one game publishes to
+and the next imports from is `<studio>/shared/assets`. Without one it is
+`~/.bgate/library` (`BGATE_HOME` moves it), machine-wide and in no
+repository, the same shape as the key store and `animlib`: the asset follows
+the person, not the game. `bgate library migrate` copies `~/.bgate/library`
+into the studio store, merges entries it already holds, and deletes nothing. `blobs/<sha256><ext>` holds the bytes once however many entries share
 them; `index.json` holds each entry's name, kind, tags, collection, size, image
 dimensions, and the project and path it came from.
 
@@ -572,6 +574,36 @@ Deleting is `bgate library forget`, a CLI command and deliberately not a tool:
 a store every project on the machine shares must not be emptiable by an
 agent. The dashboard's Library view still shows this project's own assets;
 the shared library has no pane yet.
+
+## The studio
+
+```bash
+bgate studio init D:/studio            # lay out the folder and remember it
+bgate studio adopt ./emberfall         # index a project where it is
+bgate studio adopt ./emberfall --move  # copy it into games/, check, repoint
+bgate studio status [--json]
+```
+
+A studio is one folder for every game and what they share:
+
+```
+<studio>/games/<name>/                               projects made or adopted here
+<studio>/shared/modules/<engine>/<name>/<version>/   reusable modules
+<studio>/shared/assets/                              the shared asset store
+<studio>/studio.json                                 index: games, modules
+```
+
+`bgate studio init` writes the folder to `~/.bgate/studio-dir.json`;
+`BGATE_STUDIO` overrides it. A folder without `studio.json` is not a studio,
+so a typo in the variable cannot make an arbitrary directory the place new
+games go. Once a studio is set, `bgate init` creates new games under
+`games/` unless `--dir` says otherwise. With none set, nothing changes.
+
+`adopt --move` copies the project, compares the copy file for file, and only
+then points the registry (and the active project, if it was this one) at the
+copy. It never deletes the original; it prints the path for you to remove.
+Games inside the studio are indexed by relative path, so the whole folder can
+be moved. `project_status` and the session-start block name the studio.
 
 ## Level generation
 

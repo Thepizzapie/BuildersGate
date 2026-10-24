@@ -3989,6 +3989,40 @@ unless `force`. Input actions stay: another script may read them by
 now, and an unbound action is a silent no-op, not an error.
 ```
 
+## kit_extract
+
+```text
+PUBLISH PART OF THIS GAME AS A REUSABLE MODULE in the studio's
+shared/modules, so any other game can kit_install it by version.
+
+Layout: <studio>/shared/modules/<engine>/<name>/<version>/kit.json, with
+the files under files/ at the path they install to. The manifest records
+the game and time it was extracted from.
+
+Two calls: first without `confirm` to read back the manifest (what it
+provides and needs; correct it), then with `confirm` to publish. A
+published version is never rewritten, and a version older than the
+newest is refused: a fix is a new version. A web module's files are
+under src/; its `requires.actions` are listed for the person to wire,
+since nothing edits a web game's input map.
+
+On the shelf, a studio module named like a shipped kit is used only when
+a game pins it (kit_install(name, version=...)); a name only the studio
+has resolves to its newest version and is pinned on install.
+```
+
+## kit_update
+
+```text
+MOVE A PINNED MODULE FORWARD to a newer version.
+
+Files unchanged since install are replaced; a file the game has edited
+is `kept` and named, never overwritten. Files the new version dropped
+stay in the game and are listed under `dropped`. Never moves a pin
+backwards, and a shipped kit has no pin to move. kit_list shows `newer`
+on a pinned module when a later version is published.
+```
+
 ## level_plan
 
 ```text
@@ -4755,6 +4789,14 @@ honouring the craft division (sprites/stills mint with kie; motion is
 Retro Diffusion; music/video are kie). `fresh=true` re-probes past the
 2-minute cache - the right call after the human tops an account up.
 
+"MUSIC" IS THE SOUND-EFFECTS ROUTE TOO. sfx_prompt and music_generate both
+gate on it (Suno via kie), so a keyed kie under "music" means sound effects
+are live. The result carries `capability_serves` (what each capability
+covers, in plain words) and `capability_tools` (the tools that walk through
+each gate), and every family in `routing` carries the same `serves` and
+`tools`. Measured: an audio seat read the bare order, saw no "sound" line,
+concluded it had no route and gave up with sfx_prompt in its own tool list.
+
 Keys never appear here, and there is no tool that writes one - a human
 sets keys (bgate key / the Generators panel), deliberately.
 ```
@@ -4880,6 +4922,23 @@ Name what it produced (the file, the function, the scene) rather than saying
 
 Returns {chain_id, items: [...]} in running order. Nothing dispatches until
 `bgate serve` is up, exactly as with queue_add.
+
+A LINK CAN NAME ITS PLAN ROW. Each link takes `plan_row` exactly as
+queue_add does: the row's domain goal is appended to the brief, its
+acceptance fills an empty one, its kind is derived, and the row is pointed
+at the link once the chain lands. At the slice stage that is what admits a
+link to the board; a chain had no way onto a slice row at all, so every
+chain filed there sat held until the rows were pointed at its items by
+hand. A row that is already being built, or named by two links, refuses
+the whole chain before anything lands.
+
+THE FILING SAYS WHAT THE STAGE WILL DO WITH IT. Every returned item carries
+`stage_hold` when the stage machine will not dispatch it as filed (the
+production stage holding its seat, the slice stage holding work that is
+not on a slice row, a discipline with no domain plan yet), and the result
+carries `held` (the ids) and a `note`. queue_add returns the same
+`stage_hold` on its item. Before this, a held item came back as an
+ordinary queued row and the hold was only visible in queue_list.
 ```
 
 ## queue_claim_next
@@ -5026,6 +5085,13 @@ Every queued row also carries `waiting_on`, which now NAMES the blocker:
 "WAITING ON #45 Swap in furniture" rather than "#43 QUEUED". `blocked`
 means a predecessor will never land on its own; `waiting` means the board
 is working.
+
+EVERY ROW CARRIES `depends_on_all`, every parent in running order. The
+`depends_on` column holds ONE parent (the one a chain is built on); the
+rest, added with queue_add_dependency, live in a second table and were
+invisible here. A chain serialised by hand after filing read as a fan to
+anyone who looked at the column, while `waiting_on` (which walks every
+parent) was right all along. Read `depends_on_all`, not the column.
 
 BRIEFS ARE PREVIEWS and the list is PAGED. This used to answer with every
 work item a project had ever had, brief text and all - on a real board that
@@ -6051,6 +6117,15 @@ Key: `bgate key set typesafe --global` (TYPESAFE_API_KEY), or a Vercel AI
 Gateway key (`bgate key set ai_gateway`) for the same model. TypeSafe's own
 key wins when both are set.
 
+No key: `BGATE_JEV_OLLAMA_MODEL=nimble` (or `tev1`, `laya`; `on` means
+`nimble`) sends the same request to a local Ollama 0.40+ at `127.0.0.1:11434`
+(or `OLLAMA_HOST`), which serves `/v1/systemone` natively for its decision
+models, and the answers come back in this same shape at no cost. A hosted key
+still wins when set. A chat model is refused by Ollama, not prompted into
+JSON. The local models are weaker than hosted Jev (Ollama's figures: nimble
+75.7%, tev1 73.3%, Jev 76.0%), so a feel-check number from one is not
+comparable to a hosted one; every result says `route`.
+
 ## playtest_agent_run
 
 A decision model plays the game. Godot only. The run installs
@@ -6101,10 +6176,10 @@ holds the Jev bot's most-used option for the whole run plays it again.
 
 | verdict | fails when |
 | --- | --- |
-| ONE_BUTTON | one option is over 60% of the smart bot's decisions |
+| ONE_BUTTON | one option is over 60% of the smart bot's decisions, counted over frames that offered more than one option (a frame with a single option was not a decision) |
 | FLAT | the hold-one-option bot reaches 85% or more of the smart bot's progress |
 | NO_PRESSURE | the hold-one-option bot is threatened on under 20% of decisions (a good player avoids danger, so the passive run is the honest measure) |
-| TRIVIAL | neither bot dies |
+| TRIVIAL | neither bot dies, in runs that both reached an end (an end/over/finish event) with a readable outcome (a won/lost/draw status, or a death/knocked-out event per loss). Runs that neither died nor ended inside `seconds`, or whose end event names a winner but no status, are reported under `notes`, not `fails`: 90 s is 3-4 turns of a 6-10 minute match, so set `seconds` to a whole match for a turn-based game, and give `match_end` a status from the bot's seat |
 | UNFAIR | 3 or more smart-bot deaths inside the same 5% of the scene |
 | UNMEASURED | the observer reports no `progress` (0..1) or no `danger` (bool) |
 
@@ -6112,6 +6187,16 @@ Leaving the slice stage and the release gate both require every feel-checked
 scene to pass, and at least one to have been checked, on any project a bot can
 play (Godot today). The latest result per scene is in
 `.bgate/feel/<scene>.json`; a re-run replaces it.
+
+A FAIL files one director item per scene that **waits for a person**: its
+source is in `queue.HELD_SOURCES`, so no auto-dispatcher runs it, and its brief
+asks for two or three proposed changes, each naming the metric it would move,
+for the human to file. Anything an agent files from that item inherits
+`kind=feature` unless it names a plan row, so the slice stage holds it however
+the filer labelled it. Measured on Turf War (2026-10-17): while that item was
+dispatchable and born `kind=fix`, autodeploy ran the director seat as an agent,
+it filed the tuning its brief named, relabelled the items past the slice hold,
+and retuned a game whose owner had deferred tuning from the stands.
 
 Why: HARDCOVER passed the slice check, a golden-path bot that cleared every
 boss with 0 deaths, measured telegraphs, traversal proofs and look audits, and

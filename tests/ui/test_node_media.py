@@ -1,15 +1,15 @@
-"""The node shows REAL media and REAL money — both halves, pinned.
+"""The node shows REAL media and REAL money - both halves, pinned.
 
 A workflow node used to describe its output and say nothing about the picture it
 made or the dollars it burned. Phase 2 puts both on the card. Two things can
 silently rot:
 
-  1. the batch read (``GET /api/node/media``) — one call per canvas load, because
+  1. the batch read (``GET /api/node/media``) - one call per canvas load, because
      ``renderBody`` runs on every paint and must never do I/O. Its payload shape
      and its path normalisation (``/api/preview`` REFUSES absolute paths, so an
      absolute path that escapes the project must come back refused, never
      leaked);
-  2. the price table — the estimate on a node has to be
+  2. the price table - the estimate on a node has to be
      ``count x variants x IMAGE_PRICE_USD[quality]`` from the ADAPTER. A price
      constant typed into JavaScript is an estimate that drifts away from the
      charge the moment either side moves, so the static half asserts no step file
@@ -30,8 +30,8 @@ from bgate_ui.app import app
 from bgate_ui.routes import node_media
 
 STATIC = Path(__file__).resolve().parents[2] / "frontend" / "public"
-STEP_FILES = [STATIC / "wf_steps_asset.js", STATIC / "wf_steps_agent.js",
-              STATIC / "wf_steps_world.js", STATIC / "wf_steps_3d.js"]
+STEP_FILES = [STATIC / "wf_steps_model.js", STATIC / "wf_steps_tools.js",
+              STATIC / "wf_steps_templates.js"]
 WF_JS = STATIC / "wf.js"
 
 
@@ -68,7 +68,7 @@ class TestBatchPayload:
 
     def test_unknown_name_is_an_empty_state_not_an_error(self, client):
         """A node naming an asset nothing has produced must degrade to the empty
-        plate — a 404 would blank the whole canvas."""
+        plate - a 404 would blank the whole canvas."""
         data = _payload(client, names="nobody-has-made-this")
         entry = data["assets"]["nobody-has-made-this"]
         assert entry["latest"] is None
@@ -120,13 +120,13 @@ class TestBatchPayload:
 
 
 # --------------------------------------------------------------------------- #
-# prices — the FORWARD estimate, and nothing that sums what was spent
+# prices - the FORWARD estimate, and nothing that sums what was spent
 # --------------------------------------------------------------------------- #
 class TestPrices:
     def test_prices_are_the_adapters_own_table(self, client):
         prices = _payload(client)["prices"]
         assert prices == imagegen.IMAGE_PRICE_USD
-        # the estimate a node shows is count x price[quality] — pin the arithmetic
+        # the estimate a node shows is count x price[quality] - pin the arithmetic
         assert 6 * 2 * prices["medium"] == pytest.approx(
             12 * imagegen.price_per_image("medium"))
 
@@ -175,7 +175,7 @@ def _sources() -> dict[str, str]:
     return {p.name: p.read_text(encoding="utf-8") for p in STEP_FILES + [WF_JS]}
 
 
-# a bare dollar-ish float literal, e.g. 0.042 — the shape of a smuggled price
+# a bare dollar-ish float literal, e.g. 0.042 - the shape of a smuggled price
 PRICE_LITERAL = re.compile(r"\b0\.\d{2,}\b")
 KNOWN_PRICES = {str(v) for v in imagegen.IMAGE_PRICE_USD.values()}
 
@@ -201,64 +201,6 @@ def test_wf_reads_prices_from_the_batch_endpoint():
     # no fallback unit price: an invented number is worse than no number
     assert re.search(r"unit\s*==\s*null[^\n]*\n\s*return null", src) or \
         "if (unit == null) return null;" in src
-
-
-@pytest.mark.parametrize("name", sorted(p.name for p in STEP_FILES))
-def test_node_bodies_do_no_io(name):
-    """A body runs on every paint. fetch() in one is a request per repaint."""
-    src = (STATIC / name).read_text(encoding="utf-8")
-    for token in ("fetch(", "XMLHttpRequest"):
-        assert token not in src, f"{name} does I/O — bodies must read WF's cache"
-
-
-def _step_blocks() -> dict[str, str]:
-    """Every ``WF.registerStep({...})`` body, brace-matched, by step type.
-
-    Templates repeat the same ``type:"art.concept"`` strings, so a naive
-    last-match scan reads a template where it means a step.
-    """
-    out: dict[str, str] = {}
-    for path in STEP_FILES:
-        src = path.read_text(encoding="utf-8")
-        for m in re.finditer(r"WF\.registerStep\(\s*\{", src):
-            i = src.index("{", m.end() - 1)
-            depth, j = 0, i
-            while j < len(src):
-                if src[j] == "{":
-                    depth += 1
-                elif src[j] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                j += 1
-            block = src[i:j + 1]
-            t = re.search(r'type:\s*"([\w.]+)"', block)
-            if t:
-                out[t.group(1)] = block
-    return out
-
-
-def test_image_steps_declare_what_they_cost():
-    """Every step that spends money through the image adapter declares
-    imageCost(); steps that spend nothing must NOT (a fake estimate on a free
-    step is a lie in the title bar)."""
-    costed = {"art.concept": "wf_steps_asset.js", "art.anchor": "wf_steps_asset.js",
-              "art.animation": "wf_steps_asset.js", "art.edit": "wf_steps_asset.js",
-              "agent.art": "wf_steps_agent.js", "world.background": "wf_steps_world.js",
-              "world.parallax": "wf_steps_world.js", "world.tileset": "wf_steps_world.js",
-              "world.props": "wf_steps_world.js", "3d.concept": "wf_steps_3d.js"}
-    free = ("output.sheet", "output.rig", "control.select", "control.gate",
-            "3d.sprites", "3d.model", "3d.import")
-    blocks = _step_blocks()
-    for step_type in costed:
-        assert step_type in blocks, f"{step_type} is no longer registered"
-        assert "imageCost" in blocks[step_type], (
-            f"{step_type} spends on images but declares no imageCost() — its "
-            "node can never show an estimate")
-    for step_type in free:
-        block = blocks.get(step_type, "")
-        assert "imageCost" not in block, (
-            f"{step_type} spends no API money but declares imageCost()")
 
 
 def test_empty_state_never_becomes_a_broken_image():

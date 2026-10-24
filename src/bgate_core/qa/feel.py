@@ -19,14 +19,26 @@ every decision. Without them the scene is reported UNMEASURED, which blocks the
 same as a fail: a feel check that cannot measure is not a pass.
 
 VERDICTS (one scene can earn several):
-- ONE_BUTTON  the most-used option is over 60% of the smart bot's decisions
+- ONE_BUTTON  the most-used option is over 60% of the smart bot's decisions,
+              counted over frames that offered more than one option (a frame
+              with one option was not a decision; measured Turf War: "done"
+              in retreat/resolve made a turn-based game read as repetitive)
 - FLAT        the hold-one-option bot reaches >= 85% of the smart bot's progress
 - NO_PRESSURE the hold-one-option bot is threatened on under 20% of decisions
-- TRIVIAL     neither bot dies
+- TRIVIAL     neither bot dies, in runs that BOTH reached an end with a
+              readable outcome. Runs that neither died nor ended inside
+              ``seconds`` say nothing about difficulty (90 s is 3-4 turns of
+              a 6-10 minute match); an end event with no won/lost status
+              cannot tell a loss from a win. Both are ``notes``, not ``fails``
 - UNFAIR      3+ smart-bot deaths inside the same 5% of the scene
 - UNMEASURED  the observer reports no progress or no danger
 PASS is none of them. Thresholds are module constants, measured on one game;
 change them deliberately, with the run that justifies it.
+
+A FAIL files a director item that WAITS FOR A PERSON (queue.HELD_SOURCES).
+Measured (Turf War, 2026-10-17): when it was dispatchable, autodeploy ran the
+director as an agent, which filed and ran the tuning its brief described on a
+game whose owner had deferred tuning. The check proposes; a human files.
 """
 from __future__ import annotations
 
@@ -51,6 +63,16 @@ DEATH_KIND = re.compile(r"death|died|dead|knocked|fired|game_?over|lost|defeat|c
 #: measured on vibe-coder, losing was {"kind": "run_end", "data": {"status":
 #: "fired"}}, and a name-only match called a fired bot's run TRIVIAL.
 LOSS_STATUS = re.compile(r"fired|dead|died|lost|lose|game_?over|failed|defeat", re.I)
+#: An event whose kind says the run reached an end, won or lost: what makes
+#: "nobody died" a verdict rather than a short window.
+END_KIND = re.compile(r"(^|_)(end|ended|over|finish|finished|complete|completed|"
+                      r"result|victory|win|won)($|_)", re.I)
+#: A run-ending status that says the player came through. An end event with a
+#: status the check cannot read either way (measured Turf War: `match_end
+#: {turn: 23, winner: 1}`, the CPU had knocked out every athlete) is NOT a
+#: win; it is an end whose outcome is unknown, and TRIVIAL stays unjudged.
+WIN_STATUS = re.compile(r"won|win|victory|shipped|cleared|survived|success|"
+                        r"complete|draw|tie", re.I)
 FAILS = ("ONE_BUTTON", "FLAT", "NO_PRESSURE", "TRIVIAL", "UNFAIR", "UNMEASURED")
 
 
@@ -77,19 +99,35 @@ def measure(run_dir: str | Path) -> dict:
     run_dir = Path(run_dir)
     rows = agentplay._jsonl(run_dir / "decisions.jsonl")
     events = agentplay._jsonl(run_dir / "telemetry.jsonl")
-    choices = Counter(r.get("choice") for r in rows)
+    # A FRAME WITH ONE OPTION WAS NOT A DECISION. The relay logs it (and picks
+    # the only choice without asking the model); counting it as a choice made
+    # a turn-based game's "done" frames read as one-button play.
+    decided = [r for r in rows
+               if not isinstance(r.get("options"), list) or len(r["options"]) > 1]
+    choices = Counter(r.get("choice") for r in decided)
     top, top_n = (choices.most_common(1)[0] if choices else ("", 0))
+    if not top and rows:
+        top = Counter(r.get("choice") for r in rows).most_common(1)[0][0]
     progress = [float(r["progress"]) for r in rows
                 if isinstance(r.get("progress"), (int, float))]
     danger = [bool(r["danger"]) for r in rows if r.get("danger") is not None]
     deaths = []
+    ended = False
+    end_status = None            # None: never ended; else lost | won | unknown
     for e in events:
+        kind = str(e.get("kind") or "")
         data = e.get("data") if isinstance(e.get("data"), dict) else {}
         status = " ".join(str(data.get(k) or "") for k in
                           ("status", "result", "outcome", "reason"))
-        ended = re.search(r"end|over|finish", str(e.get("kind") or ""), re.I)
-        if not (DEATH_KIND.search(str(e.get("kind") or ""))
-                or (ended and LOSS_STATUS.search(status))):
+        is_end = re.search(r"end|over|finish", kind, re.I)
+        if END_KIND.search(kind):
+            ended = True
+            if LOSS_STATUS.search(status):
+                end_status = "lost"
+            elif end_status != "lost":
+                end_status = "won" if WIN_STATUS.search(status) else "unknown"
+        if not (DEATH_KIND.search(kind)
+                or (is_end and LOSS_STATUS.search(status))):
             continue
         ts = e.get("ts")
         at = None
@@ -101,8 +139,12 @@ def measure(run_dir: str | Path) -> dict:
         deaths.append(at)
     return {
         "decisions": len(rows),
+        "decisions_with_choice": len(decided),
+        "forced": len(rows) - len(decided),
+        "ended": ended,
+        "end_status": end_status,
         "top_choice": top,
-        "top_share": round(top_n / len(rows), 3) if rows else None,
+        "top_share": round(top_n / len(decided), 3) if decided else None,
         "choices": dict(choices.most_common(8)),
         "progress_max": round(max(progress), 3) if progress else None,
         "danger_share": round(sum(danger) / len(danger), 3) if danger else None,
@@ -111,9 +153,11 @@ def measure(run_dir: str | Path) -> dict:
     }
 
 
-def verdict(smart: dict, base: dict) -> dict:
-    """The verdicts two runs earn, each with the number that earned it."""
+def verdict(smart: dict, base: dict, *, seconds: float = 0.0) -> dict:
+    """The verdicts two runs earn, each with the number that earned it, and
+    under ``notes`` the ones the runs could not judge."""
     fails: dict[str, str] = {}
+    notes: dict[str, str] = {}
     # A progress that never leaves 0 over a real run is a broken measurement,
     # not a stationary player (measured: comment_section read 0.0 for a run that
     # reached x=4856 because its FightSession had no stage_length).
@@ -145,7 +189,27 @@ def verdict(smart: dict, base: dict) -> dict:
                                 f"is threatened on {ds:.0%} of decisions "
                                 f"(minimum {PRESSURE_MIN:.0%})")
     if smart.get("deaths") == 0 and base.get("deaths") == 0:
-        fails["TRIVIAL"] = "neither the smart bot nor the hold-one-option bot died"
+        # NOBODY DIED IS ONLY A VERDICT IF A RUN REACHED ITS END. Measured
+        # (Turf War): 90 s is 3-4 turns of a 6-10 minute match, so no KO was
+        # possible in the window, and the FAIL this produced filed tuning work.
+        if smart.get("ended") and base.get("ended"):
+            if "unknown" in (smart.get("end_status"), base.get("end_status")):
+                # MEASURED (Turf War): match_end {turn, winner} with the CPU
+                # as winner and every athlete knocked out read as 0 deaths.
+                notes["TRIVIAL"] = (
+                    "unjudged: a run reached an end whose event carries no "
+                    "status the check can read (won/lost/draw from the bot's "
+                    "seat), so a loss and a win look the same; emit a status "
+                    "on the end event, or a death/knocked-out event per loss")
+            else:
+                fails["TRIVIAL"] = ("both runs reached their end and neither the "
+                                    "smart bot nor the hold-one-option bot died")
+        else:
+            window = f"{seconds:.0f} s" if seconds else "the run window"
+            notes["TRIVIAL"] = (f"not measurable: neither bot died or reached an "
+                                f"end inside {window}; a scene longer than the "
+                                "window needs a longer `seconds`, or an end/over "
+                                "event from the game, before TRIVIAL can be judged")
     buckets = Counter(int(d / UNFAIR_BUCKET) for d in smart.get("death_progress", [])
                       if d is not None)
     bad = [(b, n) for b, n in buckets.items() if n >= UNFAIR_DEATHS]
@@ -153,7 +217,8 @@ def verdict(smart: dict, base: dict) -> dict:
         b, n = max(bad, key=lambda x: x[1])
         fails["UNFAIR"] = (f"{n} smart-bot deaths between {b * UNFAIR_BUCKET:.0%} "
                            f"and {(b + 1) * UNFAIR_BUCKET:.0%} of the scene")
-    return {"verdict": "PASS" if not fails else "FAIL", "fails": fails}
+    return {"verdict": "PASS" if not fails else "FAIL", "fails": fails,
+            "notes": notes}
 
 
 def check(root: Any, *, scene: str, goal: str, seconds: float = 90.0,
@@ -192,7 +257,8 @@ def finish(root: Any, *, scene: str, goal: str, seconds: float,
            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
            "smart": smart_m, "baseline": base_m,
            "runs": {"smart": str(smart_dir), "baseline": str(base_dir)},
-           "usd": usd, **verdict(smart_m, base_m)}
+           "usd": usd,
+           **verdict(smart_m, base_m, seconds=seconds)}
     d = feel_dir(root)
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{_slug(scene)}.json").write_text(json.dumps(out, indent=2),
@@ -238,7 +304,14 @@ def escalate(root: Any, result: dict) -> dict:
 
     One open item per scene (source feel-check, source_ref the scene slug). A
     re-run that still fails files nothing new; a pass closes the open item
-    with the passing numbers."""
+    with the passing numbers.
+
+    THE DESK IS A PERSON'S. The item's source is in queue.HELD_SOURCES, so no
+    auto-dispatcher runs it and it carries no kind: it is a design decision
+    waiting for the human, not a repair. Measured (Turf War, 2026-10-17): as
+    a dispatchable kind=fix item it was run by the director seat as an agent,
+    which filed the tuning its brief named and relabelled it past the slice
+    hold."""
     from ..board import queue as _queue
     from ..store import db
     from ..store.util import rows as _rows
@@ -277,19 +350,22 @@ def escalate(root: Any, result: dict) -> dict:
         f"{b.get('deaths')}. Runs: {result.get('runs')}. Read a few decision "
         "lines from the smart run's decisions.jsonl to see the scene the way "
         "the bot saw it.\n\n"
-        "Do: decide the two or three changes that move these numbers, file "
-        "each as kind=feature or fix to the gameplay or level seat with an "
-        "acceptance naming the metric it should move, then file a qa item "
-        "depending on them that re-runs playtest_feel_check on this scene. A "
-        "pass closes this item by itself.")
+        "Do: PROPOSE the two or three changes that would move these numbers, "
+        "each naming the metric it should move and the seat that would build "
+        "it, and leave them in this item's result. A PERSON files them: this "
+        "item is held from every auto-dispatcher because it changes the "
+        "game's design, and the human decides whether the game or the check "
+        "is what needs changing. Do not file gameplay or level items from "
+        "this brief. A passing re-run of playtest_feel_check on this scene "
+        "closes this item by itself.")
     item = _queue.add(
         root, "director",
         f"FEEL FAIL: {result.get('scene') or 'the boot scene'} - "
         + ", ".join(fails)[:120],
         brief=brief, priority=10, source=FEEL_SOURCE, source_ref=ref,
-        kind="fix", severity="major", size="small",
-        acceptance="design changes filed to gameplay/level with a feel "
-                   "re-check depending on them")
+        severity="major", size="small",
+        acceptance="two or three design changes proposed for the human to "
+                   "file, each naming the metric it moves")
     return {"filed": int(item["id"])}
 
 

@@ -49,10 +49,12 @@ def test_one_button_and_flat(tmp_path):
 
 def test_no_pressure_and_trivial(tmp_path):
     smart = feel.measure(_run(tmp_path, "s", _decisions(
-        ["shoot", "jump", "dash"] * 20, danger_every=50)))
+        ["shoot", "jump", "dash"] * 20, danger_every=50),
+        events=[{"kind": "run_end", "ts": 1061, "data": {"status": "won"}}]))
     base = feel.measure(_run(tmp_path, "b", _decisions(["shoot"] * 60,
                                                        progress_to=0.2,
-                                                       danger_every=50)))
+                                                       danger_every=50),
+        events=[{"kind": "run_end", "ts": 1061, "data": {"status": "won"}}]))
     fails = feel.verdict(smart, base)["fails"]
     assert "NO_PRESSURE" in fails and "TRIVIAL" in fails
     # control: the same smart run, but the passive bot is threatened half the
@@ -60,6 +62,78 @@ def test_no_pressure_and_trivial(tmp_path):
     pressured = feel.measure(_run(tmp_path, "b2", _decisions(
         ["shoot"] * 60, progress_to=0.2, danger_every=2)))
     assert "NO_PRESSURE" not in feel.verdict(smart, pressured)["fails"]
+
+
+def test_trivial_is_a_note_not_a_fail_when_no_run_reached_an_end(tmp_path):
+    """Measured (Turf War): 90 s is 3-4 turns of a 6-10 minute match. Nobody
+    can die in that window, and the FAIL it produced filed tuning work."""
+    smart = feel.measure(_run(tmp_path, "s", _decisions(
+        ["shoot", "jump", "dash"] * 20)))
+    base = feel.measure(_run(tmp_path, "b", _decisions(["shoot"] * 60,
+                                                       progress_to=0.2)))
+    assert smart["ended"] is False and smart["deaths"] == 0
+    got = feel.verdict(smart, base, seconds=90)
+    assert got["verdict"] == "PASS", got
+    assert "TRIVIAL" not in got["fails"]
+    assert "not measurable" in got["notes"]["TRIVIAL"] and "90 s" in got["notes"]["TRIVIAL"]
+    # control: the same runs, BOTH carrying a match_end the bot survived, ARE
+    # trivial; one run ending while the other did not is still unjudged
+    end = [{"kind": "match_end", "ts": 1061, "data": {"status": "won"}}]
+    ended = feel.measure(_run(tmp_path, "s2", _decisions(
+        ["shoot", "jump", "dash"] * 20), events=end))
+    assert ended["ended"] is True and ended["end_status"] == "won"
+    assert "TRIVIAL" not in feel.verdict(ended, base)["fails"]
+    base_ended = feel.measure(_run(tmp_path, "b2", _decisions(
+        ["shoot"] * 60, progress_to=0.2), events=end))
+    assert "TRIVIAL" in feel.verdict(ended, base_ended)["fails"]
+
+
+def test_an_end_event_without_a_status_leaves_trivial_unjudged(tmp_path):
+    """Measured (Turf War, 480 s): `match_end {turn: 23, winner: 1}`, the CPU
+    had knocked out every athlete, and the check read 0 deaths and TRIVIAL."""
+    winner_only = [{"kind": "match_end", "ts": 1061,
+                    "data": {"turn": 23, "winner": 1}}]
+    smart = feel.measure(_run(tmp_path, "s", _decisions(
+        ["shoot", "jump", "dash"] * 20), events=winner_only))
+    base = feel.measure(_run(tmp_path, "b", _decisions(
+        ["shoot"] * 60, progress_to=0.2), events=winner_only))
+    assert smart["ended"] is True and smart["end_status"] == "unknown"
+    got = feel.verdict(smart, base, seconds=480)
+    assert "TRIVIAL" not in got["fails"]
+    assert "no status" in got["notes"]["TRIVIAL"]
+    # controls: a lost status is a death (no TRIVIAL question at all), and a
+    # knocked-out event counts as one too, status or no status
+    lost = feel.measure(_run(tmp_path, "l", _decisions(["shoot"] * 60), events=[
+        {"kind": "match_end", "ts": 1061, "data": {"winner": 1, "status": "lost"}}]))
+    assert lost["deaths"] == 1 and lost["end_status"] == "lost"
+    ko = feel.measure(_run(tmp_path, "k", _decisions(["shoot"] * 60), events=[
+        {"kind": "athlete_knocked_out", "ts": 1030, "data": {"reason": "pit"}},
+        *winner_only]))
+    assert ko["deaths"] == 1
+
+
+def test_one_button_counts_only_frames_that_offered_a_choice(tmp_path):
+    """Measured (Turf War): "done" was the only option in retreat/resolve
+    frames, and counting those made a turn-based game read as one-button."""
+    forced = [{"choice": "done", "ts": 1000 + i, "progress": i / 80,
+               "danger": True, "options": ["done"]} for i in range(50)]
+    real = [{"choice": c, "ts": 1050 + i, "progress": (50 + i) / 80,
+             "danger": i % 2 == 0, "options": ["dash", "jump", "shoot"]}
+            for i, c in enumerate(["shoot", "jump", "dash"] * 10)]
+    smart = feel.measure(_run(tmp_path, "s", forced + real,
+                              events=[{"kind": "fight_death", "ts": 1070}]))
+    assert smart["decisions"] == 80 and smart["forced"] == 50
+    assert smart["decisions_with_choice"] == 30
+    assert smart["top_share"] == round(10 / 30, 3)
+    base = feel.measure(_run(tmp_path, "b", _decisions(["shoot"] * 60,
+                                                       progress_to=0.2)))
+    assert "ONE_BUTTON" not in feel.verdict(smart, base)["fails"]
+    # control: the same rows without the options field count every frame
+    stripped = [{k: v for k, v in r.items() if k != "options"} for r in forced + real]
+    old = feel.measure(_run(tmp_path, "s2", stripped,
+                            events=[{"kind": "fight_death", "ts": 1070}]))
+    assert old["top_share"] == round(50 / 80, 3)
+    assert "ONE_BUTTON" in feel.verdict(old, base)["fails"]
 
 
 def test_unfair_needs_deaths_on_one_spot(tmp_path):
@@ -136,6 +210,28 @@ def test_a_failure_files_one_director_item_and_a_pass_closes_it(root):
     item = queue.get(root, got["filed"])
     assert item["seat"] == "director" and item["source"] == feel.FEEL_SOURCE
     assert "FLAT" in item["title"] and "make the hold-one-input" in item["brief"]
+    # THE DESK IS A PERSON'S (Turf War, 2026-10-17): held from every
+    # auto-dispatcher, not a repair, and the brief proposes rather than files.
+    assert item["source"] in queue.HELD_SOURCES
+    assert item["kind"] != "fix"
+    assert "A PERSON files them" in item["brief"]
+    assert "Do not file gameplay or level items" in item["brief"]
+    assert "file each as kind=feature or fix" not in item["brief"]
+    assert got["filed"] not in {int(r["id"]) for r in queue.ready(root, limit=50)}
+    assert queue.claim_next(root, "director", "agent:item-999") is None
+    # the belt to the braces: work filed FROM the feel item is a feature
+    # unless it names a plan row, whatever its filer called it
+    child = queue.add(root, "gameplay", "triple the damage", brief="x",
+                      source="seat:director", source_ref=str(got["filed"]),
+                      kind="fix")
+    assert child["kind"] == "feature"
+    planned = queue.add(root, "level", "cut the arena", brief="x",
+                        source="seat:director", source_ref=str(got["filed"]),
+                        kind="fix", planned=True)
+    assert planned["kind"] == "fix"
+    other = queue.add(root, "qa", "re-pin the golden hash", brief="x",
+                      source="seat:director", source_ref="12345", kind="fix")
+    assert other["kind"] == "fix"                 # control: no feel parent
     # a second failing run of the same scene files nothing new
     assert feel.escalate(root, _failing()) == {"open": got["filed"]}
     passed = {**_failing(), "verdict": "PASS", "fails": {}}

@@ -7,12 +7,10 @@ composes at equal height with real measured deltas.
 """
 from __future__ import annotations
 
-import pytest
+from PIL import Image
 
 from bgate_core.art import spritekit as kit
 
-PIL = pytest.importorskip("PIL")
-from PIL import Image  # noqa: E402
 
 BACK = (12, 12, 16, 255)
 BODY = (190, 170, 120, 255)

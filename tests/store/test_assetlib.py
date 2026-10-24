@@ -213,3 +213,76 @@ class TestForget:
         assert out["ok"] and not out["blob_removed"]
         assert assetlib.get("thud.wav")
         assert len(list((assetlib.home() / "blobs").iterdir())) == 1
+
+
+@pytest.fixture()
+def studio_set(tmp_path, monkeypatch):
+    """A studio at tmp_path/studio, set without touching real settings."""
+    from bgate_core.store import studio
+    root = tmp_path / "studio"
+    monkeypatch.setattr(studio, "root", lambda: root)
+    monkeypatch.setattr(studio, "assets_dir", lambda: root / "shared" / "assets")
+    return root
+
+
+class TestStudio:
+    def test_store_moves_under_the_studio(self, studio_set):
+        assert assetlib.home() == studio_set / "shared" / "assets"
+        assert assetlib.legacy_home() == Path(os.environ["BGATE_HOME"]) / "library"
+
+    def test_publish_lands_in_the_studio(self, project, studio_set):
+        got = assetlib.publish(project, ["assets/sfx/hit.wav"])
+        assert got["home"] == str(studio_set / "shared" / "assets")
+        assert (studio_set / "shared" / "assets" / "index.json").is_file()
+        assert not (assetlib.legacy_home() / "index.json").exists()
+
+    def test_migrate_needs_a_studio(self):
+        with pytest.raises(assetlib.LibraryError, match="no studio"):
+            assetlib.migrate()
+
+    def test_migrate_copies_and_deletes_nothing(self, project, monkeypatch, tmp_path):
+        old = assetlib.publish(project, ["assets"], tags=["hero"])
+        old_ids = {e["id"] for e in old["published"]}
+        old_files = sorted(p.name for p in assetlib.legacy_home().rglob("*"))
+        from bgate_core.store import studio
+        root = tmp_path / "studio"
+        monkeypatch.setattr(studio, "root", lambda: root)
+        monkeypatch.setattr(studio, "assets_dir", lambda: root / "shared" / "assets")
+
+        got = assetlib.migrate()
+        assert got["ok"] and got["copied"] == len(old_ids) and got["merged"] == 0
+        assert set(assetlib.read_index()["entries"]) == old_ids
+        walk = assetlib.get("pm_paladin_walk.png")
+        (tmp_path / "next").mkdir()
+        imported = assetlib.import_entries(tmp_path / "next", [walk["id"]])
+        assert imported["ok"] and imported["imported"][0]["sidecars"]
+        assert sorted(p.name for p in assetlib.legacy_home().rglob("*")) == old_files
+
+        again = assetlib.migrate()
+        assert again["copied"] == 0 and again["merged"] == len(old_ids)
+        assert again["blobs"] == 0
+
+    def test_migrate_merges_tags_into_a_held_entry(self, project, monkeypatch, tmp_path):
+        assetlib.publish(project, ["assets/sfx/hit.wav"], tags=["old"])
+        from bgate_core.store import studio
+        root = tmp_path / "studio"
+        monkeypatch.setattr(studio, "root", lambda: root)
+        monkeypatch.setattr(studio, "assets_dir", lambda: root / "shared" / "assets")
+        assetlib.publish(project, ["assets/sfx/hit.wav"], tags=["new"])
+        got = assetlib.migrate()
+        assert got["merged"] == 1 and got["copied"] == 0
+        assert assetlib.get("hit.wav")["tags"] == ["new", "old"]
+
+    def test_migrate_leaves_an_entry_whose_bytes_are_gone(self, project, monkeypatch, tmp_path):
+        got = assetlib.publish(project, ["assets/sfx/hit.wav",
+                                         "assets/characters/pm_paladin_idle.png"])
+        hit = next(e for e in got["published"] if e["name"] == "hit.wav")
+        (assetlib.legacy_home() / "blobs" / hit["blob"]).unlink()
+        from bgate_core.store import studio
+        root = tmp_path / "studio"
+        monkeypatch.setattr(studio, "root", lambda: root)
+        monkeypatch.setattr(studio, "assets_dir", lambda: root / "shared" / "assets")
+        out = assetlib.migrate()
+        assert not out["ok"] and out["missing"] == ["hit.wav"] and out["copied"] == 1
+        assert hit["id"] not in assetlib.read_index()["entries"]
+        assert assetlib.get("pm_paladin_idle.png")

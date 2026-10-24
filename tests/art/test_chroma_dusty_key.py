@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import pytest
 
+from PIL import Image
+
 from bgate_core.art import chroma
 
-Image = pytest.importorskip("PIL.Image")
 
 MAGENTA = (255, 0, 255)
 # What Krea actually painted, not what it was asked for.

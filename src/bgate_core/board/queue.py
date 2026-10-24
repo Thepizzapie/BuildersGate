@@ -135,7 +135,13 @@ SATISFIED = ("done",)
 # AGENT cannot take it - greenlight_advance refuses a forward move from any
 # agent, so dispatching it as one would buy a run that ends in a refusal.
 STAGE_ADVANCE_SOURCE = "stage-advance"
-HELD_SOURCES = ("chat", "human-task", STAGE_ADVANCE_SOURCE)
+# A FEEL-CHECK FAIL IS A DESIGN DECISION, NOT A TASK. MEASURED (Turf War,
+# 2026-10-17): the escalation was dispatchable and born kind=fix, autodeploy
+# ran the director seat as an agent, it did what its brief said ("file each
+# as kind=feature or fix") and relabelled its way past the slice hold, and
+# the board retuned a game whose owner had deferred tuning. The item now
+# waits for a person, who decides whether the game or the check is wrong.
+HELD_SOURCES = ("chat", "human-task", STAGE_ADVANCE_SOURCE, "feel-check")
 
 # A HUMAN STEP: work only a person can do (a call, a playtest, a sign-off that
 # is not a checkpoint on an existing item). It lives on the board as an item
@@ -156,10 +162,12 @@ FAILURE_ESCALATION_SOURCE = "failure-escalation"
 KINDS = ("feature", "content", "fix", "polish")
 SEVERITIES = ("showstopper", "major", "minor")
 
-#: Sources whose items are repairs by construction.
+#: Sources whose items are repairs by construction. Not "feel-check": a
+#: failing feel check asks for DESIGN changes, which the slice stage exists to
+#: hold until a person says so (see HELD_SOURCES).
 FIX_SOURCES = frozenset({
     "playtest", "playtest-triage", "playtest-repro", "qa-gate-escalation",
-    FAILURE_ESCALATION_SOURCE, "unblock", "feel-check",
+    FAILURE_ESCALATION_SOURCE, "unblock",
 })
 #: Process work: it reviews or plans the game rather than changing it. Never
 #: held by the slice stage and never refused by a lock.
@@ -417,6 +425,31 @@ def scope_grade(brief: str, acceptance: str = "", size: str = "medium",
     return {"score": score, "reasons": reasons}
 
 
+FEEL_SOURCE_NAME = "feel-check"
+
+
+def kind_under_feel_parent(root: str | os.PathLike[str], source_ref: str,
+                           kind: str, planned: bool = False) -> str:
+    """Anything filed FROM a feel-check item is design work: kind=feature,
+    unless it names a plan row (then the row's kind stands).
+
+    The belt to HELD_SOURCES' braces. MEASURED (Turf War, 2026-10-17): the
+    director agent dispatched on a feel-check item filed its tuning as fixes,
+    and a fix is admitted at the slice stage by construction. A feel check
+    asks whether the design works; what answers it is a design change, and the
+    slice stage exists to hold those until a person says so."""
+    ref = str(source_ref or "").strip()
+    if planned or kind == "feature" or not ref.isdigit():
+        return kind
+    try:
+        parent = get(root, int(ref))
+    except LookupError:
+        return kind
+    if str(parent.get("source") or "") != FEEL_SOURCE_NAME:
+        return kind
+    return "feature"
+
+
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
         chain_id: str = "", chain_pos: int = 0,
@@ -425,7 +458,7 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         size: str = "medium", acceptance: str = "",
         kind: str = "", severity: str = "",
         checkpoint: bool = False, checkpoint_note: str = "",
-        split_of: Optional[int] = None) -> dict:
+        split_of: Optional[int] = None, planned: bool = False) -> dict:
     # A `scope_tier_id` used to be filed here and run through scope.enforce
     # first — the cut line's one gate. It never refused an item in the product's
     # life: untiered work was deliberately allowed through, and nothing was ever
@@ -445,6 +478,7 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
     kind = str(kind or "").strip().lower() or derive_kind(root, source, source_ref)
     if kind and kind not in KINDS:
         raise ValueError(f"unknown kind {kind!r}; kinds are {KINDS}")
+    kind = kind_under_feel_parent(root, source_ref, kind, planned)
     severity = str(severity or "").strip().lower()
     if severity and severity not in SEVERITIES:
         raise ValueError(f"unknown severity {severity!r}; severities are {SEVERITIES}")
@@ -583,7 +617,8 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
                    acceptance=str(link.get("acceptance") or ""),
                    kind=str(link.get("kind") or ""),
                    checkpoint=bool(link.get("checkpoint")),
-                   checkpoint_note=str(link.get("checkpoint_note") or ""))
+                   checkpoint_note=str(link.get("checkpoint_note") or ""),
+                   planned=bool(link.get("plan_row")))
         if not chain_id:
             chain_id = str(item["chain_id"])
         previous = item
@@ -663,8 +698,15 @@ def update(root: str | os.PathLike[str], item_id: int, *,
     This is how a reviewer enriches a ticket: e.g. the video-watching director
     rewriting a transcript-era brief to add the frames/timestamps/telemetry it
     saw. Only the passed fields change; the rest (status, source, source_ref)
-    are untouched."""
-    get(root, item_id)  # 404 if missing
+    are untouched.
+
+    The activity row names every triage field that changed, old value to
+    new, under the actor who changed it. MEASURED (Turf War, 2026-10-17): an
+    autonomous director relabelled two feature items as fixes "so the
+    slice-stage hold doesn't block them", and the only trace was "item 97
+    edited". Who changed a kind, and from what, is the question the hold has
+    to be able to answer."""
+    before = get(root, item_id)  # 404 if missing
     sets, params = [], []
     if title is not None:
         if not title.strip():
@@ -718,7 +760,12 @@ def update(root: str | os.PathLike[str], item_id: int, *,
             f"UPDATE work_item SET {', '.join(sets)}, updated_at = datetime('now') "
             "WHERE id = ?", params)
     item = get(root, item_id)
-    activity.log(root, "queue", f"item {item_id} edited: {item['title'][:60]}",
+    changed = [f"{f} {before.get(f)!r}->{item.get(f)!r}"
+               for f in ("kind", "severity", "seat", "priority")
+               if before.get(f) != item.get(f)]
+    detail = f" ({', '.join(changed)})" if changed else ""
+    activity.log(root, "queue",
+                 f"item {item_id} edited: {item['title'][:60]}{detail}",
                  seat=item["seat"], ref=str(item_id))
     return item
 
@@ -2723,7 +2770,7 @@ def _admitted_on_its_own(item: dict, slice_items: set[int]) -> bool:
             or item.get("source") == "domain-plan")
 
 
-def _parent_ids(item: dict) -> list[int]:
+def _lineage_ids(item: dict) -> list[int]:
     """The rows this item descends from: what it depends on, what it was filed
     from (source_ref), what it was split from, and the item a split chain
     ("split-N") belongs to."""
@@ -2758,7 +2805,7 @@ def _admitted_in_slice(item: dict, slice_items: set[int],
     # kind=fix by hand, and each board starved three or four times a day on it.
     if _admitted_on_its_own(item, slice_items):
         return True
-    parents = _parent_ids(item)
+    parents = _lineage_ids(item)
     if any(pid in slice_items for pid in parents):
         return True
     if root is None or not parents:

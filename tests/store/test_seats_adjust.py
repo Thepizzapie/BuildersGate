@@ -2,7 +2,7 @@
 cannot quietly go green.
 
 Two halves. The Python half exercises the one behaviour a seat panel cannot
-fake — approving a revision has to put THAT revision's pixels at the path the
+fake - approving a revision has to put THAT revision's pixels at the path the
 game loads, and only a human may do it. The JS half is static: these panels
 have no test harness, so the assertions below pin the exact lines the audit
 found (default-to-PASS, /review instead of /react, a hardcoded flow whitelist,
@@ -40,7 +40,7 @@ def _read(*parts: str) -> str:
 
 
 def _code(src: str) -> str:
-    """The source with comments stripped — a fixed bug is often described in a
+    """The source with comments stripped - a fixed bug is often described in a
     comment right where it used to live, and a prose mention is not a relapse."""
     out, in_block = [], False
     for line in src.splitlines():
@@ -129,7 +129,7 @@ class TestApprovalIsIntegration:
         monkeypatch.setenv("BGATE_ACTOR", "agent:item-9")
         with pytest.raises(PermissionError):
             artifacts.review(root, sheet["r1"]["id"], "approved")
-        # the rejected revision is still the file on disk — no side effect
+        # the rejected revision is still the file on disk - no side effect
         assert sheet["live"].read_bytes() == b"\x89PNG-two" + b"b" * 64
         assert artifacts.get(root, sheet["r1"]["id"])["status"] == "candidate"
 
@@ -211,7 +211,7 @@ class TestWorkspaceDoesNotFanOut:
 
 
 # ---------------------------------------------------------------------------
-# The panels themselves — static assertions on what the audit found
+# The panels themselves - static assertions on what the audit found
 # ---------------------------------------------------------------------------
 
 class TestQaPanelCannotDefaultToPass:
@@ -275,7 +275,7 @@ class TestStudioFlowsAreDerived:
         literally, from when the bug was that two finished modules were built
         and never wired up. Two of the three have since been REMOVED on purpose:
         "Asset flow" duplicated the Assets library and the art seat, and "Game
-        editor" could not edit anything — no save, no write path — it read the
+        editor" could not edit anything - no save, no write path - it read the
         Godot tree, screenshotted and dispatched queue items, all of which
         Playtests and Agents already do.
 
@@ -283,7 +283,7 @@ class TestStudioFlowsAreDerived:
         over the same data the Agents console already owns, and between two
         places to watch one floor the one with the conversation, the queue and
         the live rails is the one that survived. With it went the last
-        flow_*.js, so this no longer asserts that any exist — an empty registry
+        flow_*.js, so this no longer asserts that any exist - an empty registry
         and an empty directory AGREE, and demanding at least one would make
         removing the last module fail a test whose subject is agreement.
 
@@ -300,7 +300,7 @@ class TestStudioFlowsAreDerived:
 
 
 class TestReferenceThumbnailsRespectTheSuffix:
-    @pytest.mark.parametrize("name", ["wf.js", "wf_steps_asset.js", "flows.js"])
+    @pytest.mark.parametrize("name", ["wf.js", "wf_steps_model.js", "wf_steps_tools.js", "flows.js"])
     def test_no_hardcoded_png_ref_path(self, name):
         code = _code(_read(name))
         assert '".bgate/refs/"' not in code       # no path built from the name
@@ -345,7 +345,7 @@ class TestGameplayControlsAndTheAtlasScan:
 
     def test_the_atlas_nav_badge_is_gone_on_purpose(self):
         """It counted dead + missing assets and the LIST VIEW was the only place
-        those were listed — its tooltip said "open Atlas to see them". The list
+        those were listed - its tooltip said "open Atlas to see them". The list
         and graph modes were removed on the user's instruction and the badge went
         with them, because a count you cannot click through to is a number that
         only nags. This asserts the removal rather than leaving the old

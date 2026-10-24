@@ -3,8 +3,6 @@ BoneMap text, the profile identity map, the name matching, the sheets, the
 scene text with libraries and IK, the IK verdict."""
 from __future__ import annotations
 
-import pytest
-
 from bgate_adapters import godot as _godot
 from bgate_adapters import godot_capture as gcap
 from bgate_adapters import godot_character as gc
@@ -114,7 +112,7 @@ class TestIKVerdict:
 
 class TestSheets:
     def test_frames_compose_one_sheet_per_clip(self, tmp_path):
-        PIL = pytest.importorskip("PIL.Image")
+        from PIL import Image as PIL
         frames = []
         for clip in ("walk", "ual/Walk"):
             for view in ("side", "front34"):

@@ -1,7 +1,7 @@
 """Reading a generated tile sheet: which tile answers which neighbour shape.
 
 THE PIECE THAT MAKES GENERATED TILES USABLE. A model hands back a terrain
-sheet — grass meeting stone, every edge and corner — in whatever arrangement
+sheet - grass meeting stone, every edge and corner - in whatever arrangement
 it felt like. `autotile.Terrain` needs the opposite: a map from NEIGHBOUR MASK
 to atlas coordinate. Somebody has to say "this one is the north-west corner",
 and asking a human to name 47 tiles by hand is how a pipeline stops being used.
@@ -9,7 +9,7 @@ and asking a human to name 47 tiles by hand is how a pipeline stops being used.
 So this reads it off the pixels. Each tile is classified by its own body
 colour, then by what its eight compass zones show: a stone tile whose western
 edge is drawn as grass is the tile for "stone with grass to the west", which
-is a mask. Verified on real Retro Diffusion output before it was written —
+is a mask. Verified on real Retro Diffusion output before it was written -
 pure fill came back 255, a west-edge tile 55, a corner 19.
 
 WHAT IT REFUSES TO DO. Art whose colours do not separate into two terrains
@@ -36,7 +36,7 @@ from bgate_core.art.autotile import SE as BIT_SE
 from bgate_core.art.autotile import SW as BIT_SW
 from bgate_core.art.autotile import W as BIT_W
 
-#: A zone is read AT THE BOUNDARY, not inset from it — and that had to be
+#: A zone is read AT THE BOUNDARY, not inset from it - and that had to be
 #: measured to be believed. An inset probe (10% in) read a tile whose western
 #: pixel column is grass as pure interior stone, because the transition strip
 #: is only two pixels wide; the mask table would then have put an interior
@@ -146,8 +146,8 @@ def detect(image, *, tile_size: tuple[int, int], bits: int = 4,
     tiles that answered a mask somebody else already answered.
 
     BOTH terrains come back, because a grass/stone sheet genuinely contains two
-    autotile sets sharing one atlas — grass that meets stone, and stone that
-    meets grass — and a game wants whichever it is painting with.
+    autotile sets sharing one atlas - grass that meets stone, and stone that
+    meets grass - and a game wants whichever it is painting with.
     """
     img = image.convert("RGBA")
     tw, th = int(tile_size[0]), int(tile_size[1])
@@ -264,7 +264,7 @@ def seam_report(image, table: dict, *, tile_size: tuple[int, int],
     """Do the tiles autotiling will place NEXT TO EACH OTHER line up?
 
     NOT a wrap test. Asking whether a tile tiles with ITSELF is the obvious
-    check and the wrong one — written first, measured giving nonsense on a real
+    check and the wrong one - written first, measured giving nonsense on a real
     terrain set, because a corner piece is never meant to repeat, it is meant to
     meet its neighbours.
 
@@ -351,7 +351,7 @@ def synthesise(image, table: dict, wanted: Sequence[int], *,
     synthesised came back "missing" while its pixels sat in the sheet.
 
     ROTATION as well as mirroring, because a square tile turned 90 degrees is
-    another mask entirely — a north-end cap rotated is an east-end cap — and a
+    another mask entirely - a north-end cap rotated is an east-end cap - and a
     four-bit set is mostly rotations of four shapes.
 
     THE CAVEAT IS THE SPRITE MIRROR RULE AGAIN: a flip or a turn is only
@@ -448,7 +448,7 @@ def _turn_image(cell, how: str):
     return cell.rotate({"r90": -90, "r180": 180, "r270": 90}[how], expand=False)
 
 # ---------------------------------------------------------------------------
-# Compositing — the last free fill
+# Compositing - the last free fill
 # ---------------------------------------------------------------------------
 def composite(image, table: dict, wanted: Sequence[int], *,
               tile_size: tuple[int, int],
@@ -457,7 +457,7 @@ def composite(image, table: dict, wanted: Sequence[int], *,
 
     Flipping and turning cannot reach every shape: a four-bit set whose art
     has no straight corridor piece (N|S, E|W) cannot rotate one into being,
-    and a BSP dungeon is mostly corridors — the masks missing after
+    and a BSP dungeon is mostly corridors - the masks missing after
     :func:`synthesise` are exactly the ones the level needs most.
 
     THE OBVIOUS CONSTRUCTION IS WRONG AND WAS SHIPPED ONCE. Taking each
@@ -467,8 +467,8 @@ def composite(image, table: dict, wanted: Sequence[int], *,
     level was drawn out of them. It reads as ridges and beading and a human
     spotted it immediately.
 
-    So the floor is never cut. Start from the FULL tile — continuous floor,
-    real art — and for each side the target wants void, carve in that donor's
+    So the floor is never cut. Start from the FULL tile - continuous floor,
+    real art - and for each side the target wants void, carve in that donor's
     OWN void pixels, restricted to the half of the tile that side owns. The
     middle stays whole, the edges are real generated art, and nothing is
     stitched through the part that has to be continuous.
@@ -510,7 +510,7 @@ def composite(image, table: dict, wanted: Sequence[int], *,
         def is_void(px):
             return (px[0] + px[1] + px[2]) / 3.0 < 60
 
-    #: Which half of the tile a side owns — a donor's void is only trusted
+    #: Which half of the tile a side owns - a donor's void is only trusted
     #: where that side can actually see it.
     halves = {
         BIT_N: (0, 0, tw, th // 2), BIT_S: (0, th // 2, tw, th),
@@ -565,40 +565,8 @@ def composite(image, table: dict, wanted: Sequence[int], *,
     return {"image": out, "table": have, "built": built,
             "still_missing": [m for m in wanted if have.get(m) is None]}
 
-def repack(image, table: dict, wanted: Sequence[int], *,
-           tile_size: tuple[int, int], columns: int = 4) -> dict:
-    """Lay the tiles out in CANONICAL MASK ORDER: mask m at (m%cols, m//cols).
-
-    A detected table maps mask -> wherever the model happened to draw it, and
-    that is unusable to anything but us: `autotile.Terrain.grid16`/`blob47`,
-    Godot's own terrain editor, and every other tool that reads a tileset all
-    assume row-major mask order from an origin. Emitting the atlas in that
-    order is what makes the output a STANDARD tileset rather than one only
-    this pipeline can read — and it is why level_generate's built-in layouts
-    work against it without being handed a table.
-    """
-    from PIL import Image
-
-    img = image.convert("RGBA")
-    tw, th = int(tile_size[0]), int(tile_size[1])
-    masks = [m for m in wanted if table.get(m) is not None]
-    rows = (len(wanted) + columns - 1) // columns
-    out = Image.new("RGBA", (columns * tw, rows * th), (0, 0, 0, 0))
-    packed: dict[int, tuple[int, int]] = {}
-    for i, mask in enumerate(wanted):
-        at = table.get(mask)
-        if at is None:
-            continue
-        src = img.crop((at[0] * tw, at[1] * th, at[0] * tw + tw,
-                        at[1] * th + th))
-        tx, ty = i % columns, i // columns
-        out.paste(src, (tx * tw, ty * th))
-        packed[mask] = (tx, ty)
-    return {"image": out, "table": packed, "columns": columns,
-            "count": len(masks)}
-
 #: How deep the void reaches in from a tile edge, as a fraction of the tile.
-#: Every edge in the set uses the SAME inset — that is what makes tiles line
+#: Every edge in the set uses the SAME inset - that is what makes tiles line
 #: up, and generated art does not provide it: measured on a real Retro
 #: Diffusion terrain sheet, tiles with one void side ranged from 61% to 82%
 #: floor and tiles with two ranged 28% to 73%, so the floor boundary jumped in
@@ -606,7 +574,7 @@ def repack(image, table: dict, wanted: Sequence[int], *,
 #: as a corridor thinner than the corridor beside it.
 #:
 #: It is a LIP, not a wall. 0.28 was the measured average of the model's own
-#: edge depth, and using it drew the boundary TWICE — once as the floor tile's
+#: edge depth, and using it drew the boundary TWICE - once as the floor tile's
 #: carved edge and again as the wall layer occupying the neighbouring cell. A
 #: two-cell corridor then lost over half its width and rendered as a seam in the
 #: rock. The wall layer owns the wall; the floor only needs enough edge to stop
@@ -615,7 +583,7 @@ EDGE_INSET = 0.1
 
 #: How far a COLLIDER reaches in, which is deliberately NOT `EDGE_INSET`.
 #: They were one constant, and shrinking the visual lip to 0.1 silently shrank
-#: every collider with it — the player would have walked most of a tile into the
+#: every collider with it - the player would have walked most of a tile into the
 #: stone before being stopped. What the art draws and where the game stops are
 #: two different questions and they get two different numbers.
 COLLIDER_INSET = 0.28
@@ -627,8 +595,8 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
                     inset: float = EDGE_INSET, clear: bool = False) -> dict:
     """Rebuild every mask with a CONSISTENT edge inset, keeping the art.
 
-    The model's texture is kept — floor from its own full tile, void from its
-    own void regions — but the GEOMETRY is imposed: void reaches exactly
+    The model's texture is kept - floor from its own full tile, void from its
+    own void regions - but the GEOMETRY is imposed: void reaches exactly
     ``inset`` of the way in from each side the mask says is void, on every
     tile. That is the property a hand-made autotile set has by construction
     and a generated one does not, and without it neighbours disagree about
@@ -636,7 +604,7 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
 
     ``clear`` carves the void band to TRANSPARENT instead of painting the void
     terrain into it, and WHICH ONE IS RIGHT depends entirely on what is behind
-    the floor layer — a question no measurement of the sheet can answer, which
+    the floor layer - a question no measurement of the sheet can answer, which
     is why it took a screenshot of the running game to settle:
 
       * Behind a wall FILL (``levelgen.layers(wall_fill=True)``, the default),
@@ -692,7 +660,7 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
     bw, bh = max(1, round(tw * inset)), max(1, round(th * inset))
     # FOUR-BIT OR EIGHT, inferred from what was asked for. In a 4-bit set the
     # corner bits are simply absent, so carving "the corner bit is clear" would
-    # notch all four corners out of every tile — including the fully open one.
+    # notch all four corners out of every tile - including the fully open one.
     _CORNER_BITS = BIT_NE | BIT_SE | BIT_SW | BIT_NW
     eight_bit = any(m & _CORNER_BITS for m in wanted)
     out_tiles: dict[int, Image.Image] = {}
@@ -714,7 +682,7 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
         # north-east corner", so at every step in a room's outline there is no
         # tile to draw and the shadow band along the wall simply BREAKS. The
         # corner is a nibble out of the tile and pure geometry, so it does not
-        # need new art — which is why a 47-tile set can be built from a 16-tile
+        # need new art - which is why a 47-tile set can be built from a 16-tile
         # generation instead of asking the model for corners it draws badly.
         if eight_bit:
             for bit, sides, box in (
@@ -743,7 +711,7 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
             # model draws the floor/void transition as a ramp, so carving the
             # band leaves the anti-aliased tail of it opaque just inside the
             # cut. On a finished map that tail is a dark line, and the wall's
-            # own mortar showing through the hole beside it is a light one —
+            # own mortar showing through the hole beside it is a light one -
             # together they read as a seam traced around every room. Anything
             # still classifying as void is part of the void.
             for y in range(th):
@@ -773,14 +741,14 @@ def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
 
     Not traced from pixels. The tiles were rebuilt with one known inset by
     :func:`normalise_edges`, so the walkable region of every tile is a
-    rectangle known exactly — tracing the art would rediscover that rectangle
+    rectangle known exactly - tracing the art would rediscover that rectangle
     with jitter and hand Godot a fifty-point polygon per tile for nothing.
 
     ``solid_void=True`` gives the collider the VOID (what stops the player),
     which is what a top-down dungeon wants: the floor is walkable and the dark
     is wall. The void of a tile is up to four edge bands, so this returns one
     polygon per band rather than trying to express a ring as a single convex
-    shape — Godot takes several polygons per tile and each band is convex.
+    shape - Godot takes several polygons per tile and each band is convex.
 
     ``full`` gives every mask one whole-tile collider instead of edge bands. It
     is what a WALL layer wants: when the wall paints every non-floor cell (see
@@ -827,13 +795,13 @@ def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
 
 
 # ---------------------------------------------------------------------------
-# Isometric — the diamond
+# Isometric - the diamond
 # ---------------------------------------------------------------------------
 # A SQUARE CARVE CANNOT SERVE A DIAMOND, which is why `tileset_generate`
 # refused isometric projects rather than shipping a plausible-looking set. In
 # an isometric tilemap the tile's art is a diamond inscribed in the tile rect,
 # its corners transparent by construction, and the four EDGES of that diamond
-# are the four cell neighbours — not the four sides of the rect. Carving square
+# are the four cell neighbours - not the four sides of the rect. Carving square
 # bands would put the shadow on the rect's edges, i.e. across the diamond's
 # corners, and every room outline would read as a grid of notches.
 #
@@ -846,8 +814,8 @@ def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
 #
 # and the diamond's four edges take those four names in that order.
 #
-# In normalised tile coordinates — u across, v down, both -1..1 from the tile's
-# centre — the diamond is |u| + |v| <= 1. That single expression carries
+# In normalised tile coordinates - u across, v down, both -1..1 from the tile's
+# centre - the diamond is |u| + |v| <= 1. That single expression carries
 # everything: |u| + |v| > 1 is outside the tile's art entirely, the value runs
 # 0 at the centre to 1 at the edge so a band is a threshold on it, and the
 # SIGNS of u and v name which edge a pixel belongs to. No trigonometry, no
@@ -858,7 +826,7 @@ def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
 #: the cell beside it; an isometric floor tile has nothing behind it but the
 #: background, so its own rim is the only thing that says where the floor
 #: stops. At 0.1 a generated level rendered as flat cut-out slabs with no
-#: edge at all — compared side by side at 0.1 / 0.18 / 0.26, this is where the
+#: edge at all - compared side by side at 0.1 / 0.18 / 0.26, this is where the
 #: edge reads without the band starting to eat the tile.
 ISO_EDGE_INSET = 0.18
 
@@ -911,12 +879,12 @@ def diamond_tiles(floor_tile, void_tile, wanted: Sequence[int], *,
     where the floor stops because one number decides it for all of them.
 
     ``clear`` carves the band to transparent instead of painting the void
-    texture into it — the same question the square path documents, with the
+    texture into it - the same question the square path documents, with the
     same answer: opaque when a wall layer fills behind it, carved over a bare
     canvas. Outside the diamond is ALWAYS transparent, which is not a choice;
     it is what makes the tile a diamond.
 
-    Returns ``{ok, image, table, inset}`` — the sheet packed four to a row in
+    Returns ``{ok, image, table, inset}`` - the sheet packed four to a row in
     canonical mask order, so it is a tileset any consumer can read.
     """
     from PIL import Image
@@ -966,7 +934,7 @@ def diamond_tiles(floor_tile, void_tile, wanted: Sequence[int], *,
 #: material. Light comes from the upper LEFT, which is the convention the
 #: floor band already implies and the one nearly every isometric game uses:
 #: the face turned south-west catches some of it, the face turned south-east
-#: catches least. Equal faces read as a flat hexagon rather than a cube — the
+#: catches least. Equal faces read as a flat hexagon rather than a cube - the
 #: whole illusion is that two planes at different angles are different values.
 ISO_FACE_LEFT = 0.72
 ISO_FACE_RIGHT = 0.48
@@ -980,7 +948,7 @@ def iso_block(top, material, *, tile_size: tuple[int, int], lift: int,
     THE ONE PRIMITIVE BEHIND BOTH WALLS AND ELEVATION, because in an
     isometric world they are the same object seen twice: a wall is a cell
     raised by `lift` that you may not enter, and a terrace is a cell raised by
-    `lift` that you may. Building them from one function is not tidiness — it
+    `lift` that you may. Building them from one function is not tidiness - it
     is why a wall and the ledge beside it cannot end up drawn with different
     geometry or lit from different directions.
 
@@ -991,7 +959,7 @@ def iso_block(top, material, *, tile_size: tuple[int, int], lift: int,
     the stone continues down the wall instead of stretching.
 
     Returns ``{image, origin, size}``. ``origin`` is the ``texture_origin``
-    Godot needs — ``(0, lift // 2)`` — which puts the art's BOTTOM EDGE on the
+    Godot needs - ``(0, lift // 2)`` - which puts the art's BOTTOM EDGE on the
     diamond's bottom vertex and therefore the block's TOP face exactly `lift`
     above the cell's floor plane. That rule is `tilemap.tile_rect`'s, stated
     from the other end; get its sign wrong and every wall sinks into the floor.
@@ -1018,7 +986,7 @@ def iso_block(top, material, *, tile_size: tuple[int, int], lift: int,
         k = left_k if u < 0 else right_k
         # SAME CENTRE-SAMPLING RULE AS THE DIAMOND, and it has to be: taking
         # int(y_low) as the first row truncated the fractional boundary, and
-        # at the centre column — where the diamond's bottom vertex sits — that
+        # at the centre column - where the diamond's bottom vertex sits - that
         # left the block's lowest pixel row empty. A one-pixel notch at the
         # tip of every wall, which tiles into a dotted line along every ledge.
         for py in range(int(y_low), th + lift):
@@ -1050,8 +1018,8 @@ def iso_ramp(material, facing: str, *, tile_size: tuple[int, int], lift: int,
     The tilt is computed in CELL space, not screen space, which is the only
     way it can line up with the neighbour it serves. Screen u and v carry the
     cell axes as ``a = (u + v) / 2`` along +x (east) and ``b = (v - u) / 2``
-    along +y (south) — read straight off the DIAMOND_DOWN projection this
-    module already carves edges with — so a ramp facing east falls with `a`
+    along +y (south) - read straight off the DIAMOND_DOWN projection this
+    module already carves edges with - so a ramp facing east falls with `a`
     and one facing south falls with `b`, exactly and at any tile aspect.
 
     ``facing`` is the direction the ramp descends: the neighbour that way sits
@@ -1077,7 +1045,7 @@ def iso_ramp(material, facing: str, *, tile_size: tuple[int, int], lift: int,
     # SUPERSAMPLED DOWN THE COLUMN, because this maps source pixels FORWARD
     # to shifted destinations and neighbouring rows do not shift by the same
     # whole number. Stepping one source row at a time left a destination row
-    # untouched wherever the shift jumped — a checkerboard of holes across
+    # untouched wherever the shift jumped - a checkerboard of holes across
     # every sloped face, which is a dither pattern at a glance and a leaking
     # surface in the game.
     SUB = 4
@@ -1095,7 +1063,7 @@ def iso_ramp(material, facing: str, *, tile_size: tuple[int, int], lift: int,
             # drop is 1.0 at the edge FACING the lower neighbour, so that is
             # the edge that descends the full lift. This was inverted
             # (lift * (1.0 - drop)) and measured wrong on facing="e": the
-            # east column sat ~3px down and the west ~15px — a cliff toward
+            # east column sat ~3px down and the west ~15px - a cliff toward
             # the very neighbour step_ok lets the walker cross.
             dest = int(fy + lift * drop)
             if not (0 <= dest < th + lift):
@@ -1137,8 +1105,8 @@ def iso_panel(material, mask, *, tile_size: tuple[int, int], lift: int,
               ) -> dict:
     """A thin wall standing along the directions its neighbours actually run.
 
-    ``mask`` is a 4-bit neighbour mask (BIT_N/E/S/W) — or "x"/"y" for a plain
-    straight run — and the footprint is a stub from the cell's CENTRE toward
+    ``mask`` is a 4-bit neighbour mask (BIT_N/E/S/W) - or "x"/"y" for a plain
+    straight run - and the footprint is a stub from the cell's CENTRE toward
     each direction the mask sets, plus the centre itself. That is the whole
     fix for the nubs: a junction tile that always extended all four ways put
     a stub out into open floor at every corner and T, because an L-corner is
@@ -1193,7 +1161,7 @@ def iso_panel(material, mask, *, tile_size: tuple[int, int], lift: int,
                 r, g, b_, al = mpx[px, py]
                 if al:
                     opx[px, py] = (r, g, b_, 255)
-    # ONE FACE, NOT TWO — the difference between a partition and a cube, and
+    # ONE FACE, NOT TWO - the difference between a partition and a cube, and
     # the reason a wall run came out looking like a barcode. A block shows the
     # camera both of its lower faces, so shading them differently is what
     # makes it read as solid. A thin panel shows only the face turned toward
@@ -1219,7 +1187,7 @@ def mirror_tile(patch):
     THE LATTICE. Isometric diamonds do not meet edge-to-edge like squares:
     the neighbour at +x sits half a tile right and half a tile down, so a
     texture only has to be seamless at the FULL tile period to still show a
-    hard join along every diagonal — which reads as a quilt of diamond
+    hard join along every diagonal - which reads as a quilt of diamond
     outlines over the whole floor, and no amount of asking the model for a
     "seamless" texture fixes it, because the model is answering the wrong
     question.
@@ -1227,8 +1195,8 @@ def mirror_tile(patch):
     Mirroring answers the right one. A tile built as a patch and its three
     reflections matches itself across every edge AND across the half-offset
     lines where the mirror falls, so neighbours agree at any alignment. The
-    cost is symmetry, which on a fine-grained material — carpet, stone,
-    concrete, the things floors are made of — is invisible at tile size and
+    cost is symmetry, which on a fine-grained material - carpet, stone,
+    concrete, the things floors are made of - is invisible at tile size and
     is the trade every hand-made tileset makes.
     """
     from PIL import Image
@@ -1253,7 +1221,7 @@ def synth_material(base, *, tile_size: tuple[int, int], palette=None,
     tile scale, so cropping one onto a diamond grid lays a regular lattice of
     motifs across the floor, and mirroring to hide the seams only trades the
     lattice for symmetry. The tiles this is written to match are nearly
-    featureless — near-black, a faint grain, at most one soft quadrant seam —
+    featureless - near-black, a faint grain, at most one soft quadrant seam -
     and that is a thing arithmetic makes better than a model does: the grain
     is per-pixel noise, so it cannot repeat, and every value is a palette
     entry by construction rather than by conform.
@@ -1262,7 +1230,7 @@ def synth_material(base, *, tile_size: tuple[int, int], palette=None,
     the project's own colours. ``grain`` is how often a pixel steps to a
     neighbouring value, ``speck`` how often it takes a much lighter one (wear,
     flecks, litter), ``seam`` how dark the cross through the tile's middle is
-    — which is what reads as floor PANELS rather than broadloom.
+    - which is what reads as floor PANELS rather than broadloom.
     """
     import random as _random
 
@@ -1315,7 +1283,7 @@ def drift_variant(tile, *, phase: int, drift: float = 0.7, lift: float = 0.0,
                   flatten: float = 0.0, palette=None):
     """A second copy of the SAME material, not a second material.
 
-    Variants were cut from elsewhere in the source painting — a different
+    Variants were cut from elsewhere in the source painting - a different
     crop, so on anything with structure at tile scale the two swatches were
     visibly different carpets, and laying them alternately across a room read
     as a quilt. The fix is not a smaller step; there is no step small enough,
@@ -1325,8 +1293,8 @@ def drift_variant(tile, *, phase: int, drift: float = 0.7, lift: float = 0.0,
 
     So modulate instead of re-cut. The tile keeps its grid, its alpha and its
     edge pixels exactly where they are, and what varies is three
-    low-frequency waves that WRAP on the cell — so the modulation itself is
-    continuous across a join — plus a reroll of the high-frequency flecks.
+    low-frequency waves that WRAP on the cell - so the modulation itself is
+    continuous across a join - plus a reroll of the high-frequency flecks.
     The waves give each variant a distinct overall cast; the flecks give
     difference that can never accumulate into a shape. Total amplitude is
     capped at ``DRIFT_CAP``.
@@ -1338,7 +1306,7 @@ def drift_variant(tile, *, phase: int, drift: float = 0.7, lift: float = 0.0,
     and ``flatten`` pulls flecks toward the tile's own mean, which is what
     trodden carpet actually does.
 
-    This is downsizing's floor_variant, generalised — their comment is the
+    This is downsizing's floor_variant, generalised - their comment is the
     reasoning above and their DRIFT_CAP is the number.
     """
     import math

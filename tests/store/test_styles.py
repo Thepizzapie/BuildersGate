@@ -28,7 +28,6 @@ def _png(path, w=1024, h=1024):
 @pytest.fixture()
 def anchors(root, tmp_path):
     """Six pinned references that clear the 1024 floor, and one that does not."""
-    pytest.importorskip("PIL.Image")
     for i in range(6):
         refs.pin(root, f"concept-{i}", _png(tmp_path / f"c{i}.png"))
     refs.pin(root, "tiny-sprite", _png(tmp_path / "tiny.png", 64, 32))
@@ -173,7 +172,6 @@ class TestTheDoorItReachesGenerationBy:
         style so the reference slot is free to carry identity."""
         settings.set(root, "art.style_source", "lora")
         anchor = tmp_path / "anchor.png"
-        pytest.importorskip("PIL.Image")
         _png(anchor)
         chroma.generate("a hero", tmp_path / "out.png", provider="krea",
                         keyed=False, root=root, ref_paths=[str(anchor)])
@@ -236,7 +234,6 @@ class TestTheOtherShelf:
 
     @pytest.fixture()
     def shipped(self, root, tmp_path):
-        pytest.importorskip("PIL.Image")
         art = root / "game" / "assets" / "characters"
         for i in range(4):
             _png(art / f"hero_{i}.png")

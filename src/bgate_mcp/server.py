@@ -151,15 +151,14 @@ mcp = FastMCP(
 
 # ONE SENTENCE PER TOOL, THE PARAGRAPH ONCE. The full explanation rode on all
 # 251 tools - 78k identical characters, ~19k tokens, in every session before
-# its first turn. It now lives in `instructions` (see _install_tool_index) and
-# each schema carries only the pointer.
+# its first turn. It now lives in `instructions` (see _install_tool_index); the
+# pointer below stays on the in-process model and _lean_schema drops it from
+# the advertised copy.
 _PROJECT_DIR_DOC = "Project root; see the server instructions."
 _PROJECT_DIR_NOTE = (
-    "EVERY TOOL TAKES `project_dir`: the absolute path to the Builders Gate "
-    "project root (the directory holding .bgate). Omit it and the server falls "
-    "back to BGATE_ROOT, then to walking up from the working directory. Pass "
-    "it explicitly whenever more than one project could be in play - it is the "
-    "only way a call is guaranteed to land in the game you mean."
+    "EVERY TOOL TAKES `project_dir`: the absolute project root (the directory "
+    "holding .bgate). Omitted, it falls back to BGATE_ROOT, then the working "
+    "directory; pass it whenever more than one project could be in play."
 )
 
 # The per-call project override. A ContextVar, deliberately: it is set on the
@@ -234,7 +233,7 @@ def _keys(root: Optional[str] = None) -> None:
 # one decision function, no shared state - see that module's docstring for why
 # it is pure.
 # A TOOL BODY THAT NEVER RETURNS IS THE WORST OUTCOME THIS PROCESS CAN
-# PRODUCE. MEASURED on boswell-edition (2026-09-19): animation_generate
+# PRODUCE. MEASURED on a JRPG test game (2026-09-19): animation_generate
 # finished its first Retro Diffusion job in 90 s, wrote the sheet, and then
 # blocked silently - no socket, no CPU, nothing more written - for the rest
 # of a 60-minute item ceiling, three attempts in a row; the server that held
@@ -1628,6 +1627,12 @@ def project_status() -> dict:
            # WHICH WORLD. The first thing an agent should know about a tree
            # that has carried two of everything.
            "canon": _canon_summary(root)}
+    # THE STUDIO, when one is set: where this machine keeps its games and
+    # what they share, so "is there a module for that" has a place to look.
+    from bgate_core.store import studio as _studio
+    st = _studio.status()
+    if st["set"]:
+        out["studio"] = st
     if missing:
         # ITEM 33 (EXIT 67): a registered path that no longer exists (a Temp
         # scaffold dir, a deleted checkout) used to just be silently dropped
@@ -1997,8 +2002,12 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
     `balance` (a NUMBER only where exposed - kie and Retro Diffusion; None
     means UNKNOWN and still routable), and `reason` when unkeyed. Pass
     `capability` ("image" | "animate" | "three_d" | "music" | "video") to get
-    `pick`, the provider that job routes to now. `fresh=true` re-probes past
-    the 2-minute cache. Keys never appear here and no tool writes one.
+    `pick`, the provider that job routes to now. "music" IS THE SOUND ROUTE
+    TOO: sfx_prompt (sound effects) and music_generate both gate on it, so
+    a keyed kie under "music" means sound effects are live. `capabilities`
+    says what each one serves and which tools walk through it. `fresh=true`
+    re-probes past the 2-minute cache. Keys never appear here and no tool
+    writes one.
     Full notes: docs/tools.md#provider_status
     """
     from bgate_core.runtime import gateway as _gateway
@@ -2008,10 +2017,18 @@ def provider_status(capability: str = "", fresh: bool = False) -> dict:
     except LookupError:
         root = None
         _keys()
+    # EACH CAPABILITY SAYS WHAT IT SERVES AND WHICH TOOLS USE IT. The bare
+    # provider order read as the whole story: an audio seat saw kie under
+    # "music" and no "sound" anywhere, concluded it had no sound-effects
+    # route, and gave up with sfx_prompt in its own tool list (Turf War,
+    # 2026-10-16). The order stays where it was; the words are new.
     out = {"ok": True,
            "providers": _gateway.status(root, fresh=bool(fresh)),
            "capabilities": {k: list(v)
-                            for k, v in _gateway.CAPABILITIES.items()}}
+                            for k, v in _gateway.CAPABILITIES.items()},
+           "capability_serves": dict(_gateway.CAPABILITY_SERVES),
+           "capability_tools": {k: list(v)
+                                for k, v in _gateway.CAPABILITY_TOOLS.items()}}
     # WHICH PROVIDER WOULD ACTUALLY BE SELECTED, for every family, without
     # having to ask one capability at a time. `bgate doctor` and this tool were
     # observed answering the same question differently across three benchmark
@@ -7836,10 +7853,13 @@ def seat_brief(role: str, section: str = "") -> dict:
     """The seat's full brief: mission, lanes, bible, canon, playtest feedback,
     locks, notes and the board. A dispatched run already has the short form in
     its prompt; call this only when you need more. section='house_rules'
-    returns just the seat's craft rules (how its tools are meant to be used).
+    returns just the seat's craft rules (how its tools are meant to be used);
+    section='protocol' returns the full director protocol.
     """
     if section == "house_rules":
         return {"role": role, "house_rules": _seats.house_rules(_root(), role)}
+    if section == "protocol":
+        return {"role": role, "protocol": _seats.DIRECTOR_PROTOCOL}
     return _seats.brief(_root(), role)
 
 
@@ -8500,27 +8520,23 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
             item["brief"] = brief[:240]
             item["brief_len"] = len(brief)
             item["result"] = result[:240]
+        # EVERY PARENT, NOT THE COLUMN. `depends_on` holds one parent; the
+        # rest live in work_item_dep (queue_add_dependency). A reader of the
+        # column alone saw a hand-serialised chain as a fan (Turf War,
+        # 2026-10-16) - the dashboard row already carried depends_on_all,
+        # this listing did not.
+        try:
+            item["depends_on_all"] = _q.parents(root, int(item["id"]))
+        except Exception:
+            item["depends_on_all"] = (
+                [int(item["depends_on"])] if item.get("depends_on") else [])
         # WHY IS THIS NOT RUNNING - answered on the row, because a queued
         # item that nothing will ever dispatch used to look exactly like
         # one that is next in line, and the difference lived in three
         # different modules. Best-effort: an unreadable blocker is not a
         # reason to fail the whole listing.
         if item.get("status") == "queued":
-            stage_hold = ""
-            try:
-                from bgate_core.design import greenlight as _gl
-
-                stage_hold = (_gl.allows(root, str(item.get("seat") or ""))[1]
-                              or _q.slice_hold_reason(root, item))
-                if not stage_hold and item.get("source") != "domain-plan":
-                    from bgate_core.design import domainplan as _dpl
-                    if str(item.get("seat") or "") in _dpl.planning_held(root):
-                        stage_hold = ("held: this project plans first - the "
-                                      f"{item.get('seat')} seat's discipline "
-                                      "has no domain plan yet; its PLAN item "
-                                      "dispatches first")
-            except Exception:
-                stage_hold = ""
+            stage_hold = _stage_hold_for(root, item)
             if stage_hold:
                 # The production stage outranks the other reasons on the row:
                 # a seat the stage is holding will not dispatch whatever its
@@ -8866,7 +8882,8 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
                       depends_on=depends_on, size=size, acceptance=acceptance,
                       kind=kind, severity=severity,
                       checkpoint=bool(checkpoint),
-                      checkpoint_note=checkpoint_note)
+                      checkpoint_note=checkpoint_note,
+                      planned=bool(plan_row))
     except PermissionError as exc:
         return {"ok": False, "refused": "locked", "error": str(exc)}
     if plan_row:
@@ -8876,6 +8893,11 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     focus_warning = _focus_warning(_root(), title, brief)
     if focus_warning:
         item = {**item, "focus_warning": focus_warning}
+    # SAY IT NOW, NOT IN THE LISTING. An item the stage holds looked exactly
+    # like one about to run until somebody opened queue_list.
+    stage_hold = _stage_hold_for(_root(), item)
+    if stage_hold:
+        item = {**item, "stage_hold": stage_hold}
     warnings = list(breadth["reasons"]) if breadth["score"] >= 1 else []
     if warnings:
         item = {**item, "warnings": warnings}
@@ -8900,6 +8922,36 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
                  if waiting else
                  f"#{depends_on} is already done, so #{item['id']} is "
                  "ready now")}}
+
+
+def _stage_hold_for(root, item: dict) -> str:
+    """Why the stage machine will not dispatch this queued item, or ''.
+
+    ONE ANSWER, SAID AT FILING AND IN THE LISTING. queue_list computed this
+    on every row; queue_add and queue_add_chain did not, so an item filed
+    at the slice stage without a plan row came back as an ordinary queued
+    row and sat held with no refusal anywhere (Turf War, 2026-10-16: twice
+    in one afternoon, a hand-filed chain and a QA re-gate). Best-effort on
+    purpose: an unreadable stage doc is not a reason to fail a filing.
+    """
+    if str(item.get("status") or "queued") != "queued":
+        return ""
+    try:
+        from bgate_core.board import queue as _q
+        from bgate_core.design import greenlight as _gl
+
+        hold = (_gl.allows(root, str(item.get("seat") or ""))[1]
+                or _q.slice_hold_reason(root, item))
+        if not hold and item.get("source") != "domain-plan":
+            from bgate_core.design import domainplan as _dpl
+            if str(item.get("seat") or "") in _dpl.planning_held(root):
+                hold = ("held: this project plans first - the "
+                        f"{item.get('seat')} seat's discipline "
+                        "has no domain plan yet; its PLAN item "
+                        "dispatches first")
+        return hold or ""
+    except Exception:
+        return ""
 
 
 def _plan_row_context(name: str) -> dict:
@@ -8936,15 +8988,48 @@ def queue_add_chain(links: list, chain_id: str = "",
     previous", ...); ten same-seat links that do not mention each other are
     ten siblings, dispatched as wide as the caps allow. MEASURED: ten
     independent cutout rigs filed as a ten-deep ladder ran one at a time.
-    mode="linear" is the old strict line. Chains cannot be appended to; hang
-    a follow-up off the board with queue_add(depends_on=...). Returns
-    {chain_id, items} with each item's depends_on.
+    mode="linear" is the old strict line. A link may name `plan_row`, the
+    plan row it builds, exactly as queue_add does: at the slice stage that
+    is what admits it. Chains cannot be appended to; hang a follow-up off
+    the board with queue_add(depends_on=...). Returns {chain_id, items}
+    with each item's depends_on, its plan_row, and a `stage_hold` on any
+    link the stage will not dispatch as filed.
     Full notes: docs/tools.md#queue_add_chain
     """
     from bgate_core.board import queue as _q
+    links = [dict(link) if isinstance(link, dict) else link
+             for link in (links or [])]
+    # A LINK ON A PLAN ROW, the same way queue_add puts an item on one. A
+    # chain had no way onto a slice row at all, so every chain filed at the
+    # slice stage sat held until somebody pointed the rows at its items by
+    # hand (Turf War, 2026-10-16). Checked before anything lands: a row
+    # that is already being built, or named twice, refuses the whole chain.
+    rows_to_link: dict[int, str] = {}
+    for i, link in enumerate(links):
+        if not isinstance(link, dict):
+            continue
+        name = str(link.pop("plan_row", "") or "").strip()
+        if not name:
+            continue
+        if name in rows_to_link.values():
+            return {"ok": False, "refused": "plan_row", "link": i,
+                    "error": f"plan row {name!r} is named by two links; one "
+                             "item builds one row"}
+        planned = _plan_row_context(name)
+        if planned.get("error"):
+            return {"ok": False, "refused": "plan_row", "link": i,
+                    "error": planned["error"]}
+        brief = str(link.get("brief") or "")
+        if planned["goal"] and planned["goal"] not in brief:
+            link["brief"] = (f"{brief}\n\n[{planned['domain']} plan] "
+                             f"DOMAIN GOAL: {planned['goal']}").strip()
+        if not str(link.get("acceptance") or "").strip():
+            link["acceptance"] = planned["acceptance"][:500]
+        link["kind"] = link.get("kind") or _q.kind_for_row(_root(), name)
+        rows_to_link[i] = name
     # EVERY LINK IS ONE DELIVERABLE. A chain of wide links is the same wide
     # ticket in several pieces, each of which then needs several runs.
-    for i, link in enumerate(links or []):
+    for i, link in enumerate(links):
         if not isinstance(link, dict):
             continue
         grade = _q.scope_grade(str(link.get("brief") or ""),
@@ -8971,13 +9056,41 @@ def queue_add_chain(links: list, chain_id: str = "",
     own_item = (os.environ.get("BGATE_WORK_ITEM") or "").strip()
     rows = _q.add_chain(
         _root(),
-        [dict(link) for link in (links or [])],
+        [dict(link) for link in links],
         chain_id=chain_id, source=f"seat:{_seat() or 'unknown'}",
         source_ref=own_item, mode=mode)
-    return {"chain_id": rows[0]["chain_id"], "count": len(rows),
-            "items": [{"id": r["id"], "seat": r["seat"], "title": r["title"],
-                       "chain_pos": r["chain_pos"],
-                       "depends_on": r["depends_on"]} for r in rows]}
+    plan_row_errors: dict[int, str] = {}
+    if rows_to_link:
+        from bgate_core.design import gameplan as _gameplan
+        for i, name in rows_to_link.items():
+            try:
+                _gameplan.link(_root(), name, int(rows[i]["id"]))
+            except (LookupError, ValueError) as exc:
+                # Pre-checked above, so this is a race with another filer;
+                # the chain landed, say which row did not take.
+                plan_row_errors[int(rows[i]["id"])] = str(exc)
+    items = []
+    for i, r in enumerate(rows):
+        entry = {"id": r["id"], "seat": r["seat"], "title": r["title"],
+                 "chain_pos": r["chain_pos"], "depends_on": r["depends_on"]}
+        if i in rows_to_link and int(r["id"]) not in plan_row_errors:
+            entry["plan_row"] = rows_to_link[i]
+        # SAY WHICH LINKS THE STAGE HOLDS, at filing. The listing said it;
+        # the filing did not, and a held chain read as a queued one.
+        hold = _stage_hold_for(_root(), r)
+        if hold:
+            entry["stage_hold"] = hold
+        items.append(entry)
+    out = {"chain_id": rows[0]["chain_id"], "count": len(rows), "items": items}
+    held = [e["id"] for e in items if e.get("stage_hold")]
+    if held:
+        out["held"] = held
+        out["note"] = (f"{len(held)} of {len(items)} links will not dispatch "
+                       "as filed - each one's stage_hold says why and what "
+                       "admits it")
+    if plan_row_errors:
+        out["plan_row_errors"] = plan_row_errors
+    return out
 
 
 @_tool
@@ -9031,6 +9144,30 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
             return {"ok": False, "refused": "checkpoint",
                     "error": "the director places checkpoints; only the "
                              "human removes one"}
+    if (kind is not None or seat is not None) and _caller_is_agent():
+        # A STAGE HOLD IS NOT LIFTED BY A RELABEL. MEASURED (Turf War,
+        # 2026-10-17): a feel-check FAIL filed a director item, autodeploy ran
+        # the director as an agent, and it filed two tuning items as features,
+        # then changed their kind to "fix" so the slice-stage hold would not
+        # block them. The hold accepted the new label. Both ran and retuned a
+        # game whose owner had deferred tuning. The hold is the human's to
+        # lift (greenlight_advance, greenlight_waive) or the item's to earn
+        # (a plan_row); an agent may still retag an item when the hold stays.
+        relabelled = {**item, **({"kind": kind} if kind is not None else {}),
+                      **({"seat": seat} if seat is not None else {})}
+        hold_before = _stage_hold_for(root, item)
+        if hold_before and not _stage_hold_for(root, relabelled):
+            return {"ok": False, "refused": "stage_hold",
+                    "stage_hold": hold_before,
+                    "error": (f"#{item_id} is held by the stage as kind="
+                              f"{item.get('kind') or '-'} on the "
+                              f"{item.get('seat')} seat, and the change you "
+                              "asked for would lift that hold. An agent does "
+                              "not relabel its way past a stage: the human "
+                              "lifts it (greenlight_advance / greenlight_waive) "
+                              "or the item earns its place (queue_add "
+                              "plan_row=...). Leave the kind honest and let "
+                              "the hold show the human what is waiting.")}
     updated = _q.update(root, item_id, title=title, brief=brief,
                         seat=seat, priority=priority,
                         max_paid_calls=max_paid_calls, kind=kind,
@@ -11105,6 +11242,72 @@ def _to_content(payload: dict):
 
 
 mcp.call_tool = _call_tool_checked
+
+
+# ---------------------------------------------------------------------------
+# THE SCHEMA ON THE WIRE CARRIES OUR WORDS, NOT PYDANTIC'S
+# ---------------------------------------------------------------------------
+#
+# MEASURED on 1622ef6: 32-50% of every seat's schema characters were generated
+# boilerplate, not anything a tool author wrote. A `"title": "Name"` beside the
+# property `name` (1,115 of them on the art surface), `anyOf: [X, {type: null}]`
+# around every Optional, and the same project_dir sentence on all 161 art tools.
+# The seatless surface went 93.0k -> 50.9k characters without losing a word.
+#
+# ONLY THE ADVERTISED COPY IS TRIMMED. Arguments are still validated by each
+# tool's pydantic model, so a null still validates where the type said
+# Optional, and _call_tool_checked reads property NAMES, which are untouched.
+# Done at list time rather than registration so tool_unlock's late arrivals are
+# trimmed the same way.
+_ORIGINAL_LIST_TOOLS = mcp.list_tools
+_NULL = {"type": "null"}
+
+
+def _lean_schema(node, in_properties: bool = False):
+    """Drop generated titles, unwrap Optional, and drop project_dir's doc."""
+    if isinstance(node, list):
+        return [_lean_schema(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    if in_properties:
+        # Keys here are parameter names, so a parameter called "title" stays.
+        return {k: _lean_schema(v) for k, v in node.items()}
+    out = {}
+    for key, value in node.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        out[key] = _lean_schema(value, in_properties=(key == "properties"))
+    options = out.get("anyOf")
+    if isinstance(options, list) and len(options) == 2 and _NULL in options:
+        other = next(o for o in options if o != _NULL)
+        if isinstance(other, dict) and not set(other) & set(out):
+            del out["anyOf"]
+            out.update(other)
+    project_dir = (out.get("properties") or {}).get("project_dir")
+    if isinstance(project_dir, dict):
+        project_dir.pop("description", None)
+    return out
+
+
+async def _list_tools_lean():
+    tools = await _ORIGINAL_LIST_TOOLS()
+    for tool in tools:
+        try:
+            tool.inputSchema = _lean_schema(tool.inputSchema)
+        except Exception:                                         # noqa: BLE001
+            pass  # an untrimmed schema is still a correct one
+    return tools
+
+
+mcp.list_tools = _list_tools_lean
+
+# REBIND THE PROTOCOL HANDLERS, or neither override reaches a client. FastMCP's
+# _setup_handlers captured the bound `self.list_tools` / `self.call_tool` at
+# construction, so assigning the attributes above only changed what in-process
+# callers see; over stdio the unknown-argument refusal never fired. Same
+# arguments as FastMCP's own registration (mcp 1.30).
+mcp._mcp_server.list_tools()(_list_tools_lean)
+mcp._mcp_server.call_tool(validate_input=False)(_call_tool_checked)
 
 
 def main() -> None:

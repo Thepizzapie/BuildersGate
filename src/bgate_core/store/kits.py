@@ -24,6 +24,19 @@ THE LEDGER. ``.bgate/kits.json`` in the Builders Gate root records what was
 installed and each file's hash at the time, so ``status`` can say
 ``installed`` / ``modified`` / ``missing`` per file without guessing, and
 ``remove`` can refuse to delete a file someone has since edited.
+
+STUDIO MODULES. With a studio set (``bgate_core.store.studio``), the shelf
+also reads ``<studio>/shared/modules/<engine>/<name>/<version>/``: modules a
+person EXTRACTED from one of their own games. A version, once published, is
+never rewritten. The ledger pins ``name@version`` for a studio module, and a
+studio module named like a shipped kit is used only when it is pinned, so a
+person's own ``health`` never silently replaces the one that ships.
+``update`` moves a pin forward with the same rule install keeps: a file edited
+since install is reported and left alone.
+
+ENGINES. Godot kits are GDScript plus project.godot input actions. A ``web``
+module is TypeScript under ``src/``; nothing edits an input map there, so its
+``requires.actions`` are reported as needs rather than bound.
 """
 from __future__ import annotations
 
@@ -39,6 +52,9 @@ TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
 KITS_DIR = TEMPLATES_DIR / "kits"
 LEDGER = ".bgate/kits.json"
 DIMENSIONS = ("2d", "3d", "any")
+KIT_ENGINES = ("godot", "web")
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,47}$")
 
 # Godot's Key enum, the physical keycodes a manifest may name. Letters and
 # digits are their ASCII codes; the rest are the constants from
@@ -82,12 +98,75 @@ def source_path(kit_dir: Path, ref: str) -> Path:
     return kit_dir / ref
 
 
-def load(name: str, engine: str = "godot") -> dict:
+def studio_modules_dir(engine: str) -> Path | None:
+    """``<studio>/shared/modules/<engine>``, or None when no studio is set."""
+    try:
+        from bgate_core.store import studio
+    except ImportError:
+        return None
+    if studio.root() is None:
+        return None
+    return Path(studio.modules_dir(engine))
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in version.split("."))
+
+
+def module_versions(name: str, engine: str = "godot") -> list[str]:
+    """Every published version of a studio module, oldest first."""
+    base = studio_modules_dir(engine)
+    if base is None or not (base / name).is_dir():
+        return []
+    found = [p.name for p in (base / name).iterdir()
+             if p.is_dir() and _VERSION_RE.match(p.name)
+             and (p / "kit.json").is_file()]
+    return sorted(found, key=_version_key)
+
+
+def _kit_dir(name: str, engine: str, version: str) -> tuple[Path, str]:
+    """Where a kit lives, and whether it is ``shipped`` or ``studio``.
+
+    A version names a studio module. Without one, the shipped kit wins; a
+    name only the studio has resolves to its newest version.
+    """
+    if version:
+        # Both come from the CLI or a hand-editable ledger and become a path.
+        if not _VERSION_RE.match(version) or not _NAME_RE.match(name):
+            raise KitError(f"{name}@{version}: a studio module is a plain name "
+                           "at MAJOR.MINOR.PATCH")
+        base = studio_modules_dir(engine)
+        if base is None:
+            raise KitError(f"{name}@{version} is a studio module and no studio "
+                           "is set; `bgate studio init <dir>` sets one")
+        return base / name / version, "studio"
+    shipped = KITS_DIR / engine / name
+    if (shipped / "kit.json").is_file():
+        return shipped, "shipped"
+    versions = module_versions(name, engine)
+    if versions:
+        return studio_modules_dir(engine) / name / versions[-1], "studio"
+    return shipped, "shipped"
+
+
+def _check_dest(dest: str, engine: str, where: str) -> Path:
+    dest_path = Path(dest)
+    if dest_path.is_absolute() or ".." in dest_path.parts:
+        raise KitError(f"{where}: {dest!r} must be a relative path "
+                       "inside the project")
+    if engine == "web" and dest_path.parts[:1] != ("src",):
+        raise KitError(f"{where}: {dest!r} is outside src/; a web module "
+                       "installs under src/ only")
+    return dest_path
+
+
+def load(name: str, engine: str = "godot", version: str = "") -> dict:
     """One kit's manifest, validated, with every source path resolved."""
-    kit_dir = KITS_DIR / engine / name
+    kit_dir, origin = _kit_dir(name, engine, version)
     manifest = kit_dir / "kit.json"
     if not manifest.is_file():
-        raise KitError(f"no kit named {name!r} for {engine}; kit_list names them")
+        what = f"{name}@{version}" if version else repr(name)
+        raise KitError(f"no kit named {what} for {engine}; kit_list names them")
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -102,13 +181,21 @@ def load(name: str, engine: str = "godot") -> dict:
         raise KitError(f"{manifest}: dimension must be one of {DIMENSIONS}")
     if not data["files"]:
         raise KitError(f"{manifest}: a kit with no files installs nothing")
+    kit_version = ""
+    if origin == "studio":
+        kit_version = kit_dir.name
+        if data.get("version") != kit_version:
+            raise KitError(f"{manifest}: version {data.get('version')!r} does "
+                           f"not match its directory {kit_version!r}")
     files = []
     for dest, ref in data["files"].items():
-        dest_path = Path(dest)
-        if dest_path.is_absolute() or ".." in dest_path.parts:
-            raise KitError(f"{manifest}: {dest!r} must be a relative path "
-                           "inside the project")
+        dest_path = _check_dest(dest, engine, str(manifest))
+        if origin == "studio" and ref.startswith("template:"):
+            raise KitError(f"{manifest}: a studio module carries its own files, "
+                           f"not {ref!r}")
         src = source_path(kit_dir, ref)
+        if origin == "studio" and not src.resolve().is_relative_to(kit_dir.resolve()):
+            raise KitError(f"{manifest}: {ref!r} points outside the module")
         if not src.is_file():
             raise KitError(f"{manifest}: {ref!r} is not a file ({src})")
         files.append({"dest": dest_path.as_posix(), "source": str(src),
@@ -130,26 +217,38 @@ def load(name: str, engine: str = "godot") -> dict:
                      "kits": list(requires.get("kits") or [])},
         "provides": data.get("provides") or {},
         "dir": str(kit_dir),
+        "origin": origin,
+        "version": kit_version,
     }
 
 
 def list_kits(engine: str = "godot", dimension: str = "") -> list[dict]:
     """Every kit for an engine, optionally only those fitting a dimension.
 
+    Shipped kits, then studio modules (newest version, with every version
+    under ``versions``). A studio module named like a shipped kit is listed
+    on the shipped row as ``studio_versions``; it is used only when pinned.
+
     A kit whose manifest is broken is REPORTED, not dropped: a kit that
     silently vanishes from the list is a kit nobody will fix.
     """
     base = KITS_DIR / engine
+    studio_base = studio_modules_dir(engine)
+    shipped = sorted(p.name for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
+    studio_names = (sorted(p.name for p in studio_base.iterdir() if p.is_dir())
+                    if studio_base is not None and studio_base.is_dir() else [])
     out: list[dict] = []
-    if not base.is_dir():
-        return out
-    for kit_dir in sorted(p for p in base.iterdir() if p.is_dir()):
+    for name in shipped + [n for n in studio_names if n not in shipped]:
         try:
-            kit = load(kit_dir.name, engine)
+            kit = load(name, engine)
         except KitError as exc:
-            out.append({"name": kit_dir.name, "engine": engine,
-                        "error": str(exc)})
+            out.append({"name": name, "engine": engine, "error": str(exc)})
             continue
+        versions = module_versions(name, engine)
+        if kit["origin"] == "studio":
+            kit["versions"] = versions
+        elif versions:
+            kit["studio_versions"] = versions
         if dimension and kit["dimension"] not in ("any", dimension):
             continue
         out.append(kit)
@@ -258,6 +357,21 @@ def status(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
             kits.append(kit)
             continue
         rec = ledger.get(kit["name"])
+        pinned = (rec or {}).get("version") or ""
+        if pinned and pinned != kit["version"]:
+            # The ledger's pin, not the shelf's newest or the shipped copy,
+            # is what this game holds.
+            try:
+                kit = {**load(kit["name"], engine, pinned),
+                       "versions": module_versions(kit["name"], engine)}
+            except KitError as exc:
+                kits.append({"name": kit["name"], "engine": engine,
+                             "error": f"pinned {kit['name']}@{pinned}: {exc}"})
+                continue
+        if pinned:
+            versions = kit.get("versions") or []
+            kit["newer"] = (versions[-1] if versions and
+                            _version_key(versions[-1]) > _version_key(pinned) else "")
         files = []
         for f in kit["files"]:
             dest = game / f["dest"]
@@ -282,8 +396,11 @@ def status(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
 
 def install(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
             name: str, *, engine: str = "godot", force: bool = False,
-            bind: bool = True, dimension: str = "") -> dict:
+            bind: bool = True, dimension: str = "", version: str = "") -> dict:
     """Copy a kit into the game. Never overwrites without ``force``.
+
+    ``version`` installs that studio module version and pins it; without
+    one, a game that already pins a version keeps it (``update`` moves it).
 
     Returns what landed, what was left alone and why, which input actions
     were added, and what the kit still needs that this project lacks
@@ -291,7 +408,9 @@ def install(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
     needs is absent afterwards.
     """
     root, game = Path(root).resolve(), Path(game_dir).resolve()
-    kit = load(name, engine)
+    if not version:
+        version = (read_ledger(root).get(name) or {}).get("version") or ""
+    kit = load(name, engine, version)
     if dimension and kit["dimension"] not in ("any", dimension):
         raise KitError(f"{name} is a {kit['dimension']} kit; this project is "
                        f"{dimension}. kit_install(any_dimension=True) or "
@@ -324,16 +443,20 @@ def install(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
     actions = kit["requires"]["actions"]
     added_actions: list[str] = []
     missing_actions: list[str] = []
-    if actions:
-        have = declared_actions(project_godot)
-        missing_actions = sorted(a for a in actions if a not in have)
-        if missing_actions and bind and project_godot.is_file():
-            added_actions = bind_actions(project_godot, actions)
-            missing_actions = []
-
-    autoloads = declared_autoloads(project_godot)
-    missing_autoloads = [a for a in kit["requires"]["autoloads"]
-                         if a not in autoloads]
+    if engine != "godot":
+        # No input map to edit: the needs are listed for the person to wire.
+        missing_actions = sorted(actions)
+        missing_autoloads = list(kit["requires"]["autoloads"])
+    else:
+        if actions:
+            have = declared_actions(project_godot)
+            missing_actions = sorted(a for a in actions if a not in have)
+            if missing_actions and bind and project_godot.is_file():
+                added_actions = bind_actions(project_godot, actions)
+                missing_actions = []
+        autoloads = declared_autoloads(project_godot)
+        missing_autoloads = [a for a in kit["requires"]["autoloads"]
+                             if a not in autoloads]
     missing_kits = [k for k in kit["requires"]["kits"] if k not in ledger]
 
     # The ledger records the kit's hash for every file the kit OWNS here:
@@ -351,6 +474,8 @@ def install(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
     ledger[name] = {"files": files_rec,
                     "installed_at": rec.get("installed_at") or _stamp(),
                     "updated_at": _stamp()}
+    if kit["version"]:
+        ledger[name]["version"] = kit["version"]
     _write_ledger(root, ledger)
 
     all_present = all((game / f["dest"]).is_file() for f in kit["files"])
@@ -358,6 +483,7 @@ def install(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
     return {
         "ok": all_present,
         "kit": name, "title": kit["title"], "dimension": kit["dimension"],
+        "version": kit["version"], "origin": kit["origin"],
         "written": written, "kept": kept, "replaced": replaced,
         "actions_added": added_actions,
         "actions_missing": missing_actions,
@@ -378,11 +504,11 @@ def remove(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
     an unbound action is a silent no-op in the engine, not an error.
     """
     root, game = Path(root).resolve(), Path(game_dir).resolve()
-    kit = load(name, engine)
     ledger = read_ledger(root)
     rec = ledger.get(name)
     if rec is None:
         raise KitError(f"{name} is not in the ledger; nothing to remove")
+    kit = load(name, engine, rec.get("version") or "")
     removed, refused, absent = [], [], []
     for f in kit["files"]:
         dest = game / f["dest"]
@@ -402,6 +528,182 @@ def remove(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
     return {"ok": not refused, "kit": name, "removed": removed,
             "refused": refused, "absent": absent,
             "ledger_cleared": not refused}
+
+
+# ---------------------------------------------------------------------------
+# Studio modules: extract one from a game, move a pin forward
+# ---------------------------------------------------------------------------
+def extract(game_dir: str | os.PathLike[str], name: str, version: str,
+            files: list[str], *, engine: str = "godot", title: str = "",
+            summary: str = "", dimension: str = "any", usage: str = "",
+            requires: dict | None = None, provides: dict | None = None,
+            confirm: bool = False) -> dict:
+    """Publish files from a game as ``<name>@<version>`` in the studio.
+
+    Two calls by design. Without ``confirm`` nothing is written: the result
+    is the manifest it WOULD publish, so the person can read what it claims
+    to provide and need and correct it. With ``confirm`` the version is
+    written, and from then on it is immutable: publishing the same version
+    twice is refused, whatever the bytes.
+    """
+    game = Path(game_dir).resolve()
+    if engine not in KIT_ENGINES:
+        raise KitError(f"modules are for {KIT_ENGINES}, not {engine!r}")
+    if not _NAME_RE.match(name):
+        raise KitError(f"module name {name!r}: lowercase letters, digits and "
+                       "_, starting with a letter")
+    if not _VERSION_RE.match(version):
+        raise KitError(f"version {version!r} must be MAJOR.MINOR.PATCH")
+    if dimension not in DIMENSIONS:
+        raise KitError(f"dimension must be one of {DIMENSIONS}")
+    if not files:
+        raise KitError("a module with no files installs nothing")
+    base = studio_modules_dir(engine)
+    if base is None:
+        raise KitError("no studio is set; `bgate studio init <dir>` sets one")
+    target = base / name / version
+    if target.exists():
+        raise KitError(f"{name}@{version} is already published and versions "
+                       "are immutable; publish a new version")
+
+    picked: dict[str, Path] = {}
+    for rel in files:
+        dest = _check_dest(Path(rel).as_posix(), engine, "files")
+        src = (game / dest).resolve()
+        if not src.is_relative_to(game):
+            raise KitError(f"{rel!r} is outside {game}")
+        if not src.is_file():
+            raise KitError(f"{rel!r} is not a file in {game}")
+        picked[dest.as_posix()] = src
+    req = requires or {}
+    manifest = {
+        "name": name, "version": version, "engine": engine,
+        "title": title or name.replace("_", " ").capitalize(),
+        "dimension": dimension,
+        "summary": summary,
+        "files": {dest: f"files/{dest}" for dest in sorted(picked)},
+        "requires": {"actions": dict(req.get("actions") or {}),
+                     "autoloads": list(req.get("autoloads") or []),
+                     "kits": list(req.get("kits") or [])},
+        "provides": dict(provides or {}),
+        "usage": usage,
+        "extracted_from": str(game),
+        "extracted_at": _stamp(),
+    }
+    for action, keys in manifest["requires"]["actions"].items():
+        for key in keys:
+            if engine == "godot" and key not in KEYCODES:
+                raise KitError(f"action {action!r} names key {key!r}, not in "
+                               f"{sorted(KEYCODES)}")
+    previous = module_versions(name, engine)
+    out = {"ok": True, "module": name, "version": version, "engine": engine,
+           "manifest": manifest, "dir": str(target),
+           "previous_versions": previous}
+    if not confirm:
+        out.update(confirmed=False,
+                   note="nothing written; check provides and requires, then "
+                        "call again with confirm")
+        return out
+    if previous and _version_key(version) < _version_key(previous[-1]):
+        raise KitError(f"{name}@{version} is older than the newest published "
+                       f"version {previous[-1]}")
+    if not summary:
+        raise KitError("a published module needs a summary saying what it is")
+
+    staging = base / name / f".{version}.tmp"
+    shutil.rmtree(staging, ignore_errors=True)
+    for dest, src in picked.items():
+        out_path = staging / "files" / dest
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, out_path)
+    (staging / "kit.json").write_text(json.dumps(manifest, indent=2) + "\n",
+                                      encoding="utf-8")
+    staging.rename(target)
+    load(name, engine, version)
+    _index_module(engine, name, version, manifest)
+    out.update(confirmed=True, note="")
+    return out
+
+
+def _index_module(engine: str, name: str, version: str, manifest: dict) -> None:
+    """Record a published version in studio.json. The folder is the truth;
+    the index is what the studio page reads without walking every module."""
+    try:
+        from bgate_core.store import studio
+        data = studio.index()
+    except Exception:                                             # noqa: BLE001
+        return
+    key = f"{engine}/{name}"
+    entry = data["modules"].get(key) if isinstance(data["modules"].get(key), dict) else {}
+    versions = sorted(set(entry.get("versions") or []) | {version}, key=_version_key)
+    data["modules"][key] = {"engine": engine, "name": name, "versions": versions,
+                            "title": manifest["title"],
+                            "summary": manifest["summary"],
+                            "dimension": manifest["dimension"]}
+    studio.save_index(data)
+
+
+def update(root: str | os.PathLike[str], game_dir: str | os.PathLike[str],
+           name: str, *, engine: str = "godot", version: str = "") -> dict:
+    """Move a pinned module to ``version`` (default: the newest).
+
+    A file the game has not edited since install is replaced by the new
+    version's copy; an edited one is kept and named, never overwritten.
+    Files the new version dropped stay in the game and are reported.
+    """
+    root, game = Path(root).resolve(), Path(game_dir).resolve()
+    ledger = read_ledger(root)
+    rec = ledger.get(name)
+    if rec is None:
+        raise KitError(f"{name} is not installed here; kit_install it first")
+    pinned = rec.get("version") or ""
+    if not pinned:
+        raise KitError(f"{name} is a shipped kit, not a pinned studio module; "
+                       "there is no version to move")
+    versions = module_versions(name, engine)
+    target = version or (versions[-1] if versions else "")
+    if not target:
+        raise KitError(f"no published versions of {name} for {engine}")
+    if _version_key(target) < _version_key(pinned):
+        raise KitError(f"{name}@{target} is older than the pinned {pinned}")
+    if target == pinned:
+        return {"ok": True, "kit": name, "from": pinned, "to": target,
+                "written": [], "kept": [], "dropped": [],
+                "note": f"already at {pinned}"}
+    old = {f["dest"]: f for f in load(name, engine, pinned)["files"]}
+    new = load(name, engine, target)
+    files_rec = dict(rec.get("files") or {})
+    written, kept = [], []
+    for f in new["files"]:
+        dest = game / f["dest"]
+        if dest.is_file():
+            current = _sha(dest)
+            if current == f["hash"]:
+                files_rec[f["dest"]] = f["hash"]
+                kept.append({"dest": f["dest"], "reason": "already identical"})
+                continue
+            owned = files_rec.get(f["dest"]) or (old.get(f["dest"]) or {}).get("hash")
+            if current != owned:
+                files_rec.pop(f["dest"], None)
+                kept.append({"dest": f["dest"],
+                             "reason": "edited since install; left alone"})
+                continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(f["source"], dest)
+        files_rec[f["dest"]] = f["hash"]
+        written.append(f["dest"])
+    new_dests = {f["dest"] for f in new["files"]}
+    dropped = sorted(d for d in old if d not in new_dests)
+    for d in dropped:
+        files_rec.pop(d, None)
+    ledger[name] = {**rec, "files": files_rec, "version": target,
+                    "updated_at": _stamp()}
+    _write_ledger(root, ledger)
+    return {"ok": True, "kit": name, "from": pinned, "to": target,
+            "written": written, "kept": kept, "dropped": dropped,
+            "usage": new["usage"],
+            "note": (f"{len(dropped)} file(s) the new version no longer ships "
+                     "were left in the game" if dropped else "")}
 
 
 # ---------------------------------------------------------------------------

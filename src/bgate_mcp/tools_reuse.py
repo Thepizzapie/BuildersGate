@@ -11,11 +11,14 @@ share a file: both are about the boundary between one game and the next.
     ``src/templates/kits/<engine>/``, installed into THIS project one at a
     time, never overwriting. ``bgate_core.store.kits`` is the mechanism.
   * THE LIBRARY is assets: a sprite sheet one game generated, published to
-    ``~/.bgate/library`` and imported into another. Content-addressed, in
+    the studio's ``shared/assets`` (``~/.bgate/library`` with no studio) and
+    imported into another. Content-addressed, in
     no repository, following the person. ``bgate_core.store.assetlib``.
 
-Kits are Godot-only for now (they are GDScript) and register under that
-engine; the library is engine-neutral and registers everywhere.
+Kits serve Godot (GDScript plus input actions) and web (TypeScript under
+src/). With a studio set, modules a person extracted from one of their games
+(kit_extract) sit on the same shelf, pinned per game by version (kit_update
+moves the pin). The library is engine-neutral and registers everywhere.
 """
 from __future__ import annotations
 
@@ -46,6 +49,11 @@ def _game_dir(godot_project: str) -> _Path:
     return _Path(found)
 
 
+def _engine() -> str:
+    """The pinned project's engine; kits exist for godot and web."""
+    return _project.engine_of(_root())
+
+
 def _dimension() -> str:
     try:
         return _project.get(_root()).get("dimension") or ""
@@ -71,14 +79,15 @@ def kit_list(dimension: Annotated[str, Field(description="2d | 3d | any. Empty: 
     """
     dim = dimension if dimension in ("2d", "3d") else (
         "" if dimension == "any" else _dimension())
+    engine = _engine()
     try:
         game = _game_dir(godot_project)
     except FileNotFoundError as exc:
         # No engine project yet: the shelf is still worth reading.
-        out = {"kits": _kits.list_kits("godot", dim), "engine": "godot",
+        out = {"kits": _kits.list_kits(engine, dim), "engine": engine,
                "dimension": dim or "any", "note": str(exc)}
         return out
-    return _kits.status(_root(), game, "godot", dim)
+    return _kits.status(_root(), game, engine, dim)
 
 
 @_tool
@@ -87,7 +96,8 @@ def kit_install(name: Annotated[str, Field(description="A kit from kit_list: top
                 bind_actions: Annotated[bool, Field(description="Append the kit's MISSING input actions to project.godot [input] with default keys. Existing actions are never touched. Default True.")] = True,
                 force: Annotated[bool, Field(description="Replace a file that exists and differs (a timestamped .bak is kept). Default False: such a file is reported and left alone.")] = False,
                 check: Annotated[bool, Field(description="Load every installed script inside the running project afterwards and report whether the engine compiled it. Default True; skipped with a reason when Godot is not installed.")] = True,
-                any_dimension: Annotated[bool, Field(description="Install a kit whose dimension does not match the project's (a 3D kit into a 2D game). Default False: refused with the mismatch named.")] = False) -> dict:
+                any_dimension: Annotated[bool, Field(description="Install a kit whose dimension does not match the project's (a 3D kit into a 2D game). Default False: refused with the mismatch named.")] = False,
+                version: Annotated[str, Field(description="A studio module version to install and pin, e.g. 1.2.0 (kit_list shows `versions`). Empty: the shipped kit, the game's existing pin, or a studio-only module's newest.")] = "") -> dict:
     """DROP A SYSTEM INTO THE GAME: copies one kit's scripts into scripts/,
     adds the input actions it reads, and proves the engine compiles them.
 
@@ -101,20 +111,26 @@ def kit_install(name: Annotated[str, Field(description="A kit from kit_list: top
     """
     root = _root()
     game = _game_dir(godot_project)
-    result = _kits.install(root, game, name, engine="godot", force=force,
+    engine = _engine()
+    result = _kits.install(root, game, name, engine=engine, force=force,
                            bind=bind_actions,
-                           dimension="" if any_dimension else _dimension())
+                           dimension="" if any_dimension else _dimension(),
+                           version=version)
     for rel in result["written"]:
         _note_tool_write(root, str(game / rel))
     if result["actions_added"]:
         _note_tool_write(root, str(game / "project.godot"))
-    if check:
+    if check and engine != "godot":
+        result["check"] = {"skipped": f"no compile probe for {engine}; "
+                                      "engine_check builds the game"}
+    elif check:
         if _godot.available().get("available") and (game / "project.godot").is_file():
             # load() + can_instantiate() inside the running project, not
             # --import: an unreferenced script is not compiled by an import,
             # and every kit script is unreferenced the moment it lands.
             result["check"] = _kits.prove(
-                game, [f["dest"] for f in _kits.load(name)["files"]])
+                game, [f["dest"] for f in
+                       _kits.load(name, engine, result["version"])["files"]])
             if not result["check"].get("ok"):
                 result["ok"] = False
         else:
@@ -138,11 +154,65 @@ def kit_remove(name: Annotated[str, Field(description="A kit the ledger says is 
     """
     root = _root()
     game = _game_dir(godot_project)
-    result = _kits.remove(root, game, name, engine="godot", force=force)
+    result = _kits.remove(root, game, name, engine=_engine(), force=force)
     for rel in result["removed"]:
         _note_tool_write(root, str(game / rel))
     _log("kit", f"{name}: removed {len(result['removed'])}, "
                 f"refused {len(result['refused'])}", ref=name)
+    return result
+
+
+@_tool
+def kit_extract(name: Annotated[str, Field(description="Module name: lowercase letters, digits and _, e.g. relay_netcode.")],
+                version: Annotated[str, Field(description="MAJOR.MINOR.PATCH, e.g. 1.0.0. A published version is immutable; a fix is a new version.")],
+                files: Annotated[list[str], Field(description="Paths relative to the engine project; each lands at the same path when installed. Web modules: under src/ only.")],
+                summary: Annotated[str, Field(description="What the module is and does, one or two sentences. Required to publish.")] = "",
+                title: Annotated[str, Field(description="Display name. Empty: derived from name.")] = "",
+                dimension: Annotated[str, Field(description="2d | 3d | any. Default any.")] = "any",
+                requires: Annotated[Optional[dict], Field(description='What a game needs for it to work: {"actions": {name: [keys]}, "autoloads": [...], "kits": [...]}.')] = None,
+                provides: Annotated[Optional[dict], Field(description="Free-form: class names, signals, exports, methods, a TS module's exports.")] = None,
+                usage: Annotated[str, Field(description="How to wire it into a game.")] = "",
+                godot_project: Annotated[str, Field(description="The engine project the files are in. Empty: the pinned project's own.")] = "",
+                confirm: Annotated[bool, Field(description="False (default): write nothing and return the manifest to check. True: publish it.")] = False) -> dict:
+    """PUBLISH PART OF THIS GAME AS A REUSABLE MODULE in the studio's
+    shared/modules, so any other game can kit_install it by version.
+
+    Two calls: first without `confirm` to read back the manifest (what it
+    provides and needs; correct it), then with `confirm` to publish. A
+    published version is never rewritten. Needs a studio (`bgate studio
+    init`). Godot and web projects.
+    Full notes: docs/tools.md#kit_extract
+    """
+    game = _game_dir(godot_project)
+    result = _kits.extract(game, name, version, files, engine=_engine(),
+                           title=title, summary=summary, dimension=dimension,
+                           usage=usage, requires=requires, provides=provides,
+                           confirm=confirm)
+    if result.get("confirmed"):
+        _log("kit", f"published {name}@{version} ({len(files)} file(s))",
+             ref=f"{name}@{version}")
+    return result
+
+
+@_tool
+def kit_update(name: Annotated[str, Field(description="A studio module this game has pinned.")],
+               version: Annotated[str, Field(description="The version to move to. Empty: the newest published.")] = "",
+               godot_project: Annotated[str, Field(description="The engine project. Empty: the pinned project's own.")] = "") -> dict:
+    """MOVE A PINNED MODULE FORWARD to a newer version.
+
+    Files unchanged since install are replaced; a file the game has edited
+    is `kept` and named, never overwritten. Files the new version dropped
+    stay in the game and are listed under `dropped`. Never moves a pin
+    backwards.
+    Full notes: docs/tools.md#kit_update
+    """
+    root = _root()
+    game = _game_dir(godot_project)
+    result = _kits.update(root, game, name, engine=_engine(), version=version)
+    for rel in result["written"]:
+        _note_tool_write(root, str(game / rel))
+    _log("kit", f"{name}: {result['from']} -> {result['to']}, wrote "
+                f"{len(result['written'])}, kept {len(result['kept'])}", ref=name)
     return result
 
 
@@ -155,7 +225,8 @@ def library_publish(paths: Annotated[list[str], Field(description="Files or dire
                     collection: Annotated[str, Field(description="A name grouping these entries (a character, a tileset, a prop set). One word a person would say.")] = "",
                     note: Annotated[str, Field(description="What this is and how it was made, for whoever finds it next year.")] = "") -> dict:
     """PUT AN ASSET WHERE THE NEXT GAME CAN FIND IT: copies files out of
-    this project into the machine-wide library at ~/.bgate/library.
+    this project into the shared library: the studio's shared/assets when
+    a studio is set, else ~/.bgate/library.
 
     Content-addressed: the same bytes published twice are stored once and
     come back under `existing` with the new tags merged. Nothing leaves the

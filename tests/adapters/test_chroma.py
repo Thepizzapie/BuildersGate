@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("PIL")
-
 from PIL import Image, ImageDraw
 
 from bgate_core.art import chroma

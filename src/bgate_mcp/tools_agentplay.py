@@ -32,7 +32,9 @@ def decide(state: str, questions: str, model: str = "") -> dict:
     About 250 ms and a hundredth of a cent a call. Use it for classification
     and judgement over text you already have - it does not write, plan or
     read files. Needs TYPESAFE_API_KEY or AI_GATEWAY_API_KEY
-    (`bgate key set typesafe --global`)."""
+    (`bgate key set typesafe --global`), or BGATE_JEV_OLLAMA_MODEL naming a
+    local Ollama decision model (laya, nimble, tev1) for a keyless, weaker
+    route on the same endpoint; the result's `route` says which answered."""
     from bgate_adapters import jev
 
     spent = _budget()
@@ -93,12 +95,17 @@ def playtest_feel_check(scene: str, goal: str, seconds: float = 90.0) -> dict:
 
     FAILS (any of): ONE_BUTTON (one option > 60% of decisions), FLAT (the
     hold-one-option bot reaches >= 85% of the Jev bot's progress), NO_PRESSURE
-    (the hold-one-option bot is threatened on < 20% of decisions), TRIVIAL (neither bot dies), UNFAIR (3+
+    (the hold-one-option bot is threatened on < 20% of decisions), TRIVIAL
+    (neither bot dies, in runs that both reached an end; runs that neither
+    died nor ended inside `seconds` are a `notes` entry, not a fail), UNFAIR (3+
     deaths in one 5% of the scene), UNMEASURED (the game's bgate_observe()
-    reports no `progress` 0..1 or `danger` bool). Leaving the slice and the
-    release gate both require every checked scene to pass. Built after
+    reports no `progress` 0..1 or `danger` bool). ONE_BUTTON counts only
+    frames that offered more than one option. Leaving the slice and the
+    release gate both require every checked scene to pass. A FAIL files a
+    director item that WAITS FOR A PERSON; nothing dispatches it. Built after
     HARDCOVER passed every clearability gate and the human called it "a flat
-    just hold click game". Two runs of `seconds` game time; about $0.03."""
+    just hold click game". Two runs of `seconds` game time; about $0.03. For
+    a turn-based game set `seconds` to a whole match or TRIVIAL is unjudged."""
     spent = _budget()
     if not spent.get("ok"):
         return spent
@@ -109,12 +116,14 @@ def playtest_feel_check(scene: str, goal: str, seconds: float = 90.0) -> dict:
 
 
 @_tool
-def playtest_agent_install() -> dict:
-    """Install or refresh the BGateAgent autoload (addons/bgate/bgate_agent.gd)
-    in this Godot project. Inert unless a playtest_agent_run launches the
-    game. Additive: the game's own autoloads are kept."""
+def playtest_agent_install(refresh: bool = False) -> dict:
+    """Install the BGateAgent autoload (addons/bgate/bgate_agent.gd) in this
+    Godot project. Inert unless a playtest_agent_run launches the game.
+    Additive: the game's own autoloads are kept, and so is the game's own
+    copy of the script when it differs from the template (the result says
+    so under `note`); `refresh=True` replaces it with the template."""
     try:
-        return {"ok": True, **_agentplay.install(_root())}
+        return {"ok": True, **_agentplay.install(_root(), refresh=refresh)}
     except RuntimeError as exc:
         return {"ok": False, "error": str(exc)}
 

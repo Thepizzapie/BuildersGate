@@ -576,6 +576,9 @@ def index() -> str:
     return _inject_identity(_inject_token(_inject_settings(html)))
 
 
+_EDITIONS = ("selfhost", "connected", "builder", "publisher")
+
+
 def _inject_settings(html: str) -> str:
     """Ride the client-side settings into the page as ``window.BGATE_SETTINGS``.
 
@@ -594,9 +597,14 @@ def _inject_settings(html: str) -> str:
     """
     try:
         from bgate_core.store import settings as _settings
-        values = _settings.client(_root())
+        values = dict(_settings.client(_root()) or {})
     except Exception:
-        return html          # no project, no registry: the JS fallbacks stand
+        values = {}          # no project, no registry: the JS fallbacks stand
+    # A packaged build stamps its edition before this module loads; the page
+    # reads it to decide which first-run path to show. Unset means selfhost.
+    edition = os.environ.get("BGATE_EDITION", "").strip().lower()
+    if edition in _EDITIONS:
+        values["edition"] = edition
     if not values:
         return html
     shim = "<script>window.BGATE_SETTINGS=%s;</script>" % json.dumps(values)
@@ -711,8 +719,10 @@ def _inject_token(html: str) -> str:
 # THE FLOOR'S ASSETS LIVE IN A SEPARATE PACKAGE. img/floor and audio/floor
 # (~30MB of decoration) are not in frontend/public any more; their source is
 # packaging/floor-assets/, installed as builders-gate-floor-assets (the `floor`
-# extra). Resolution order: that package if it imports, else a local static
-# tree that still carries them (an older build), else nothing — the floor
+# extra). Resolution order: that package if it imports, else the pack's source
+# in packaging/floor-assets/ when this is a git checkout (so a dev checkout
+# gets the floor without installing the extra), else a local static tree that
+# still carries them (an older build), else nothing. Then the floor
 # draws the procedural fallback it has always carried, and the radio's
 # manifest says why so the silence is explained rather than mysterious.
 # Mounted BEFORE the general /static mount because starlette matches mounts
@@ -729,6 +739,10 @@ def _floor_assets_root() -> Optional[Path]:
             return root
     except Exception:
         pass  # no pack is a quieter floor, never a broken dashboard
+    repo = Path(__file__).resolve().parents[2]
+    source = repo / "packaging" / "floor-assets" / "builders_gate_floor_assets"
+    if (repo / ".git").exists() and (source / "img").is_dir():
+        return source
     return None
 
 
@@ -2364,6 +2378,23 @@ def serve(port: int = 7788, remote: bool = False) -> None:
         print(f"  Stop that one, or start this on another port: "
               f"bgate serve --port {port + 1}")
         raise SystemExit(2)
+
+    # SAY THE PORT TO EVERYTHING THIS DASHBOARD STARTS OR SERVES. The web
+    # template's vite proxy and the kie callback both named 7788 as a
+    # constant; on a machine with two projects that is the other game's
+    # dashboard (bgate_adapters.web.dashboard_port has the measurement).
+    # The env reaches children of this process; the file reaches the MCP
+    # server, which is not one.
+    from bgate_adapters import web as _web
+
+    os.environ[_web.DASHBOARD_PORT_ENV] = str(port)
+    if root is not None:
+        try:
+            marker = Path(root) / ".bgate"
+            marker.mkdir(parents=True, exist_ok=True)
+            (marker / _web.PORT_FILENAME).write_text(str(port), encoding="utf-8")
+        except OSError:
+            pass                   # a read-only tree still gets a dashboard
 
     print(f"builders gate · dashboard on {url}")
     if root is None:

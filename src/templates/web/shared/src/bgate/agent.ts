@@ -42,7 +42,8 @@
  * to the harness template: playtest_agent_run reinstalls it on every run.
  */
 
-type Opt = { keys?: string[]; tap?: string[]; click?: string; act?: string; desc?: string };
+/** `run` is for games driven by commands rather than keys: called once when the option is chosen. */
+type Opt = { keys?: string[]; tap?: string[]; click?: string; act?: string; desc?: string; run?: () => void };
 export interface Observation {
   state: string | Record<string, unknown>;
   options: Record<string, Opt | string>;
@@ -133,6 +134,7 @@ async function decide(obs: Observation): Promise<void> {
     // (last-call): the bot "held" KeyS for 1200 frames while the hero stood at
     // the spawn, because the keys had been dropped on a focus change.
     pending = [...keep];
+    opt.run?.();
     if (opt.click) (document.querySelector(opt.click) as HTMLElement | null)?.click();
     if (opt.act) (window as unknown as { bgate_act?: (name: string) => void }).bgate_act?.(opt.act);
     report("agent_decision", {

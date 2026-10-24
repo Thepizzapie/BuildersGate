@@ -295,7 +295,7 @@ def _max_turns(root: str, item: Optional[dict] = None) -> int:
     CLI itself.
 
     GRIPE 40: a small/medium item's size-derived cap (runlimits.SIZE_LIMITS)
-    wins over the project default when the size gives one — the whole point
+    wins over the project default when the size gives one - the whole point
     of `size` is a TIGHTER ceiling than "whatever this project usually
     allows", not a looser one. `large` (or no item) falls through unchanged.
     """
@@ -927,7 +927,7 @@ def _seat_cap(root: str, seat: str) -> int:
 
     MEASURED (EXIT 67, item 24): three art agents ran in parallel and mixed
     characters into each other's reference sheets (kie upload name collision,
-    fixed separately by content-hashing upload names) — the deeper problem is
+    fixed separately by content-hashing upload names) - the deeper problem is
     that art generation shares provider-side state a single global concurrency
     cap does not protect. ``dispatch.max_per_seat`` is a per-seat map read from
     settings; the registry default is ``{"art": 1}``.
@@ -1095,7 +1095,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                            running=running, max_concurrent=cap)
         # PER-SEAT CAP. concurrency_limit above is a FLOOR refusal (autodeploy
         # stops the whole tick on it); this one is per-ITEM, because a seat at
-        # its cap should not stop a different seat's work from dispatching —
+        # its cap should not stop a different seat's work from dispatching -
         # see refusal code `seat_cap`, deliberately not in autodeploy.FLOOR_CODES.
         seat = str(item.get("seat") or "")
         seat_cap = _seat_cap(root, seat)
@@ -1200,7 +1200,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     if blocked:
         return _refused("runner_unavailable", blocked, runner=runner.name)
 
-    # ITEM 13 — DOES THIS SEAT HAVE ANYWHERE TO SPEND, before it is spawned to
+    # ITEM 13 - DOES THIS SEAT HAVE ANYWHERE TO SPEND, before it is spawned to
     # try. MEASURED: Retro Diffusion ran dry ($0.11) on EXIT 67's night one;
     # two Codex art runs stalled on it silently, each one burning a full turn
     # to discover what this refuses in one dispatch-time read.
@@ -1572,7 +1572,7 @@ def detect_usage_limit(text: str, *, runner: str = "") -> Optional[dict]:
     """Is this the agent's own report that it hit a session/account limit?
 
     Returns {"raw": <the matched sentence>, "resumes_at": <parsed text, or
-    "">, "runner": runner} or None. Best-effort text matching, deliberately —
+    "">, "runner": runner} or None. Best-effort text matching, deliberately -
     there is no structured field for this in either CLI's event stream, only
     the sentence a human would also have read to figure it out.
     """
@@ -1651,17 +1651,17 @@ def _holder_item(root: str, item_id: int) -> Optional[int]:
     MEASURED (EXIT 67, item 27): a run dispatched on #4 chains through
     queue_claim_next to #35, #13, #42, #46 and dies at the runtime ceiling
     mid-#46. The old code banked the kill against `item_id` (#4) unconditionally
-    — even though #4 had called queue_complete and closed hours earlier. #4,
+    - even though #4 had called queue_complete and closed hours earlier. #4,
     #35, #13 and #42 each needed a manual re-close after being falsely failed.
 
     The run's actor stamp (``agent:item-<item_id>``) is shared by every item it
     claims, so the still-open ones (status='dispatched') are exactly the work
-    this process has not yet settled. The LAST of those — highest id among
-    open claims, since claim_next only ever claims forward — is what the
+    this process has not yet settled. The LAST of those - highest id among
+    open claims, since claim_next only ever claims forward - is what the
     process is holding when it dies. If nothing is open under that actor, fall
     back to `item_id` itself only if IT is still 'dispatched' (a run that
     never claimed anything, the ordinary case). If neither holds, the run has
-    already banked everything it touched and there is nothing to fail —
+    already banked everything it touched and there is nothing to fail -
     returning None so the caller does not stamp a closed item.
     """
     try:
@@ -1713,7 +1713,7 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
                 "files, not regenerate them.")
     # ATTRIBUTE THE KILL TO WHAT THE RUN WAS ACTUALLY HOLDING, not to
     # `item_id` (the item this run was originally dispatched on). A chained
-    # run may have long since closed `item_id` and be several claims deep —
+    # run may have long since closed `item_id` and be several claims deep -
     # see _holder_item. `holder is None` means every item this run ever
     # touched is already settled; the kill has nothing left to fail.
     holder = _holder_item(root, item_id)
@@ -1805,7 +1805,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                   f"killed: exceeded the {limit_s // 60}-minute runtime limit")
             return
 
-        # GRIPE 40(b) — LAND WHAT YOU HAVE. Fired once per checkpoint per run
+        # GRIPE 40(b) - LAND WHAT YOU HAVE. Fired once per checkpoint per run
         # (entry["budget_steered"] tracks which ones already went out), so a
         # 2-second poll does not repost the same steer a dozen times before
         # the agent's current step ends and it can read the inbox.
@@ -2315,7 +2315,7 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
         # ITEM 32: name every item this RUN carried, not just the one it was
         # dispatched on. A chained run (queue_claim_next) may have completed
         # several items under this process's clock, and all of their files
-        # land in the same commit — attributing it to only the first id is
+        # land in the same commit - attributing it to only the first id is
         # how #13's and #44's work got committed as "item #4".
         try:
             ids = sorted({item_id, *(int(r["id"])
@@ -2341,7 +2341,7 @@ def _notify_peer_seats(root: str, item_id: int, committed_paths: list) -> None:
     """GRIPE 39c. Warn every OTHER live agent whose seat lanes just moved.
 
     THE GAP. An item's auto-commit can land inside another RUNNING agent's own
-    write_globs — two art items sharing ``game/assets/**``, say — and nothing
+    write_globs - two art items sharing ``game/assets/**``, say - and nothing
     told the still-running one its files just changed under it. It kept
     working off what it read at the start of its turn, and its own result
     landed on top of the peer's, or contradicted it, with neither agent aware
@@ -2349,7 +2349,7 @@ def _notify_peer_seats(root: str, item_id: int, committed_paths: list) -> None:
 
     Read ``_live`` directly (not queue.list_items) because the question is
     "which agents does THIS PROCESS actually have a pipe to steer", which is
-    exactly what ``_live`` is — see the module docstring on why steering has
+    exactly what ``_live`` is - see the module docstring on why steering has
     to go through here rather than the MCP server.
 
     Best-effort throughout: a steer that fails to post costs a peer a warning,
@@ -3262,10 +3262,6 @@ STEER_MARKER = _agentlog.STEER_MARKER
 _tool_subject = _agentlog.tool_subject
 _final_tokens = _agentlog.final_tokens
 _final_model = _agentlog.final_model
-
-
-def _add_step(state: dict, step: dict) -> None:
-    _agentlog.add_step(state, step, MAX_STEPS)
 
 
 def _absorb(state: dict, raw: bytes) -> None:

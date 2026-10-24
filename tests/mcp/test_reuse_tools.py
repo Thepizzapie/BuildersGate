@@ -36,8 +36,8 @@ async def call(tool: str, /, **kwargs) -> dict:
 class TestKitsOverMcp:
     def test_registered(self):
         names = {t.name for t in server.mcp._tool_manager.list_tools()}
-        assert {"kit_list", "kit_install", "kit_remove",
-                "library_publish", "library_search", "library_import"} <= names
+        assert {"kit_list", "kit_install", "kit_remove", "kit_extract",
+                "kit_update", "library_publish", "library_search", "library_import"} <= names
 
     @pytest.mark.anyio
     async def test_list_filters_to_the_project_dimension(self, game):
@@ -78,6 +78,33 @@ class TestKitsOverMcp:
         monkeypatch.setattr(server._godot, "available", lambda: {"available": False})
         got = await call("kit_install", name="health", check=True)
         assert got["ok"] and "skipped" in got["check"]
+
+    @pytest.mark.anyio
+    async def test_extract_confirm_install_update_round_trip(self, game, tmp_path,
+                                                             monkeypatch):
+        base = tmp_path / "studio" / "shared" / "modules"
+        monkeypatch.setattr(kits, "studio_modules_dir", lambda engine: base / engine)
+        mod = game / "scripts" / "dash.gd"
+        mod.parent.mkdir(parents=True, exist_ok=True)
+        mod.write_text("extends Node\n", encoding="utf-8")
+        args = dict(name="dash", version="1.0.0", files=["scripts/dash.gd"],
+                    summary="A dash.")
+        draft = await call("kit_extract", **args)
+        assert draft["ok"] and draft["confirmed"] is False
+        assert not base.exists()
+        assert (await call("kit_extract", **args, confirm=True))["confirmed"]
+        again = await call("kit_extract", **args, confirm=True)
+        assert again["ok"] is False and "immutable" in again["error"]
+
+        mod.unlink()
+        got = await call("kit_install", name="dash", check=False)
+        assert got["ok"] and got["version"] == "1.0.0"
+        mod.write_text("extends Node # 2\n", encoding="utf-8")
+        await call("kit_extract", **{**args, "version": "1.1.0"}, confirm=True)
+        mod.write_text("extends Node\n", encoding="utf-8")
+        moved = await call("kit_update", name="dash")
+        assert (moved["from"], moved["to"]) == ("1.0.0", "1.1.0")
+        assert moved["written"] == ["scripts/dash.gd"]
 
 
 class TestLibraryOverMcp:
@@ -123,14 +150,16 @@ class TestLibraryOverMcp:
         assert "library_publish" in names
 
 
-def test_every_kit_is_godot_owned_and_engine_spine():
-    """The classification that keeps a web project from being offered
-    GDScript, and audio from carrying a controller installer."""
+def test_every_kit_tool_serves_godot_and_web_and_is_engine_spine():
+    """Kits register for godot and web (the store picks the engine's
+    shelf), and audio never carries a controller installer."""
     from bgate_core.runtime import engines
     from bgate_core.store import modules
 
-    for name in ("kit_list", "kit_install", "kit_remove"):
-        assert name in engines.ENGINE_TOOLS["godot"]
+    for name in ("kit_list", "kit_install", "kit_remove", "kit_extract",
+                 "kit_update"):
+        assert engines.tool_enabled(name, "godot")
+        assert engines.tool_enabled(name, "web")
         assert modules.spine_group(name) == "engine"
         assert not modules.seat_tool_enabled(name, "audio")
         assert modules.seat_tool_enabled(name, "gameplay")
