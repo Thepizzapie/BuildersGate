@@ -125,7 +125,7 @@ class TestAdoptDoesNotClobber:
         adopt.adopt(game)
         text = (game / "CLAUDE.md").read_text(encoding="utf-8")
         assert "Always use tabs." in text
-        assert "queue_next" in text
+        assert "queue_add" in text
 
     def test_refuses_when_a_managed_path_is_a_directory(self, game):
         (game / "CLAUDE.md").mkdir()
@@ -303,6 +303,18 @@ class TestStampedBriefing:
                   if "_" in m and not m.startswith("bgate ")}
         unknown = {name for name in cited if name not in real}
         assert not unknown, f"CLAUDE.md cites non-existent tools: {sorted(unknown)}"
+
+    def test_it_stays_small(self):
+        # Claude Code loads this file into every session and every dispatched
+        # run in the project. It was 13.8k characters, 6x the web template.
+        assert len(self.SOURCE.read_text(encoding="utf-8")) < 7000
+
+    def test_a_missing_tool_is_not_read_as_a_dead_server(self):
+        # Each seat loads only its crafts, so a seated run legitimately lacks
+        # most tools named here; only project_status missing means disconnected.
+        text = self.SOURCE.read_text(encoding="utf-8")
+        assert "does not appear in your tool list, the server is not" not in text
+        assert "tool_unlock" in text
 
     def test_it_covers_the_things_a_beginner_needs(self):
         text = self.SOURCE.read_text(encoding="utf-8")

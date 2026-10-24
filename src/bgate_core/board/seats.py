@@ -1763,11 +1763,12 @@ def director_instructions(seat: str = "",
         return (
             f"Builders Gate. This session has adopted the {seat.upper()} seat "
             f"(BGATE_SEAT={seat}), so it is a spawned seat worker, not the "
-            "top-level director. Your task prompt carries your identity; "
-            f"seat_brief({seat!r}) carries your lanes, mission, house rules, "
-            "pinned refs and the project bible. Read it once before you write "
-            "anything, and use seat_can_write as the oracle when a path is "
-            "uncertain, the PreToolUse hook enforces the same answer."
+            "top-level director. Your task prompt carries your identity and "
+            "the short form of your brief (mission, lanes, peers, locks, the "
+            f"bible's contents); seat_brief({seat!r}) is the full ~25 KB "
+            "version, for when you need more than that. Use seat_can_write as "
+            "the oracle when a path is uncertain, the PreToolUse hook enforces "
+            "the same answer."
         )
     # Rules before the mission: the mission is project data and can be any
     # length, so a long one pushes the server's appended project_dir note and
