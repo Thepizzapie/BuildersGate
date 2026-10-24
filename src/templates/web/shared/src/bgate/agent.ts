@@ -128,7 +128,11 @@ async function decide(obs: Observation): Promise<void> {
         held = held.filter((h) => h !== k);
       }
     }
-    pending = keep.filter((k) => !held.includes(k));
+    // Re-press every kept key, not only the new ones: a window blur clears the
+    // game's key set and nothing else would ever press them again. Measured
+    // (last-call): the bot "held" KeyS for 1200 frames while the hero stood at
+    // the spawn, because the keys had been dropped on a focus change.
+    pending = [...keep];
     if (opt.click) (document.querySelector(opt.click) as HTMLElement | null)?.click();
     if (opt.act) (window as unknown as { bgate_act?: (name: string) => void }).bgate_act?.(opt.act);
     report("agent_decision", {
