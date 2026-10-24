@@ -133,7 +133,6 @@ def test_status_carries_the_qr_and_the_url(client):
     assert st["listening"] and st["enabled"]
     assert st["url"] == "http://100.64.0.9:7788"
     assert st["token"] == phone["x-bgate-token"]
-    pytest.importorskip("segno")
     assert st["qr"].startswith("data:image/svg+xml")
 
 

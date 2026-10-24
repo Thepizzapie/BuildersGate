@@ -159,7 +159,6 @@ def test_pair_page_serves_the_phone_token_and_qr_on_loopback(client, monkeypatch
     assert remote.ensure_token(tmp_path) in r.text
     assert token not in r.text          # the dashboard's own token never leaves the page
     assert "http://100.64.0.9:7788" in r.text
-    pytest.importorskip("segno")
     assert 'src="data:image/svg+xml' in r.text
 
 
