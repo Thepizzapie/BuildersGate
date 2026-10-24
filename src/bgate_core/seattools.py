@@ -59,7 +59,7 @@ __all__ = ["tools_for_seat", "seat_registers"]
 #: Every seat gets these. The board, its own instructions, canon, and the
 #: safety rails, none of which are optional to doing any work at all.
 CORE: tuple[str, ...] = (
-    "project_status", "project_select", "tool_index",
+    "project_status", "tool_index",
     "seat_brief", "seat_list", "seat_can_write", "seat_notes", "seat_post_note",
     # The worker's half of the board. Dependencies, cancel, park/unpark and
     # queue_next were called by no worker seat in 3,381 runs (2026-10-24);
@@ -73,7 +73,7 @@ CORE: tuple[str, ...] = (
     "not_building_list", "recall", "ask_human",
     "asset_status", "asset_lock", "asset_release", "asset_track", "asset_verify",
     "asset_untrack",
-    "provider_status", "bgate_doctor", "decide", "copy_check",
+    "provider_status", "kie_status", "bgate_doctor", "decide", "copy_check",
     # EVERY SEAT PLANS ITS OWN DISCIPLINE. The domain plan is the end state
     # the seat builds toward; a seat that cannot read or revise it is back
     # to building against a feature list. plan_promote stays director-only.
@@ -83,8 +83,9 @@ CORE: tuple[str, ...] = (
     # of whichever engine the project records; a seat brief on a web or
     # Unity project tells every seat to call them, so every seat has them.
     # The engine gate (engines.ENGINE_TOOLS) still decides which engine's
-    # own family registers underneath.
-    "engine_",
+    # own family registers underneath. Not the prefix: engine_scaffold and
+    # engine_templates start a project, which no dispatched seat does.
+    "engine_status", "engine_check", "engine_screenshot",
 )
 
 #: The rest of the queue family: arranging the board rather than working an
@@ -120,7 +121,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     "tech": (
         "kit_",
         "godot_", "web_", "unity_", "scene_", "playtest_",
-        "iteration_", "aseprite_status", "project_set_engine",
+        "iteration_", "aseprite_status", "project_set_engine", "game_view_get",
     ),
     # The visual pipeline. The biggest list, and it earns it: this is the only
     # seat that generates, rigs, measures and delivers assets.
@@ -136,7 +137,7 @@ SEATS: dict[str, tuple[str, ...]] = {
         "web_status", "web_dev", "unity_status", "unity_install_scripts",
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
-        "canon_check", "vfx_animate", "sidescroll_generate", "level_reskin",
+        "canon_check", "vfx_animate", "level_reskin",
         "game_view_get", "research_findings", "research_grid",
     ),
     # Music, SFX and mix.
@@ -150,6 +151,7 @@ SEATS: dict[str, tuple[str, ...]] = {
         "library_",
         "cinematic_", "storyboard_", "kie_video_generate", "image_generate",
         "image_edit", "music_", "voice_", "animation_", "godot_screenshot",
+        "game_view_get",
     ),
     # Verification: does the game actually play. Drives the engine hard, writes
     # only tests, and files what it finds.
@@ -188,6 +190,22 @@ SEATS: dict[str, tuple[str, ...]] = {
 }
 
 
+#: Seat -> names its prefixes would match but it must not carry. A prefix keeps
+#: a family whole as it grows; these are the few members that belong to
+#: another seat's handoff: delivering a mesh is art's, a verdict on art is qa's.
+_ART_HANDOFF = ("godot_deliver_asset", "godot_import_asset",
+                "godot_character_wire", "godot_clip_capture",
+                "godot_clip_retarget", "godot_retarget_check")
+EXCEPT: dict[str, tuple[str, ...]] = {
+    "gameplay": _ART_HANDOFF,
+    "qa": _ART_HANDOFF,
+    "art": ("art_qa_verdict", "art_tournament_verdict"),
+    # The human adopts the research plan ("I adopt it myself", in the
+    # kickoff's own words); the rest of research_ is the director's to run.
+    "director": ("research_plan_adopt",),
+}
+
+
 def tools_for_seat(seat: str) -> tuple[str, ...] | None:
     """The prefixes a seat may register, or None meaning "everything".
 
@@ -212,4 +230,6 @@ def seat_registers(tool_name: str, seat: str) -> bool:
     if allowed is None:
         return True
     name = (tool_name or "").strip()
+    if name in EXCEPT.get((seat or "").strip().lower(), ()):
+        return False
     return any(name == p or name.startswith(p) for p in allowed)

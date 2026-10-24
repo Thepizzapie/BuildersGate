@@ -211,6 +211,7 @@ def _upsert(root, title: str, body: str) -> dict:
 
 RESEARCH_FIRST = (
     "RESEARCH FIRST. Before the thesis, run pre-production research: "
+    "tool_unlock(\"research\") to register the research_ tools, then "
     "research_suggest for comparable games, then show me the list and wait "
     "for me to confirm or drop them (research_comp_set); research_teardown "
     "each confirmed one; then research_plan_draft and show me the draft. I "

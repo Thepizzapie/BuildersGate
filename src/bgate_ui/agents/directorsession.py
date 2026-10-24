@@ -154,10 +154,10 @@ def _seat_table(root) -> str:
     """The seats, their missions, their write lanes and their tool surfaces.
 
     The toolset half is not decoration: a seat's MCP registry is trimmed to the
-    crafts it practises (bgate_core.store.modules.SEAT_CRAFTS), so filing image work
-    with the audio seat hands it a brief it has no tool to do.
+    families it uses (bgate_core.seattools.SEATS), so filing image work with
+    the audio seat hands it a brief it has no tool to do.
     """
-    from bgate_core.store import modules as _modules
+    from bgate_core import seattools as _seattools
     from bgate_core.board import seats as _seats
 
     try:
@@ -166,13 +166,11 @@ def _seat_table(root) -> str:
         table = dict(_seats.DEFAULT_SEATS)
     out = []
     for role, cfg in table.items():
-        crafts = _modules.SEAT_CRAFTS.get(role)
-        if crafts is None:
+        own = _seattools.SEATS.get(role)
+        if own is None:
             tools = "every builders-gate tool"
         else:
-            prefixes = [p for craft in crafts
-                        for p in _modules.CRAFTS.get(craft, ())]
-            tools = ", ".join(sorted(set(prefixes))) + "* plus the shared spine"
+            tools = ", ".join(sorted(set(own))) + "* plus the shared spine"
         mission = " ".join(str(cfg.get("mission") or "").split())
         lanes = ", ".join(cfg.get("write_globs") or []) or "(no write lane)"
         out.append(f"  {role} — {mission}\n"

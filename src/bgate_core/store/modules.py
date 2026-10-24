@@ -519,46 +519,22 @@ def unclassified(tool_names) -> list[str]:
     return sorted(n for n in tool_names
                   if n not in SPINE and not crafts_owning(n))
 
-# Which crafts each seat holds. THE DIRECTOR IS A SEAT TOO: the seatless
-# human session used to register all ~250 tools (about 100k tokens of schema
-# before the first turn) because "reaches across crafts" was read as "holds
-# every generation surface". It holds the arbitration and evidence crafts and
-# delegates generation to the seats that practise it; when it genuinely needs
-# a craft in its own hands, `tool_unlock(craft)` registers it on the spot and
-# BGATE_SEAT_TOOLS=all still registers everything at boot. Unknown seats
-# stay unscoped.
+# ONE SEAT TABLE. A dispatched seat's surface is `bgate_core.seattools.SEATS`,
+# measured from 3,381 runs, and nothing else. There used to be a second
+# per-seat table here (SEAT_CRAFTS, plus SEAT_SPINE) and the registry was the
+# AND of the two: `level` was missing from this one, so it was scoped by
+# seattools alone, and every edit had to be made twice or it silently did
+# nothing. CRAFTS above stays: it is what a tool IS (for tool_unlock and the
+# module switch), not who holds it.
+#
+# THE SEATLESS SESSION is the director at a keyboard. It holds the
+# arbitration and evidence crafts plus the whole spine and delegates
+# generation; `tool_unlock(craft)` registers a craft on the spot and
+# BGATE_SEAT_TOOLS=all registers everything at boot.
 DIRECTOR = "director"
 
-SEAT_CRAFTS: dict[str, tuple[str, ...]] = {
-    DIRECTOR: ("verdicts", "brainstorm", "playtest", "quest", "dialogue"),
-    "art": ("image", "three_d"),
-    # gameplay gets `verdicts` for traversal_prove and nothing else would be
-    # the wrong trade, a seat that builds routes and cannot prove one drives
-    # the QA seat for every jump it places. The rest of the craft is cheap.
-    "gameplay": ("playtest", "level", "quest", "verdicts"),
-    "tech": ("level", "three_d"),
-    "audio": ("music", "voice", "sfx"),
-    # narrative holds `cinematic` for the storyboard half, scripts and
-    # boards are writing work, not for shot generation, which spends, and
-    # `brainstorm`, because a room with nobody in it was reachable by no seat.
-    "narrative": ("dialogue", "quest", "cinematic", "brainstorm"),
-    "qa": ("playtest", "verdicts"),
-    "cinematic": ("cinematic", "image"),
-}
-
-# Which SPINE groups each seat holds. `core` and `canon` are universal; only
-# the seats that edit scenes or run the engine's checks carry `engine`.
-_ALL_SPINE = tuple(SPINE_GROUPS)
-SEAT_SPINE: dict[str, tuple[str, ...]] = {
-    DIRECTOR: _ALL_SPINE,
-    "art": _ALL_SPINE,
-    "gameplay": _ALL_SPINE,
-    "tech": _ALL_SPINE,
-    "qa": _ALL_SPINE,
-    "cinematic": _ALL_SPINE,
-    "audio": ("core", "canon"),
-    "narrative": ("core", "canon"),
-}
+SESSION_CRAFTS: tuple[str, ...] = (
+    "verdicts", "brainstorm", "playtest", "quest", "dialogue")
 
 
 def effective_seat(seat: str) -> str:
@@ -567,11 +543,14 @@ def effective_seat(seat: str) -> str:
 
 
 def hidden_crafts(seat: str) -> list[str]:
-    """Crafts this seat does NOT hold, what `tool_unlock` could add."""
-    held = SEAT_CRAFTS.get(effective_seat(seat))
-    if held is None:
+    """Crafts the seatless session does NOT hold, what `tool_unlock` could add.
+
+    A dispatched seat answers from seattools, which lists families rather than
+    crafts, so it has nothing to report here; an unknown seat holds everything.
+    """
+    if (seat or "").strip():
         return []
-    return sorted(c for c in CRAFTS if c not in held)
+    return sorted(c for c in CRAFTS if c not in SESSION_CRAFTS)
 
 
 def seat_tool_enabled(tool_name: str, seat: str) -> bool:
@@ -580,31 +559,24 @@ def seat_tool_enabled(tool_name: str, seat: str) -> bool:
     Fail open two ways on purpose: an unknown seat (a project invented one -
     its surface is unknowable, so it gets everything), and any tool outside
     every table. A wrongly-hidden tool is a silently broken workflow; a
-    wrongly-shown one costs only context. The seatless session is the
-    director and is scoped like any seat, `tool_unlock` is its way out.
+    wrongly-shown one costs only context.
     """
-    if (seat or "").strip() and tool_name in DIRECTOR_ONLY:
-        # Before the craft lookup, and gated on ANY seat rather than a known
+    if (seat or "").strip():
+        # Before the seat lookup, and gated on ANY seat rather than a known
         # one: dispatch is the fact that matters here, not which chair.
-        return False
-    key = effective_seat(seat)
-    held = SEAT_CRAFTS.get(key)
-    if held is None:
+        if tool_name in DIRECTOR_ONLY:
+            return False
+        from .. import seattools
+        return seattools.seat_registers(tool_name, seat)
+    if spine_group(tool_name):
         return True
-    group = spine_group(tool_name)
-    if group:
-        return group in SEAT_SPINE.get(key, _ALL_SPINE)
-    # A TOOL MAY BELONG TO SEVERAL CRAFTS, and it is enabled if the seat holds
-    # ANY of them. This used to return on the first craft whose prefix matched,
-    # so a shared tool resolved to whichever craft happened to be declared
-    # first in CRAFTS, `game_view_` is in both `image` and `level`, and
-    # gameplay (which holds `level`, not `image`) was refused it because
-    # `image` is written higher in the dict. Dict order is not a permission
-    # model.
+    # A TOOL MAY BELONG TO SEVERAL CRAFTS, and it is enabled if the session
+    # holds ANY of them: `game_view_` is in both `image` and `level`, and dict
+    # order is not a permission model.
     owners = crafts_owning(tool_name)
     if not owners:
         return True
-    return bool(owners & set(held))
+    return bool(owners & set(SESSION_CRAFTS))
 
 
 def pip_hint(for_modules) -> str:
