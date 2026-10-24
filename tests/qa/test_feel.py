@@ -184,3 +184,11 @@ def test_a_run_whose_code_changed_mid_run_files_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(feel, "escalate", lambda root, out: filed.append(out))
     got = feel.check(tmp_path, scene="", goal="x", seconds=1)
     assert got["stale"] is True and "skipped" in got["board"] and not filed
+
+
+def test_being_caught_is_a_death(tmp_path):
+    """A stealth game ends a run with a catch, not a death event."""
+    rows = _decisions(["sneak", "hide", "go"] * 20)
+    caught = feel.measure(_run(tmp_path, "c", rows, [
+        {"kind": "sam_catch", "ts": 1030.5, "data": {"by": "sight"}}]))
+    assert caught["deaths"] == 1

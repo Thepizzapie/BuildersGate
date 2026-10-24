@@ -44,7 +44,9 @@ FLAT_RATIO = 0.85
 PRESSURE_MIN = 0.20
 UNFAIR_DEATHS = 3
 UNFAIR_BUCKET = 0.05
-DEATH_KIND = re.compile(r"death|died|dead|knocked|fired|game_?over|lost|defeat", re.I)
+#: "catch"/"caught"/"captured": in a stealth game being caught IS the death.
+#: Measured (ONLY YOU): 15 sam_catch events in a run the check called TRIVIAL.
+DEATH_KIND = re.compile(r"death|died|dead|knocked|fired|game_?over|lost|defeat|catch|caught|captured", re.I)
 #: A run-ending event whose status says the player lost counts as a death too:
 #: measured on vibe-coder, losing was {"kind": "run_end", "data": {"status":
 #: "fired"}}, and a name-only match called a fired bot's run TRIVIAL.
