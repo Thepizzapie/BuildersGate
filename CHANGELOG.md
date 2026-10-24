@@ -48,6 +48,16 @@ repository at first publication. There is no earlier release history to record.
   call in the MCP modules, so a tool cannot gate on a capability it is not
   listed under.
 
+### Changed
+- **Seat toolsets re-measured over 3,381 agent runs.** Worker seats no
+  longer carry `queue_add_dependency`, `queue_cut_dependency`,
+  `queue_cancel`, `queue_park`, `queue_unpark`, `queue_next` or
+  `agent_activity`; those are the director's. Each seat also drops the
+  families no run of it ever called (e.g. `library_` outside audio and
+  cinematic, `brainstorm_` for narrative and director). Every tool a seat
+  brief names for that seat stays, and a hand-started session still gets
+  everything. Per-turn schema falls 4-23% depending on the seat.
+
 ### Added
 - **`bgate studio`: one folder for every game and what they share.**
   `bgate studio init DIR` lays out `games/`, `shared/modules/<engine>/`,
