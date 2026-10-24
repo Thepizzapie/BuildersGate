@@ -930,7 +930,6 @@ def mount_origin(faces: str, tile_size, depth: float = MOUNT_DEPTH):
 DRAWN_FACING = "e"
 
 
-
 def cells(plan: dict, atlas: dict, *, source: int,
           layer: str = "") -> dict:
     """A prop plan as `tilemap.encode_cells` input. ``{cells, mirrored, types}``
@@ -1080,24 +1079,3 @@ def art_spec(name: str, *, tile_px: int = 32, view: str = "") -> dict:
         out.update(motion="static", frames=1, sheet_px=list(cell),
                    note="one frame")
     return out
-
-
-def art_manifest(names=None, *, tile_px: int = 32, view: str = "") -> dict:
-    """`art_spec` for every type, plus the totals a generation has to budget.
-
-    Types whose mount means nothing in this view are reported rather than
-    dropped: a ceiling mount is ordinary in a platformer and meaningless seen
-    from above, and a generation that silently skipped them would look like a
-    budget that came in under estimate.
-    """
-    from . import gameview as _view
-
-    names = tuple(names or sorted(PROP_TYPES))
-    specs = [art_spec(n, tile_px=tile_px, view=view) for n in names]
-    return {"tile_px": tile_px, "view": _view.normalise(view),
-            "specs": [s for s in specs if s["in_view"]],
-            "out_of_view": [s["type"] for s in specs if not s["in_view"]],
-            "drawings": sum(max(1, len(s["facings"]))
-                            for s in specs if s["in_view"]),
-            "frames": sum(s["frames"] * max(1, len(s["facings"]))
-                          for s in specs if s["in_view"])}
