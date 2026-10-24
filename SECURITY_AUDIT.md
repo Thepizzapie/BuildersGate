@@ -166,8 +166,28 @@ committed `src/bgate_ui/static/dist/` is what ships. The exposure is to contribu
 The fix is free: `vite` is pinned `^6.0.11` and **6.4.5 is published and in-range**, so
 `npm audit fix` clears both with a lockfile refresh and no manifest change.
 
-The systemic cause is that `security.yml` audits Python thoroughly and JavaScript not at all —
-CI runs `npm ci` in four places across `ci.yml` and `release-exe.yml` and `npm audit` in zero.
+The systemic cause is that **nothing in the repo's automation looks at JavaScript**, from two
+directions at once:
+
+- `security.yml` audits Python thoroughly and JS not at all — CI runs `npm ci` in four places
+  across `ci.yml` and `release-exe.yml`, and `npm audit` in zero.
+- `.github/dependabot.yml` declares only the `pip` and `github-actions` ecosystems. There is no
+  `npm` entry, and `frontend/package-lock.json` is not in a monitored directory.
+
+That second point explains why these two sat unfixed while a fix was in range. GitHub's
+*dependency graph* detects the lockfile and raises **alerts** regardless of `dependabot.yml` —
+the push to this branch printed `GitHub found 6 vulnerabilities on Thepizzapie/BuildersGate's
+default branch (2 high, 3 moderate, 1 low)`, and the 2 high are these. But `dependabot.yml`
+governs **update PRs**, not alerts, so with no `npm` ecosystem declared, no automated bump is
+ever opened for the frontend. The alert fires into the Security tab and nothing carries it
+forward. Hence vite pinned at 6.4.3 with 6.4.5 published and `^6.0.11` happily allowing it.
+
+The remaining 3 moderate and 1 low alerts are visible in the Security tab but not from inside a
+clone — `pip-audit` reports the `[project]` floors and the resolved tree clean, and `npm audit`
+reports only the 2 high, so they are most likely the `setuptools` build floor in **A** (which
+Dependabot reads from `pyproject.toml` and the repo's own floor audit cannot see) plus
+`github-actions` pins. Worth reading at
+`https://github.com/Thepizzapie/BuildersGate/security/dependabot` to close the loop.
 
 **C. `Pillow>=13.0.0` is uncapped while 31 source call sites use an API Pillow 14 removes**
 
@@ -248,6 +268,18 @@ is a lockfile-only change), then add the standing check beside the pip-audit job
 
 `--audit-level=high` matches the repo's existing stance against gates nobody can make green.
 
+Then add the missing ecosystem to `.github/dependabot.yml`, so a fix PR is raised rather than an
+alert nobody is paged for:
+
+```yaml
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
+```
+
 ### 3. Cap Pillow and migrate off `getdata()` *(maintainability — dated deadline)*
 Add `Pillow>=13.0.0,<14` today as the cheap stopgap, then migrate the 31 source call sites to
 `get_flattened_data()`. Mechanical, well covered by existing tests, and it has a hard date
@@ -280,3 +312,7 @@ stops at `[project]`, the dependency audit stops at Python, the Pillow pin stops
 bound, and the CI matrix stops below the version range the package advertises. The two
 high-severity npm advisories are the only items with a live fix available right now, and that
 fix is a lockfile refresh.
+
+The through-line is narrower than "add more scanning": the Python supply chain is watched from
+two directions and the JavaScript one from neither, and the one floor that executes at install
+time is the one the floor audit does not read.
