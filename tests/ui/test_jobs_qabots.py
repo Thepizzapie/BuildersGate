@@ -370,32 +370,6 @@ class TestVerdicts:
     def test_the_aggregate_is_pessimistic(self, verdicts, expected):
         assert qa_bots.aggregate_verdict(verdicts) == expected
 
-    def test_run_all_returns_one_verdict_a_gate_can_read(self, client, game,
-                                                         monkeypatch):
-        _stub_probe(monkeypatch, _summary(_samples({"opponent_hp": 90})))
-        body = client.post("/api/qa-bots/run-all", json={"bots": [
-            {"name": "hitter", "actions": [],
-             "expect": [{"property": "opponent_hp", "comparator": "lt", "value": 100}]},
-            {"name": "misser", "actions": [],
-             "expect": [{"property": "opponent_hp", "comparator": "eq", "value": 0}]},
-        ]}).json()["data"]
-        assert body["verdict"] == "fail"
-        assert body["counts"] == {"pass": 1, "fail": 1, "error": 0, "unknown": 0}
-        assert [r["bot"] for r in body["runs"]] == ["hitter", "misser"]
-
-    def test_run_all_with_an_unproven_bot_is_not_green(self, client, game,
-                                                       monkeypatch):
-        _stub_probe(monkeypatch, _summary(_samples({"opponent_hp": 90})))
-        body = client.post("/api/qa-bots/run-all", json={"bots": [
-            {"name": "hitter", "actions": [],
-             "expect": [{"property": "opponent_hp", "comparator": "lt", "value": 100}]},
-            {"name": "tourist", "actions": []},
-        ]}).json()["data"]
-        assert body["verdict"] == "unknown"
-
-    def test_run_all_needs_bots(self, client, game):
-        assert client.post("/api/qa-bots/run-all", json={"bots": []}).status_code == 400
-
 
 class TestBaselines:
     def test_the_last_run_becomes_the_baseline_and_the_next_diffs_it(
@@ -434,7 +408,7 @@ class TestBaselines:
             "ORDER BY id").fetchall()
         assert [bool(r["is_baseline"]) for r in rows] == [False, False, True]
 
-    def test_an_errored_run_does_not_erase_the_baseline(self, client, game,
+    def test_an_errored_run_does_not_erase_the_baseline(self, client, root, game,
                                                         monkeypatch):
         _stub_probe(monkeypatch, _summary(_samples({"opponent_hp": 70})))
         good = client.post("/api/qa-bots/run",
@@ -443,8 +417,8 @@ class TestBaselines:
         _stub_probe(monkeypatch, None, ok=False)
         client.post("/api/qa-bots/run", json={"bot": "puncher", "actions": []})
 
-        still = client.get("/api/qa-bots/baseline?bot=puncher").json()["data"]
-        assert still["id"] == good["run_id"]
+        from bgate_ui.routes.qa_bots import baseline_for
+        assert baseline_for(root, "puncher")["id"] == good["run_id"]
 
     def test_history_is_paginated_and_carries_the_verdicts(self, client, game,
                                                            monkeypatch):
@@ -465,11 +439,6 @@ class TestBaselines:
         everything = client.get("/api/qa-bots/runs?limit=1").json()
         assert everything["page"]["total"] == 3
         assert len(everything["data"]) == 1
-
-    def test_no_baseline_yet_is_a_404_not_an_empty_pass(self, client, game):
-        got = client.get("/api/qa-bots/baseline?bot=nobody")
-        assert got.status_code == 404
-        assert got.json()["error"]["code"] == "not_found"
 
 
 # ---------------------------------------------------------------------------

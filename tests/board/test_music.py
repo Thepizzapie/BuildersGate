@@ -965,13 +965,6 @@ class TestKeepAndDiscardEndpoints:
         assert got["install"]["path"].endswith("hum.mp3")
         assert (root / got["install"]["path"]).is_file()
 
-    def test_discard_records_the_reason(self, client, fake):
-        one = self._one(client, fake)[0]
-        got = client.post("/api/music/discard",
-                          json={"artifact_id": one["artifact_id"],
-                                "note": "wrong era"}).json()["data"]
-        assert got["artifact"]["status"] == "rejected"
-
     def test_a_missing_artifact_is_a_404(self, client, fake):
         assert client.post("/api/music/keep",
                            json={"artifact_id": 9999}).status_code == 404
@@ -987,12 +980,6 @@ class TestKeepAndDiscardEndpoints:
         got = client.get("/api/music/candidates").json()["data"]
         assert len(got["candidates"]) == 1 and len(got["kept"]) == 1
         assert got["kept"][0]["install"]["path"].endswith("hum.mp3")
-
-
-class TestTaskEndpoint:
-    def test_it_reports_a_finished_task(self, client, fake):
-        got = client.get("/api/music/task/task-1").json()["data"]
-        assert got["status"] == "SUCCESS" and got["track_count"] == 2
 
 
 # ---------------------------------------------------------------------------

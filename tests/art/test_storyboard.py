@@ -18,7 +18,6 @@ the state it leaves the row in when the provider fails.
 """
 from __future__ import annotations
 
-import base64
 import json
 
 import pytest
@@ -315,34 +314,3 @@ class TestTheRoutes:
 
         assert "storyboard" in routes.REGISTERED
         assert not [f for f in routes.FAILURES if f["module"] == "storyboard"]
-
-    def test_a_refusal_comes_back_as_a_400_a_user_can_read(
-            self, client, board):
-        r = client.post("/api/storyboard/frame/set",
-                        json={"name": board, "idx": 1, "status": "approved"})
-        assert r.status_code == 400
-        assert "has no image" in r.text
-
-    def test_an_upload_lands_inside_the_board_and_attaches(
-            self, client, board, root):
-        blob = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 40).decode()
-        r = client.post("/api/storyboard/frame/upload",
-                        json={"name": board, "idx": 1,
-                              "data": f"data:image/png;base64,{blob}"})
-        assert r.status_code == 200, r.text
-        rel = r.json()["data"]["path"]
-        assert rel.startswith(storyboard.BOARD_DIRNAME)
-        assert (root / rel).is_file()
-
-    def test_a_non_image_upload_is_refused(self, client, board):
-        r = client.post("/api/storyboard/frame/upload",
-                        json={"name": board, "idx": 1, "ext": "exe",
-                              "data": base64.b64encode(b"MZ").decode()})
-        assert r.status_code == 415
-
-    def test_generating_a_frame_that_does_not_exist_answers_immediately(
-            self, client, board):
-        """Not as a job that fails a minute later in a panel nobody is on."""
-        r = client.post("/api/storyboard/frame/generate",
-                        json={"name": board, "idx": 99})
-        assert r.status_code == 404

@@ -809,57 +809,6 @@ def aggregate_verdict(verdicts: list[str]) -> str:
     return "pass"
 
 
-@router.post("/api/qa-bots/run-all")
-def qa_bots_run_all(request: Request, payload: Optional[dict] = None,
-                    async_: int = Query(0, alias="async")):
-    """Run a roster and return one verdict the QA gate can consume.
-
-    ``{"bots": [{name, actions, ticks, expect}, ...]}``. Bots run in sequence —
-    they each spawn a headless engine, and racing them would make the samples
-    meaningless.
-    """
-    payload = payload or {}
-    raw = payload.get("bots")
-    if not isinstance(raw, list) or not raw:
-        raise api.bad_request("bots must be a non-empty list")
-    specs = [_bot_spec(b if isinstance(b, dict) else {}) for b in raw]
-    root_dir = root()
-
-    def execute(job_id: Optional[int] = None) -> dict:
-        # One contract for the whole roster. Deriving it per bot would let a
-        # concurrent edit land mid-roster and produce two verdicts about two
-        # different games under one aggregate.
-        contract = contract_for(root_dir)
-        runs = []
-        for i, spec in enumerate(specs):
-            if job_id is not None:
-                if jobs_api.is_cancelled(job_id):
-                    return jobs_api.cancelled_result(f"after {i} of {len(specs)} bots")
-                jobs.progress(root_dir, job_id, fraction=i / len(specs),
-                              stage=f"{spec['bot']} ({i + 1}/{len(specs)})")
-            runs.append(run_bot(root_dir, spec, contract))
-        verdicts = [r["verdict"] for r in runs]
-        return {
-            "ok": True,
-            "verdict": aggregate_verdict(verdicts),
-            "counts": {v: verdicts.count(v)
-                       for v in ("pass", "fail", "error", "unknown")},
-            "regressions": [r["bot"] for r in runs
-                            if (r.get("baseline_diff") or {}).get("regressed")],
-            "contract": contract,
-            "contract_issues": list(contract.get("issues") or []),
-            "runs": [{k: v for k, v in r.items()
-                      if k not in ("stdout", "contract")} for r in runs],
-        }
-
-    if jobs_api.wants_async(payload, async_):
-        body = jobs_api.start("qa_bots.run_all", execute,
-                              request_body={"bots": [s["bot"] for s in specs]},
-                              request=request)
-        return JSONResponse(status_code=202, content=body)
-    return api.ok(execute())
-
-
 @router.get("/api/qa-bots/runs")
 def qa_bots_runs(page: api.Page = Depends(), bot: str = "",
                  verdict: str = "") -> dict:
@@ -879,15 +828,6 @@ def qa_bots_runs(page: api.Page = Depends(), bot: str = "",
         f"SELECT * FROM qa_bot_run WHERE 1=1{where} ORDER BY id DESC LIMIT ? OFFSET ?",
         [*params, page.limit, page.offset]).fetchall()
     return page.envelope([_run_summary(_row_to_run(r)) for r in rows], total)
-
-
-@router.get("/api/qa-bots/baseline")
-def qa_bots_baseline(bot: str) -> dict:
-    """The run the next one will be diffed against."""
-    base = baseline_for(root(), bot)
-    if base is None:
-        raise api.not_found(f"no baseline for '{bot}' yet — run it once", bot=bot)
-    return api.ok(base)
 
 
 def _run_summary(run: dict) -> dict:

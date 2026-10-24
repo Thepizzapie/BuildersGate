@@ -16,7 +16,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Request
 
-from bgate_adapters import kie as _kie
 from bgate_core.board import jobs as _core_jobs
 from bgate_core.audio import music as _music
 from bgate_ui import api
@@ -132,26 +131,6 @@ def music_generate(payload: dict, request: Request) -> dict:
                               request=request))
 
 
-@router.post("/api/music/recover")
-def music_recover(payload: dict, request: Request) -> dict:
-    """Collect the tracks of a task that was already paid for. Costs nothing.
-
-    For the batch that submitted, rendered, was charged, and then died at the
-    download — which is not hypothetical: kie's CDN 403'd every download this
-    product made until the User-Agent was fixed. Idempotent by Suno track id.
-    """
-    task_id = str((payload or {}).get("task_id") or "").strip()
-    if not task_id:
-        raise api.bad_request("recover needs the task_id of a kie music task")
-    try:
-        return api.ok(_music.recover(root(), task_id,
-                                     name=str((payload or {}).get("name") or "")))
-    except _music.MusicError as exc:
-        raise api.bad_request(str(exc), task_id=task_id)
-    except Exception as exc:                                     # noqa: BLE001
-        raise api.unavailable(api.safe_error(exc), task_id=task_id)
-
-
 @router.get("/api/music/candidates")
 def music_candidates(logical_name: Optional[str] = None,
                      limit: int = 200) -> dict:
@@ -184,64 +163,6 @@ def music_keep(payload: dict, request: Request) -> dict:
         raise api.not_found(str(exc), artifact_id=artifact_id)
     except (_music.MusicError, ValueError, OSError) as exc:
         raise api.bad_request(str(exc), artifact_id=artifact_id)
-
-
-@router.post("/api/music/install")
-def music_install(payload: dict, request: Request) -> dict:
-    """Put an already-approved take where the game can load it. The repair door.
-
-    Separate from keep() because the state it fixes is not a decision waiting to
-    be made — it is a decision already made whose delivery did not happen. On a
-    project with the approval gate off, ``artifacts.register`` approves each take
-    as it is filed, so there was never a candidate and never a keep; the row said
-    approved and ``game/assets/audio/music/`` did not exist. Also the honest
-    button for an approved track whose file was later deleted.
-    """
-    artifact_id = _artifact_id(payload)
-    try:
-        return api.ok(_music.install(root(), artifact_id,
-                                     actor=api.current_actor(request)))
-    except LookupError as exc:
-        raise api.not_found(str(exc), artifact_id=artifact_id)
-    except (_music.MusicError, ValueError, OSError) as exc:
-        raise api.bad_request(str(exc), artifact_id=artifact_id)
-
-
-@router.post("/api/music/discard")
-def music_discard(payload: dict, request: Request) -> dict:
-    """Reject a candidate. The file stays under .bgate_out; the decision is kept."""
-    artifact_id = _artifact_id(payload)
-    try:
-        return api.ok(_music.discard(root(), artifact_id,
-                                     actor=api.current_actor(request),
-                                     note=str((payload or {}).get("note") or "")))
-    except LookupError as exc:
-        raise api.not_found(str(exc), artifact_id=artifact_id)
-    except ValueError as exc:
-        raise api.bad_request(str(exc), artifact_id=artifact_id)
-
-
-@router.get("/api/music/task/{task_id}")
-def music_task(task_id: str) -> dict:
-    """Where a Suno task got to, straight from kie. Costs nothing.
-
-    For the batch whose download died: the charge happened, the tracks may be
-    sitting there, and this says so before anyone pays for them twice.
-    """
-    try:
-        return api.ok(_music.status(root(), task_id))
-    except _music.MusicError as exc:
-        raise api.bad_request(str(exc), task_id=task_id)
-    except _kie.KieError as exc:
-        # NOT 503. An unset KIE_API_KEY is a configuration state the caller can
-        # fix in the panel, and 503 says the upstream is down — which sends
-        # someone to kie's status page over a key they never entered. It also
-        # tripped the route smoke test, whose whole rule is that a GET must not
-        # answer in the server-error class for a condition the server is fine
-        # about.
-        raise api.bad_request(str(exc), task_id=task_id)
-    except Exception as exc:                                     # noqa: BLE001
-        raise api.unavailable(api.safe_error(exc), task_id=task_id)
 
 
 def _artifact_id(payload: Optional[dict]) -> int:
