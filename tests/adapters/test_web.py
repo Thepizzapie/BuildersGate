@@ -276,8 +276,10 @@ class TestScaffold:
         # ...and the DISPLAY name still reaches the places a human reads.
         assert "Neon Drift" in (tmp_path / "g" / "index.html").read_text(
             encoding="utf-8")
-        assert (tmp_path / "g" / "CLAUDE.md").read_text(
-            encoding="utf-8").startswith("# Neon Drift")
+        # The briefing sits inside the managed block, so its heading is the
+        # first line after the marker.
+        assert "-->\n# Neon Drift\n" in (tmp_path / "g" / "CLAUDE.md").read_text(
+            encoding="utf-8")
 
     def test_no_token_survives_into_the_stamped_project(self, tmp_path):
         scaffold.new_project(tmp_path / "g", "Neon Drift", kind="3d",

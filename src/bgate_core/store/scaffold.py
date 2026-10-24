@@ -217,6 +217,21 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
             out = target / rel
             name_rel = str(rel).replace("\\", "/")
 
+            # THE BRIEFING GOES IN AS A MANAGED BLOCK, the same one adopt
+            # writes. Copied raw it carried no markers, so the next adopt
+            # appended a second briefing beside it instead of refreshing it.
+            if source == shared and name_rel == "CLAUDE.md":
+                from . import adopt as _adopt
+
+                stamped = _adopt.stamp_claude_md(target, name, engine)
+                if stamped.get("action") == "unchanged":
+                    unchanged.append(name_rel)
+                else:
+                    written.append(name_rel)
+                    if stamped.get("action") == "created":
+                        created.append(name_rel)
+                continue
+
             backup: Path | None = None
             if out.exists():
                 if _already_ours(out, item, name):

@@ -27,7 +27,11 @@ repository at first publication. There is no earlier release history to record.
   are nine), `queue_next` and `library_search` for seats that no longer hold
   them. Seat-worker instructions no longer send every run to the full ~25 KB
   `seat_brief` first; the dispatch prompt carries the short form (5% of the
-  last 1,476 runs still call it).
+  last 1,476 runs still call it). `bgate init` copied the briefing as the
+  whole file with no managed-block markers, so a later `bgate adopt`
+  appended the new one beside the old (27 projects on one machine carried
+  that unmarked stamp). Scaffold now writes the managed block, and adopt
+  converts an unmarked stamp in place, keeping anything written below it.
 - **The director's rules reach the session, and the schemas carry our words,
   not pydantic's.** Measured on 1622ef6: Claude Code keeps the first 4096
   characters of a server's `instructions`, and a seatless session's ran to
