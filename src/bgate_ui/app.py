@@ -719,8 +719,10 @@ def _inject_token(html: str) -> str:
 # THE FLOOR'S ASSETS LIVE IN A SEPARATE PACKAGE. img/floor and audio/floor
 # (~30MB of decoration) are not in frontend/public any more; their source is
 # packaging/floor-assets/, installed as builders-gate-floor-assets (the `floor`
-# extra). Resolution order: that package if it imports, else a local static
-# tree that still carries them (an older build), else nothing — the floor
+# extra). Resolution order: that package if it imports, else the pack's source
+# in packaging/floor-assets/ when this is a git checkout (so a dev checkout
+# gets the floor without installing the extra), else a local static tree that
+# still carries them (an older build), else nothing. Then the floor
 # draws the procedural fallback it has always carried, and the radio's
 # manifest says why so the silence is explained rather than mysterious.
 # Mounted BEFORE the general /static mount because starlette matches mounts
@@ -737,6 +739,10 @@ def _floor_assets_root() -> Optional[Path]:
             return root
     except Exception:
         pass  # no pack is a quieter floor, never a broken dashboard
+    repo = Path(__file__).resolve().parents[2]
+    source = repo / "packaging" / "floor-assets" / "builders_gate_floor_assets"
+    if (repo / ".git").exists() and (source / "img").is_dir():
+        return source
     return None
 
 

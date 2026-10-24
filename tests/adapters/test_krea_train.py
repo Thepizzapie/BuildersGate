@@ -18,8 +18,6 @@ import pytest
 
 from bgate_adapters import krea
 
-PIL = pytest.importorskip("PIL.Image", reason="resolution checks need Pillow")
-
 
 def _png(path, w=1024, h=1024):
     from PIL import Image

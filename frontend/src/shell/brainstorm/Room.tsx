@@ -11,7 +11,7 @@ import { useEvents, useViewActive } from "../../hooks";
 import { useStickyBottom } from "../sticky";
 import "./room.css";
 
-/* WHICH SEATS HAVE A DRAWN PORTRAIT (frontend/public/img/floor/<seat>/face.png,
+/* WHICH SEATS HAVE A DRAWN PORTRAIT (packaging/floor-assets/builders_gate_floor_assets/img/<seat>/face.png,
  * generated from that seat's own floor sprite). Named rather than probed: a
  * missing <img> renders as a broken-image glyph in the middle of a
  * conversation, which is worse than the icon it replaced, and there is no

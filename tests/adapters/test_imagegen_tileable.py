@@ -23,11 +23,9 @@ from __future__ import annotations
 
 import shutil
 
-import pytest
+from PIL import Image
 
 from bgate_adapters.imagegen import make_tileable
-
-Image = pytest.importorskip("PIL.Image")
 
 
 def _plate(path, w=16, h=16, fmt=None):
