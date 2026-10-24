@@ -184,6 +184,58 @@ class TestTheSpineSplit:
         assert server._module_registers("blender_rig")
 
 
+class TestARememberedUnlockStaysWithItsProject:
+    """tool_unlock's memory is for one project's next boot, not the machine.
+
+    MEASURED: one `image` unlock booted 41 tools into every seatless session
+    on the machine for 24 h, and the writer was this suite, because the file
+    ignored BGATE_HOME.
+    """
+
+    def test_an_unlock_in_one_project_does_not_load_in_another(
+            self, tmp_path, monkeypatch):
+        from bgate_mcp import server
+
+        monkeypatch.delenv("BGATE_SEAT", raising=False)
+        monkeypatch.setenv("BGATE_ROOT", str(tmp_path / "game_a"))
+        server._remember_unlock("image")
+        assert "image" in server._unlocked_crafts()
+        monkeypatch.setenv("BGATE_ROOT", str(tmp_path / "game_b"))
+        assert "image" not in server._unlocked_crafts()
+
+    def test_it_lives_under_bgate_home(self, tmp_path, monkeypatch):
+        from bgate_mcp import server
+
+        monkeypatch.setenv("BGATE_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("BGATE_ROOT", str(tmp_path / "game"))
+        server._remember_unlock("music")
+        assert (tmp_path / "home" / "unlocked_crafts.json").is_file()
+
+    def test_an_expired_unlock_is_forgotten(self, tmp_path, monkeypatch):
+        import time
+
+        from bgate_mcp import server
+
+        monkeypatch.setenv("BGATE_ROOT", str(tmp_path / "game"))
+        server._remember_unlock("sfx")
+        later = time.time() + server._UNLOCK_TTL_S + 1
+        monkeypatch.setattr(time, "time", lambda: later)
+        assert "sfx" not in server._unlocked_crafts()
+
+    def test_the_old_machine_wide_shape_unlocks_nothing(self, monkeypatch):
+        import json
+        import os
+        import time
+        from pathlib import Path
+
+        from bgate_mcp import server
+
+        path = Path(os.environ["BGATE_HOME"]) / "unlocked_crafts.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"image": time.time()}), encoding="utf-8")
+        assert server._unlocked_crafts() == set()
+
+
 class TestTheTwoDDefault:
     def test_a_2d_init_switches_the_3d_pipeline_off(self, tmp_path):
         from bgate_cli import main

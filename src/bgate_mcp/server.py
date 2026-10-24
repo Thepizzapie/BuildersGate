@@ -1157,21 +1157,48 @@ def _module_registers(tool_name: str) -> bool:
     return False
 
 
-#: Where tool_unlock remembers a craft for the next server this machine boots.
-_UNLOCK_FILE = _Path.home() / ".bgate" / "unlocked_crafts.json"
-_UNLOCK_TTL_S = 24 * 3600
+# WHERE AN UNLOCK IS REMEMBERED, AND FOR WHOM. It used to be one flat
+# {craft: time} file for the whole machine with a 24 h life, so one session's
+# unlock booted into every hand-started session in every project. MEASURED
+# 2026-10-24: `image` unlocked once, and every seatless session afterwards
+# carried 41 more tools (196 -> 237). The writer was the test suite:
+# test_modules calls tool_unlock seatless, and this path ignored BGATE_HOME,
+# the override conftest isolates ~/.bgate with.
+#
+# Now: under BGATE_HOME like the rest of ~/.bgate, keyed by the project root
+# this server booted on ("" for none), and four hours, which covers the
+# reconnect it exists for. The old flat shape reads as empty.
+_UNLOCK_TTL_S = 4 * 3600
+
+
+def _unlock_file() -> _Path:
+    base = os.environ.get("BGATE_HOME") or ""
+    home = _Path(base).expanduser() if base else _Path.home() / ".bgate"
+    return home / "unlocked_crafts.json"
+
+
+def _unlock_key() -> str:
+    root = _boot_root()
+    return os.path.normcase(os.path.abspath(root)) if root else ""
+
+
+def _read_unlocks() -> dict:
+    import json as _jsonlib
+
+    try:
+        rows = _jsonlib.loads(_unlock_file().read_text(encoding="utf-8"))
+    except Exception:                                             # noqa: BLE001
+        return {}
+    roots = rows.get("roots") if isinstance(rows, dict) else None
+    return roots if isinstance(roots, dict) else {}
 
 
 def _unlocked_crafts() -> set:
-    import json as _jsonlib
     import time as _time
 
-    try:
-        rows = _jsonlib.loads(_UNLOCK_FILE.read_text(encoding="utf-8"))
-    except Exception:                                             # noqa: BLE001
-        return set()
     now = _time.time()
-    return {c for c, at in (rows or {}).items()
+    held = _read_unlocks().get(_unlock_key()) or {}
+    return {c for c, at in held.items()
             if isinstance(at, (int, float)) and now - at < _UNLOCK_TTL_S}
 
 
@@ -1179,14 +1206,19 @@ def _remember_unlock(craft: str) -> None:
     import json as _jsonlib
     import time as _time
 
+    roots = _read_unlocks()
+    now = _time.time()
+    # Expired rows are dropped on every write, so the file cannot grow with
+    # every project this machine has ever opened.
+    roots = {key: kept for key, crafts in roots.items() if isinstance(crafts, dict)
+             and (kept := {c: at for c, at in crafts.items()
+                           if isinstance(at, (int, float))
+                           and now - at < _UNLOCK_TTL_S})}
+    roots.setdefault(_unlock_key(), {})[craft] = now
     try:
-        rows = _jsonlib.loads(_UNLOCK_FILE.read_text(encoding="utf-8"))
-    except Exception:                                             # noqa: BLE001
-        rows = {}
-    rows[craft] = _time.time()
-    try:
-        _UNLOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _UNLOCK_FILE.write_text(_jsonlib.dumps(rows), encoding="utf-8")
+        path = _unlock_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_jsonlib.dumps({"roots": roots}), encoding="utf-8")
     except Exception:                                             # noqa: BLE001
         logging.getLogger(__name__).info("tool_unlock: not remembered",
                                          exc_info=True)
