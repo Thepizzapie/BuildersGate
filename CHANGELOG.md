@@ -758,6 +758,16 @@ repository at first publication. There is no earlier release history to record.
   carrying the first street beside the island; 58 references to
   `main.tscn` in one agent's log, 88 to a retired module in another.
 
+### Removed
+- **The second copy of the floor art in `frontend/public/img/floor`.**
+  103 files, 7.3 MB, byte-identical to `packaging/floor-assets`. A git
+  checkout without the `floor` extra now mounts the pack source in
+  `packaging/floor-assets` directly, so the dev floor keeps its art and
+  gains the radio audio. Wheels and the exe are unchanged. Also gone: four
+  floor tiles nothing loads, `scripts/install_cast_portraits.py`, and
+  Pillow/segno `importorskip` guards in ten test files that could never
+  skip.
+
 ## [0.1.46] - 2026-09-12
 
 ### Added
