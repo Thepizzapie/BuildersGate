@@ -376,12 +376,6 @@ def frame_verdict(frame: Image.Image, anchor: dict, *,
            "failed": [c["name"] for c in checks if c["fired"]]}
 
 
-def is_fall_risk(name: str, description: str = "") -> bool:
-    """Does this pose's name/description match a known doubling trigger?"""
-    text = f"{name} {description}".lower()
-    return any(t in text for t in FALL_PROMPT_RISK)
-
-
 def gate_sheet(frame_paths: dict[str, str], anchor_path: str | os.PathLike[str], *,
               subject_class: str = "character",
               cycles: Optional[dict[str, list[str]]] = None) -> dict:

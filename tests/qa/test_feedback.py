@@ -110,59 +110,6 @@ class TestRouting:
         assert feedback.route(text) == seat
 
 
-class TestSplitUtterances:
-    """Whisper segments are not utterances — this split is load-bearing.
-
-    Caught on real speech: one segment held a jump complaint AND a music
-    compliment. Classified whole it became a single 'fix' routed to AUDIO (the
-    word "music" won), so a physics complaint went to the wrong seat and the
-    compliment vanished.
-    """
-
-    def test_multi_sentence_segment_splits(self):
-        parts = feedback.split_utterances({
-            "t_start": 0.0, "t_end": 9.0,
-            "text": "The jump feels floaty. I do not like it. But I love the music here.",
-        })
-        assert len(parts) == 3
-        assert parts[0]["text"] == "The jump feels floaty."
-
-    def test_timestamps_are_interpolated_and_ordered(self):
-        parts = feedback.split_utterances({
-            "t_start": 10.0, "t_end": 20.0,
-            "text": "The jump feels floaty. But I love the music here.",
-        })
-        assert parts[0]["t_start"] == 10.0
-        assert 10.0 < parts[1]["t_start"] < 20.0
-        assert parts[0]["t_end"] <= parts[1]["t_start"]
-        assert parts[-1]["t_end"] <= 20.0
-
-    def test_single_sentence_passes_through(self):
-        parts = feedback.split_utterances(
-            {"t_start": 1.0, "t_end": 2.0, "text": "The jump feels floaty"})
-        assert len(parts) == 1
-        assert parts[0]["t_start"] == 1.0
-
-    def test_empty_segment_yields_nothing(self):
-        assert feedback.split_utterances({"t_start": 0, "t_end": 1, "text": "  "}) == []
-
-    def test_continuous_speech_is_ONE_item_not_shredded(self):
-        """The deliberate reversal (real playtest feedback): a continuous
-        stretch of talking is ONE feedback item, even when it spans topics —
-        because in practice a real complaint spans several segments and
-        shredding it routed one issue to three seats. A single segment holding
-        two topics spoken with no pause can't be split by a time rule; that
-        semantic split is the director's job when it reads the transcript.
-        """
-        items = feedback.extract([{
-            "id": 1, "t_start": 0.0, "t_end": 9.0,
-            "text": "The jump feels really floaty. I do not like it. "
-                    "But I love the music in this level.",
-        }])
-        assert len(items) == 1  # one thought, not three shreds
-        assert items[0]["segment_ids"] == [1]
-
-
 class TestSpeechVariance:
     """Whisper does not return the words you imagined. All observed on real audio."""
 

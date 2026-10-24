@@ -38,19 +38,6 @@ class TestQueueCore:
         with pytest.raises(ValueError, match="title"):
             queue.add(root, "art", "   ")
 
-    def test_promoted_playtest_items_flow_in_once(self, root):
-        with db.tx(root) as conn:
-            conn.execute("INSERT INTO playtest_session (id, name, slug, status) "
-                         "VALUES (1, 'R', 'r', 'ready')")
-            conn.execute(
-                "INSERT INTO playtest_item (session_id, t, kind, text, seat, status) "
-                "VALUES (1, 5.0, 'fix', 'jump is floaty', 'gameplay', 'promoted')")
-
-        first = queue.sync_promoted(root)
-        assert first["created"] == 1
-        assert "playtest item" in first["items"][0]["brief"]
-        assert queue.sync_promoted(root)["created"] == 0  # once, not every poll
-
     def test_orbit_import_fails_soft(self, root):
         got = queue.import_orbit(root, api_url="http://127.0.0.1:1")  # nothing there
         assert got["created"] == 0

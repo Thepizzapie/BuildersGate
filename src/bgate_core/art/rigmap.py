@@ -3,11 +3,10 @@
 A sheet is a grid of frames and nothing else. Everything that makes it RIGGABLE
 — which cells form the walk cycle, where the main hand is in frame 7, where the
 character's feet touch the ground — is knowledge that currently lives in the
-artist's head and dies there. gear.py can MEASURE a grip anchor when five weapon
-sheets happen to agree (``measure_anchors``) and INFER one otherwise, but a
-project with one weapon has nothing to intersect and inference is a guess. The
-missing piece was never the algorithm. It was a place for a person to say "the
-hand is here" and have it stick.
+artist's head and dies there. Measuring a grip by intersecting weapon sheets
+needs several weapons, and inferring one from the body is a guess. The missing
+piece was never the algorithm. It was a place for a person to say "the hand is
+here" and have it stick.
 
 That place is a sidecar: ``<sheet-stem>.rig.json`` next to the PNG. Sidecar and
 not embedded metadata, because Godot's importer rewrites .import files, image
@@ -19,8 +18,8 @@ never initialised.
 What the format buys, downstream:
 
   * ``anchors_for()`` yields ``gear.Anchor`` objects with source ``authored``,
-    which ranks ABOVE every inferred source in gear.py's provenance ladder. A
-    labelled sheet stops guessing.
+    which gear.py's provenance ladder counts as measured. A labelled sheet
+    stops guessing.
   * ``spriteframes_text()`` writes a real Godot 4 SpriteFrames over an
     ARBITRARY grid — rows and columns, per-animation frame lists, per-animation
     loop and fps. sprites.py can only emit a horizontal strip in sheet order,
@@ -471,25 +470,6 @@ def autoslice(sheet_size: tuple[int, int], cell: tuple[int, int]) -> dict:
     if cols * rows > MAX_CELLS:
         raise RigError(f"{cols}x{rows} is {cols * rows} cells; the cap is {MAX_CELLS}")
     return {"cell_w": cw, "cell_h": ch, "cols": cols, "rows": rows}
-
-
-def swap_hands(data: dict, frame: Optional[int] = None) -> dict:
-    """Exchange left_hand and right_hand — on one frame, or on all of them.
-
-    A character that turns around keeps its main hand and swaps its anatomical
-    ones. Re-clicking both anchors to express that is the kind of chore that
-    ends with a half-labelled sheet, so it is one action.
-    """
-    left, right = HAND_SLOTS
-    for lab in data.get("labels") or []:
-        if frame is not None and lab["frame"] != frame:
-            continue
-        if lab["slot"] == left:
-            lab["slot"] = right
-        elif lab["slot"] == right:
-            lab["slot"] = left
-    (data.get("labels") or []).sort(key=lambda d: (d["frame"], d["slot"]))
-    return data
 
 
 def hand_coverage(data: dict) -> dict[int, list[str]]:

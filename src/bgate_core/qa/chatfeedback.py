@@ -455,29 +455,6 @@ def retract(root: str | os.PathLike[str], *, msg_id: str = "",
         return int(cur.rowcount or 0)
 
 
-def set_item_status(root: str | os.PathLike[str], item_id: int,
-                    status: str) -> dict:
-    """Promote or dismiss one captured remark, by hand.
-
-    The same disposition playtest feedback has, and it means the same thing:
-    'new' is a candidate nobody has judged, and an offhand remark must never
-    become work by itself. Promoting here does NOT file anything — it marks the
-    item as one the dev wants carried into the digest with weight.
-    """
-    if status not in ITEM_STATUSES:
-        raise ValueError(f"status must be one of {ITEM_STATUSES}; got {status!r}")
-    with db.tx(root) as conn:
-        cur = conn.execute(
-            "UPDATE chat_feedback_item SET status = ? WHERE id = ?",
-            (status, int(item_id)))
-        if not cur.rowcount:
-            raise Missing(f"no chat feedback item {item_id}")
-    row = db.connect(root).execute(
-        "SELECT * FROM chat_feedback_item WHERE id = ?",
-        (int(item_id),)).fetchone()
-    return dict(row)
-
-
 # ---------------------------------------------------------------------------
 # The digest. Deterministic: no model, no spend, no network.
 # ---------------------------------------------------------------------------

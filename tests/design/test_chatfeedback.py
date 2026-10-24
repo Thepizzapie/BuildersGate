@@ -240,11 +240,6 @@ class TestDigest:
                                       at=base + 5))
         assert fb.group(fb.items(root, session["id"]))[0]["marked"] is True
 
-    def test_dismissed_items_are_excluded(self, root, session):
-        item = fb.capture(root, session, msg("a", "the jump feels floaty"))
-        fb.set_item_status(root, item["id"], "dismissed")
-        assert fb.group(fb.items(root, session["id"])) == []
-
     def test_the_digest_is_fenced_with_this_session_s_own_mark(
             self, root, session):
         fb.capture(root, session, msg("a", "the jump feels floaty"))

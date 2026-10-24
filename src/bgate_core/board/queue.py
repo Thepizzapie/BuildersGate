@@ -1,12 +1,13 @@
 """The work queue — where intent becomes dispatchable seat work.
 
 Modeled on Orbit's ticket->task pattern: items carry a seat, a title, a brief,
-and a lifecycle (queued -> dispatched -> done/failed). Three inflows:
+and a lifecycle (queued -> dispatched -> done/failed). Two inflows:
 
   * the human, via the dashboard's add form
-  * promoted playtest items (sync_promoted — feedback the user blessed becomes
-    queued work automatically, keeping its telemetry-joined provenance)
   * optionally, Orbit tickets tagged for the game (import_orbit)
+
+A promoted playtest item is not an inflow: promotion marks the moment, and the
+director authors the work from the full transcript.
 
 Seats interact through MCP tools (queue_next / queue_complete); the dashboard
 dispatches real Claude sessions against items.
@@ -2938,33 +2939,6 @@ def claimed_open(root: str | os.PathLike[str], actor: str) -> list[dict]:
     return rows(db.connect(root).execute(
         "SELECT * FROM work_item WHERE status = 'dispatched' AND actor = ? "
         "ORDER BY id", (str(actor or ""),)))
-
-
-def sync_promoted(root: str | os.PathLike[str]) -> dict:
-    """Promoted playtest items the user blessed become queued work, once each.
-
-    Provenance rides along (source_ref = playtest item id) so the working agent
-    can pull the frame + telemetry via playtest_brief.
-    """
-    conn = db.connect(root)
-    promoted = rows(conn.execute(
-        """
-        SELECT i.id, i.seat, i.kind, i.text FROM playtest_item i
-        WHERE i.status = 'promoted'
-          AND NOT EXISTS (SELECT 1 FROM work_item w
-                          WHERE w.source = 'playtest' AND w.source_ref = CAST(i.id AS TEXT))
-        """))
-    created = []
-    for item in promoted:
-        seat = item["seat"] if item["seat"] in _seats.DEFAULT_SEATS else "gameplay"
-        created.append(add(
-            root, seat,
-            title=f"[{item['kind']}] {item['text'][:70]}",
-            brief=f"Promoted playtest feedback (playtest item {item['id']}): "
-                  f"\"{item['text']}\". Pull playtest_brief for the frame and "
-                  "the telemetry around this moment before acting.",
-            source="playtest", source_ref=str(item["id"])))
-    return {"created": len(created), "items": created}
 
 
 def import_orbit(root: str | os.PathLike[str], api_url: str = "http://127.0.0.1:8077",

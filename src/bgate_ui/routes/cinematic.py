@@ -30,10 +30,7 @@ from bgate_ui.routes import jobs as _jobs
 
 router = APIRouter()
 
-GENERATE_JOB = "cinematic_shot"
-ASSEMBLE_JOB = "cinematic_assemble"
 KEEP_JOB = "cinematic_keep"
-CONTINUITY_JOB = "cinematic_continuity"
 
 # Same reason routes/music.py records it: a job row lives in the database and
 # the thread advancing it lives in this process, so a non-terminal job created
@@ -93,159 +90,6 @@ def cinematic_plan(payload: dict) -> dict:
             audio_gain_db=float(body.get("audio_gain_db") or 0),
             fade_in=float(body.get("fade_in") or 0),
             fade_out=float(body.get("fade_out") or 0)))
-    except _cine.CinematicError as exc:
-        raise api.bad_request(str(exc)) from exc
-
-
-@router.get("/api/cinematic/styles")
-def cinematic_styles() -> dict:
-    """The preset table, with each entry's `note` naming its trap."""
-    return api.ok({"styles": _cine.styles(),
-                   "fallback": _cine.STYLE_FALLBACK})
-
-
-@router.post("/api/cinematic/generate")
-def cinematic_generate(payload: dict, request: Request) -> dict:
-    """Buy one shot. 202 + {job_id}; poll /api/jobs/{id}.
-
-    ONE SHOT PER REQUEST, matching the core module — there is no
-    generate-the-sequence endpoint, because the thing a human must do between
-    shots is watch the last one, and an endpoint that spends a sequence in one
-    call is an endpoint built to skip that.
-    """
-    body = payload or {}
-    project = str(root())
-    name = str(body.get("name") or "").strip()
-    idx = body.get("idx")
-    if not name:
-        raise api.bad_request("which sequence?")
-    try:
-        idx = int(idx)
-    except (TypeError, ValueError):
-        raise api.bad_request("idx must be the shot number to generate") from None
-
-    model = str(body.get("model") or "")
-    audio = bool(body.get("generate_audio", False))
-    # EXPLICIT INTENT, DEFAULT OFF. Without it a generation refuses rather than
-    # writing over a candidate file that is already on disk — which is a clip
-    # somebody already paid for, and overwriting one errors nowhere.
-    overwrite = bool(body.get("overwrite", False))
-
-    def work(job_id: int) -> dict:
-        def progress(fraction: float, words: str, _status: str = "") -> None:
-            # A video generation reports little, so what this mostly buys is
-            # the difference between "running" and "hung" — and what a person
-            # does about an apparent hang is fire a second paid generation at
-            # the same shot.
-            if job_id:
-                _core_jobs.progress(project, job_id, fraction=fraction,
-                                    stage=words[:200])
-        try:
-            result = _cine.generate_shot(project, name, idx, model=model,
-                                         generate_audio=audio,
-                                         overwrite=overwrite,
-                                         on_progress=progress)
-        except Exception as exc:                                 # noqa: BLE001
-            return {"ok": False, "error": api.safe_error(exc)}
-        if job_id:
-            _core_jobs.progress(project, job_id, fraction=1.0,
-                                stage="done" if result.get("ok") else "failed")
-        return {**result, "sequence": name, "idx": idx}
-
-    if str(body.get("async", "")).strip().lower() in {"0", "false", "no"}:
-        return api.ok(work(0))
-    return api.ok(_jobs.start(GENERATE_JOB, work,
-                              request_body={"sequence": name, "idx": idx,
-                                            "model": model},
-                              request=request))
-
-
-@router.post("/api/cinematic/assemble")
-def cinematic_assemble(payload: dict, request: Request) -> dict:
-    """Join the kept shots into one .ogv. 202 + {job_id}.
-
-    A job because it is an ffmpeg pass over the whole runtime — minutes for a
-    long sequence — not because it costs money. It costs nothing.
-    """
-    body = payload or {}
-    project = str(root())
-    name = str(body.get("name") or "").strip()
-    if not name:
-        raise api.bad_request("which sequence?")
-    quality = int(body.get("quality") or _cine.DEFAULT_QUALITY)
-
-    def work(job_id: int) -> dict:
-        try:
-            result = _cine.assemble(project, name, quality=quality)
-        except Exception as exc:                                 # noqa: BLE001
-            return {"ok": False, "error": api.safe_error(exc)}
-        if job_id:
-            _core_jobs.progress(project, job_id, fraction=1.0, stage="done")
-        return result
-
-    if str(body.get("async", "")).strip().lower() in {"0", "false", "no"}:
-        return api.ok(work(0))
-    return api.ok(_jobs.start(ASSEMBLE_JOB, work,
-                              request_body={"sequence": name},
-                              request=request))
-
-
-@router.get("/api/cinematic/transitions")
-def cinematic_transitions() -> dict:
-    """How two shots may be joined, and what each costs."""
-    from bgate_core.cine import cinecut as _cut
-
-    return api.ok({"transitions": _cut.TRANSITIONS,
-                   "default": _cut.DEFAULT_TRANSITION})
-
-
-@router.post("/api/cinematic/continuity")
-def cinematic_continuity(payload: dict, request: Request) -> dict:
-    """Measure whether the shots cut together. 202 + {job_id}.
-
-    A job because it extracts and compares frames across every join, which on a
-    ten-shot sequence is twenty ffmpeg invocations — fast each, slow together,
-    and slow enough that a synchronous call looks like a hung panel.
-    """
-    body = payload or {}
-    project = str(root())
-    name = str(body.get("name") or "").strip()
-    if not name:
-        raise api.bad_request("which sequence?")
-
-    def work(job_id: int) -> dict:
-        try:
-            result = _cine.check_continuity(project, name)
-        except Exception as exc:                                 # noqa: BLE001
-            return {"ok": False, "error": api.safe_error(exc)}
-        if job_id:
-            _core_jobs.progress(project, job_id, fraction=1.0, stage="done")
-        return result
-
-    if str(body.get("async", "")).strip().lower() in {"0", "false", "no"}:
-        return api.ok(work(0))
-    return api.ok(_jobs.start(CONTINUITY_JOB, work,
-                              request_body={"sequence": name},
-                              request=request))
-
-
-@router.post("/api/cinematic/deliver")
-def cinematic_deliver(payload: dict, request: Request) -> dict:
-    """Write the .tscn, the script and the captions into the engine project.
-
-    Synchronous: this writes four small text files and measures nothing. It is
-    also the only endpoint here that can refuse for a reason a human will want
-    to argue with — a hand-edited script it will not overwrite — so it answers
-    in the same request rather than through a job the panel has to poll.
-    """
-    body = payload or {}
-    name = str(body.get("name") or "").strip()
-    if not name:
-        raise api.bad_request("which sequence?")
-    try:
-        return api.ok(_cine.deliver(root(), name,
-                                    actor=api.current_actor(request),
-                                    force=bool(body.get("force"))))
     except _cine.CinematicError as exc:
         raise api.bad_request(str(exc)) from exc
 
@@ -336,29 +180,6 @@ def cinematic_discard(payload: dict, request: Request) -> dict:
                                 actor=api.current_actor(request)))
 
 
-@router.post("/api/cinematic/recover")
-def cinematic_recover(payload: dict) -> dict:
-    """Download a shot that was already paid for. The anti-double-charge door.
-
-    Synchronous: the generation is finished at the provider, so this is a
-    download rather than a wait.
-    """
-    body = payload or {}
-    name = str(body.get("name") or "").strip()
-    if not name:
-        raise api.bad_request("which sequence?")
-    try:
-        idx = int(body.get("idx"))
-    except (TypeError, ValueError):
-        raise api.bad_request("idx must be the shot number") from None
-    try:
-        return api.ok(_cine.recover_shot(root(), name, idx,
-                                         str(body.get("task_id") or ""),
-                                         overwrite=bool(body.get("overwrite"))))
-    except _cine.CinematicError as exc:
-        raise api.bad_request(str(exc)) from exc
-
-
 @router.get("/api/cinematic/estimate")
 def cinematic_estimate(name: str = "") -> dict:
     """What a shot list will cost, before any of it is bought. Spends nothing.
@@ -374,45 +195,6 @@ def cinematic_estimate(name: str = "") -> dict:
         return api.ok(_cine.estimate_sequence(root(), name))
     except _cine.CinematicError as exc:
         raise api.bad_request(str(exc)) from exc
-
-
-@router.get("/api/cinematic/jobs")
-def cinematic_jobs(limit: int = 12) -> dict:
-    """Every cutscene job this project has run, newest first.
-
-    All three kinds in one list, because a human watching a sequence come
-    together does not think of "generate", "keep" and "assemble" as separate
-    queues — they are the stages of one thing, and a shot generating while an
-    earlier one transcodes is the normal state.
-
-    A non-terminal job older than this process is reported ORPHANED: its thread
-    died with the previous dashboard and it will never move again. That is a
-    thing to dismiss, not a thing to wait for.
-
-    ``orphaned`` IS THREE-VALUED — true, false, or null for "could not tell",
-    with ``orphan_reason`` saying which and why. See :func:`_orphan_state`.
-
-    ``stuck`` IS THE DATABASE'S OWN ANSWER, not the provider's. A shot left at
-    'generating' by a dead process may be a paid, finished clip sitting at kie
-    with nobody collecting it, and the only thing that used to notice was a
-    human remembering. This half costs no network call so it can ride on every
-    refresh; GET /api/cinematic/stuck asks the provider.
-    """
-    project = root()
-    cap = max(1, min(int(limit), 50))
-    out = []
-    for kind in (GENERATE_JOB, ASSEMBLE_JOB, KEEP_JOB, CONTINUITY_JOB):
-        for row in _core_jobs.list_jobs(project, kind=kind, limit=cap):
-            job = _core_jobs.get(project, int(row["id"])) or row
-            view = _jobs.view(project, job)
-            request = view.get("request") or {}
-            view["sequence"] = str(request.get("sequence") or "")
-            view["idx"] = request.get("idx")
-            view["orphaned"], view["orphan_reason"] = _orphan_state(view, job)
-            out.append(view)
-    out.sort(key=lambda j: int(j.get("id") or 0), reverse=True)
-    return api.ok({"jobs": out[:cap],
-                   "stuck": _cine.stuck_shots(project, poll=False)})
 
 
 @router.get("/api/cinematic/stuck")

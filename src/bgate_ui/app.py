@@ -1233,62 +1233,6 @@ def screenmap_view(fresh: int = 0) -> dict:
     return _screenmap.scan_cached(_root(), force=bool(fresh))
 
 
-# A waiter costs nothing while it waits (see queue_wait) but it still holds a
-# connection, so it is bounded anyway: a caller that still cares re-issues, and
-# the re-issue is also how we learn it is still alive.
-_WAIT_MAX_S = 120
-_WAIT_MAX_IDS = 200
-_WAIT_TICK_S = 2.0
-
-
-@app.get("/api/queue/wait")
-async def queue_wait(ids: str, timeout_s: int = 60) -> dict:
-    """LONG-POLL: block until any of the given items reaches done/failed.
-
-    ids is comma-separated ("101,105"). This is the anti-sleep-poll: an
-    orchestrator fires ONE background request per dispatch batch and gets
-    woken the moment an agent self-reports (or dies and gets reaped) instead
-    of guessing check-in intervals.
-
-    Async, and capped at _WAIT_MAX_S. It used to be a sync handler sleeping up
-    to THIRTY MINUTES, which pinned one of FastAPI's threadpool workers per
-    waiter — a couple of dispatch batches and the server had no workers left for
-    the dashboard's own polls, i.e. the feature starved the page that uses it.
-    Awaiting on the event loop holds no worker at all; the 2s DB check runs in a
-    thread only for the microseconds it takes.
-    """
-    import asyncio
-
-    want = [int(x) for x in ids.split(",") if x.strip().isdigit()][:_WAIT_MAX_IDS]
-    if not want:
-        # Sentence + code, deliberately at 200: this route's callers are
-        # orchestrators reading `error` as prose (see the contract test).
-        return {"ok": False, "code": "bad_request",
-                "error": "ids must be a comma-separated list of item ids"}
-    budget = max(5, min(int(timeout_s), _WAIT_MAX_S))
-    deadline = time.monotonic() + budget
-    root = _root()
-
-    def _statuses() -> dict:
-        out = {}
-        for item_id in want:
-            try:
-                out[item_id] = _queue.get(root, item_id)["status"]
-            except LookupError:
-                out[item_id] = "missing"
-        return out
-
-    while True:
-        statuses = await asyncio.to_thread(_statuses)
-        finished = {i: s for i, s in statuses.items()
-                    if s in ("done", "failed", "cancelled", "missing")}
-        remaining = deadline - time.monotonic()
-        if finished or remaining <= 0:
-            return {"finished": finished, "statuses": statuses,
-                    "timed_out": not finished, "waited_budget_s": budget}
-        await asyncio.sleep(min(_WAIT_TICK_S, remaining))
-
-
 @app.post("/api/queue/{item_id}/dispatch")
 def queue_dispatch(item_id: int, payload: Optional[dict] = None) -> dict:
     """Spawn an agent on a queued item.
@@ -1635,16 +1579,6 @@ def artifact_restore(artifact_id: int) -> dict:
                  ref=str(artifact_id))
     return {"ok": True, "restored_revision": art["revision"],
             "logical_name": art["logical_name"], "path": art["path"]}
-
-
-@app.get("/api/assets/workspace")
-def asset_workspace(request: Request, page: _api.Page = Depends()) -> dict:
-    # workspace() folds revisions into logical groups in Python, so the window
-    # is applied to the folded result rather than to the underlying rows.
-    groups = artifacts.workspace(_root())
-    return _listing(
-        request, page, "groups",
-        lambda limit, offset: (groups[offset:offset + limit], len(groups)))
 
 
 @app.post("/api/artifacts/{artifact_id}/regenerate")
