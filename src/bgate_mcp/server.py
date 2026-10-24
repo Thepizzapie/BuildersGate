@@ -9049,11 +9049,16 @@ def queue_add_chain(links: list, chain_id: str = "",
             return {"ok": False, "refused": "director_only",
                     "error": "human checkpoints are placed by the director or "
                              "the human"}
+    # The filing agent's own item is the chain's parent: that is how the slice
+    # stage admits a follow-up through its lineage. queue_add stamped it; a
+    # chain did not, so every director split sat "held: slice stage" until a
+    # person retagged it kind=fix (ONLY YOU, 2026-10-24: ten of them at once).
+    own_item = (os.environ.get("BGATE_WORK_ITEM") or "").strip()
     rows = _q.add_chain(
         _root(),
         [dict(link) for link in links],
         chain_id=chain_id, source=f"seat:{_seat() or 'unknown'}",
-        mode=mode)
+        source_ref=own_item, mode=mode)
     plan_row_errors: dict[int, str] = {}
     if rows_to_link:
         from bgate_core.design import gameplan as _gameplan

@@ -46,3 +46,24 @@ def test_wasd_and_custom_actions_map_by_name_and_dedupe_by_key():
 def test_a_map_with_no_keys_gives_an_empty_pad_not_a_guess():
     pad = controls.pad_layout(controls.parse_input_map("[input]\n", include_builtin=True))
     assert pad == {"dpad": {}, "buttons": [], "dropped": []}
+
+
+def test_a_web_game_ships_controls_json_with_dom_codes(tmp_path):
+    import json
+    (tmp_path / "controls.json").write_text(json.dumps({"actions": [
+        {"action": "move_left", "keys": ["KeyA", "ArrowLeft"]}, {"action": "move_right", "keys": ["KeyD"]},
+        {"action": "move_up", "keys": ["KeyW"]}, {"action": "move_down", "keys": ["KeyS"]},
+        {"action": "interact", "keys": ["Space"]}, {"action": "pause", "keys": ["Escape"]},
+        {"action": "attack", "keys": ["KeyJ"]}, {"action": "throw", "keys": ["KeyK"]},
+        {"action": "sneak", "keys": ["KeyC"]}, {"action": "restart", "keys": ["KeyR"]},
+        {"action": "drop", "keys": ["KeyQ"]}, {"action": "bogus", "keys": ["NotAKey"]}]}), encoding="utf-8")
+    pad = controls.pad_for_project(tmp_path)
+    assert pad["dpad"]["left"] == {"label": "A", "code": "KeyA", "key": "a", "keyCode": 65, "action": "move_left"}
+    assert set(pad["dpad"]) == {"up", "down", "left", "right"}
+    assert [(b["label"], b["code"], b["role"]) for b in pad["buttons"]] == [
+        ("OK", "Space", "accept"), ("Menu", "Escape", "menu"), ("Attack", "KeyJ", "action"),
+        ("Throw", "KeyK", "action"), ("Sneak", "KeyC", "action"), ("Restart", "KeyR", "action")]
+    assert pad["dropped"] == ["drop"]
+    hint = controls.for_project(tmp_path)
+    assert hint[0] == {"action": "move_left", "keys": ["A", "\u2190"], "buttons": [], "codes": ["KeyA", "ArrowLeft"]}
+    assert controls.pad_for_project(tmp_path / "nowhere") == {"dpad": {}, "buttons": [], "dropped": []}

@@ -453,6 +453,18 @@ def slice_check_due(root: str | os.PathLike[str]) -> dict:
     if not state["slice"]["rows"]:
         return {"due": False, "why": "this project has no vertical slice rows",
                 "open": 0}
+    # The slice check gates LEAVING the slice stage. Once the project is in
+    # production or release it has nothing left to decide, and re-filing it
+    # after every slice-row commit took one of two dispatch slots all day
+    # (measured, last-call 2026-10-23: four re-files in forty minutes).
+    try:
+        from .greenlight import stage as _stage
+        if _stage(root) in ("production", "release"):
+            return {"due": False, "why": "the project is past the slice stage; "
+                                         "the slice check has nothing left to gate",
+                    "open": 0}
+    except Exception:                                             # noqa: BLE001
+        pass
     try:
         existing = rows(db.connect(root).execute(
             "SELECT id, status, source_ref FROM work_item "

@@ -191,6 +191,26 @@ class TestWiredAndVerified:
 
 
 class TestSliceCheck:
+    @pytest.fixture(autouse=True)
+    def _at_slice(self, root):
+        # The check gates LEAVING the slice stage; the root fixture stamps
+        # production, where it is never due.
+        from bgate_core.design import greenlight
+        from bgate_core.store import workspace
+        workspace.set(root, greenlight.SEAT, greenlight.DOC_KEY,
+                      {"stage": greenlight.SLICE})
+
+    def test_never_due_past_the_slice_stage(self, root):
+        from bgate_core.design import greenlight
+        from bgate_core.store import workspace
+        gameplan.ingest(root, MANIFEST, session_id=1)
+        for item in queue.list_items(root):
+            queue.set_status(root, item["id"], "done", result="landed")
+        assert gameplan.slice_check_due(root)["due"] is True
+        workspace.set(root, greenlight.SEAT, greenlight.DOC_KEY,
+                      {"stage": greenlight.PRODUCTION})
+        assert gameplan.slice_check_due(root)["due"] is False
+
     def test_not_due_until_every_slice_row_is_built(self, root):
         gameplan.ingest(root, MANIFEST, session_id=1)
         assert gameplan.slice_check_due(root)["due"] is False

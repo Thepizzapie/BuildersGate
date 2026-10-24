@@ -97,13 +97,11 @@ class TestChainLinksOnPlanRows:
         # The row's acceptance and domain goal reached the link.
         assert queue.get(at_slice, first["id"])["acceptance"].startswith(
             "boots headless")
-        # Link 1 is slice work; link 2 is its own follow-up (admitted); link
-        # 3 hangs off link 2, which is not a slice item, so the stage holds
-        # it - and the FILING says so, which is the whole point.
-        assert "stage_hold" not in first and "stage_hold" not in second
-        assert "slice" in third["stage_hold"]
-        assert got["held"] == [third["id"]]
-        assert "1 of 3" in got["note"]
+        # Link 1 is slice work; link 2 is its own follow-up; link 3 hangs off
+        # link 2 and inherits admission through the lineage, so nothing in a
+        # chain rooted on a slice row is held.
+        assert not any("stage_hold" in i for i in (first, second, third))
+        assert "held" not in got
 
     async def test_a_row_named_twice_refuses_before_anything_lands(
             self, at_slice):

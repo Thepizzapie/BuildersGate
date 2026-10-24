@@ -20,6 +20,7 @@
  *       accept: { keys: ["KeyA"], desc: "accept the diff" },  // hold keys
  *       reject: { click: "#reject", desc: "reject it" },       // click an element
  *       scroll: { keys: ["ArrowDown"], tap: ["ArrowDown"], desc: "read further" },
+ *       attack: { act: "attack", desc: "swing at the nearest enemy" }, // window.bgate_act("attack")
  *     },
  *     goal: "ship the feature without breaking prod",         // optional
  *     progress: 0.4,   // 0..1 through the scene  - the feel check needs it
@@ -34,10 +35,15 @@
  * is 4 s away", "line 12 deletes a test"): raw JSON got a model 0.32 mean
  * confidence and one option 90% of the time; plain lines with the facts worked
  * out got 0.48-1.0 and sensible play.
+ *
+ * `act` names a game hook for what keys cannot express (aim at a target, then
+ * click): the game registers `window.bgate_act = (name) => ...` and the agent
+ * calls it once per decision that chooses the option. Keep this file byte-equal
+ * to the harness template: playtest_agent_run reinstalls it on every run.
  */
 
 /** `run` is for games driven by commands rather than keys: called once when the option is chosen. */
-type Opt = { keys?: string[]; tap?: string[]; click?: string; desc?: string; run?: () => void };
+type Opt = { keys?: string[]; tap?: string[]; click?: string; act?: string; desc?: string; run?: () => void };
 export interface Observation {
   state: string | Record<string, unknown>;
   options: Record<string, Opt | string>;
@@ -46,7 +52,7 @@ export interface Observation {
   danger?: boolean;
 }
 
-const params = new URLSearchParams(location.search);
+const params = new URLSearchParams(typeof location === "undefined" ? "" : location.search);
 const relay = params.get("bgate_agent") || "";
 const base = relay.replace(/\/decide$/, "");
 const runSeconds = Number(params.get("bgate_seconds") || 0);
@@ -123,9 +129,14 @@ async function decide(obs: Observation): Promise<void> {
         held = held.filter((h) => h !== k);
       }
     }
-    pending = keep.filter((k) => !held.includes(k));
+    // Re-press every kept key, not only the new ones: a window blur clears the
+    // game's key set and nothing else would ever press them again. Measured
+    // (last-call): the bot "held" KeyS for 1200 frames while the hero stood at
+    // the spawn, because the keys had been dropped on a focus change.
+    pending = [...keep];
     opt.run?.();
     if (opt.click) (document.querySelector(opt.click) as HTMLElement | null)?.click();
+    if (opt.act) (window as unknown as { bgate_act?: (name: string) => void }).bgate_act?.(opt.act);
     report("agent_decision", {
       choice, confidence: got?.confidence ?? 0, ms: Math.round(performance.now() - t0), frame,
     });

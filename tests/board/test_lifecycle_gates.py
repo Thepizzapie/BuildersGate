@@ -168,3 +168,26 @@ def test_a_slice_items_follow_up_is_admitted_at_the_slice_stage():
              "depends_on": None}
     assert _admitted_in_slice(follow_up, {46})
     assert not _admitted_in_slice(stray, {46})
+
+
+def test_a_follow_ups_follow_up_inherits_slice_admission(tmp_path):
+    """A split link two steps from a feel-check item, or a chain member of a
+    split, is admitted through its lineage rather than a manual kind=fix."""
+    from bgate_core.board import queue
+    root = tmp_path
+    # A playtest row is fix work on its own (feel-check rows are not, since
+    # 15f1a17); its descendants are what this is about.
+    feel = queue.add(root, "gameplay", "PLAYTEST: Sam clips the wall", "x",
+                     source="playtest")
+    child = queue.add(root, "gameplay", "Sam hunts", "x", source="seat:director",
+                      source_ref=str(feel["id"]))
+    link = queue.add(root, "gameplay", "#a keep physics on", "x", source="seat:director")
+    db.connect(root).execute("UPDATE work_item SET chain_id = ? WHERE id = ?",
+                             (f"split-{child['id']}", link["id"]))
+    stray = queue.add(root, "art", "a poster nobody asked for", "x", source="seat:art")
+    link_row, stray_row = queue.get(root, link["id"]), queue.get(root, stray["id"])
+    assert queue._admitted_in_slice(child, set(), root)
+    assert queue._admitted_in_slice(link_row, set(), root)
+    assert not queue._admitted_in_slice(stray_row, set(), root)
+    # no root: the old one-step rule, nothing crashes
+    assert not queue._admitted_in_slice(link_row, set())

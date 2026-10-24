@@ -2727,7 +2727,7 @@ def ready(root: str | os.PathLike[str], seat: str = "",
     out = [c for c in candidates
            if (c["source"] == planning
                or (c["seat"] not in held and c["seat"] not in unplanned))
-           and (not in_slice or _admitted_in_slice(c, slice_items))
+           and (not in_slice or _admitted_in_slice(c, slice_items, root))
            and not (feel_failing and _feel_holds(c))
            and not c.get("exhausted_at")
            and not over_attempt_cap(root, c)
@@ -2762,16 +2762,7 @@ def _slice_item_ids(root: str | os.PathLike[str]) -> set[int]:
         return set()
 
 
-def _admitted_in_slice(item: dict, slice_items: set[int]) -> bool:
-    # A slice item's OWN follow-up is slice work. Measured (vibe-coder): the
-    # wallpaper and the UI sounds were delivered by slice rows, the art and
-    # audio seats filed "wire it in" items as they should, and the stage held
-    # both - the slice could not finish because its integration was not on a
-    # plan row.
-    ref = str(item.get("source_ref") or "")
-    if ((item.get("depends_on") and int(item["depends_on"]) in slice_items)
-            or (ref.isdigit() and int(ref) in slice_items)):
-        return True
+def _admitted_on_its_own(item: dict, slice_items: set[int]) -> bool:
     return (int(item["id"]) in slice_items
             or (item.get("kind") or "") == "fix"
             or item.get("source") in PROCESS_SOURCES
@@ -2779,11 +2770,67 @@ def _admitted_in_slice(item: dict, slice_items: set[int]) -> bool:
             or item.get("source") == "domain-plan")
 
 
+def _lineage_ids(item: dict) -> list[int]:
+    """The rows this item descends from: what it depends on, what it was filed
+    from (source_ref), what it was split from, and the item a split chain
+    ("split-N") belongs to."""
+    out: list[int] = []
+    ref = str(item.get("source_ref") or "")
+    if ref.isdigit():
+        out.append(int(ref))
+    if item.get("depends_on"):
+        out.append(int(item["depends_on"]))
+    if item.get("split_of"):
+        out.append(int(item["split_of"]))
+    chain = str(item.get("chain_id") or "")
+    if chain.startswith("split-") and chain[6:].isdigit():
+        out.append(int(chain[6:]))
+    return out
+
+
+def _admitted_in_slice(item: dict, slice_items: set[int],
+                       root: str | os.PathLike[str] | None = None,
+                       _seen: Optional[set[int]] = None) -> bool:
+    # A slice item's OWN follow-up is slice work. Measured (vibe-coder): the
+    # wallpaper and the UI sounds were delivered by slice rows, the art and
+    # audio seats filed "wire it in" items as they should, and the stage held
+    # both - the slice could not finish because its integration was not on a
+    # plan row.
+    #
+    # And the follow-up's follow-up is too: with `root` the lineage is walked
+    # (source_ref, depends_on, split_of, a "split-N" chain) up to an admitted
+    # ancestor. Measured (LAST CALL, ONLY YOU, GNOMEFALL): every FEEL FAIL
+    # child, every split link and every "wire it in" row filed two steps from
+    # a slice item sat as "held: slice stage" until a director retagged it
+    # kind=fix by hand, and each board starved three or four times a day on it.
+    if _admitted_on_its_own(item, slice_items):
+        return True
+    parents = _lineage_ids(item)
+    if any(pid in slice_items for pid in parents):
+        return True
+    if root is None or not parents:
+        return False
+    seen = _seen if _seen is not None else {int(item["id"])}
+    for pid in parents:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            parent = get(root, pid)
+        except Exception:                                         # noqa: BLE001
+            continue
+        if parent and _admitted_in_slice(parent, slice_items, root, seen):
+            return True
+    return False
+
+
 def _feel_failing(root: str | os.PathLike[str]) -> list[str]:
     try:
         from ..qa import feel as _feel
+        # A human waiver in the verdict file (feel.waive) lifts the hold the
+        # same way it lifts the stage gate; the numbers stay on record.
         return [str(r.get("scene")) for r in _feel.results(root)
-                if r.get("verdict") != "PASS"]
+                if r.get("verdict") != "PASS" and not r.get("waived")]
     except Exception:                                             # noqa: BLE001
         return []
 
@@ -2818,7 +2865,7 @@ def slice_hold_reason(root: str | os.PathLike[str], item: dict) -> str:
             return ""
     except Exception:
         return ""
-    if _admitted_in_slice(item, _slice_item_ids(root)):
+    if _admitted_in_slice(item, _slice_item_ids(root), root):
         return ""
     return ("held: the project is at the 'slice' stage - only work on a "
             "vertical-slice plan row, fixes and gates dispatch until the "
