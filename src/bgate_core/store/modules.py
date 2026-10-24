@@ -243,6 +243,9 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                 # The clip-pack roster: which CC0 packs blender_animate can
                 # retarget from. Reads a cache, spawns nothing.
                 "animation_library",
+                # The art mission's last step: a delivered mesh is verified
+                # in the EXPORTED pck, which drops what the editor tolerates.
+                "godot_export_probe",
                 "local_status"),
     "music": ("music_", "audio_listen_record"),
     "cinematic": ("cinematic_", "storyboard_", "kie_video_"),
@@ -314,7 +317,10 @@ CRAFTS: dict[str, tuple[str, ...]] = {
                  # The 3D gates that were hand-written inside every game:
                  # boot scene, shared sub_resources, support, headroom,
                  # colliders. One call, world space.
-                 "godot_scene_audit"),
+                 "godot_scene_audit",
+                 # The landing comparison against the pinned concept sheet is
+                 # a verdict too: the qa brief runs it on every art item.
+                 "concept_compare"),
     "brainstorm": ("brainstorm_",),
     "research": ("research_",),
 }

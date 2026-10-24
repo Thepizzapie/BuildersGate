@@ -131,6 +131,8 @@ SEATS: dict[str, tuple[str, ...]] = {
         "godot_deliver_asset", "godot_import_asset", "godot_screenshot",
         "godot_check_project", "godot_inspect_resource", "godot_status",
         "godot_test_run", "godot_retarget_check",
+        # The art mission says to verify delivered meshes in the export.
+        "godot_export_probe",
         "web_status", "web_dev", "unity_status", "unity_install_scripts",
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
@@ -157,6 +159,11 @@ SEATS: dict[str, tuple[str, ...]] = {
         "scale_check", "consistency_check", "canon_check", "room_review",
         "mesh_faceting", "skin_dominance", "art_qa_verdict",
         "iteration_",
+        # The qa brief's own gate steps: the landing comparison, the three
+        # presentation audits and the pinned refs they are judged against.
+        # The brief told qa to run every one of these and none registered.
+        "concept_compare", "room_audit", "screen_audit", "sprite_family_check",
+        "ref_list",
     ),
     # Lore, quests, dialogue.
     "narrative": (

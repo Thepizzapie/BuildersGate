@@ -60,6 +60,14 @@ repository at first publication. There is no earlier release history to record.
   line. The table is pinned by a test that reads every `_provider_gate`
   call in the MCP modules, so a tool cannot gate on a capability it is not
   listed under.
+- **A seat's brief no longer names tools the seat cannot call.** The qa
+  brief told qa to run `concept_compare`, `room_audit`, `screen_audit`,
+  `sprite_family_check` and `ref_list`, and the art mission told art to
+  verify meshes with `godot_export_probe`; none of them registered for that
+  seat. They do now. Engine traps that name a tool (`godot_run`,
+  `godot_import_asset`, `godot_screenshot`) reach only the seats that hold
+  it. `tests/test_brief_toolsets.py` walks every seat's brief against both
+  seat gates, so the two cannot drift apart again.
 
 ### Changed
 - **Seat toolsets re-measured over 3,381 agent runs.** Worker seats no
