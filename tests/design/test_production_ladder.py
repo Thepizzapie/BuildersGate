@@ -151,8 +151,8 @@ class TestLevelSeat:
         assert "level" in seats.roles_for(root)
         assert domainplan.DOMAINS["level"]["seat"] == "level"
         from bgate_core import seattools
-        assert seattools.seat_registers("room_build", "level")
-        assert not seattools.seat_registers("room_build", "gameplay")
+        assert seattools.seat_registers("room_audit", "level")
+        assert not seattools.seat_registers("room_audit", "gameplay")
 
 
 class TestIterationScope:
