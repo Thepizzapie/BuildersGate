@@ -1,21 +1,21 @@
-"""Worn-gear placeholder sheets — measure the hand, then stamp a stand-in on it.
+"""Worn-gear sheets - measure the hand, then stamp generated gear on it.
 
 The equip/layer system (templates/2d gear_rig.gd) rides the body's clock: a gear
-layer only has to be an ALIGNED SHEET — the character's own canvas and grid with
-only the gear drawn — and it overlays 1:1 for free. That is cheap per animation
+layer only has to be an ALIGNED SHEET - the character's own canvas and grid with
+only the gear drawn - and it overlays 1:1 for free. That is cheap per animation
 and brutally expensive per MISSING animation: the moment the body plays an
 action the weapon has no sheet for, the layer blanks and the equipped weapon
 VANISHES mid-combat. A real project shows the gap plainly: five weapons drawn
 for four attack actions, against a body with fourteen.
 
 Filling that gap with an image model is both wasteful and wrong. The gear has to
-land on the HAND, in every frame, to the pixel — a diffusion model cannot hit
+land on the HAND, in every frame, to the pixel - a diffusion model cannot hit
 that, and paying it to miss is worse than not paying. So this module is
 procedural end to end:
 
   1. MEASURE. The existing aligned sheets already encode the hand: each is a
      mostly-empty canvas with a weapon drawn at the grip. Five different weapons
-     drawn for the same action agree on exactly one region — where the hand is.
+     drawn for the same action agree on exactly one region - where the hand is.
      Intersect their masks per frame and the centroid of what survives is a
      ground-truth grip anchor. No guessing involved.
   2. INFER, and say so. Uncovered actions have no gear sheet to read, so the
@@ -23,14 +23,13 @@ procedural end to end:
      anchors, matched back into the body frame, largest non-head cluster on the
      hand's side, extremity of that cluster. Every anchor carries its `source`,
      and `validate_inference` re-runs the inference on the frames that DO have
-     ground truth and reports the error in pixels — a guess presented as a
+     ground truth and reports the error in pixels - a guess presented as a
      measurement would be the one unforgivable output here.
-  3. STAMP. A hazard-striped bar at the anchor, oriented away from the body.
-     It must read as a placeholder at a glance; art that looks finished never
-     gets redrawn.
+  3. STAMP. `stamp_generated` composites a generated gear image at the
+     anchor, palette-conformed to the body first, clipped at the cell edge.
 
 Pure Pillow + stdlib on purpose (numpy is an optional extra here, and these
-canvases are 384x160 — a Python loop is not the bottleneck). Every function is
+canvases are 384x160 - a Python loop is not the bottleneck). Every function is
 I/O-free except the explicit save/scan helpers at the bottom.
 """
 from __future__ import annotations
@@ -40,14 +39,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # A pixel counts as drawn above this alpha. Sprite sheets carry feathered edges;
 # 8 keeps the halo out of centroids without eating genuine soft pixels.
 ALPHA_THRESHOLD = 8
 
 # The PNG tEXt key that marks OUR output. Coverage has to tell "drawn by a human"
-# from "stamped by this module", and a filename cannot carry that — the game's
+# from "stamped by this module", and a filename cannot carry that - the game's
 # format string fixes the name, and the real project already ships hand-drawn art
 # literally called placeholder_throw_one_hand.png. The marker travels in the file.
 MARKER_KEY = "bgate"
@@ -59,7 +58,7 @@ MARKER_VALUE = "gear-placeholder"
 MIN_CELL = 8
 MAX_CELLS = 16
 
-# Anchor provenance, weakest last. Callers report these verbatim — the whole
+# Anchor provenance, weakest last. Callers report these verbatim - the whole
 # point is that a reader can tell which anchors were read off real art.
 AUTHORED = "authored"                  # a person pointed at the pixel (spriteedit)
 SLICE = "slice"                        # a person dragged a slice in Aseprite
@@ -67,7 +66,7 @@ MEASURED = "measured"                  # >=2 gear sheets agreed; grip intersecti
 MEASURED_SINGLE = "measured_single"    # one sheet only; centroid of the whole gear
 INFERRED_HAND = "inferred_hand"        # learned hand palette, clustered on the body
 INFERRED_SILHOUETTE = "inferred_silhouette"  # no palette match; body extremity
-# Human-authored tiers count as measured — rigmap has documented `authored` as
+# Human-authored tiers count as measured - rigmap has documented `authored` as
 # outranking every inferred source since it existed, but this tuple never
 # learned that, so Anchor.measured was False for the one kind of anchor a
 # person had explicitly placed.
@@ -159,7 +158,7 @@ def _pitch(total: int, bands: Sequence[tuple[int, int]]) -> int:
     INSIDE its cell, so a candidate cell size that cuts through drawn pixels is
     provably wrong. Scanning divisors smallest-first then takes the finest grid
     the content permits. This is what survives the sparse layouts a naive
-    band-COUNT dies on — a block sheet with one occupied column out of four has
+    band-COUNT dies on - a block sheet with one occupied column out of four has
     a single band, no pitch to measure, and still resolves correctly because
     only a cell of the true width contains that band whole.
     """
@@ -175,7 +174,7 @@ def detect_grid(img: Image.Image, *, cell: Optional[tuple[int, int]] = None,
                 alpha_threshold: int = ALPHA_THRESHOLD) -> Grid:
     """The cell lattice of a sprite sheet.
 
-    Pass `cell` whenever you know it — a gear sheet MUST inherit its body's grid,
+    Pass `cell` whenever you know it - a gear sheet MUST inherit its body's grid,
     and inheriting is strictly better than re-deriving from sparser content.
     Autodetection is for the body sheet itself, or for a lone sheet with no peer.
     """
@@ -201,7 +200,7 @@ def detect_grid(img: Image.Image, *, cell: Optional[tuple[int, int]] = None,
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Mask:
-    """One frame's drawn pixels. Coordinates are CELL-LOCAL throughout — an
+    """One frame's drawn pixels. Coordinates are CELL-LOCAL throughout - an
     anchor means the same thing in every frame of every sheet that way, and the
     caller adds the cell origin only when it draws."""
     w: int
@@ -276,7 +275,7 @@ def measure_anchors(sheets: Sequence[Image.Image], grid: Grid, *,
                     alpha_threshold: int = ALPHA_THRESHOLD) -> list[Anchor]:
     """Ground-truth grip anchors from the aligned sheets that already exist.
 
-    Different weapons for the same action differ everywhere EXCEPT the hand —
+    Different weapons for the same action differ everywhere EXCEPT the hand -
     a dagger and a maul share only the few pixels where both are gripped. So the
     intersection of their per-frame masks is the grip, and its centroid is the
     anchor. With one sheet there is nothing to intersect and the honest answer is
@@ -298,7 +297,7 @@ def measure_anchors(sheets: Sequence[Image.Image], grid: Grid, *,
                 cx, cy = shared.centroid()  # type: ignore[misc]
                 anchors.append(Anchor(row, col, cx, cy, MEASURED, len(drawn)))
                 continue
-            # No common pixel — the weapons genuinely disagree about the grip.
+            # No common pixel - the weapons genuinely disagree about the grip.
             # Averaging their centroids is the weaker answer, and says so.
             cs = [m.centroid() for m in drawn]
             anchors.append(Anchor(row, col,
@@ -359,8 +358,8 @@ def pool_hand_palette(samples: Sequence[tuple[Image.Image, Sequence[Anchor]]],
     """One palette from every covered action, ranked ONCE over the pooled counts.
 
     Concatenating each action's top-N instead would quietly widen the palette
-    with each action's own runners-up — hair, leather, whatever else brushed the
-    grip in one pose — and a wider palette merges the hand blob into the arm and
+    with each action's own runners-up - hair, leather, whatever else brushed the
+    grip in one pose - and a wider palette merges the hand blob into the arm and
     the torso. Rank globally, keep the few colours that dominate everywhere.
 
     min_luma_sum is not a magic number: a hand is a LIT surface, while the dark
@@ -417,11 +416,11 @@ def infer_anchor(body: Image.Image, grid: Grid, row: int, col: int, *,
     """Best read of the hand in ONE body frame that has no gear sheet.
 
     Palette-match the hand colour, drop the blob nearest the top-centre of the
-    silhouette (that is the face — the same colour as the hand and always in
+    silhouette (that is the face - the same colour as the hand and always in
     frame), keep the blob on the side this layer's hand lives on, and take its
     outermost pixel: the grip sits at the END of the arm, not at its centre.
     Falls back to the silhouette extremity when nothing matches, and says which
-    it did. Cost of being wrong is a placeholder a few px off the hand — which
+    it did. Cost of being wrong is a placeholder a few px off the hand - which
     is why validate_inference exists to quantify it before anyone trusts it.
     """
     px = _cell_pixels(body, grid, row, col)
@@ -515,63 +514,6 @@ def validate_inference(body: Image.Image, grid: Grid, measured: Sequence[Anchor]
     }
 
 
-# ---------------------------------------------------------------------------
-# Placeholder rendering
-# ---------------------------------------------------------------------------
-# Hazard stripes. Nothing in a real palette looks like this, which is the point:
-# a placeholder that could pass for art never gets replaced.
-STRIPE_A = (255, 0, 190, 235)
-STRIPE_B = (26, 26, 32, 235)
-GRIP_DOT = (0, 240, 255, 255)
-OUTLINE = (10, 10, 14, 255)
-
-
-def _bar(length: int, width: int) -> Image.Image:
-    """The placeholder glyph, drawn upright with its GRIP at the bottom-centre."""
-    bar = Image.new("RGBA", (width, length), (0, 0, 0, 0))
-    d = ImageDraw.Draw(bar)
-    step = max(3, width)
-    for i, y in enumerate(range(0, length, step)):
-        d.rectangle([0, y, width - 1, min(length - 1, y + step - 1)],
-                    fill=STRIPE_A if i % 2 == 0 else STRIPE_B)
-    d.rectangle([0, 0, width - 1, length - 1], outline=OUTLINE)
-    return bar
-
-
-def _rotate_vec(vx: float, vy: float, deg: float) -> tuple[float, float]:
-    """A vector under Pillow's CCW image rotation, in y-down image space."""
-    a = math.radians(deg)
-    return (math.cos(a) * vx + math.sin(a) * vy,
-            -math.sin(a) * vx + math.cos(a) * vy)
-
-
-def stamp_placeholder(sheet: Image.Image, grid: Grid, anchor: Anchor, *,
-                      direction: tuple[float, float], length: int, width: int) -> None:
-    """Composite one placeholder glyph so its grip lands exactly on the anchor.
-
-    Drawn into a CELL-SIZED layer, never straight onto the sheet: a stamp that
-    ran past its cell would land in the neighbouring frame, and the rig reads
-    frames by cell rectangle — one long weapon would then smear across the whole
-    animation. Clipping at the cell edge is what real aligned art does too.
-    """
-    dx, dy = direction
-    norm = math.hypot(dx, dy) or 1.0
-    dx, dy = dx / norm, dy / norm
-    # The glyph points "up" (0,-1); solve for the CCW rotation that sends it to d.
-    deg = math.degrees(math.atan2(-dx, -dy))
-    bar = _bar(max(4, length), max(3, width))
-    rot = bar.rotate(deg, resample=Image.NEAREST, expand=True)
-    gx, gy = _rotate_vec(0.0, bar.height / 2.0, deg)   # grip offset, rotated
-    cx, cy = anchor.x - gx, anchor.y - gy              # cell-local bar centre
-    layer = Image.new("RGBA", (grid.cell_w, grid.cell_h), (0, 0, 0, 0))
-    layer.paste(rot, (int(round(cx - rot.width / 2)), int(round(cy - rot.height / 2))))
-    d = ImageDraw.Draw(layer)
-    d.ellipse([anchor.x - 2, anchor.y - 2, anchor.x + 2, anchor.y + 2],
-              fill=GRIP_DOT, outline=OUTLINE)
-    ox, oy, _, _ = grid.box(anchor.row, anchor.col)
-    sheet.alpha_composite(layer, dest=(ox, oy))
-
-
 def stamp_generated(sheet: Image.Image, grid: Grid, anchor: Anchor,
                     generated: Image.Image, *,
                     anchor_palette: Sequence[tuple[int, int, int]] = (),
@@ -582,12 +524,11 @@ def stamp_generated(sheet: Image.Image, grid: Grid, anchor: Anchor,
     call, its own 1px ink line, a warmer palette than the pinned one) gets
     stamped straight onto a torso that WAS conformed to the pinned palette,
     and the seam is visible - the weapon's colours and line weight are both
-    a different asset's. Unlike ``stamp_placeholder`` (a drawn hazard bar,
-    no real pixels to conform), this path has real pixels: it runs them
+    a different asset's. This path has real pixels, so it runs them
     through ``framegate.conform_stamp`` first - nearest-colour snap to the
     anchor palette, plus a reported (never silently "fixed") ink-weight flag
-    a palette conform cannot correct - THEN composites, same clip-at-cell-edge
-    discipline as the placeholder path.
+    a palette conform cannot correct - THEN composites, clipped at the cell
+    edge.
 
     Returns {line_weight_flag, stamp_stroke, anchor_stroke}. `anchor_palette`/
     `anchor_stroke` empty skips the conform (the composite still happens) -
@@ -611,7 +552,7 @@ def stamp_generated(sheet: Image.Image, grid: Grid, anchor: Anchor,
 
 
 # ---------------------------------------------------------------------------
-# The rig profile — everything the covered actions teach, in one object
+# The rig profile - everything the covered actions teach, in one object
 # ---------------------------------------------------------------------------
 @dataclass
 class RigProfile:
@@ -634,7 +575,7 @@ class RigProfile:
 
 def anchors_for(profile: RigProfile, body: Image.Image, layer_action: str, *,
                 alpha_threshold: int = ALPHA_THRESHOLD) -> list[Anchor]:
-    """The anchors to stamp for one layer action — measured if we have them."""
+    """The anchors to stamp for one layer action - measured if we have them."""
     have = profile.measured.get(layer_action)
     if have:
         return have
@@ -653,13 +594,13 @@ def conform_to_palette(icon_path: str | Path, palette: Sequence[Sequence[int]],
     """Snap a generated icon onto the pinned palette, then outline it.
 
     `palette` is RGB triples (bible-pinned or sampled from the character's own
-    sheets — same shape :func:`bgate_core.art.spritekit.lock_palette` and
+    sheets - same shape :func:`bgate_core.art.spritekit.lock_palette` and
     ``image_sprites``' palette_lock already take). Quantisation is delegated
     there wholesale rather than forked.
 
     `stroke_width` > 0 dilates the icon's opaque silhouette by that many
     pixels and fills the ring BEHIND the (already-quantised) icon with
-    `stroke_color` (default: the darkest palette entry) — a cheap, deterministic
+    `stroke_color` (default: the darkest palette entry) - a cheap, deterministic
     outline so a held weapon icon still reads against a busy floor tile, which a
     body sheet locked to its own palette never needed. Never raises: a stroke
     or a lock that fails leaves the source file untouched and says why.

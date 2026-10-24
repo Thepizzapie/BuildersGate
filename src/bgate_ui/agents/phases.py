@@ -1,23 +1,23 @@
-"""Phases — the pockets of work inside one running agent.
+"""Phases - the pockets of work inside one running agent.
 
 A dispatched agent is not one action, it is a run: it says what it is about to
 do, does five or nine tool calls, produces something, says what it is doing
 next. The dashboard could only ever show that as one card with the last line of
-output on it, so the shape of the run — which part is happening, what came out
-of the part before, where it went wrong — was invisible unless you opened the
+output on it, so the shape of the run - which part is happening, what came out
+of the part before, where it went wrong - was invisible unless you opened the
 raw log and read four hundred lines of stream-json.
 
 This turns the step feed into that shape, with no cooperation from the agent.
 
 WHERE A PHASE STARTS. On a narration step. Claude emits assistant text before a
-batch of tool calls ("Right — first the SpriteFrames, then the scene"), so the
+batch of tool calls ("Right - first the SpriteFrames, then the scene"), so the
 text IS the agent declaring a unit of work, and the tools that follow are that
 unit. It is a heuristic and it is honest about being one: a run with no
 narration comes back as a single phase called "working", which is exactly as
 much structure as that run really has.
 
-WHAT A PHASE CARRIES. Its tools, its results, its steers — and the artifacts
-that appeared during its window, matched on time (see dispatch._add_step for why
+WHAT A PHASE CARRIES. Its tools, its results, its steers - and the artifacts
+that appeared during its window, matched on time (see agentlog.add_step for why
 steps are stamped). That last part is the point of the whole module: "the audio
 seat made these three files while it was doing the footsteps pass" is a
 sentence the UI could not previously form.
@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # A narration this short is an aside ("Done.", "Perfect!"), not a new unit of
-# work — starting a phase on it produces a graph of one-line noise.
+# work - starting a phase on it produces a graph of one-line noise.
 MIN_TITLE = 12
 # Steps kept per phase in the payload. The full feed stays one click away at
 # /api/agent-activity; this is what the graph and the rail draw.
@@ -89,7 +89,7 @@ def split(steps: list[dict], *, running: bool = False) -> list[dict]:
         elif kind == "result":
             phase["results"] += 1
             # A tool result that reads as an error is the single most useful
-            # thing to surface at phase level — it is where a run goes wrong.
+            # thing to surface at phase level - it is where a run goes wrong.
             body = text.lower()
             if not phase["error"] and ("error" in body[:200] or "traceback" in body[:200]
                                        or body.startswith("failed")):
@@ -110,8 +110,8 @@ def split(steps: list[dict], *, running: bool = False) -> list[dict]:
 # Read tool's hint (absolute, backslashes), a path inside a Bash one-liner, a
 # bare project-relative path in a result line.
 #
-# NOT A REGEX. The obvious pattern for this — an unanchored lazy run of
-# "path-ish characters" ending in an extension — is quadratic, because the
+# NOT A REGEX. The obvious pattern for this - an unanchored lazy run of
+# "path-ish characters" ending in an extension - is quadratic, because the
 # character class contains space, dot and both slashes, so every start position
 # rescans the rest of the blob. Measured at ~5 ms on a single 1000-character
 # narration step, which over a 500-step ring and one poll every three seconds is
@@ -139,7 +139,7 @@ def _image_tokens(blob: str) -> list[str]:
 
 
 # THE FILES THAT ARE THE WORK, not pictures of it. An agent's run is mostly
-# reading and writing source, scenes and data, and the log said so in prose — a
+# reading and writing source, scenes and data, and the log said so in prose - a
 # 90-character absolute path in the middle of a sentence, which you could read
 # but not open. These are the extensions worth turning into something clickable.
 _READ_EXT = (".gd", ".gdshader", ".tscn", ".tres", ".godot", ".import",
@@ -158,7 +158,7 @@ MAX_READ = 12
 
 def _relative(root: Path, raw: str) -> str:
     """A path from a log line as a project-relative path, or "" if it is not
-    one (or does not exist — a path in a prompt is not a file)."""
+    one (or does not exist - a path in a prompt is not a file)."""
     text = str(raw or "").strip().strip("'\"`,()[]")
     if not text:
         return ""
@@ -179,7 +179,7 @@ def look(root: str | os.PathLike[str], phases: list[dict]) -> list[dict]:
     """What the agent actually had in front of it, per phase.
 
     An art agent spends its run reading references, opening sheets in PIL and
-    re-reading its own last render — and none of that was anywhere on screen,
+    re-reading its own last render - and none of that was anywhere on screen,
     so watching it work meant watching a spinner and trusting it. Registered
     artifacts only cover what it FILED; this covers what it LOOKED AT, which is
     most of the interesting part and all of the part you argue with.
@@ -224,7 +224,7 @@ def look(root: str | os.PathLike[str], phases: list[dict]) -> list[dict]:
             if here:
                 step["images"] = here[:4]
             # The narration right after a look is the agent's READING of what it
-            # saw — "the cut is off, the teal backing bled through". That is the
+            # saw - "the cut is off, the teal backing bled through". That is the
             # sentence you want next to the image, and it is only identifiable
             # by position.
             if after_image and step.get("kind") == "say":
