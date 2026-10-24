@@ -10,6 +10,13 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Fixed
+- **A remembered `tool_unlock` stays with its project.** It was one flat
+  file for the whole machine with a 24 h life, so one unlock booted that
+  craft into every seatless session in every project: measured, `image`
+  added 41 tools to each (196 to 237). The writer was the test suite, because
+  the file ignored `BGATE_HOME`. It is now under `BGATE_HOME`, keyed by the
+  project root the server booted on, and lasts 4 h; the old shape reads as
+  nothing unlocked.
 - **The director's rules reach the session, and the schemas carry our words,
   not pydantic's.** Measured on 1622ef6: Claude Code keeps the first 4096
   characters of a server's `instructions`, and a seatless session's ran to
