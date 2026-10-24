@@ -169,24 +169,17 @@ def _hidden_lines(hidden, *, full: bool) -> list[str]:
 
 def compact(tools, *, seat: str = "",
             hidden: dict[str, list[str]] | None = None) -> str:
-    """NAMES ONLY, grouped — the version that rides in the instructions block.
+    """The pointer to the map, and the crafts NOT loaded - what rides in the
+    instructions block.
 
-    The full `render` is ~230 lines and belongs in a tool result the agent asks
-    for. This is what it costs to make the agent KNOW the map exists and
-    roughly what is in it, which is the whole discoverability problem: a flat
-    alphabetical tool list gives no hint that `sprite_sheet_check` is free and
-    goes before `image_sprites`.
+    NO NAMES FOR LOADED TOOLS. Every client already lists them in the tools
+    array; repeating them here was 3.6k characters on a seatless session, and
+    those characters pushed the rules past Claude Code's 4096-character cut on
+    instructions. What the tools array cannot say is which crafts exist but
+    are absent, so that part stays. `tools` is kept in the signature so the
+    callers and the craft grouping in `render` are unchanged.
     """
-    by_group = groups(tools)
-    lines = ["THE TOOL SURFACE, by craft. `tool_index()` gives one line per "
+    lines = ["THE TOOL SURFACE, by craft: `tool_index()` gives one line per "
              "tool, `tool_index(task=\"...\")` searches it."]
-    for group in sorted(by_group):
-        if group == "spine":
-            continue
-        names = ", ".join(n for n, _ in by_group[group])
-        lines.append(f"  {group}: {names}")
-    if by_group.get("spine"):
-        names = ", ".join(n for n, _ in by_group["spine"])
-        lines.append(f"  spine ({SPINE_BLURB}): {names}")
     lines.extend(_hidden_lines(hidden, full=False))
     return "\n".join(lines)

@@ -10,6 +10,19 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Fixed
+- **The director's rules reach the session, and the schemas carry our words,
+  not pydantic's.** Measured on 1622ef6: Claude Code keeps the first 4096
+  characters of a server's `instructions`, and a seatless session's ran to
+  14,465, so the ladder, chain rules, approval gate and `project_dir` note
+  never arrived. The instructions now carry `DIRECTOR_RULES` (one line per
+  rule) with the mission and the NOT LOADED crafts, 3.5k in all; the full
+  protocol is `seat_brief('director', section='protocol')`. Loaded tool names
+  are no longer repeated (the tools array lists them). Advertised schemas drop
+  generated `title`s, the `anyOf` null wrapper and the per-tool `project_dir`
+  sentence: director 40.2k to 20.2k characters, art 124.9k to 84.6k. Arguments
+  are still validated by each tool's own model. The unknown-argument refusal
+  never fired for a client, because FastMCP binds its handlers at
+  construction; both overrides are now registered on the protocol server.
 - **A filing says when the stage will hold it, a chain link can sit on a
   plan row, and queue_list shows every parent.** Measured on Turf War
   (2026-10-16), a second web project on one machine: a chain filed at the

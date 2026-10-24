@@ -92,12 +92,20 @@ class TestTheRender:
         text = toolindex.render(SAMPLE)
         assert text.index("IMAGE") < text.index("SPINE")
 
-    def test_compact_is_names_only_and_much_smaller(self):
+    def test_compact_names_no_loaded_tool(self):
+        # The tools array already lists every loaded tool; repeating the names
+        # in instructions pushed the rules past Claude Code's 4096-char cut.
         full = toolindex.render(SAMPLE)
         small = toolindex.compact(SAMPLE)
         assert len(small) < len(full)
         assert "Generate ONE image" not in small
-        assert "image_generate" in small
+        assert "image_generate" not in small
+        assert "tool_index()" in small
+
+    def test_compact_still_names_the_crafts_not_loaded(self):
+        small = toolindex.compact(SAMPLE, hidden={"music": ["music_generate"]})
+        assert "NOT LOADED" in small
+        assert "music" in small
 
 
 class TestItIsWiredToTheRealRegistry:
@@ -143,5 +151,3 @@ class TestItIsWiredToTheRealRegistry:
         if server._PARKED:
             assert "NOT LOADED" in instructions
             assert "image:" in instructions
-        else:
-            assert "image_generate" in instructions
