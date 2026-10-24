@@ -2499,14 +2499,14 @@ TRAPS: tuple[dict, ...] = (
      "look like a missing mesh, it looks like objects floating over the sky's "
      "ground colour. Supplying ARRAY_NORMAL does not save you. If geometry is "
      "invisible from the side you expect, suspect winding before materials."},
-    {"dims": (), "seats": (), "text":
+    {"dims": (), "seats": (), "tool": "godot_run", "text":
      "A PARSE ERROR IN A godot_run SCRIPT LOOKS EXACTLY LIKE A HANG. If load() "
      "fails it returns null, the next call errors, quit() is never reached, and "
      "the harness kills the run at the timeout with NO stdout at all. Always: "
      "`if X == null: print('LOAD FAILED'); quit(); return`, and bisect with "
      "early quit()s. Confirm the engine starts at all with a trivial "
      "print+quit before suspecting your own logic."},
-    {"dims": (), "seats": (), "text":
+    {"dims": (), "seats": (), "tool": "godot_run", "text":
      "Reference other scripts by PATH, not by class_name. A cross-script "
      "`class_name` lookup hangs a headless run for 45s+ with no output when the "
      "editor's global class cache has not been rebuilt, which is the state "
@@ -2517,7 +2517,7 @@ TRAPS: tuple[dict, ...] = (
      "`await process_frame`. A headless test that instantiates a scene and reads "
      "state set in _ready() must await a frame first, otherwise a correct game "
      "is reported broken by a test with a timing bug."},
-    {"dims": ("3d", "2d+3d"), "seats": (), "text":
+    {"dims": ("3d", "2d+3d"), "seats": (), "tool": "godot_import_asset", "text":
      "IMPORT ASSETS SEQUENTIALLY. Parallel godot_import_asset calls collide on "
      "the shared `.godot/` cache and die with a Windows PermissionError that "
      "reads like a locked file. And a src_path already inside the project makes "
@@ -2541,8 +2541,9 @@ TRAPS: tuple[dict, ...] = (
      "not imported as a VideoStream, so load() returns null, the "
      "VideoStreamPlayer stays empty, and the scene runs perfectly with a blank "
      "rectangle where the cutscene was. Nothing anywhere says 'wrong format'. "
-     "Transcode with cinematic_keep and check the installed path ends .ogv."},
-    {"dims": (), "seats": (), "text":
+     "Transcode with cinematic_keep (the cinematic seat's tool; queue it "
+     "there if you do not hold it) and check the installed path ends .ogv."},
+    {"dims": (), "seats": (), "tool": "godot_screenshot", "text":
      "godot_screenshot's window never takes true foreground focus on Windows, so "
      "Input.mouse_mode stays VISIBLE and anything gated on MOUSE_MODE_CAPTURED "
      "collapses in the shot. That is the harness, not your game. Never add "
@@ -2552,10 +2553,21 @@ TRAPS: tuple[dict, ...] = (
 
 
 def traps_for(role: str, dimension: str) -> list[str]:
-    """The trap list this seat is actually exposed to, in fixed order."""
+    """The trap list this seat is actually exposed to, in fixed order.
+
+    A row with a `tool` reaches only the seats that can call that tool: a
+    narrative brief was carrying the godot_screenshot focus trap for a tool
+    it does not have.
+    """
+    from .. import seattools
+    from ..store import modules
+
     return [t["text"] for t in TRAPS
             if (not t["dims"] or dimension in t["dims"])
-            and (not t["seats"] or role in t["seats"])]
+            and (not t["seats"] or role in t["seats"])
+            and (not t.get("tool")
+                 or (seattools.seat_registers(t["tool"], role)
+                     and modules.seat_tool_enabled(t["tool"], role)))]
 
 
 # Universal, and non-obvious enough that an agent which has not been told
