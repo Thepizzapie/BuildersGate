@@ -151,15 +151,14 @@ mcp = FastMCP(
 
 # ONE SENTENCE PER TOOL, THE PARAGRAPH ONCE. The full explanation rode on all
 # 251 tools - 78k identical characters, ~19k tokens, in every session before
-# its first turn. It now lives in `instructions` (see _install_tool_index) and
-# each schema carries only the pointer.
+# its first turn. It now lives in `instructions` (see _install_tool_index); the
+# pointer below stays on the in-process model and _lean_schema drops it from
+# the advertised copy.
 _PROJECT_DIR_DOC = "Project root; see the server instructions."
 _PROJECT_DIR_NOTE = (
-    "EVERY TOOL TAKES `project_dir`: the absolute path to the Builders Gate "
-    "project root (the directory holding .bgate). Omit it and the server falls "
-    "back to BGATE_ROOT, then to walking up from the working directory. Pass "
-    "it explicitly whenever more than one project could be in play - it is the "
-    "only way a call is guaranteed to land in the game you mean."
+    "EVERY TOOL TAKES `project_dir`: the absolute project root (the directory "
+    "holding .bgate). Omitted, it falls back to BGATE_ROOT, then the working "
+    "directory; pass it whenever more than one project could be in play."
 )
 
 # The per-call project override. A ContextVar, deliberately: it is set on the
@@ -7854,10 +7853,13 @@ def seat_brief(role: str, section: str = "") -> dict:
     """The seat's full brief: mission, lanes, bible, canon, playtest feedback,
     locks, notes and the board. A dispatched run already has the short form in
     its prompt; call this only when you need more. section='house_rules'
-    returns just the seat's craft rules (how its tools are meant to be used).
+    returns just the seat's craft rules (how its tools are meant to be used);
+    section='protocol' returns the full director protocol.
     """
     if section == "house_rules":
         return {"role": role, "house_rules": _seats.house_rules(_root(), role)}
+    if section == "protocol":
+        return {"role": role, "protocol": _seats.DIRECTOR_PROTOCOL}
     return _seats.brief(_root(), role)
 
 
@@ -11235,6 +11237,72 @@ def _to_content(payload: dict):
 
 
 mcp.call_tool = _call_tool_checked
+
+
+# ---------------------------------------------------------------------------
+# THE SCHEMA ON THE WIRE CARRIES OUR WORDS, NOT PYDANTIC'S
+# ---------------------------------------------------------------------------
+#
+# MEASURED on 1622ef6: 32-50% of every seat's schema characters were generated
+# boilerplate, not anything a tool author wrote. A `"title": "Name"` beside the
+# property `name` (1,115 of them on the art surface), `anyOf: [X, {type: null}]`
+# around every Optional, and the same project_dir sentence on all 161 art tools.
+# The seatless surface went 93.0k -> 50.9k characters without losing a word.
+#
+# ONLY THE ADVERTISED COPY IS TRIMMED. Arguments are still validated by each
+# tool's pydantic model, so a null still validates where the type said
+# Optional, and _call_tool_checked reads property NAMES, which are untouched.
+# Done at list time rather than registration so tool_unlock's late arrivals are
+# trimmed the same way.
+_ORIGINAL_LIST_TOOLS = mcp.list_tools
+_NULL = {"type": "null"}
+
+
+def _lean_schema(node, in_properties: bool = False):
+    """Drop generated titles, unwrap Optional, and drop project_dir's doc."""
+    if isinstance(node, list):
+        return [_lean_schema(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    if in_properties:
+        # Keys here are parameter names, so a parameter called "title" stays.
+        return {k: _lean_schema(v) for k, v in node.items()}
+    out = {}
+    for key, value in node.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        out[key] = _lean_schema(value, in_properties=(key == "properties"))
+    options = out.get("anyOf")
+    if isinstance(options, list) and len(options) == 2 and _NULL in options:
+        other = next(o for o in options if o != _NULL)
+        if isinstance(other, dict) and not set(other) & set(out):
+            del out["anyOf"]
+            out.update(other)
+    project_dir = (out.get("properties") or {}).get("project_dir")
+    if isinstance(project_dir, dict):
+        project_dir.pop("description", None)
+    return out
+
+
+async def _list_tools_lean():
+    tools = await _ORIGINAL_LIST_TOOLS()
+    for tool in tools:
+        try:
+            tool.inputSchema = _lean_schema(tool.inputSchema)
+        except Exception:                                         # noqa: BLE001
+            pass  # an untrimmed schema is still a correct one
+    return tools
+
+
+mcp.list_tools = _list_tools_lean
+
+# REBIND THE PROTOCOL HANDLERS, or neither override reaches a client. FastMCP's
+# _setup_handlers captured the bound `self.list_tools` / `self.call_tool` at
+# construction, so assigning the attributes above only changed what in-process
+# callers see; over stdio the unknown-argument refusal never fired. Same
+# arguments as FastMCP's own registration (mcp 1.30).
+mcp._mcp_server.list_tools()(_list_tools_lean)
+mcp._mcp_server.call_tool(validate_input=False)(_call_tool_checked)
 
 
 def main() -> None:
