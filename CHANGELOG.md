@@ -97,6 +97,14 @@ repository at first publication. There is no earlier release history to record.
   cycle is refused by name. The caller no longer has to know that level
   depends on gameplay depends on tech.
 
+### Removed
+- **Dead code with no caller anywhere.** The four workflow step files
+  (`wf_steps_asset`, `_agent`, `_3d`, `_world`.js) that no script tag has
+  loaded since the model/tools/templates steps replaced them, plus
+  `tilemask.repack`, `gear.stamp_placeholder`, `gateway.route_note`,
+  `retrodiffusion.pixel_fixer` and `dispatch._add_step`. No behaviour
+  changes: nothing reached any of it.
+
 ### Fixed
 - **`scale_contract_set` answered a pixel dict in `classes` with a raw
   `TypeError`** (`float(None)`), naming neither the field nor the unit; a

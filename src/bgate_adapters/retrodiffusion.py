@@ -1,19 +1,18 @@
-"""Retro Diffusion — the animation model that knows what a walk cycle is.
+"""Retro Diffusion - the animation model that knows what a walk cycle is.
 
 The motion testbed's verdict, measured: general image models produce clean
 FRAMES and no GAIT; RD's advanced-animation models produce the gait. Fed one
 of downsizing's own character frames it returned a full stride with zero
-battery findings and the identity intact — choreography is its training data.
+battery findings and the identity intact - choreography is its training data.
 Fed a large out-of-distribution character it redraws at ~70%; the sprite
 contract's start-frame-per-direction flow is built around that boundary.
 
 API facts from the vendor's own agent reference (api-examples llms.txt,
 verified live 2026-08-17): base https://api.retrodiffusion.ai/v1, header
-X-RD-Token, prompts describe the SUBJECT only (never say "pixel art" — the
+X-RD-Token, prompts describe the SUBJECT only (never say "pixel art" - the
 style carries it), input_image is raw base64 RGB WITHOUT transparency,
 animations want the async job flow, check_cost dry-runs for free, failures
-are auto-refunded. Also here because they are free and useful: pixel_fixer
-(native-grid reconstruction) and palette conversion tools.
+are auto-refunded.
 """
 from __future__ import annotations
 
@@ -52,8 +51,8 @@ POLL_SECONDS = 2.0
 #: way. The job is accepted and then never completes, so the caller sees a
 #: timeout rather than a rejection and reasonably concludes the provider is
 #: down. The animation prompt describes MOTION only ("confident, steady
-#: steps") — the style id carries the rendering and the input image carries
-#: the subject — so there is nothing a long prompt buys that is worth a dead
+#: steps") - the style id carries the rendering and the input image carries
+#: the subject - so there is nothing a long prompt buys that is worth a dead
 #: job. Trimmed on a word boundary rather than refused: a caller that wrote
 #: an over-long prompt still wants its animation.
 #: Set to 140 rather than a round 200 because 140 is the length actually
@@ -78,7 +77,7 @@ def api_key(root: Any = None) -> str:
 
 
 def available(root: Any = None) -> dict:
-    """Presence only — the free health check is balance(), run on demand."""
+    """Presence only - the free health check is balance(), run on demand."""
     key = api_key(root)
     if not key:
         return {"available": False,
@@ -151,7 +150,7 @@ def _post(path: str, payload: dict, *, root: Any = None,
 
 
 def _b64_rgb(path: str | os.PathLike[str], bg: tuple[int, int, int]) -> str:
-    """A file as the raw base64 RGB PNG the API wants — alpha flattened onto
+    """A file as the raw base64 RGB PNG the API wants - alpha flattened onto
     a flat backdrop, because 'RGB without transparency' is the input contract
     and a transparent PNG arrives as undefined colour under the alpha."""
     import io
@@ -212,7 +211,7 @@ def _animation_body(prompt: str, action: str, image_b64: str,
     if not (32 <= w <= 256 and 32 <= h <= 256):
         raise RetroDiffusionError(f"size {w}x{h} outside RD's 32..256")
     # remove_bg deliberately OFF. RD's server-side keying eats any interior
-    # colour near the background — a white undershirt, pale jeans — and hands
+    # colour near the background - a white undershirt, pale jeans - and hands
     # back sprites with transparent HOLES through the body, discovered on a
     # 45-strip run viewed against a light background. The caller keys the
     # flat background itself (see key_background): a corner-seeded flood only
@@ -239,7 +238,7 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
 
     ``prompt`` describes the MOTION, not the art ("confident, steady steps");
     the style id carries the pixel rendering. ``size`` defaults to the start
-    frame's own dimensions — RD wants them to match. ``palette`` optionally
+    frame's own dimensions - RD wants them to match. ``palette`` optionally
     pins output colours (their input_palette). Uses the async job flow the
     vendor recommends for animations, polling until done or ``timeout``.
 
@@ -252,7 +251,7 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
     stitching, so one hung job took the whole call down and the caller saw
     "sent no response or progress for 1800s; aborting" with nothing written
     and no error to act on - measured, twice, on this project.
-    THE COST OF GIVING UP TOO EARLY IS NOT ZERO — IT IS THE WHOLE JOB.
+    THE COST OF GIVING UP TOO EARLY IS NOT ZERO - IT IS THE WHOLE JOB.
     RD bills when the job runs, so a poll that expires before the job flips
     to succeeded pays full price and discards the result: the provider's
     dashboard shows SUCCEEDED and nothing reaches disk. Measured here at
@@ -262,7 +261,7 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
     slow case, not the fast one. 600s costs nothing on a healthy job (the
     poll exits the moment status flips) and stops paying for results we
     then throw away. Surviving the MCP idle ceiling is the resume check's
-    job in animation_generate, not this timeout's — a killed call now
+    job in animation_generate, not this timeout's - a killed call now
     re-adopts finished directions instead of re-buying them.
 
     Returns the shared result shape {ok, path, usd, provider, model, seconds,
@@ -399,7 +398,7 @@ def key_background(img, *, tolerance: int = 28) -> "object":
     """Flood-key an RD sheet's flat background to transparency. Returns RGBA.
 
     Seeded from all four borders, spreading only through pixels within
-    ``tolerance`` of the border's own dominant colour — background connected
+    ``tolerance`` of the border's own dominant colour - background connected
     to the outside vanishes, interior regions of a similar colour (a white
     shirt, pale jeans) DO NOT, because the flood cannot reach them through
     the figure's outline. This is the client-side answer to remove_bg's
@@ -442,7 +441,7 @@ def key_background(img, *, tolerance: int = 28) -> "object":
 # Tiles
 # ---------------------------------------------------------------------------
 #: The tile styles, with the size range each accepts. `tileset` returns a
-#: TERRAIN SET — two terrains and the edges between them — which is the
+#: TERRAIN SET - two terrains and the edges between them - which is the
 #: autotile family, not one texture; measured on a $0.10 call that came back
 #: as a 4x5 grass/stone sheet.
 TILE_STYLES = {
@@ -465,7 +464,7 @@ def tileset(prompt: str, *, kind: str = "tileset", tile_px: int = 32,
     """A tile sheet from one of RD's tile styles. Returns {ok, png, usd, ...}.
 
     ``prompt`` describes the MATERIAL ("mossy grey stone dungeon floor"), never
-    the rendering — the style carries the pixel art, same contract as the
+    the rendering - the style carries the pixel art, same contract as the
     animation call. ``kind`` picks from :data:`TILE_STYLES`; ``variation``
     needs ``input_image`` and is how a missing mask gets filled from a tile
     that already exists.
@@ -577,18 +576,3 @@ def ui(prompt: str, *, kind: str = "ui_element", px: int = 128,
 # ---------------------------------------------------------------------------
 # Free utilities
 # ---------------------------------------------------------------------------
-def pixel_fixer(image: str | os.PathLike[str], *, neural: bool = False,
-                root: Any = None) -> bytes:
-    """Native-grid reconstruction, free. Returns PNG bytes.
-
-    The vendor's answer to exactly the uneven-pixel problem this project
-    measured: a generation that pretends to be pixel art gets rebuilt onto a
-    real grid. Rate limited at 10/min per token; sizes 16px..16MP.
-    """
-    body = {"input_image": base64.b64encode(Path(image).read_bytes()).decode()}
-    path = "/pixel-fixer/neural" if neural else "/pixel-fixer/standard"
-    got = _post(path, body, root=root)
-    images = got.get("base64_images") or []
-    if not images:
-        raise RetroDiffusionError("pixel fixer returned no image")
-    return base64.b64decode(images[0])

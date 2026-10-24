@@ -7,16 +7,10 @@ and hand-rolls the asset - placeholder PNGs, procedural stand-ins, a 270-line
 workaround - while a second provider sat fully keyed and funded the whole
 time. One dead key must read as a ROUTING event, not a capability outage.
 
-So this module gives one answer to two questions, from any process:
+So this module gives one answer, from any process:
 
   status(root)            every hosted provider: keyed, reachable, and - where
                           the provider exposes it - the remaining balance.
-  route_note(root, cap)   ONE SENTENCE for an error message: which provider to
-                          use instead, or the honest "nothing is funded, file
-                          the blocker". Appended to billing-shaped failures by
-                          the MCP server's _fail, so the redirect arrives in
-                          the same tool result as the refusal - the exact
-                          moment the agent is deciding to hand-roll.
 
 WHAT IT DELIBERATELY IS NOT. Not a key store (keys stay in .env; there is no
 set_api_key tool, same reasoning as bgate_core.store.settings). It reads; the
@@ -137,7 +131,7 @@ def _probe(provider: str, root) -> dict:
                     bal = rd.balance(root)
                     # PREFER THE USD BALANCE, NOT `credits`. RD's
                     # /inferences/credits returns BOTH, and only `balance` is
-                    # the spendable figure its billing charges against —
+                    # the spendable figure its billing charges against -
                     # `credits` kept reporting 50.0 on an account that was
                     # refusing every call with {'code': 'request_failed',
                     # 'message': 'Not enough balance.'}. Preferring `credits`
@@ -239,24 +233,6 @@ def _balance_phrase(row: dict) -> str:
     if balance is None:
         return " (balance unknown - the call itself is the probe)"
     return f" with {balance:g} {row.get('balance_unit') or 'credits'} left"
-
-
-def route_note(root, capability: str = "image") -> str:
-    """The sentence a billing failure carries so the agent re-routes.
-
-    Written for the agent that just read "no credit" and is about to decide
-    the pipeline is closed: it is not, unless every row here says so too.
-    """
-    routed = pick(root, capability)
-    if routed["provider"]:
-        return (f"THIS IS A ROUTING EVENT, NOT AN OUTAGE: {routed['why']} - "
-                f"re-run the SAME pipeline tool routed at "
-                f"{routed['provider']} (provider_status shows every row). "
-                "Do NOT hand-roll the asset because one account is empty.")
-    return (f"{routed['why']}. Nothing is funded for this, so do not improvise "
-            "a substitute asset: report the drained accounts in your result "
-            "note (provider_status has the rows) and file the top-up as the "
-            "blocker - a human decides which account gets money.")
 
 
 # Error text that means "the account, not the request" - the shapes the
