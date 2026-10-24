@@ -61,12 +61,19 @@ __all__ = ["tools_for_seat", "seat_registers"]
 CORE: tuple[str, ...] = (
     "project_status", "project_select", "tool_index",
     "seat_brief", "seat_list", "seat_can_write", "seat_notes", "seat_post_note",
-    "queue_", "board_digest", "handoff_note", "handoff_read",
+    # The worker's half of the board. Dependencies, cancel, park/unpark and
+    # queue_next were called by no worker seat in 3,381 runs (2026-10-24);
+    # they are the director's, in DIRECTOR_QUEUE below. queue_add_chain stays
+    # because queue_add refuses an oversized item and names it as the fix.
+    "queue_get", "queue_complete", "queue_add", "queue_add_chain",
+    "queue_claim_next", "queue_list", "queue_update", "queue_reopen",
+    "queue_accept_known_issue",
+    "board_digest", "handoff_note", "handoff_read",
     "bible_read", "decision_list", "decision_add", "pending_decisions",
     "not_building_list", "recall", "ask_human",
     "asset_status", "asset_lock", "asset_release", "asset_track", "asset_verify",
     "asset_untrack",
-    "agent_activity", "provider_status", "bgate_doctor", "decide", "copy_check",
+    "provider_status", "bgate_doctor", "decide", "copy_check",
     # EVERY SEAT PLANS ITS OWN DISCIPLINE. The domain plan is the end state
     # the seat builds toward; a seat that cannot read or revise it is back
     # to building against a feature list. plan_promote stays director-only.
@@ -80,48 +87,50 @@ CORE: tuple[str, ...] = (
     "engine_",
 )
 
+#: The rest of the queue family: arranging the board rather than working an
+#: item on it. The prefix, so a new board operation lands here first.
+DIRECTOR_QUEUE: tuple[str, ...] = ("queue_", "agent_activity")
+
 #: Seat -> the extra families its MEASURED usage shows it reaching for.
+#: Re-measured 2026-10-24 over 3,381 runs in 40 projects: a family no run of
+#: that seat ever called, and that predates the median run, was dropped.
 SEATS: dict[str, tuple[str, ...]] = {
     # Mechanics, systems and feel: edits scripts and scenes, drives the engine,
     # and proves it with the engine rather than by reading.
     "gameplay": (
-        "kit_", "library_",
+        "kit_",
         "godot_", "web_", "unity_", "scene_",
-        "traversal_prove", "scale_check", "scale_record_3d",
-        "encounter_design_set", "playtest_", "evidence_",
-        "iteration_", "telemetry", "game_view_", "causal_", "consistency_check",
+        "traversal_prove", "playtest_",
+        "iteration_", "telemetry", "game_view_",
         # What the comparable games got right and wrong, cited. Read-only.
         "research_findings", "research_grid",
     ),
     # Layout, pacing, encounter placement and graybox geometry. The level and
     # room families moved here from gameplay and tech: one owner, one rule.
     "level": (
-        "kit_", "library_",
-        "level_", "room_", "encounter_", "blockout_", "sidescroll_generate",
-        "traversal_prove", "scene_", "game_view_", "scale_check",
+        "level_", "room_", "blockout_", "sidescroll_generate",
+        "traversal_prove", "scene_", "game_view_",
         "godot_screenshot", "godot_evidence", "godot_run", "godot_test_run",
-        "godot_check_project", "godot_status", "godot_scene_audit",
-        "web_status", "unity_status", "evidence_", "playtest_",
-        "screen_audit", "research_findings",
+        "godot_check_project",
+        "web_status", "unity_status", "playtest_",
+        "research_findings",
     ),
     # Engine plumbing, build and performance, the same engine surface, plus
     # the project-level knobs gameplay does not touch.
     "tech": (
-        "kit_", "library_",
-        "godot_", "web_", "unity_", "scene_", "playtest_", "evidence_",
-        "iteration_", "game_view_", "local_status", "kie_status",
-        "aseprite_status", "project_set_engine",
+        "kit_",
+        "godot_", "web_", "unity_", "scene_", "playtest_",
+        "iteration_", "aseprite_status", "project_set_engine",
     ),
     # The visual pipeline. The biggest list, and it earns it: this is the only
     # seat that generates, rigs, measures and delivers assets.
     "art": (
-        "library_",
         "blender_", "mesh_faceting", "skin_dominance", "animation_",
         "godot_character_wire", "godot_clip_",
         "image_", "art_", "palette_pin", "ref_", "bible_ref_",
         "godot_deliver_asset", "godot_import_asset", "godot_screenshot",
         "godot_check_project", "godot_inspect_resource", "godot_status",
-        "godot_test_run", "godot_retarget_check", "godot_evidence",
+        "godot_test_run", "godot_retarget_check",
         "web_status", "web_dev", "unity_status", "unity_install_scripts",
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
@@ -132,7 +141,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     "audio": (
         "library_",
         "sfx_", "music_", "audio_", "voice_", "godot_check_project",
-        "godot_test_run", "godot_screenshot", "scene_wire", "scene_swap_resource",
+        "godot_test_run", "godot_screenshot",
     ),
     # Cutscenes and shot sequences.
     "cinematic": (
@@ -146,22 +155,22 @@ SEATS: dict[str, tuple[str, ...]] = {
         "godot_", "web_test_run", "web_status", "unity_test_run", "unity_status",
         "evidence_", "playtest_", "scene_outline", "traversal_prove",
         "scale_check", "consistency_check", "canon_check", "room_review",
-        "mesh_faceting", "skin_dominance", "animation_curves", "art_qa_verdict",
-        "iteration_", "causal_",
+        "mesh_faceting", "skin_dominance", "art_qa_verdict",
+        "iteration_",
     ),
     # Lore, quests, dialogue.
     "narrative": (
-        "lore_", "quest_", "dialogue_", "canon_check", "consistency_check",
-        "storyboard_write_script", "brainstorm_", "research_findings",
+        "lore_", "quest_", "dialogue_", "canon_check",
+        "storyboard_write_script", "research_findings",
     ),
     # Owns the pillars and arbitrates. Reads widely, writes design; measured at
     # SEVEN distinct tools, so this list is deliberately near-CORE.
     "director": (
-        "bible_", "decision_", "not_building_", "greenlight_", "lore_brief",
-        "brainstorm_", "research_", "godot_screenshot", "godot_evidence",
+        "bible_", "decision_", "not_building_", "greenlight_",
+        "research_", "godot_screenshot", "godot_evidence",
         "plan_status", "plan_promote", "plan_cut", "iteration_",
         "agent_steer", "agent_steer_all", "scale_contract_set", "profile_",
-        "seat_configure", "dialogue_list", "quest_list",
+        "seat_configure", *DIRECTOR_QUEUE,
         # The canon record (canon_set / canon_retire / canon_unretire /
         # canon_status / canon_audit) and the chaos-mode merge
         # (worktree_integrations / worktree_merge) were registered for no seat
