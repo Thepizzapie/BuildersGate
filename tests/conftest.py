@@ -6,7 +6,7 @@ import shutil
 import pytest
 
 # THE SUITE SEES THE WHOLE SURFACE. A seatless process is the director and
-# parks the generation crafts (bgate_core.store.modules.SEAT_CRAFTS); most of
+# parks the generation crafts (bgate_core.store.modules.SESSION_CRAFTS); most of
 # these tests call image_*, blender_* and music_* through the registry and
 # are about those tools, not about scoping. The scoping itself is tested in
 # tests/cli/test_modules.py, which clears this variable for the assertions
