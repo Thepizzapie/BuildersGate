@@ -1000,14 +1000,6 @@ def _tool(fn: Optional[Callable] = None, *,
         # is written in. project_set_engine plus a fresh session is the way to
         # change it, and it says so in its own result.
         return wrapper
-    if not _seat_registers(fn.__name__):
-        # AND NEITHER IS A TOOL THIS SEAT NEVER CALLS. Same reasoning as the
-        # module gate, a size larger: measured on one project's logs, art
-        # called 21 distinct tools, gameplay 22, qa 12 and the director 7, out
-        # of 256 registered. A gameplay agent editing GDScript was carrying
-        # cinematic_plan, image_sprites and blender_rig on every turn.
-        # bgate_core.seattools has the numbers and the lists.
-        return wrapper
     wrapper.__doc__ = _wire_doc(fn)
     return mcp.tool()(wrapper)
 
@@ -1034,26 +1026,6 @@ def _seat_scoped_off(tool_name: str) -> bool:
 # everything: a missing feature must only ever be the result of a stored
 # decision, never of a broken read.
 _MODULES_OFF: Optional[set] = None
-
-
-def _seat_registers(tool_name: str) -> bool:
-    """Does the seat this process serves carry this tool?
-
-    Resolved per call rather than cached, because it is a pure string test
-    against an env var that is fixed for the process anyway, and because the
-    cached-set pattern above is what made the module gate hard to reason about.
-
-    A session with no BGATE_SEAT is a human at a keyboard, and gets everything.
-    """
-    try:
-        from bgate_core import seattools as _seattools
-
-        return _seattools.seat_registers(
-            tool_name, os.environ.get("BGATE_SEAT", "").strip())
-    except Exception:                                             # noqa: BLE001
-        # Same rule as the module gate: a missing toolset must only ever come
-        # from a stored decision, never from a failed read.
-        return True
 
 
 #: How much of a docstring rides on the wire. Everything up to the first blank
@@ -1137,10 +1109,9 @@ def _module_registers(tool_name: str) -> bool:
 
     if _MODULES_OFF and not _modules.tool_enabled(tool_name, _MODULES_OFF):
         return False
-    # THE SEAT'S CRAFT, on top of the project's modules. A dispatched seat
-    # registers only the craft surfaces it practises plus the shared spine -
-    # a gameplay agent stops carrying every blender_ and cinematic_ schema on
-    # every turn. Scoped-off is per process and per seat, exactly like the
+    # THE SEAT, on top of the project's modules. A dispatched seat registers
+    # what bgate_core.seattools measured it using; the seatless director
+    # registers the spine plus its own crafts. Scoped-off is per process and per seat, exactly like the
     # module gate; BGATE_SEAT_TOOLS=all is the escape hatch for a session
     # that genuinely needs everything (say so in the dispatch env).
     if (os.environ.get("BGATE_SEAT_TOOLS", "").strip().lower()) == "all":

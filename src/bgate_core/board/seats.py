@@ -2519,15 +2519,13 @@ def traps_for(role: str, dimension: str) -> list[str]:
     narrative brief was carrying the godot_screenshot focus trap for a tool
     it does not have.
     """
-    from .. import seattools
     from ..store import modules
 
     return [t["text"] for t in TRAPS
             if (not t["dims"] or dimension in t["dims"])
             and (not t["seats"] or role in t["seats"])
             and (not t.get("tool")
-                 or (seattools.seat_registers(t["tool"], role)
-                     and modules.seat_tool_enabled(t["tool"], role)))]
+                 or modules.seat_tool_enabled(t["tool"], role))]
 
 
 # Universal, and non-obvious enough that an agent which has not been told
