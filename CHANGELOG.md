@@ -114,6 +114,15 @@ repository at first publication. There is no earlier release history to record.
   everything. Per-turn schema falls 4-23% depending on the seat.
 
 ### Added
+- **A Style tab in the art seat trains a house style.** The four
+  `/api/art/style` routes had no caller. The tab shows the anchors that clear
+  the 1024px floor and names the ones dropped. It trains a style by name and
+  follows the run while it goes: uploading image n of total, then training on
+  the Krea job id, with elapsed time. A failure stays on screen with its
+  reason. The tab also switches or clears the active style and forgets one.
+  `krea.train` takes an `on_stage` callback for this. Training now uses the
+  `art.style_dataset` shelf the panel shows; before, it always trained on
+  pins.
 - **`bgate studio`: one folder for every game and what they share.**
   `bgate studio init DIR` lays out `games/`, `shared/modules/<engine>/`,
   `shared/assets/` and a `studio.json` index, and remembers the folder in
