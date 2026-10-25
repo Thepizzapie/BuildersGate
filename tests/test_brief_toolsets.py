@@ -30,8 +30,6 @@ DIMENSIONS = ("2d", "3d", "2d+3d")
 #: (seat, tool) pairs the seat's brief names as ANOTHER seat's step, a
 #: handoff rather than a call. Each must still appear, or the entry is stale.
 HANDOFFS: dict[tuple[str, str], str] = {
-    ("art", "level_generate"): "art hands its manifest to the level generator",
-    ("art", "sidescroll_generate"): "same handoff, side-scroller view",
     ("level", "tileset_generate"): "level queues tilesets to the art seat",
     ("level", "prop_generate"): "level queues props to the art seat",
     ("tech", "cinematic_keep"): "the .mp4 trap points tech at the cinematic seat",

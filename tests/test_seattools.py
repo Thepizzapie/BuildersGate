@@ -66,8 +66,21 @@ def test_prefixes_cover_tools_that_do_not_exist_yet():
     """Families are matched by prefix so a new tool is available the day it is
     written, not the day someone remembers this file."""
     assert seattools.seat_registers("godot_some_new_check", "gameplay")
-    assert seattools.seat_registers("blender_some_new_op", "art")
+    assert seattools.seat_registers("image_some_new_op", "art")
     assert seattools.seat_registers("queue_anything", "director")
+
+
+def test_tools_no_run_called_stay_out_of_art_and_level():
+    """Measured 2026-10-24: none of 475 art runs called the form tools or
+    blender_live_*, and no run of any seat called the level generators."""
+    for tool in ("blender_hull", "blender_skin", "blender_tube", "blender_rock",
+                 "blender_live_run", "sidescroll_generate", "level_reskin"):
+        assert not seattools.seat_registers(tool, "art"), tool
+    for tool in ("level_plan", "level_generate", "sidescroll_generate",
+                 "room_build"):
+        assert not seattools.seat_registers(tool, "level"), tool
+    assert seattools.seat_registers("blender_blob", "art")
+    assert seattools.seat_registers("blockout_generate", "level")
 
 
 def test_every_named_seat_is_a_real_seat():

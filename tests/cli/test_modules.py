@@ -388,7 +388,7 @@ class TestEveryToolIsClassified:
     def test_the_tools_p0_reclassified_reach_the_right_seats(self):
         # The specific miscategorisations, asserted by seat rather than by
         # table, because the table is the mechanism and this is the point.
-        assert modules.seat_tool_enabled("sidescroll_generate", "level")
+        assert not modules.seat_tool_enabled("sidescroll_generate", "level")  # 0 runs; tool_unlock("level")
         assert not modules.seat_tool_enabled("sidescroll_generate", "art")
         assert not modules.seat_tool_enabled("sidescroll_generate", "audio")
         assert modules.seat_tool_enabled("sprite_sheet_check", "art")
