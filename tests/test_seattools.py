@@ -66,7 +66,7 @@ def test_prefixes_cover_tools_that_do_not_exist_yet():
     """Families are matched by prefix so a new tool is available the day it is
     written, not the day someone remembers this file."""
     assert seattools.seat_registers("godot_some_new_check", "gameplay")
-    assert seattools.seat_registers("image_some_new_op", "art")
+    assert seattools.seat_registers("blender_some_new_op", "art")
     assert seattools.seat_registers("queue_anything", "director")
 
 

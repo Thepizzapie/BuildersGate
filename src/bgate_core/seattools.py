@@ -113,7 +113,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     # 79 of them level items in 2D projects (2026-10-24): blockout_generate
     # and room_audit are what the seat reaches for.
     "level": (
-        "room_audit", "room_review", "room_override", "blockout_",
+        "room_", "blockout_",
         "traversal_prove", "scene_", "game_view_",
         "godot_screenshot", "godot_evidence", "godot_run", "godot_test_run",
         "godot_check_project",
@@ -129,20 +129,8 @@ SEATS: dict[str, tuple[str, ...]] = {
     ),
     # The visual pipeline. The biggest list, and it earns it: this is the only
     # seat that generates, rigs, measures and delivers assets.
-    # Names, not "blender_": the form tools (blender_hull / _skin / _tube /
-    # _rock) and blender_live_* were called by none of 475 art runs
-    # (2026-10-24). The form helpers stay in blender_run's kit as bg_*.
     "art": (
-        "blender_status", "blender_run", "blender_warmup",
-        "blender_scene_stats", "blender_export_gltf", "blender_combine",
-        "blender_humanoid_template", "blender_rig", "blender_flex",
-        "blender_weights", "blender_template_deviation", "blender_silhouette",
-        "blender_texture", "blender_turnaround", "blender_generate",
-        "blender_sweep", "blender_layer_rerun", "blender_sprites",
-        "blender_animate", "blender_fuse", "blender_shade", "blender_lathe",
-        "blender_loft", "blender_material", "blender_bake", "blender_decal",
-        "blender_tree", "blender_scatter", "blender_look_audit", "blender_blob",
-        "mesh_faceting", "skin_dominance", "animation_",
+        "blender_", "mesh_faceting", "skin_dominance", "animation_",
         "godot_character_wire", "godot_clip_",
         "image_", "art_", "palette_pin", "ref_", "bible_ref_",
         "godot_deliver_asset", "godot_import_asset", "godot_screenshot",
@@ -153,7 +141,8 @@ SEATS: dict[str, tuple[str, ...]] = {
         "web_status", "web_dev", "unity_status", "unity_install_scripts",
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
-        "canon_check", "vfx_animate", "game_view_get", "research_findings", "research_grid",
+        "canon_check", "vfx_animate", "game_view_get",
+        "research_findings", "research_grid",
     ),
     # Music, SFX and mix.
     "audio": (
@@ -214,7 +203,13 @@ _ART_HANDOFF = ("godot_deliver_asset", "godot_import_asset",
 EXCEPT: dict[str, tuple[str, ...]] = {
     "gameplay": _ART_HANDOFF,
     "qa": _ART_HANDOFF,
-    "art": ("art_qa_verdict", "art_tournament_verdict"),
+    # The form tools and blender_live_* were called by none of 475 art runs
+    # (2026-10-24); their helpers stay in blender_run's kit as bg_*.
+    "art": ("art_qa_verdict", "art_tournament_verdict",
+            "blender_hull", "blender_skin", "blender_tube", "blender_rock",
+            "blender_live_status", "blender_live_run", "blender_live_view",
+            "blender_live_export", "blender_live_reset"),
+    "level": ("room_build",),
     # The human adopts the research plan ("I adopt it myself", in the
     # kickoff's own words); the rest of research_ is the director's to run.
     "director": ("research_plan_adopt",),
