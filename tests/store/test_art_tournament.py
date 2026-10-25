@@ -347,7 +347,8 @@ def test_each_start_is_its_own_tournament_and_status_reads_the_newest(
         client, root, monkeypatch):
     from bgate_ui.agents import dispatch
     monkeypatch.setattr(dispatch, "find_claude", lambda: None)
-    a, b = _candidate(root, "a", b"one"), _candidate(root, "b", b"two")
+    a = _candidate(root, "a", b"one")
+    _candidate(root, "b", b"two")
     first = client.post("/api/art-tournament/start", json={"logical_name": "hero"}).json()
     for mid in first["match_ids"]:
         art_tournament.record_verdict(root, mid, winner_artifact_id=a["id"])
