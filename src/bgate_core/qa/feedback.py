@@ -131,49 +131,6 @@ def route(text: str) -> str:
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
-def split_utterances(seg: dict) -> list[dict]:
-    """One whisper segment -> one item PER SENTENCE, with interpolated times.
-
-    Whisper segments are not utterances. A single segment routinely carries
-    several distinct remarks:
-
-        "the jump feels floaty. I do not like it. But I love the music here."
-
-    Classified whole, that collapses to one item — and routes to AUDIO because
-    "music" appears, sending a jump-physics complaint to the wrong seat while the
-    compliment about the music disappears. Observed on real speech, not theory.
-
-    Timestamps are interpolated across the segment by character position. It's an
-    approximation (people don't speak at uniform rate), but it beats stamping
-    every remark with the segment's start — which parks them all on the same
-    telemetry window.
-    """
-    text = seg["text"].strip()
-    if not text:
-        return []
-
-    parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p.strip()]
-    if len(parts) <= 1:
-        return [{**seg, "text": text}]
-
-    t_start, t_end = seg["t_start"], seg["t_end"]
-    span = max(t_end - t_start, 0.0)
-    total = sum(len(p) for p in parts) or 1
-
-    out, consumed = [], 0
-    for part in parts:
-        frac_start = consumed / total
-        consumed += len(part)
-        frac_end = consumed / total
-        out.append({
-            **seg,
-            "text": part,
-            "t_start": round(t_start + span * frac_start, 3),
-            "t_end": round(t_start + span * frac_end, 3),
-        })
-    return out
-
-
 # Seconds of silence that end one spoken thought. A playtest comment is a
 # continuous 5-15s ramble about ONE thing; then a pause, then the next thing.
 # Merging segments separated by less than this keeps one issue as ONE item

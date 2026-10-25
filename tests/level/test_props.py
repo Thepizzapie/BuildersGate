@@ -531,12 +531,6 @@ class TestTheArtContract:
         assert props.art_spec("torch")["facings"] == ["e", "w"]
         assert props.art_spec("barrel")["facings"] == []
 
-    def test_the_manifest_totals_what_a_generation_must_produce(self):
-        m = props.art_manifest()
-        assert len(m["specs"]) == len(props.PROP_TYPES)
-        assert m["drawings"] > len(m["specs"])         # torch counts twice
-        assert m["frames"] > m["drawings"]             # loops and states
-
     def test_every_type_declares_at_most_one_motion_mechanism(self):
         for name, spec in props.PROP_TYPES.items():
             assert not (spec.get("anim") and spec.get("states")), name

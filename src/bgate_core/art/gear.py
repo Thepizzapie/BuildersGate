@@ -1,4 +1,4 @@
-"""Worn-gear sheets - measure the hand, then stamp generated gear on it.
+"""Worn-gear sheets - find the grid, then stamp generated gear on the hand.
 
 The equip/layer system (templates/2d gear_rig.gd) rides the body's clock: a gear
 layer only has to be an ALIGNED SHEET - the character's own canvas and grid with
@@ -13,28 +13,19 @@ land on the HAND, in every frame, to the pixel - a diffusion model cannot hit
 that, and paying it to miss is worse than not paying. So this module is
 procedural end to end:
 
-  1. MEASURE. The existing aligned sheets already encode the hand: each is a
-     mostly-empty canvas with a weapon drawn at the grip. Five different weapons
-     drawn for the same action agree on exactly one region - where the hand is.
-     Intersect their masks per frame and the centroid of what survives is a
-     ground-truth grip anchor. No guessing involved.
-  2. INFER, and say so. Uncovered actions have no gear sheet to read, so the
-     anchor comes from the body: a hand-colour palette LEARNED at the measured
-     anchors, matched back into the body frame, largest non-head cluster on the
-     hand's side, extremity of that cluster. Every anchor carries its `source`,
-     and `validate_inference` re-runs the inference on the frames that DO have
-     ground truth and reports the error in pixels - a guess presented as a
-     measurement would be the one unforgivable output here.
+  1. GRID. `detect_grid` reads the cell size off the sheet's occupied bands.
+  2. ANCHOR. The grip comes from rigmap (authored or sliced by a person) as
+     `Anchor` objects; every anchor carries its `source`, so a reader can tell
+     which ones were read off real art.
   3. STAMP. `stamp_generated` composites a generated gear image at the
      anchor, palette-conformed to the body first, clipped at the cell edge.
 
 Pure Pillow + stdlib on purpose (numpy is an optional extra here, and these
 canvases are 384x160 - a Python loop is not the bottleneck). Every function is
-I/O-free except the explicit save/scan helpers at the bottom.
+I/O-free except `conform_to_palette`, which reads and writes the icon.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -44,13 +35,6 @@ from PIL import Image
 # A pixel counts as drawn above this alpha. Sprite sheets carry feathered edges;
 # 8 keeps the halo out of centroids without eating genuine soft pixels.
 ALPHA_THRESHOLD = 8
-
-# The PNG tEXt key that marks OUR output. Coverage has to tell "drawn by a human"
-# from "stamped by this module", and a filename cannot carry that - the game's
-# format string fixes the name, and the real project already ships hand-drawn art
-# literally called placeholder_throw_one_hand.png. The marker travels in the file.
-MARKER_KEY = "bgate"
-MARKER_VALUE = "gear-placeholder"
 
 # Grid search bounds. A sprite cell below 8px or a sheet past 16 cells on an axis
 # is not a thing these pipelines produce, and allowing them lets a sparse sheet
@@ -71,28 +55,6 @@ INFERRED_SILHOUETTE = "inferred_silhouette"  # no palette match; body extremity
 # learned that, so Anchor.measured was False for the one kind of anchor a
 # person had explicitly placed.
 MEASURED_SOURCES = (AUTHORED, SLICE, MEASURED, MEASURED_SINGLE)
-
-# One body animation can need MORE than one gear layer: a dual-wield swing drives
-# a main-hand layer and an off-hand layer off the same body frames, and the game
-# loads them under distinct layer-action names. Anything not listed maps to a
-# single layer of its own name (main_hand_swing -> main_hand_swing).
-BODY_TO_LAYER_ACTIONS: dict[str, tuple[str, ...]] = {
-    "dual_wield_swing": ("dual_wield_main", "dual_wield_off"),
-}
-
-# Throw actions are served by the THROWABLE slot, not the held weapon: the game
-# loads one shared placeholder_<action>.png rather than one per weapon, so these
-# actions leave the weapon x action grid and get their own coverage rows.
-THROWABLE_BODY_ACTIONS: tuple[str, ...] = ("throw_one_hand", "throw_two_hand")
-
-# Which hand a layer hangs on. Drives the side bias: a main-hand layer must track
-# the main hand even in a frame where both hands are visible.
-LAYER_HAND: dict[str, str] = {
-    "main_hand_swing": "main_hand",
-    "dual_wield_main": "main_hand",
-    "off_hand_swing": "off_hand",
-    "dual_wield_off": "off_hand",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -242,12 +204,6 @@ def cell_mask(img: Image.Image, grid: Grid, row: int, col: int, *,
                 tuple(v > alpha_threshold for v in alpha.tobytes()))
 
 
-def _intersect(masks: Sequence[Mask]) -> Mask:
-    first = masks[0]
-    bits = tuple(all(m.bits[i] for m in masks) for i in range(len(first.bits)))
-    return Mask(first.w, first.h, bits)
-
-
 # ---------------------------------------------------------------------------
 # Anchors
 # ---------------------------------------------------------------------------
@@ -269,249 +225,6 @@ class Anchor:
     @property
     def measured(self) -> bool:
         return self.source in MEASURED_SOURCES
-
-
-def measure_anchors(sheets: Sequence[Image.Image], grid: Grid, *,
-                    alpha_threshold: int = ALPHA_THRESHOLD) -> list[Anchor]:
-    """Ground-truth grip anchors from the aligned sheets that already exist.
-
-    Different weapons for the same action differ everywhere EXCEPT the hand -
-    a dagger and a maul share only the few pixels where both are gripped. So the
-    intersection of their per-frame masks is the grip, and its centroid is the
-    anchor. With one sheet there is nothing to intersect and the honest answer is
-    the whole gear's centroid, flagged `measured_single`: still a measurement,
-    but of the weapon, not of the hand.
-    """
-    if not sheets:
-        return []
-    anchors: list[Anchor] = []
-    for row, col in grid.iter_cells():
-        masks = [cell_mask(s, grid, row, col, alpha_threshold=alpha_threshold)
-                 for s in sheets]
-        drawn = [m for m in masks if m]
-        if not drawn:
-            continue                       # empty cell: this frame has no gear
-        if len(drawn) >= 2:
-            shared = _intersect(drawn)
-            if shared:
-                cx, cy = shared.centroid()  # type: ignore[misc]
-                anchors.append(Anchor(row, col, cx, cy, MEASURED, len(drawn)))
-                continue
-            # No common pixel - the weapons genuinely disagree about the grip.
-            # Averaging their centroids is the weaker answer, and says so.
-            cs = [m.centroid() for m in drawn]
-            anchors.append(Anchor(row, col,
-                                  sum(c[0] for c in cs) / len(cs),  # type: ignore[index]
-                                  sum(c[1] for c in cs) / len(cs),  # type: ignore[index]
-                                  MEASURED_SINGLE, len(drawn)))
-            continue
-        cx, cy = drawn[0].centroid()        # type: ignore[misc]
-        anchors.append(Anchor(row, col, cx, cy, MEASURED_SINGLE, 1))
-    return anchors
-
-
-def anchor_side_bias(anchors: Sequence[Anchor], grid: Grid) -> dict[int, int]:
-    """Per row: is this layer's hand on the +x or -x side of the frame?
-
-    Rows are VIEWS (nw/sw, or the four diagonals), so the main hand swaps sides
-    between them and a "farthest point from the body" rule picks the wrong hand
-    half the time. The measured anchors already answer it per row, so the bias is
-    read off the art rather than assumed from a handedness convention.
-    """
-    bias: dict[int, int] = {}
-    for row in range(grid.rows):
-        xs = [a.x for a in anchors if a.row == row]
-        if xs:
-            bias[row] = 1 if (sum(xs) / len(xs)) >= grid.cell_w / 2 else -1
-    return bias
-
-
-# ---------------------------------------------------------------------------
-# Inference for uncovered actions
-# ---------------------------------------------------------------------------
-def _palette_counts(body: Image.Image, grid: Grid, anchors: Sequence[Anchor], *,
-                    radius: int, min_luma_sum: int, alpha_threshold: int,
-                    into: dict[tuple[int, int, int], int]) -> None:
-    rgb = body.convert("RGBA")
-    px = rgb.load()
-    for a in anchors:
-        if not a.measured:
-            continue
-        ox, oy, _, _ = grid.box(a.row, a.col)
-        for dy in range(-radius, radius + 1):
-            for dx in range(-radius, radius + 1):
-                x, y = ox + int(a.x) + dx, oy + int(a.y) + dy
-                if not (0 <= x < rgb.width and 0 <= y < rgb.height):
-                    continue
-                r, g, b, al = px[x, y]
-                if al <= alpha_threshold or r + g + b < min_luma_sum:
-                    continue
-                key = (r // 16 * 16, g // 16 * 16, b // 16 * 16)
-                into[key] = into.get(key, 0) + 1
-
-
-def pool_hand_palette(samples: Sequence[tuple[Image.Image, Sequence[Anchor]]],
-                      grid: Grid, *, radius: int = 5, top_n: int = 5,
-                      min_luma_sum: int = 250,
-                      alpha_threshold: int = ALPHA_THRESHOLD
-                      ) -> list[tuple[int, int, int]]:
-    """One palette from every covered action, ranked ONCE over the pooled counts.
-
-    Concatenating each action's top-N instead would quietly widen the palette
-    with each action's own runners-up - hair, leather, whatever else brushed the
-    grip in one pose - and a wider palette merges the hand blob into the arm and
-    the torso. Rank globally, keep the few colours that dominate everywhere.
-
-    min_luma_sum is not a magic number: a hand is a LIT surface, while the dark
-    end of the ramp is outline and shadow that every part of the character
-    shares, so a dark entry in the palette matches the whole silhouette and the
-    clustering collapses. Measured on the real project, letting one dark leather
-    tone in tripled the inference error (median 11px -> 30px on a 96x80 cell).
-    """
-    counts: dict[tuple[int, int, int], int] = {}
-    for body, anchors in samples:
-        _palette_counts(body, grid, anchors, radius=radius,
-                        min_luma_sum=min_luma_sum,
-                        alpha_threshold=alpha_threshold, into=counts)
-    ranked = sorted(counts.items(), key=lambda kv: -kv[1])[:top_n]
-    # Recenter each quantization bucket so the palette sits mid-bucket.
-    return [(r + 8, g + 8, b + 8) for (r, g, b), _ in ranked]
-
-
-def _components(flags: list[bool], w: int, h: int, min_size: int) -> list[list[tuple[int, int]]]:
-    """8-connected blobs of a boolean bitmap, largest-noise filtered."""
-    seen = [False] * len(flags)
-    out: list[list[tuple[int, int]]] = []
-    for start in range(len(flags)):
-        if not flags[start] or seen[start]:
-            continue
-        seen[start] = True
-        stack = [start]
-        pts: list[tuple[int, int]] = []
-        while stack:
-            i = stack.pop()
-            x, y = i % w, i // w
-            pts.append((x, y))
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < w and 0 <= ny < h:
-                        j = ny * w + nx
-                        if flags[j] and not seen[j]:
-                            seen[j] = True
-                            stack.append(j)
-        if len(pts) >= min_size:
-            out.append(pts)
-    return out
-
-
-def _cell_pixels(img: Image.Image, grid: Grid, row: int, col: int):
-    return img.convert("RGBA").crop(grid.box(row, col)).load()
-
-
-def infer_anchor(body: Image.Image, grid: Grid, row: int, col: int, *,
-                 palette: Sequence[tuple[int, int, int]], side: int,
-                 tolerance: float = 48.0, min_component: int = 8,
-                 alpha_threshold: int = ALPHA_THRESHOLD) -> Optional[Anchor]:
-    """Best read of the hand in ONE body frame that has no gear sheet.
-
-    Palette-match the hand colour, drop the blob nearest the top-centre of the
-    silhouette (that is the face - the same colour as the hand and always in
-    frame), keep the blob on the side this layer's hand lives on, and take its
-    outermost pixel: the grip sits at the END of the arm, not at its centre.
-    Falls back to the silhouette extremity when nothing matches, and says which
-    it did. Cost of being wrong is a placeholder a few px off the hand - which
-    is why validate_inference exists to quantify it before anyone trusts it.
-    """
-    px = _cell_pixels(body, grid, row, col)
-    w, h = grid.cell_w, grid.cell_h
-    solid: list[bool] = []
-    matched: list[bool] = []
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = px[x, y]
-            on = a > alpha_threshold
-            solid.append(on)
-            if not on or not palette:
-                matched.append(False)
-                continue
-            best = min((r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
-                       for pr, pg, pb in palette)
-            matched.append(best < tolerance * tolerance)
-    body_pts = [(i % w, i // w) for i, v in enumerate(solid) if v]
-    if not body_pts:
-        return None
-    cx = sum(p[0] for p in body_pts) / len(body_pts)
-    cy = sum(p[1] for p in body_pts) / len(body_pts)
-    top = min(p[1] for p in body_pts)
-    midx = (min(p[0] for p in body_pts) + max(p[0] for p in body_pts)) / 2
-
-    blobs = _components(matched, w, h, min_component)
-    source = INFERRED_HAND
-    if not blobs:
-        # Nothing hand-coloured: fall back to the silhouette itself.
-        blobs = [body_pts]
-        source = INFERRED_SILHOUETTE
-
-    def centre(pts):
-        return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
-
-    if len(blobs) > 1:
-        head = min(blobs, key=lambda p: (centre(p)[1] - top) ** 2
-                   + 0.25 * (centre(p)[0] - midx) ** 2)
-        blobs = [p for p in blobs if p is not head] or [head]
-    # Prefer a big blob on the right side; size breaks ties between two arms.
-    arm = max(blobs, key=lambda p: side * (centre(p)[0] - cx) * 2 + len(p) ** 0.5)
-    ex, ey = max(arm, key=lambda p: side * (p[0] - cx) + 0.5 * abs(p[1] - cy))
-    return Anchor(row, col, float(ex), float(ey), source, len(arm))
-
-
-def infer_anchors(body: Image.Image, grid: Grid, *,
-                  palette: Sequence[tuple[int, int, int]],
-                  side_bias: dict[int, int], **kw) -> list[Anchor]:
-    """Inferred anchors for every non-empty cell of a body sheet."""
-    out: list[Anchor] = []
-    for row, col in grid.iter_cells():
-        side = side_bias.get(row, side_bias.get(0, 1))
-        a = infer_anchor(body, grid, row, col, palette=palette, side=side, **kw)
-        if a is not None:
-            out.append(a)
-    return out
-
-
-def validate_inference(body: Image.Image, grid: Grid, measured: Sequence[Anchor], *,
-                       palette: Sequence[tuple[int, int, int]],
-                       side_bias: dict[int, int], **kw) -> dict:
-    """Run the inference on frames that DO have ground truth and score it.
-
-    This is the number that keeps the inferred anchors honest: same body sheet,
-    same code path, compared against the intersection anchors. Reported in
-    pixels alongside the cell size, so a reader can judge "6px on an 96x80 cell"
-    for themselves instead of taking "inferred" on faith.
-    """
-    errors: list[float] = []
-    per_cell: list[dict] = []
-    for a in measured:
-        if not a.measured:
-            continue
-        side = side_bias.get(a.row, side_bias.get(0, 1))
-        got = infer_anchor(body, grid, a.row, a.col, palette=palette, side=side, **kw)
-        if got is None:
-            per_cell.append({"row": a.row, "col": a.col, "error_px": None})
-            continue
-        err = math.hypot(got.x - a.x, got.y - a.y)
-        errors.append(err)
-        per_cell.append({"row": a.row, "col": a.col, "error_px": round(err, 1),
-                         "source": got.source})
-    ordered = sorted(errors)
-    return {
-        "n": len(errors),
-        "cell": [grid.cell_w, grid.cell_h],
-        "median_px": round(ordered[len(ordered) // 2], 1) if ordered else None,
-        "mean_px": round(sum(errors) / len(errors), 1) if errors else None,
-        "max_px": round(ordered[-1], 1) if ordered else None,
-        "per_cell": per_cell,
-    }
 
 
 def stamp_generated(sheet: Image.Image, grid: Grid, anchor: Anchor,
@@ -549,39 +262,6 @@ def stamp_generated(sheet: Image.Image, grid: Grid, anchor: Anchor,
     return {"line_weight_flag": conformed["line_weight_flag"],
            "stamp_stroke": conformed["stamp_stroke"],
            "anchor_stroke": conformed["anchor_stroke"]}
-
-
-# ---------------------------------------------------------------------------
-# The rig profile - everything the covered actions teach, in one object
-# ---------------------------------------------------------------------------
-@dataclass
-class RigProfile:
-    """What the four covered actions teach about this character's hands.
-
-    Learned once, reused for every uncovered action and every new weapon class.
-    Keeping it one object is what stops the palette and the side bias from being
-    silently re-derived (differently) at each call site.
-    """
-    grid: Grid
-    palette: list[tuple[int, int, int]]
-    side_bias: dict[str, dict[int, int]]        # hand -> row -> +1 / -1
-    measured: dict[str, list[Anchor]]           # layer_action -> anchors
-    validation: dict                            # inference error, in pixels
-
-    def bias_for(self, layer_action: str) -> dict[int, int]:
-        hand = LAYER_HAND.get(layer_action, "main_hand")
-        return self.side_bias.get(hand) or next(iter(self.side_bias.values()), {})
-
-
-def anchors_for(profile: RigProfile, body: Image.Image, layer_action: str, *,
-                alpha_threshold: int = ALPHA_THRESHOLD) -> list[Anchor]:
-    """The anchors to stamp for one layer action - measured if we have them."""
-    have = profile.measured.get(layer_action)
-    if have:
-        return have
-    return infer_anchors(body, profile.grid, palette=profile.palette,
-                         side_bias=profile.bias_for(layer_action),
-                         alpha_threshold=alpha_threshold)
 
 
 # ---------------------------------------------------------------------------

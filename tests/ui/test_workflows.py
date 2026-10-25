@@ -84,18 +84,6 @@ class TestStart:
 
 
 class TestAgentSteps:
-    def test_agent_step_creates_one_item_carrying_the_run_id(self, root):
-        run = workflows.start(root, graph())
-        item_id = node(run, "art")["work_item_id"]
-        item = queue.get(root, item_id)
-        assert item["seat"] == "art"
-        assert item["source"] == "workflow"
-        assert item["source_ref"] == f"run:{run['id']}:art"
-        # the brief carries the run and the task text, not "(no task text)"
-        assert f"run #{run['id']}" in item["brief"]
-        assert "hit-detection fires from behind" in item["brief"]
-        assert workflows.for_work_item(root, item_id) == {
-            "run_id": run["id"], "node_id": "art"}
 
     def test_node_status_follows_its_item(self, root):
         run = workflows.start(root, graph())

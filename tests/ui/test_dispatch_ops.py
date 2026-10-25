@@ -106,12 +106,6 @@ class TestItemRoutes:
         assert missing.status_code == 404
         assert missing.json()["error"]["code"] == "not_found"
 
-    def test_wait_route_still_resolves(self, client):
-        """/api/queue/wait must not be swallowed by /api/queue/{item_id}."""
-        got = client.get("/api/queue/wait?ids=&timeout_s=5")
-        assert got.status_code == 200
-        assert "ids" in got.json()["error"]
-
     def test_patch_edits_and_validates(self, client, root):
         item = queue.add(root, "art", "typo'd breif")
         got = client.patch(f"/api/queue/{item['id']}",

@@ -334,21 +334,6 @@ class TestCaptureTarget:
     def test_no_godot_project_means_no_hints(self, root):
         assert playtest.game_window_hints(root) == []
 
-    def test_windows_endpoint(self, client, root, monkeypatch):
-        from bgate_adapters import recorder
-
-        game = root / "game"
-        game.mkdir()
-        (game / "project.godot").write_text(
-            '[application]\n\nconfig/name="Test Game"\n', encoding="utf-8")
-        monkeypatch.setattr(recorder.sys, "platform", "win32")
-        monkeypatch.setattr(recorder, "list_windows", lambda *a, **k: [
-            {"pid": 2, "process": "godot", "title": "Test Game (DEBUG)"}])
-        body = client.get("/api/playtest/windows").json()
-        assert body["ok"] is True
-        assert body["data"]["windows"][0]["title"] == "Test Game (DEBUG)"
-        assert body["data"]["suggested"] == "Test Game (DEBUG)"
-
 
 class TestLiveLevel:
     def test_level_reports_silence_with_a_duration(self, monkeypatch):
@@ -387,41 +372,3 @@ class TestLiveLevel:
         assert got["peak"] == 0.31
         assert got["silent_for_s"] < 1
         assert "warning" not in got
-
-    def test_level_endpoint_when_nothing_is_recording(self, client):
-        body = client.get("/api/playtest/level").json()
-        assert body["ok"] is True
-        assert body["data"]["recording"] is False
-        assert "no session" in body["data"]["reason"]
-
-    def test_level_endpoint_reports_a_dead_recorder_rather_than_lying(
-            self, client, root, session):
-        with db.tx(root) as conn:
-            conn.execute("UPDATE playtest_session SET status = 'recording' "
-                         "WHERE id = ?", (session,))
-        body = client.get("/api/playtest/level").json()["data"]
-        assert body["recording"] is False
-        assert "server restarted" in body["reason"]
-
-    def test_level_endpoint_reads_the_live_recorder(self, client, root, session):
-        import time as _time
-
-        from bgate_adapters import recorder
-
-        with db.tx(root) as conn:
-            conn.execute("UPDATE playtest_session SET status = 'recording' "
-                         "WHERE id = ?", (session,))
-        rec = recorder.Recording(out_dir=None)
-        rec.started_at = rec.audio_started_at = _time.time() - 5
-        rec._last_signal_at = _time.time()
-        rec._peaks.append(0.2)
-        rec._rmss.append(0.03)
-        rec._samples = recorder.MIC_RATE * 5
-        playtest._LIVE[session] = rec
-        try:
-            body = client.get("/api/playtest/level").json()["data"]
-            assert body["recording"] is True
-            assert body["session_id"] == session
-            assert body["signal"] is True
-        finally:
-            playtest._LIVE.pop(session, None)

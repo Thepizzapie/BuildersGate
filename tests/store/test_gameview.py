@@ -95,14 +95,6 @@ class TestPropsReadTheView:
         assert "NOT isometric" in top["camera"]
         assert top["view"] == "top_down" and side["view"] == "side_scroller"
 
-    def test_the_manifest_reports_what_falls_out_of_view(self):
-        """Reported, not dropped — a generation that silently skipped them
-        would look like a budget that came in under estimate."""
-        m = props.art_manifest(view="side_scroller")
-        assert "pillar" in m["out_of_view"]
-        assert all(s["in_view"] for s in m["specs"])
-        assert len(m["specs"]) + len(m["out_of_view"]) == len(props.PROP_TYPES)
-
     def test_planning_a_mount_the_view_lacks_is_refused_loudly(self):
         """A level quietly missing a whole class of prop looks like a density
         problem, which is the wrong thing to go and fix."""

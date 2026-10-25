@@ -90,7 +90,6 @@ class TestResolution:
         assert got["drawn"] == ["ne", "se"]
         assert got["mirror"] == {"nw": "ne", "sw": "se"}
 
-
     def test_rows_follow_an_override_under_strip_layout_too(self, root):
         """A station-facing override ("working is drawn north") on a strip
         contract must move the ROWS with it — the start-frame slicer reads
@@ -111,13 +110,6 @@ class TestResolution:
     def test_an_unset_project_answers_with_the_default(self, root):
         got = sc.load(root)
         assert got["preset"] == "single" and got["drawn"] == ["e"]
-
-
-class TestViewClause:
-    def test_each_view_has_words_and_unknown_has_none(self):
-        for view in sc.VIEWS:
-            assert sc.view_clause(view)
-        assert sc.view_clause("cinematic-drone-shot") == ""
 
 
 class TestSubjectClass:

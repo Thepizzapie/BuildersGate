@@ -394,21 +394,6 @@ def test_left_and_right_hands_are_first_class_slots(client, game):
     assert len(d["rig"]["labels"]) == 3
 
 
-def test_swap_hands_exchanges_only_the_anatomical_pair():
-
-    data = rigmap.normalise({"grid": GRID, "labels": [
-        {"slot": "left_hand", "frame": 0, "x": 1, "y": 1},
-        {"slot": "right_hand", "frame": 0, "x": 20, "y": 1},
-        {"slot": "main_hand", "frame": 0, "x": 20, "y": 1},
-        {"slot": "left_hand", "frame": 1, "x": 5, "y": 5},
-    ]})
-    rigmap.swap_hands(data, frame=0)
-    at = {(l["slot"], l["frame"]): l["x"] for l in data["labels"]}
-    assert at[("left_hand", 0)] == 20 and at[("right_hand", 0)] == 1
-    assert at[("main_hand", 0)] == 20, "the logical hand does not move"
-    assert at[("left_hand", 1)] == 5, "another frame is untouched"
-
-
 # ---------------------------------------------------------------------------
 # Scene wiring over HTTP
 # ---------------------------------------------------------------------------

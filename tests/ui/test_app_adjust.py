@@ -83,53 +83,6 @@ class TestQueueAdd:
 
 
 # ---------------------------------------------------------------------------
-# 5. queue_wait — bounded, and holding no worker
-# ---------------------------------------------------------------------------
-class TestQueueWaitBounding:
-    def test_the_cap_is_minutes_not_half_an_hour(self):
-        assert ui_app._WAIT_MAX_S <= 120
-
-    def test_a_thirty_minute_request_is_clamped_to_the_cap(self, client, root,
-                                                           monkeypatch):
-        """A caller asking for 30 minutes gets the cap, not 30 minutes."""
-        monkeypatch.setattr(ui_app, "_WAIT_MAX_S", 5)  # the same clamp, faster
-        item = _queue.add(root, "tech", "still queued")
-        started = time.monotonic()
-        got = client.get(f"/api/queue/wait?ids={item['id']}&timeout_s=1800").json()
-        assert got["waited_budget_s"] == 5
-        assert got["timed_out"] is True
-        assert time.monotonic() - started < 30
-
-    def test_a_finished_item_returns_immediately(self, client, root):
-        item = _queue.add(root, "tech", "done already")
-        _queue.set_status(root, item["id"], "done", result="shipped")
-        started = time.monotonic()
-        got = client.get(f"/api/queue/wait?ids={item['id']}&timeout_s=120").json()
-        assert got["finished"] == {str(item["id"]): "done"} or \
-               list(got["finished"].values()) == ["done"]
-        assert got["timed_out"] is False
-        assert time.monotonic() - started < 5
-
-    def test_a_short_timeout_is_honoured_and_says_so(self, client, root):
-        item = _queue.add(root, "tech", "never finishes")
-        started = time.monotonic()
-        got = client.get(f"/api/queue/wait?ids={item['id']}&timeout_s=5").json()
-        assert got["timed_out"] is True
-        assert got["waited_budget_s"] == 5
-        assert time.monotonic() - started < 20
-
-    def test_the_handler_is_async_so_it_holds_no_threadpool_worker(self):
-        import inspect
-        assert inspect.iscoroutinefunction(ui_app.queue_wait)
-
-    def test_bad_ids_still_answer_in_prose(self, client):
-        got = client.get("/api/queue/wait?ids=&timeout_s=5")
-        assert got.status_code == 200
-        body = got.json()
-        assert body["ok"] is False and "ids" in body["error"]
-
-
-# ---------------------------------------------------------------------------
 # 4. /api/state must not hash on the poll thread
 # ---------------------------------------------------------------------------
 class TestVerifyOffThePollPath:

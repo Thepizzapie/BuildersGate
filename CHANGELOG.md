@@ -169,6 +169,18 @@ repository at first publication. There is no earlier release history to record.
   `tilemask.repack`, `gear.stamp_placeholder`, `gateway.route_note`,
   `retrodiffusion.pixel_fixer` and `dispatch._add_step`. No behaviour
   changes: nothing reached any of it.
+- **Functions only tests called, and 31 dashboard routes nothing requests.**
+  `sprites.from_painted_sheet`, `feedback.split_utterances`, gear's
+  measure/infer stage (`measure_anchors`, `validate_inference`,
+  `infer_anchor(s)`, `RigProfile` and helpers), `queue.sync_promoted`,
+  `chatfeedback.set_item_status`, `props.art_manifest`, `rigmap.swap_hands`,
+  `workflows.for_work_item`, `framegate.is_fall_risk` and
+  `spritecontract.view_clause`. The routes are the storyboard writes, most
+  cinematic and music job endpoints (the MCP tools do the same work),
+  qa-bots `run-all` and `baseline`, playtest `windows` and `level`,
+  `queue/wait` and `assets/workspace`; no frontend page, Pulsiron routine or
+  BGATE-ios screen calls them. The art brief now names `sprite_sheet_slice`
+  for cutting a filmstrip.
 - **The second copy of the floor art in `frontend/public/img/floor`.**
   103 files, 7.3 MB, byte-identical to `packaging/floor-assets`. A git
   checkout without the `floor` extra now mounts the pack source in

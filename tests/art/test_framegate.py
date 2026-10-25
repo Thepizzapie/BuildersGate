@@ -177,12 +177,6 @@ def test_gate_sheet_reports_per_frame_verdicts_and_overall_failure(tmp_path):
     assert "translucency_ghost" in result["frames"]["walk/1"]["failed"]
 
 
-def test_is_fall_risk_matches_known_doubling_triggers():
-    assert fg.is_fall_risk("death/2", "collapsing backward")
-    assert fg.is_fall_risk("relocate/0", "falling into position")
-    assert not fg.is_fall_risk("walk/0", "striding forward")
-
-
 # ---------------------------------------------------------------------------
 # Provenance (ITEMS 2/3): stale-anchor frames are named, not trusted
 # ---------------------------------------------------------------------------

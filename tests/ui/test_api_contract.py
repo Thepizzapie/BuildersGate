@@ -208,7 +208,6 @@ class TestPagination:
         ("/api/activity", "events"),
         ("/api/artifacts", "artifacts"),
         ("/api/agents", "agents"),
-        ("/api/assets/workspace", "groups"),
     ])
     def test_every_list_endpoint_keeps_its_key_and_gains_a_page(
             self, client, root, path, key):
@@ -218,7 +217,7 @@ class TestPagination:
 
     @pytest.mark.parametrize("path", [
         "/api/queue", "/api/activity", "/api/artifacts",
-        "/api/agents", "/api/assets/workspace",
+        "/api/agents",
     ])
     def test_every_list_endpoint_envelopes_when_asked(self, client, root, path):
         got = client.get(f"{path}?limit=2").json()

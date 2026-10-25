@@ -1963,8 +1963,8 @@ def sweep(root: str | os.PathLike[str], *, limit: int = SWEEP_RUN_LIMIT,
     :func:`advance` is driven by the canvas's poll, and the poll dies with the
     tab. A workflow step's queue_complete then updates the ITEM and nothing
     ever reads it back onto the node — the run sat 'running' forever on a step
-    that was already done, and ``for_work_item`` had no production caller to
-    say otherwise. The followup tick calls this, so a closed canvas is no
+    that was already done, and nothing read the item back onto the node. The
+    followup tick calls this, so a closed canvas is no
     longer a stalled run.
 
     Bounded and idempotent like qa_gate.sweep: at most ``limit`` live runs per
@@ -2189,18 +2189,3 @@ def pending_picks(root: str | os.PathLike[str]) -> list[dict]:
             entry["candidates"] = []
         out.append(entry)
     return out
-
-
-def for_work_item(root: str | os.PathLike[str], item_id: int) -> Optional[dict]:
-    """Which run/node a queue item belongs to, read off its source_ref."""
-    try:
-        item = _queue.get(root, item_id)
-    except LookupError:
-        return None
-    ref = str(item.get("source_ref") or "")
-    if not ref.startswith("run:"):
-        return None
-    parts = ref.split(":", 2)
-    if len(parts) != 3 or not parts[1].isdigit():
-        return None
-    return {"run_id": int(parts[1]), "node_id": parts[2]}

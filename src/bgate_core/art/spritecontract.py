@@ -499,8 +499,3 @@ def contract_for(root: str | os.PathLike[str], character: str = "",
     if unplayable:
         out["unplayable"] = unplayable
     return out
-
-
-def view_clause(view: str) -> str:
-    """The projection directive for a view, '' for an unknown one."""
-    return VIEW_CLAUSES.get(str(view or "").strip().lower(), "")

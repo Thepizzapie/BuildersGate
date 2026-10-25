@@ -104,56 +104,6 @@ def item_report(item_id: int, format: str = "md", window_s: float = 4.0):
 
 
 # ---------------------------------------------------------------------------
-# 3. Live mic level
-# ---------------------------------------------------------------------------
-@router.get("/api/playtest/level")
-def live_level(session_id: Optional[int] = None) -> dict:
-    """Rolling peak/rms + silent_for_s for the session recording right now.
-
-    Never raises: a dashboard poll must render "not recording" or "your mic is
-    dead", not a red panel, whichever it is.
-    """
-    try:
-        return api.ok(playtest.live_level(root(), session_id))
-    except Exception as exc:                  # sounddevice absent, etc.
-        # Still a 200 with ok: False, so the panel says "not recording" rather
-        # than going red. Only the text changes; see api.safe_error.
-        return api.ok({"ok": False, "recording": False,
-                       "reason": api.safe_error(exc)})
-
-
-# ---------------------------------------------------------------------------
-# 4. Window picker for capture
-# ---------------------------------------------------------------------------
-@router.get("/api/playtest/windows")
-def capture_windows(filter: str = "") -> dict:
-    """Windows gdigrab can target, plus which one we would pick unattended.
-
-    Without this the only capture target anyone could choose was the whole
-    desktop — every frame of every bug report showing whatever else was open.
-    """
-    from bgate_adapters import recorder
-
-    r = root()
-    hints = playtest.game_window_hints(r)
-    try:
-        windows = recorder.list_windows(filter)
-    except Exception as exc:
-        return api.ok({"windows": [], "hints": hints, "suggested": None,
-                       "reason": "could not enumerate windows: "
-                                 + api.safe_error(exc)})
-    suggested = None
-    try:
-        resolved = recorder.resolve_window(None, hints=hints)
-        suggested = None if resolved["whole_desktop"] else resolved["title"]
-        note = resolved["note"]
-    except Exception as exc:
-        note = api.safe_error(exc)
-    return api.ok({"windows": windows, "hints": hints,
-                   "suggested": suggested, "note": note})
-
-
-# ---------------------------------------------------------------------------
 # 5. The QA seat's evidence stream
 # ---------------------------------------------------------------------------
 @router.get("/api/playtest/qa-queue")

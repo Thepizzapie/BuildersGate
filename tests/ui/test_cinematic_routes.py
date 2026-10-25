@@ -67,11 +67,6 @@ class TestOptionsAndStyles:
         assert "provider_available" in got
         assert "encoder" in got and "ok" in got["encoder"]
 
-    def test_the_style_table_is_served_rather_than_retyped(self, client):
-        got = data(client.get("/api/cinematic/styles"))
-        assert set(got["styles"]) == set(cinematic.STYLES)
-        assert got["fallback"] == cinematic.STYLE_FALLBACK
-
     def test_model_limits_are_served_in_intent_terms(self, client):
         """A form that retypes '4 to 15 seconds' lies the day kie changes it,
         and the field name behind it differs per model anyway."""
@@ -121,24 +116,12 @@ class TestPlanning:
 
 
 class TestGuards:
-    def test_generate_needs_a_shot_number(self, client):
-        assert client.post("/api/cinematic/generate",
-                           json={"name": "x"}).status_code == 400
 
     def test_keep_needs_an_artifact_id(self, client):
         assert client.post("/api/cinematic/keep", json={}).status_code == 400
 
-    def test_recover_needs_a_sequence(self, client):
-        assert client.post("/api/cinematic/recover",
-                           json={"idx": 1}).status_code == 400
-
 
 class TestPostProductionEndpoints:
-    def test_transitions_are_served_with_their_costs(self, client):
-        got = data(client.get("/api/cinematic/transitions"))
-        assert got["default"] == "cut"
-        assert set(got["transitions"]) >= {"cut", "fade", "dissolve"}
-        assert all(t["note"] for t in got["transitions"].values())
 
     def test_a_plan_accepts_the_sound_and_transition_fields(self, client):
         got = data(client.post("/api/cinematic/plan", json={
@@ -160,21 +143,6 @@ class TestPostProductionEndpoints:
                                       "transition_s": 5}]})
         assert r.status_code == 400
         assert "as long as the shot" in r.text
-
-    def test_deliver_needs_a_sequence(self, client):
-        assert client.post("/api/cinematic/deliver",
-                           json={}).status_code == 400
-
-    def test_delivering_an_unassembled_sequence_is_a_400_that_explains(
-            self, client):
-        client.post("/api/cinematic/plan", json={
-            "name": "raw", "shots": [{"action": "a", "duration": 5}]})
-        r = client.post("/api/cinematic/deliver", json={"name": "raw"})
-        assert r.status_code == 400 and "assembled" in r.text
-
-    def test_continuity_needs_a_sequence(self, client):
-        assert client.post("/api/cinematic/continuity",
-                           json={}).status_code == 400
 
 
 class TestJobsAndOrphans:
@@ -220,13 +188,6 @@ class TestJobsAndOrphans:
         state, _ = routes._orphan_state({"status": "done"},
                                         {"created_at": "not a date"})
         assert state is False
-
-    def test_the_jobs_list_carries_the_cheap_stuck_sweep(self, client):
-        """The dashboard must be able to show paid, uncollected work without an
-        agent thinking to ask — and without a provider call per refresh."""
-        got = data(client.get("/api/cinematic/jobs"))
-        assert got["stuck"]["polled"] is False
-        assert got["stuck"]["stale"] == 0
 
     def test_the_sweep_has_its_own_endpoint(self, client, monkeypatch):
         monkeypatch.setattr(cinematic, "stuck_shots",

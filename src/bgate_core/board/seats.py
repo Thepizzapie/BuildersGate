@@ -459,7 +459,7 @@ DISPATCH_RULES = {
         "character, angle authority = any frame at the wanted camera angle, "
         "prompt names both jobs. One ref alone gives pure-N instead of "
         "back-3/4. Filmstrip single-gen (whole cycle as ONE image, "
-        "from_painted_sheet to slice) remains the way to mint a NEW "
+        "sprite_sheet_slice to cut it) remains the way to mint a NEW "
         "character's first sheet - identity by construction.\n"
         "• ACT ON THE FINDINGS. facing_flip / wrong_direction / height_split "
         "/ yaw_drift / set_drift on a strip = re-roll THAT strip, do not "
