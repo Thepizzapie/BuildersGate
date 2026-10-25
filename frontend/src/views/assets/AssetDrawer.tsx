@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button, Drawer, Tabs } from "@mantine/core";
 import type { AssetGroup } from "../../store";
 import { RevisionPane } from "./RevisionPane";
+import { Tournament } from "./Tournament";
 import { groupStatus } from "./categorise";
 
 /* The detail drawer: every revision of one logical asset, approved beside
@@ -115,6 +116,7 @@ export function AssetDrawer({ group, onClose, onReview, onRegenerate, onOpenSpri
           <Fold label="Work note" text={selected?.work_item?.result} />
           <Fold label="Review decision" text={selected?.review_note} />
         </div>
+        <Tournament group={g} onReview={onReview} />
         <div className="asset-feedback">
           <strong>
             {g.feedback.length} linked playtest note{g.feedback.length === 1 ? "" : "s"}
