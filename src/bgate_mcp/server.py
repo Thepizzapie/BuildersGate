@@ -7428,25 +7428,45 @@ def art_qa_verdict(artifact_id: int, verdict: str, score: int = 0,
 
 
 @_tool
-def art_tournament_verdict(match_id: int, winner_artifact_id: int,
-                           reasons: str = "") -> dict:
-    """Record an INDEPENDENT reviewer's pick in ONE pairwise art match.
+def art_tournament_verdict(match_id: int = 0, winner_artifact_id: int = 0,
+                           reasons: str = "",
+                           verdicts: Optional[list] = None) -> dict:
+    """Record an INDEPENDENT reviewer's picks in pairwise art matches.
 
-    Given two candidates shown in the order your tournament brief listed,
-    say which is better. PICK A WINNER - do not skip a close match.
-    winner_artifact_id must be one of the two candidates IN THIS match, and a
-    second verdict on a decided match is refused, not overwritten. Returns
-    {ok, match_id, logical_name, winner_id}; ratings come from
-    art_tournament_standings.
+    Pass every match at once as verdicts=[{match_id, winner_artifact_id,
+    reasons}], or one match as match_id + winner_artifact_id. PICK A WINNER -
+    do not skip a close match. A winner must be one of the two candidates IN
+    THAT match, and a second verdict on a decided match is refused, not
+    overwritten. Returns {ok, recorded: [{match_id, winner_id}], refused:
+    [{match_id, error}]}; ratings come from art_tournament_standings.
     Full notes: docs/tools.md#art_tournament_verdict
     """
     root = _root()
-    match = _art_tournament.record_verdict(
-        root, int(match_id), winner_artifact_id=int(winner_artifact_id),
-        reasons=reasons)
-    return {"ok": True, "match_id": match["id"],
-            "logical_name": match["logical_name"],
-            "winner_id": match["winner_id"]}
+    batch = list(verdicts or [])
+    if not batch:
+        if not match_id:
+            return _fail(ValueError("pass verdicts=[...] or match_id + "
+                                    "winner_artifact_id"))
+        batch = [{"match_id": match_id, "winner_artifact_id": winner_artifact_id,
+                  "reasons": reasons}]
+    recorded, refused = [], []
+    logical_name = ""
+    # ONE BAD ROW DOES NOT SINK THE REST. A reviewer that typo'd one id in a
+    # 28-row table keeps the 27 it got right and is told which one to resend.
+    for v in batch:
+        try:
+            v = dict(v)
+            match = _art_tournament.record_verdict(
+                root, int(v["match_id"]),
+                winner_artifact_id=int(v["winner_artifact_id"]),
+                reasons=str(v.get("reasons") or ""))
+            logical_name = match["logical_name"]
+            recorded.append({"match_id": match["id"], "winner_id": match["winner_id"]})
+        except (KeyError, TypeError, ValueError, LookupError) as exc:
+            refused.append({"match_id": (v.get("match_id") if isinstance(v, dict)
+                                         else None), "error": str(exc)})
+    return {"ok": not refused, "logical_name": logical_name,
+            "recorded": recorded, "refused": refused}
 
 
 @_tool

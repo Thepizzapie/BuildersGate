@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import itertools
 import random
+import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
 from bgate_core.art import art_tournament as _art_tournament
 from bgate_core.store import artifacts as _artifacts
+from bgate_core.store import db as _db
 from bgate_core.board import queue as _queue
 from bgate_ui.agents import dispatch as _dispatch
 from bgate_ui.deps import root
@@ -49,34 +51,44 @@ def _gather_candidates(r, logical_name: str) -> list[dict]:
 
 def _reviewer_brief(logical_name: str, matches: list[dict],
                     candidates_by_id: dict[int, dict]) -> str:
+    """The reviewer's instructions: every image read ONCE, every verdict in ONE call.
+
+    It used to say "open BOTH images" per match, so 8 candidates cost 56 image
+    reads and 28 tool calls for what is 8 images and one decision table. The
+    images stay in the reviewer's context once read; the per-match FIRST/SECOND
+    order is still coin-flipped, and the candidate list itself is shuffled, so
+    position bias is cancelled in the order the reviewer is asked to compare.
+    """
+    ids = list(candidates_by_id)
+    random.shuffle(ids)
+    label = {cid: f"#{cid}" for cid in ids}
+    images = "\n".join(f"- {label[cid]} (artifact_id={cid}): "
+                       f"{candidates_by_id[cid]['path']}" for cid in ids)
     lines: list[str] = []
     for m in matches:
         a_id, b_id = m["candidate_a_id"], m["candidate_b_id"]
-        first_id, second_id = (a_id, b_id) if m["shown_first"] == "a" else (b_id, a_id)
-        first, second = candidates_by_id[first_id], candidates_by_id[second_id]
-        lines.append(
-            f"- match_id={m['id']}\n"
-            f"    FIRST  (artifact_id={first_id}): {first['path']}\n"
-            f"    SECOND (artifact_id={second_id}): {second['path']}"
-        )
+        first, second = (a_id, b_id) if m["shown_first"] == "a" else (b_id, a_id)
+        lines.append(f"- match_id={m['id']}: FIRST {label[first]} vs "
+                     f"SECOND {label[second]}")
     listing = "\n".join(lines) if lines else "(no matches were opened)"
     return (
         "You are an INDEPENDENT art-quality reviewer running a PAIRWISE "
-        "tournament — you did NOT make these images. For each match below, "
-        "open BOTH images with the Read tool and decide which one is "
-        "better: stronger silhouette, cleaner linework, better palette "
-        "harmony, more appealing pose. This is a comparative judgement, not "
-        "a checklist — trust your eye on which one you would ship.\n\n"
+        "tournament - you did NOT make these images. Judge which image of each "
+        "pair is better: stronger silhouette, cleaner linework, better palette "
+        "harmony, more appealing pose. This is a comparative judgement, not a "
+        "checklist - trust your eye on which one you would ship.\n\n"
         f"REVIEW TARGET: {logical_name}\n\n"
-        "MATCHES (FIRST/SECOND is the order to look at them in, not a hint "
-        "about which is better — it was randomised before you saw it):\n"
+        "CANDIDATES - open each of these ONCE with the Read tool, in this "
+        "order, before judging anything:\n"
+        f"{images}\n\n"
+        "MATCHES (FIRST/SECOND is the order to compare them in, not a hint "
+        "about which is better - it was randomised):\n"
         f"{listing}\n\n"
-        "For EACH match above, in order:\n"
-        "1. Read both images.\n"
-        "2. Call the MCP tool `art_tournament_verdict(match_id=<the id>, "
-        "winner_artifact_id=<the artifact_id of whichever image you preferred>, "
-        "reasons='<one line, specific>')`. PICK A WINNER even on a close call — "
-        "do not skip a match.\n\n"
+        "Then call the MCP tool `art_tournament_verdict` ONCE with every "
+        "match: `art_tournament_verdict(verdicts=[{\"match_id\": <id>, "
+        "\"winner_artifact_id\": <the artifact_id you preferred>, "
+        "\"reasons\": \"<one line, specific>\"}, ...])`. PICK A WINNER in "
+        "every match, even a close one - do not skip any.\n\n"
         "When every match has a verdict, call `queue_complete` with a one-"
         "paragraph summary of how the field shook out."
     )
@@ -97,7 +109,11 @@ def start_tournament(payload: Optional[dict] = None) -> dict:
     logical_name = (payload.get("logical_name") or "").strip()
     if not logical_name:
         raise HTTPException(400, "logical_name is required")
-    tournament_ref = (payload.get("tournament_ref") or "").strip()
+    named_ref = (payload.get("tournament_ref") or "").strip()
+    # A FRESH REF PER START. Left at "", a second tournament over a target
+    # pooled into the first one's standings, ranking candidates that had since
+    # been approved or rejected beside the new ones.
+    tournament_ref = named_ref or f"t{int(time.time() * 1000)}"
     r = root()
 
     candidates = _gather_candidates(r, logical_name)
@@ -128,12 +144,13 @@ def start_tournament(payload: Optional[dict] = None) -> dict:
     # logical_name, so the duplicate did not sit harmlessly beside the first: it
     # weighted the same comparison twice in the Elo.
     open_already = [m for m in _art_tournament.list_matches(
-        r, logical_name=logical_name, tournament_ref=tournament_ref, limit=None)
-        if m.get("winner_id") is None]
+        r, logical_name=logical_name, tournament_ref=named_ref or None,
+        limit=None) if m.get("winner_id") is None]
     if open_already:
         raise HTTPException(
             409, f"{len(open_already)} match(es) for {logical_name!r} are still "
-                 "open — judge or discard those before opening another "
+                 "open — judge or discard those (POST "
+                 "/api/art-tournament/discard) before opening another "
                  "tournament over the same candidates, or pass a distinct "
                  "tournament_ref")
 
@@ -163,6 +180,7 @@ def start_tournament(payload: Optional[dict] = None) -> dict:
         "ok": bool(dispatched.get("ok")),
         "review_item_id": item["id"],
         "dispatched": dispatched.get("pid"),
+        "tournament_ref": tournament_ref,
         "candidate_count": len(candidates),
         "match_count": len(matches),
         "match_ids": [m["id"] for m in matches],
@@ -176,3 +194,50 @@ def tournament_standings(logical_name: str,
     r = root()
     return {"ok": True, **_art_tournament.standings(
         r, logical_name, tournament_ref=tournament_ref)}
+
+
+def _latest_ref(r, logical_name: str) -> Optional[str]:
+    last = _art_tournament.list_matches(r, logical_name=logical_name,
+                                        tournament_ref=None, limit=None)
+    return last[-1].get("tournament_ref") if last else None
+
+
+@router.get("/api/art-tournament/status")
+def tournament_status(logical_name: str) -> dict:
+    """The newest tournament for a target: standings with each candidate's
+    path and current status, open matches, and the reviewer item's state.
+    {ok, running: false} when the target has never been tournamented."""
+    r = root()
+    ref = _latest_ref(r, logical_name)
+    if ref is None:
+        return {"ok": True, "logical_name": logical_name, "tournament_ref": None,
+                "standings": [], "decided_matches": 0, "pending_matches": 0,
+                "review": None}
+    out = _art_tournament.standings(r, logical_name, tournament_ref=ref)
+    for row in out["standings"]:
+        try:
+            art = _artifacts.get(r, row["artifact_id"])
+        except LookupError:
+            continue
+        row.update(path=art.get("path"), revision=art.get("revision"),
+                   status=art.get("status"))
+    row = _db.connect(r).execute(
+        "SELECT id, status FROM work_item WHERE source = 'art-tournament' "
+        "AND source_ref = ? ORDER BY id DESC LIMIT 1", (logical_name,)).fetchone()
+    review = {"id": row["id"], "status": row["status"]} if row else None
+    return {"ok": True, "tournament_ref": ref, "review": review, **out}
+
+
+@router.post("/api/art-tournament/discard")
+def tournament_discard(payload: Optional[dict] = None) -> dict:
+    """Drop a target's UNDECIDED matches, so a tournament whose reviewer died
+    stops blocking the next one. Decided matches are kept."""
+    payload = payload or {}
+    logical_name = (payload.get("logical_name") or "").strip()
+    if not logical_name:
+        raise HTTPException(400, "logical_name is required")
+    r = root()
+    open_ids = [m["id"] for m in _art_tournament.list_matches(
+        r, logical_name=logical_name, tournament_ref=None, limit=None)
+        if m.get("winner_id") is None]
+    return {"ok": True, "discarded": _art_tournament.discard_matches(r, open_ids)}

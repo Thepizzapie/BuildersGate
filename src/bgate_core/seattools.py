@@ -164,6 +164,9 @@ SEATS: dict[str, tuple[str, ...]] = {
         "evidence_", "playtest_", "scene_outline", "traversal_prove",
         "scale_check", "consistency_check", "canon_check", "room_review",
         "mesh_faceting", "skin_dominance", "art_qa_verdict",
+        # The art tournament dispatches its pairwise reviewer to qa; without
+        # these it was handed 28 matches and no tool to record one.
+        "art_tournament_",
         "iteration_",
         # The qa brief's own gate steps: the landing comparison, the three
         # presentation audits and the pinned refs they are judged against.
