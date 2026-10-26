@@ -4,6 +4,7 @@ import { previewURL, lightbox } from "../../bridge";
 import { Head, Nothing, Tag, ReadError } from "./prims";
 import { useJSON, ago } from "./api";
 import { useSeatChips } from "./chips";
+import { ArtStyle } from "./ArtStyle";
 import type { SeatBodyProps } from "./types";
 import "./artaudio.css";
 import "./art.css";
@@ -269,6 +270,8 @@ export function Art({ seat, active, tab }: SeatBodyProps) {
       </div>
     );
   };
+
+  if (tab === "style") return <ArtStyle active={active} />;
 
   if (tab === "locks") {
     return (

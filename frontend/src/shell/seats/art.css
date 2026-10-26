@@ -125,3 +125,53 @@
   border-radius: 3px;
   padding: 0 4px;
 }
+
+/* STYLE TAB. The run card keeps its state on screen for the length of a
+ * 15-minute job: running, done, or failed with the adapter's reason. */
+.bga-run {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; margin: 0 0 10px;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.bga-run .b { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 }
+.bga-run .b span { font: 400 11px var(--mono); color: var(--text-3) }
+.bga-run .b .err { color: var(--bad) }
+.bga-run.t-running { border-color: var(--c-art) }
+.bga-run.t-running .ti { color: var(--c-art); animation: bga-spin 1.2s linear infinite }
+.bga-run.t-done .ti { color: var(--good) }
+.bga-run.t-failed { border-color: var(--bad-line); background: var(--bad-soft) }
+.bga-run.t-failed .ti { color: var(--bad) }
+.bga-run .bar { width: 120px; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden }
+.bga-run .bar > span { display: block; height: 100%; background: var(--c-art) }
+@keyframes bga-spin { to { transform: rotate(360deg) } }
+
+.bga-train { display: flex; gap: 8px; margin: 0 0 8px }
+.bga-train input {
+  flex: 1; min-width: 0; padding: 5px 8px;
+  background: transparent; color: inherit; font: inherit;
+  border: 1px solid var(--line); border-radius: 4px;
+}
+.bga-warn { font: 400 11px var(--mono); color: var(--warn); margin: 2px 0 }
+
+.bga-anchors {
+  display: grid; gap: 8px; margin: 0 0 10px;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+}
+.bga-anchor {
+  display: flex; flex-direction: column; gap: 4px; padding: 0;
+  background: none; border: 1px solid var(--line); border-radius: 4px;
+  cursor: zoom-in; overflow: hidden; color: inherit;
+}
+.bga-anchor img, .bga-anchor .none { width: 100%; aspect-ratio: 1; object-fit: cover; display: block }
+.bga-anchor .cap {
+  font: 400 10px var(--mono); color: var(--text-3); padding: 0 4px 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.bga-styled {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-bottom: 1px solid var(--line);
+}
+.bga-styled .nm { display: flex; flex-direction: column; flex: 1; min-width: 0 }
+.bga-styled .nm span { font: 400 11px var(--mono); color: var(--text-3) }
+.bga-styled.on .nm b { color: var(--c-art) }
