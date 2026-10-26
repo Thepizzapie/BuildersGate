@@ -281,7 +281,11 @@ with no matches yet does not appear - it has no rating to report.
 ## art_tournament_verdict
 
 ```text
-Record an INDEPENDENT reviewer's pick in ONE pairwise art match.
+Record an INDEPENDENT reviewer's picks in pairwise art matches.
+
+Pass every match in one call: verdicts=[{match_id, winner_artifact_id,
+reasons}]. One match alone still works as match_id + winner_artifact_id.
+A bad row is refused by itself; the rest are recorded.
 
 art_qa_verdict asks "is this on-model" against a reference. This asks a
 different question a reviewer only sees when dispatched against a
@@ -302,7 +306,8 @@ silently recorded. So is a second verdict on a match already decided:
 re-sending after a dropped response used to overwrite the first pick in
 silence, so a retry is now an error rather than a rewrite.
 
-Returns {ok, match_id, logical_name, winner_id}. The rating itself is
+Returns {ok, logical_name, recorded: [{match_id, winner_id}], refused:
+[{match_id, error}]}; ok is false when any row was refused. The rating itself is
 NOT computed here - see art_tournament_standings, which derives it fresh
 from every decided match so a corrected verdict can never leave a stale
 number behind.

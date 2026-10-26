@@ -286,3 +286,101 @@ def test_start_explains_the_auto_approve_interaction(client, root):
     got = client.post("/api/art-tournament/start", json={"logical_name": "hero"})
     assert got.status_code == 404
     assert "auto_approve" in got.text
+
+
+# ---------------------------------------------------------------------------
+# Working end to end: the reviewer can record, the drawer can watch
+# ---------------------------------------------------------------------------
+
+def test_the_reviewer_seat_holds_the_verdict_tool():
+    """start dispatches to qa. qa without art_tournament_verdict was handed
+    every match and no way to decide one."""
+    from bgate_core.store import modules
+    assert modules.seat_tool_enabled("art_tournament_verdict", "qa")
+    assert modules.seat_tool_enabled("art_tournament_standings", "qa")
+
+
+def test_the_brief_lists_each_image_once_and_asks_for_one_call(root):
+    from bgate_ui.routes import art_tournament as route
+    cands = {c["id"]: c for c in (_candidate(root, n, n.encode())
+                                  for n in ("a", "b", "c", "d"))}
+    ids = list(cands)
+    matches = [art_tournament.record_match(
+        root, logical_name="hero", candidate_a_id=x, candidate_b_id=y)
+        for i, x in enumerate(ids) for y in ids[i + 1:]]
+    brief = route._reviewer_brief("hero", matches, cands)
+    for c in cands.values():
+        assert brief.count(c["path"]) == 1, "each image is read once, not per match"
+    assert "verdicts=[" in brief
+    assert brief.count("match_id=") == len(matches)
+
+
+async def _verdict(**kwargs) -> dict:
+    import json
+    from bgate_mcp import server
+    result = await server.mcp.call_tool("art_tournament_verdict", kwargs)
+    content = result[0] if isinstance(result, tuple) else result
+    return json.loads(content[0].text)
+
+
+@pytest.mark.anyio
+async def test_one_verdict_call_records_every_match_and_names_the_bad_row(
+        root, monkeypatch):
+    monkeypatch.setenv("BGATE_ROOT", str(root))
+    a, b, c = (_candidate(root, n, n.encode()) for n in ("a", "b", "c"))
+    m1 = art_tournament.record_match(root, logical_name="hero",
+                                     candidate_a_id=a["id"], candidate_b_id=b["id"])
+    m2 = art_tournament.record_match(root, logical_name="hero",
+                                     candidate_a_id=b["id"], candidate_b_id=c["id"])
+    got = await _verdict(verdicts=[
+        {"match_id": m1["id"], "winner_artifact_id": a["id"], "reasons": "x"},
+        {"match_id": m2["id"], "winner_artifact_id": a["id"], "reasons": "not in it"},
+    ])
+    assert [r["match_id"] for r in got["recorded"]] == [m1["id"]]
+    assert got["refused"][0]["match_id"] == m2["id"]
+    assert got["ok"] is False
+    single = await _verdict(match_id=m2["id"], winner_artifact_id=c["id"])
+    assert single["ok"] and single["recorded"][0]["winner_id"] == c["id"]
+
+
+def test_each_start_is_its_own_tournament_and_status_reads_the_newest(
+        client, root, monkeypatch):
+    from bgate_ui.agents import dispatch
+    monkeypatch.setattr(dispatch, "find_claude", lambda: None)
+    a = _candidate(root, "a", b"one")
+    _candidate(root, "b", b"two")
+    first = client.post("/api/art-tournament/start", json={"logical_name": "hero"}).json()
+    for mid in first["match_ids"]:
+        art_tournament.record_verdict(root, mid, winner_artifact_id=a["id"])
+    second = client.post("/api/art-tournament/start", json={"logical_name": "hero"}).json()
+    assert second["tournament_ref"] != first["tournament_ref"]
+    status = client.get("/api/art-tournament/status",
+                        params={"logical_name": "hero"}).json()
+    assert status["tournament_ref"] == second["tournament_ref"]
+    assert status["decided_matches"] == 0 and status["pending_matches"] == 1
+    assert status["review"]["id"] == second["review_item_id"]
+
+
+def test_status_carries_paths_for_the_drawer(client, root):
+    a, b = _candidate(root, "a", b"one"), _candidate(root, "b", b"two")
+    m = art_tournament.record_match(root, logical_name="hero", candidate_a_id=a["id"],
+                                    candidate_b_id=b["id"], tournament_ref="t1")
+    art_tournament.record_verdict(root, m["id"], winner_artifact_id=b["id"])
+    got = client.get("/api/art-tournament/status", params={"logical_name": "hero"}).json()
+    top = got["standings"][0]
+    assert top["artifact_id"] == b["id"] and top["path"] and top["status"] == "candidate"
+    none = client.get("/api/art-tournament/status", params={"logical_name": "nobody"}).json()
+    assert none["tournament_ref"] is None and none["standings"] == []
+
+
+def test_discard_clears_the_block_a_dead_reviewer_left(client, root, monkeypatch):
+    from bgate_ui.agents import dispatch
+    monkeypatch.setattr(dispatch, "find_claude", lambda: None)
+    _candidate(root, "a", b"one"), _candidate(root, "b", b"two")
+    client.post("/api/art-tournament/start", json={"logical_name": "hero"})
+    assert client.post("/api/art-tournament/start",
+                       json={"logical_name": "hero"}).status_code == 409
+    got = client.post("/api/art-tournament/discard", json={"logical_name": "hero"}).json()
+    assert got["discarded"] == 1
+    assert client.post("/api/art-tournament/start",
+                       json={"logical_name": "hero"}).status_code == 200

@@ -10,6 +10,17 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Fixed
+- **The art tournament runs.** Nothing could start one: the start route had
+  no caller, and the qa reviewer it dispatched did not hold
+  `art_tournament_verdict`, so it was handed every match and no way to decide
+  one. The Assets drawer now has a Pairwise ranking panel: rank an asset's
+  candidates, watch the reviewer, read the standings, approve the winner, and
+  discard the open matches a dead reviewer left behind
+  (`POST /api/art-tournament/discard`, `GET /api/art-tournament/status`). The
+  reviewer reads each image once instead of twice per match (8 candidates: 8
+  reads, not 56) and records every verdict in one `art_tournament_verdict`
+  call instead of 28. Each start is its own tournament, so a second ranking no
+  longer pools with the first.
 - **One table decides a dispatched seat's tools.** The registry was the AND
   of two per-seat tables, `modules.SEAT_CRAFTS` and `seattools.SEATS`, so an
   edit to either alone did nothing and `level` was scoped by one of them only.
