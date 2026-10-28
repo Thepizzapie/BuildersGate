@@ -6,11 +6,11 @@ a bot that never decided.
 """
 from __future__ import annotations
 
-import subprocess
 import sys
 import time
 
 from bgate_core.qa import agentplay
+from bgate_core.runtime import proc as _proc
 
 FAILURE = (
     "SCRIPT ERROR: Parse Error: The variable type is being inferred from a "
@@ -29,8 +29,11 @@ def test_a_broken_agent_autoload_ends_the_run_with_its_parse_error(tmp_path,
     monkeypatch.setattr(agentplay, "install", lambda root: {"placed": False})
     monkeypatch.setattr("bgate_adapters.godot.find_godot", lambda *a, **k: "godot")
 
+    # Through runtime.proc.popen, so the child gets its own session: kill_tree
+    # signals the child's process GROUP on POSIX, and a bare Popen shares
+    # pytest's, which on the Linux CI runner killed the runner itself.
     def fake_popen(args, **kwargs):
-        return subprocess.Popen([sys.executable, str(child)], **kwargs)
+        return _proc.popen([sys.executable, str(child)], **kwargs)
 
     monkeypatch.setattr(agentplay, "_popen", fake_popen)
     t0 = time.monotonic()
