@@ -65,7 +65,7 @@ class TestQaGateScope:
         assert not qa_gate.is_chain_end(root, {"id": 99, "chain_id": ""})
 
     def test_scope_setting_is_read_per_project(self, root):
-        assert qa_gate.gate_scope(root) == "all"
+        assert qa_gate.gate_scope(root) == "milestones"
         settings.set(root, "qa.gate", "chains")
         assert qa_gate.gate_scope(root) == "chains"
         assert followup.load_settings(root)["qa_gate"] == "chains"

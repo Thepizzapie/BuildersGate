@@ -22,6 +22,9 @@ Deliberately NOT in bgate_core: core stays pure data/logic; spawning agents is a
 UI-server concern.
 
 Contract:
+- Scope (``qa.gate``, see GATE_SCOPES): by default one round per completed
+  human checkpoint, not one per item. The rules below are the per-item gate,
+  which ``qa.gate = all`` turns back on.
 - Maker seats gated: art, gameplay, audio, narrative. QA/director items are never
   gated (no recursion); items created by the gate itself (source='qa-gate') are
   never gated either.
@@ -84,20 +87,22 @@ MAX_ROUNDS = 3
 
 ESCALATION_SOURCE = "qa-gate-escalation"
 
-# WHICH ITEMS GET A REVIEWER AT ALL. ``all`` is the shipped behaviour: one QA
-# round per completed maker item. MEASURED (sunder, 2026-10-04): 13 of the
-# first 27 agent runs on a fresh board were QA gates, one of them a full Godot
-# boot and screenshot to verify a 22-word text card - half the slots went to
-# reviewing, not building. ``chains`` reviews only the LAST link of a chain
-# (one verdict per feature instead of one per step) and leaves single items to
-# the per-frame rule and the human's sign-off; ``none`` files no automatic
-# round. The live value is ``qa.gate``; this tuple is the vocabulary.
-GATE_SCOPES = ("all", "chains", "none")
-DEFAULT_GATE_SCOPE = "all"
+# WHICH ITEMS GET A REVIEWER AT ALL. ``milestones`` is the default: no round
+# per maker item, ONE round when a human checkpoint item completes, covering
+# everything since the previous checkpoint, and its verdict goes to the person
+# signing that checkpoint off. MEASURED (cat-cafe, 2026-10-27): QA was 125 of
+# 266 items and 49% of run spend under per-item gating, 40 of 119 rounds failed
+# and at least 10 items were gated twice, while the only judge who ever played
+# the game was never asked. ``all`` is the old per-item gate, kept as an
+# opt-in. ``chains`` reviews only the LAST link of a chain (one verdict per
+# feature instead of one per step); ``none`` files no automatic round. The live
+# value is ``qa.gate``; this tuple is the vocabulary.
+GATE_SCOPES = ("milestones", "all", "chains", "none")
+DEFAULT_GATE_SCOPE = "milestones"
 
 
 def gate_scope(root: str | os.PathLike[str]) -> str:
-    """all | chains | none for THIS project, read per call."""
+    """milestones | all | chains | none for THIS project, read per call."""
     try:
         got = str(_settings.get(root, "qa.gate") or "").strip().lower()
     except Exception:
@@ -334,6 +339,85 @@ def open_round(root: str | os.PathLike[str], item: dict) -> dict:
     return {"ok": True, "gate": int(gate["id"]), "why": ""}
 
 
+def is_milestone(item: dict) -> bool:
+    """A human checkpoint that has just completed and waits for sign-off."""
+    return (bool(int(item.get("checkpoint") or 0))
+            and str(item.get("status") or "") == "review"
+            and str(item.get("source") or "") not in ("qa-gate", ESCALATION_SOURCE))
+
+
+def _milestone_brief(item: dict, batch: list[dict]) -> str:
+    listed = "\n".join(f"  - #{b['id']} [{b['seat']}] {b['title']} ({b['status']})"
+                       for b in batch[:40]) or "  (nothing upstream of it)"
+    note = str(item.get("checkpoint_note") or "").strip()
+    return (
+        f"MILESTONE QA for checkpoint #{item['id']} ({item['seat']}): "
+        f"\"{item['title']}\". The checkpoint is done and waits for the human's "
+        "sign-off. Your verdict is what they read before they play it, so "
+        "judge the milestone as a whole, the way the player meets it.\n\n"
+        + (f"What the human said to look at: {note}\n\n" if note else "")
+        + f"THE CHECKPOINT'S CLAIM: {(item.get('result') or '(none)')[:1200]}\n\n"
+        f"Everything since the previous checkpoint:\n{listed}\n\n"
+        "Protocol:\n"
+        "1. Run the game and reach the milestone the checkpoint names. Take "
+        "engine_screenshot frames of what the player sees at 1x, side by side "
+        "with the pinned concept refs where there are any. Run the test suite "
+        "headlessly.\n"
+        "2. Check that the listed items are actually wired into what you saw: a "
+        "delivered asset or system the running game never shows is a finding.\n"
+        "3. Verdict: queue_complete THIS item (done) with 'VERDICT: PASS' or "
+        "'VERDICT: FAIL' plus the evidence (screenshot paths, test counts). On "
+        "FAIL, the result is a ranked list, worst first, each line naming the "
+        "item number, the exact problem and the exact fix. Do NOT reopen "
+        "anything: the human decides at the checkpoint whether to send work "
+        "back.\n"
+        "4. seat_post_note (topic 'qa-gate') with the verdict and evidence paths."
+    )
+
+
+def open_milestone_round(root: str | os.PathLike[str], item: dict) -> dict:
+    """File the one QA round a completed checkpoint owes. Returns ``{ok, gate, why}``.
+
+    Filed under source 'qa-gate' with the checkpoint as source_ref, so every
+    per-item guard (one open round, no re-review of an unmoved item) holds here
+    too. The caller dispatches, as with :func:`open_round`.
+    """
+    ref = str(item["id"])
+    if _open_gate_exists(root, ref):
+        return {"ok": False, "gate": 0,
+                "why": "a QA round for this checkpoint is already open"}
+    batch = _queue.checkpoint_digest(root, int(item["id"]))
+    gate = _queue.add(root, "qa",
+                      f"Milestone QA: checkpoint #{item['id']} - {item['title'][:70]}",
+                      brief=_milestone_brief(item, batch), priority=8,
+                      source="qa-gate", source_ref=ref)
+    return {"ok": True, "gate": int(gate["id"]), "why": ""}
+
+
+def _scan_milestones(root: str, cutoff_utc: str) -> None:
+    """The backstop for ``milestones`` scope: a checkpoint in review since
+    ``cutoff_utc`` with no QA round for its latest completion gets one."""
+    from bgate_ui.agents import dispatch as _dispatch
+
+    rows = db.connect(root).execute(
+        "SELECT * FROM work_item WHERE status = 'review' "
+        "AND COALESCE(checkpoint, 0) = 1 AND updated_at >= ? "
+        "ORDER BY updated_at", (cutoff_utc,)).fetchall()
+    for row in rows:
+        item = dict(row)
+        if not is_milestone(item):
+            continue
+        ref = str(item["id"])
+        if _open_gate_exists(root, ref):
+            continue
+        last = _latest_gate_created(root, ref)
+        if last and item["updated_at"] <= last:
+            continue
+        opened = open_milestone_round(root, item)
+        if opened.get("ok"):
+            _dispatch.dispatch(root, int(opened["gate"]))
+
+
 def _scan_once(root: str, cutoff_utc: str) -> None:
     """The backstop sweep: review anything completed since ``cutoff_utc`` that
     has no QA round.
@@ -355,6 +439,9 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
     # in 'review' — so this loop would find nothing to do regardless; the early
     # return is what makes that explicit rather than incidental.
     if not _gates.wants_qa_agent(root):
+        return
+    if gate_scope(root) == "milestones":
+        _scan_milestones(root, cutoff_utc)
         return
     conn = db.connect(root)
     cap = max_rounds(root)

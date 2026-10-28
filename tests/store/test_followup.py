@@ -72,10 +72,38 @@ class TestBranchTable:
     def test_the_agent_gate_opens_a_qa_round(self, root):
         # A tech item: an ART result with no per-frame verdict is REOPENED by
         # the gate (EXIT 67 item 9b), which is the other branch.
-        got = followup.decide([_ev(1, "item.done", 41)], _settings(gate_mode="agent"),
+        got = followup.decide([_ev(1, "item.done", 41)], _settings(gate_mode="agent", qa_gate="all"),
                               _board([_item(41, seat="tech", title="a script",
                                             result="wired it")]))
         assert "qa_spawn" in _kinds(got)
+
+    def test_milestone_scope_skips_the_per_item_round(self):
+        got = followup.decide([_ev(1, "item.done", 41)], _settings(gate_mode="agent"),
+                              _board([_item(41, seat="tech", result="wired it")]))
+        assert "qa_spawn" not in _kinds(got)
+        assert any("milestones" in a["why"] for a in got if a["kind"] == "skip")
+
+    def test_a_completed_checkpoint_opens_one_milestone_round(self):
+        cp = _item(41, seat="gameplay", status="review", checkpoint=1)
+        got = followup.decide([_ev(1, "item.review", 41)], _settings(gate_mode="agent"),
+                              _board([cp]))
+        assert _kinds(got).count("qa_milestone") == 1
+
+    def test_a_reviewed_checkpoint_that_has_not_moved_is_not_reviewed_again(self):
+        cp = _item(41, status="review", checkpoint=1)
+        board = _board([cp], qa={41: {"open": False, "escalated": False,
+                                      "last": "2026-07-30 02:00:00"}})
+        got = followup.decide([_ev(1, "item.review", 41)], _settings(gate_mode="agent"),
+                              board)
+        assert "qa_milestone" not in _kinds(got)
+
+    def test_a_plain_review_hold_and_the_per_item_scope_get_no_milestone_round(self):
+        plain = followup.decide([_ev(1, "item.review", 41)], _settings(gate_mode="agent"),
+                                _board([_item(41, status="review")]))
+        per_item = followup.decide(
+            [_ev(1, "item.review", 41)], _settings(gate_mode="agent", qa_gate="all"),
+            _board([_item(41, status="review", checkpoint=1)]))
+        assert "qa_milestone" not in _kinds(plain) + _kinds(per_item)
 
     def test_no_gate_spawns_nothing(self, root):
         got = followup.decide([_ev(1, "item.done", 41)], _settings(gate_mode="none"),

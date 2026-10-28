@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from bgate_core.store import db
+from bgate_core.store import db, settings
 from bgate_core.board import gates, queue
 from bgate_ui.agents import autodeploy, dispatch as _dispatch, qa_gate
 
@@ -279,6 +279,7 @@ class TestQaGateHonoursTheMode:
         # A tech item: an ART result with no per-frame verdict is reopened by
         # the gate rather than reviewed (EXIT 67 item 9b), which is a
         # different path from the one this test measures.
+        settings.set(root, "qa.gate", "all")
         item = queue.add(root, "tech", "a script")
         queue.set_status(root, item["id"], "done", result="wired it")
 

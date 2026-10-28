@@ -228,7 +228,7 @@ def load_settings(root: str | os.PathLike[str]) -> dict:
         # mean "review nothing".
         "gated_seats": tuple(_get("qa.gated_seats", _qa_gate.GATED_SEATS)
                              or _qa_gate.GATED_SEATS),
-        # all | chains | none - how many of those completions get a reviewer.
+        # milestones | all | chains | none - which completions get a reviewer.
         "qa_gate": (str(_get("qa.gate", _qa_gate.DEFAULT_GATE_SCOPE) or "")
                     .strip().lower() or _qa_gate.DEFAULT_GATE_SCOPE),
         "notify_kinds": list(_get("notify.kinds", ()) or ()),
@@ -568,7 +568,8 @@ def _action(kind: str, branch: int, event: dict, guard: str, why: str,
 def decide(events: Iterable[dict], settings: dict, board: dict) -> list[dict]:
     """What to do about a batch of events. NO side effects, no I/O, no clock.
 
-    Returns a list of action dicts — ``reopen``, ``qa_spawn``, ``qa_escalate``,
+    Returns a list of action dicts: ``reopen``, ``qa_spawn``, ``qa_milestone``,
+    ``qa_escalate``,
     ``emit``, ``debrief``, ``notify``, and ``skip`` for a decision that chose to
     do nothing (returned rather than dropped, so "why did nothing happen" is
     answerable). Feed it a literal list of events and a literal board and it is
@@ -602,6 +603,10 @@ def decide(events: Iterable[dict], settings: dict, board: dict) -> list[dict]:
 
         # -- branch 3: the builder's gate is holding it ----------------------
         if kind == "item.review":
+            milestone = _branch_milestone(ev, item, settings, board)
+            if milestone:
+                actions.extend(milestone)
+                continue
             actions.append(_action(
                 "skip", 3, ev, f"item:{item_id}",
                 "held in review for your approval — the chain behind it stays "
@@ -877,6 +882,10 @@ def _branch_qa(ev: dict, item: dict, settings: dict, board: dict) -> list[dict]:
     item_id = int(item["id"])
     qa = (board.get("qa") or {}).get(item_id) or {}
     scope = str(settings.get("qa_gate") or _qa_gate.DEFAULT_GATE_SCOPE)
+    if scope == "milestones":
+        return [_action("skip", 2, ev, f"qa-gate:{item_id}",
+                        "qa.gate is 'milestones' - this item is reviewed with "
+                        "the next checkpoint, not on its own")]
     if scope == "none":
         return [_action("skip", 2, ev, f"qa-gate:{item_id}",
                         "qa.gate is 'none' - no automatic review on this board")]
@@ -912,6 +921,35 @@ def _branch_qa(ev: dict, item: dict, settings: dict, board: dict) -> list[dict]:
     return [_action("qa_spawn", 2, ev, f"qa-gate:{item_id}",
                     f"QA round {rounds} of {cap} for #{item_id}",
                     item=item_id, rounds=rounds, cap=cap)]
+
+
+def _branch_milestone(ev: dict, item: dict, settings: dict,
+                      board: dict) -> list[dict]:
+    """Branch 3a. A human checkpoint completed: one QA round for the milestone.
+
+    Empty list means this is not a milestone this branch reviews (not a
+    checkpoint, another scope, another gate mode) and branch 3 skips it as
+    before.
+    """
+    if str(settings.get("gate_mode")) != _gates.AGENT:
+        return []
+    if str(settings.get("qa_gate") or _qa_gate.DEFAULT_GATE_SCOPE) != "milestones":
+        return []
+    if not _qa_gate.is_milestone(item):
+        return []
+    item_id = int(item["id"])
+    qa = (board.get("qa") or {}).get(item_id) or {}
+    if qa.get("open"):
+        return [_action("skip", 3, ev, f"qa-gate:{item_id}",
+                        "a QA round for this checkpoint is already open")]
+    last = str(qa.get("last") or "")
+    if last and str(item.get("updated_at") or "") <= last:
+        return [_action("skip", 3, ev, f"qa-gate:{item_id}",
+                        "this checkpoint was already reviewed and has not "
+                        "moved since")]
+    return [_action("qa_milestone", 3, ev, f"qa-gate:{item_id}",
+                    f"checkpoint #{item_id} is done - one QA round for the "
+                    "milestone before the human signs it off", item=item_id)]
 
 
 def _branch_chain(ev: dict, item: dict, board: dict) -> list[dict]:
@@ -1177,6 +1215,8 @@ def apply_action(root: str | os.PathLike[str], action: dict) -> dict:
             return {**out, **_do_fail_escalate(root, action)}
         if kind == "qa_spawn":
             return {**out, **_do_qa_spawn(root, action)}
+        if kind == "qa_milestone":
+            return {**out, **_do_qa_milestone(root, action)}
         if kind == "qa_escalate":
             return {**out, **_do_qa_escalate(root, action)}
         if kind == "emit":
@@ -1489,6 +1529,24 @@ def _do_qa_spawn(root, action: dict) -> dict:
     if _qa_gate._open_gate_exists(root, str(item_id)):
         return {"why": "a QA round is already open for this item"}
     gate = _qa_gate.open_round(root, item)
+    if not gate.get("ok"):
+        return {"why": str(gate.get("why") or "the gate could not be filed")}
+    sent = _dispatch.dispatch(root, int(gate["gate"]), actor=LEDGER_KIND)
+    return {"ok": True, "gate": int(gate["gate"]),
+            "dispatched": bool(sent.get("ok")),
+            "why": str(sent.get("error") or action.get("why") or "")}
+
+
+def _do_qa_milestone(root, action: dict) -> dict:
+    from bgate_ui.agents import dispatch as _dispatch
+
+    item_id = int(action.get("item") or 0)
+    item = _item(root, item_id)
+    if item is None:
+        return {"why": "the item is gone"}
+    if not _qa_gate.is_milestone(item):
+        return {"why": "the checkpoint is no longer waiting for sign-off"}
+    gate = _qa_gate.open_milestone_round(root, item)
     if not gate.get("ok"):
         return {"why": str(gate.get("why") or "the gate could not be filed")}
     sent = _dispatch.dispatch(root, int(gate["gate"]), actor=LEDGER_KIND)
