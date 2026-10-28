@@ -482,12 +482,23 @@ def clear(root: Any, scene: str, *, by: str, reason: str) -> dict:
     if not str(reason or "").strip():
         raise ValueError("say why the failing scene is cleared; the reason "
                          "stays on record beside the numbers it overrides")
-    waived = waive(root, scene, by=by, reason=reason)
+    # ONLY A SCENE THAT IS FAILING. A typo would otherwise write a fresh
+    # verdict file holding nothing but a waiver, leave the real scene failing
+    # and the hold on, and answer ok.
+    failing = {_slug(r.get("scene") or ""): str(r.get("scene") or "")
+               for r in results(root)
+               if r.get("verdict") != "PASS" and not r.get("waived")}
+    key = _slug(scene) if str(scene or "").strip() else ""
+    if key not in failing:
+        raise ValueError(
+            f"{scene!r} is not a failing feel check; failing: "
+            + (", ".join(sorted(failing.values())) or "none"))
+    waived = waive(root, failing[key], by=by, reason=reason)
     closed = []
     for it in _rows(db.connect(root).execute(
             "SELECT id FROM work_item WHERE source = ? AND source_ref = ? AND "
             "status IN ('queued','dispatched','review','parked')",
-            (FEEL_SOURCE, _slug(scene)))):
+            (FEEL_SOURCE, key))):
         _queue.complete(root, int(it["id"]), skip_gate=True,
                         result=f"cleared by {by}: {reason}")
         closed.append(int(it["id"]))
