@@ -384,6 +384,7 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
     wall_cap = float(seconds) * 10 + 60
     t0 = time.time()
     timed_out = False
+    failed: Optional[dict] = None
     with open(out / "game.log", "w", encoding="utf-8") as log:
         proc = _popen(args, cwd=str(game), env=env, stdin=subprocess.DEVNULL,
                       stdout=log, stderr=subprocess.STDOUT)
@@ -395,6 +396,18 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
                 if relay.exhausted:
                     kill_tree(proc)
                     break
+                # BGateAgent is what quits at BGATE_AUTOQUIT. If it failed to
+                # parse, the game runs to the wall cap and the run reads as a
+                # bot that never decided. Only worth reading before the first
+                # decision: one decision proves the autoload loaded.
+                if relay.count == 0:
+                    failed = godot.autoload_failure(
+                        (out / "game.log").read_text(encoding="utf-8",
+                                                     errors="replace"),
+                        Path(AGENT_AUTOLOAD[1]).name)
+                    if failed:
+                        kill_tree(proc)
+                        break
                 if time.time() - t0 > wall_cap:
                     timed_out = True
                     kill_tree(proc)
@@ -402,15 +415,18 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
     return _finish(relay, out, t0, timed_out, proc.returncode, policy=policy,
                    goal=goal, seconds=seconds, max_usd=max_usd,
                    max_decisions=max_decisions, installed=installed,
-                       warmed=warmed)
+                   warmed=warmed, failed=failed)
 
 
 def _finish(relay: "Relay", out: Path, t0: float, timed_out: bool,
             exit_code: Any, *, policy: str, goal: str, seconds: float,
             max_usd: float, max_decisions: int, installed: dict,
-            warmed: Optional[dict] = None) -> dict:
+            warmed: Optional[dict] = None,
+            failed: Optional[dict] = None) -> dict:
     relay.close()
     summary = summarize(out)
+    if failed:
+        summary.update(failed)
     summary.update({
         "ok": relay.count > 0 and not timed_out and not relay.exhausted,
         "policy": policy, "goal": goal, "game_seconds": seconds,

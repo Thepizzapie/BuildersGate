@@ -217,9 +217,10 @@ def capture_clips(project_dir, scene_res: str, out_dir, *, clips: Optional[list]
                "BGATE_CLIP_LIST": ",".join(str(c) for c in (clips or []))}
         try:
             with _godot._enginelock.hold(project, what="godot_clip_capture"):
-                proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
-                                      stdin=subprocess.DEVNULL, env=env,
-                                      creationflags=_godot._NO_WINDOW, **_godot._TEXT)
+                proc = _godot._run_capture(cmd, timeout=timeout, env=env,
+                                           script_name=_CAPTURE_SCRIPT)
+        except _godot.AutoloadFailed as exc:
+            return {"ok": False, **exc.info}
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"the capture run did not exit within {timeout}s"}
         except _godot._enginelock.EngineBusy as exc:
