@@ -202,6 +202,42 @@ def wants_qa_agent(root: str | os.PathLike[str]) -> bool:
     return mode(root) == AGENT
 
 
+def has_open_checkpoint(root: str | os.PathLike[str]) -> bool:
+    """Is any checkpoint item still ahead (not done, not cancelled)?
+
+    Unreadable board: True, which keeps ``qa.gate = milestones`` as configured
+    rather than guessing at a fallback.
+    """
+    from ..store import db as _db
+    try:
+        row = _db.connect(root).execute(
+            "SELECT 1 FROM work_item WHERE COALESCE(checkpoint, 0) = 1 "
+            "AND status NOT IN ('done', 'cancelled') LIMIT 1").fetchone()
+    except Exception:
+        return True
+    return row is not None
+
+
+# NO CHECKPOINT, NO MILESTONE. cat-cafe set one checkpoint in 266 items; under
+# ``qa.gate = milestones`` with nothing ahead to sign off, every maker item
+# would close unreviewed and nothing would say so. Until a checkpoint is set,
+# the per-item gate keeps running (bgate_ui.agents.qa_gate.effective_scope),
+# and project_status and board_digest carry this line.
+NO_CHECKPOINT_NOTE = ("qa.gate=milestones but no checkpoint is set, so items "
+                      "are reviewed one by one")
+
+
+def qa_scope_note(root: str | os.PathLike[str]) -> str:
+    """NO_CHECKPOINT_NOTE when milestone QA is falling back to per-item, else ''."""
+    try:
+        scope = str(_settings.get(root, "qa.gate") or "").strip().lower()
+    except Exception:
+        return ""
+    if mode(root) != AGENT or scope != "milestones":
+        return ""
+    return "" if has_open_checkpoint(root) else NO_CHECKPOINT_NOTE
+
+
 # GRIPE 40c/D — THE SMALL FAST LANE. A one-line copy fix and a HUD boss fight
 # pay the same QA round under 'agent' mode, and the round is the same cost
 # either way: an agent spawned, a screenshot taken, a verdict written. That is
