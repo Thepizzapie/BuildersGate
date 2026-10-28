@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from bgate_core.qa import feel
 
 
@@ -242,14 +244,14 @@ def test_a_failure_files_one_director_item_and_a_pass_closes_it(root):
 def test_polish_and_content_wait_while_a_scene_fails(root):
     from bgate_core.board import queue
 
-    polish = queue.add(root, "art", "shinier boss", brief="x", kind="polish")
-    fix = queue.add(root, "gameplay", "give firing a heat cost", brief="x",
-                    kind="feature")
+    polish = queue.add(root, "audio", "shinier boss theme", brief="x",
+                       kind="polish")
+    feature = queue.add(root, "tech", "save slots", brief="x", kind="feature")
     d = feel.feel_dir(root)
     d.mkdir(parents=True)
     (d / "a.json").write_text(json.dumps(_failing()))
     ready_ids = {int(r["id"]) for r in queue.ready(root, limit=50)}
-    assert polish["id"] not in ready_ids and fix["id"] in ready_ids
+    assert polish["id"] not in ready_ids and feature["id"] in ready_ids
     assert "feel check is failing" in queue.slice_hold_reason(root, polish)
     # control: once the scene passes, the polish is free again
     (d / "a.json").write_text(json.dumps({**_failing(), "verdict": "PASS"}))
@@ -288,3 +290,79 @@ def test_being_caught_is_a_death(tmp_path):
     caught = feel.measure(_run(tmp_path, "c", rows, [
         {"kind": "sam_catch", "ts": 1030.5, "data": {"by": "sight"}}]))
     assert caught["deaths"] == 1
+
+
+def test_a_fail_halts_art_level_and_gameplay_whatever_their_kind(root):
+    """B3 (cat-cafe, 2026-10-25): the hold read kind alone, so items filed
+    kind '' or fix built two days of content on a FEEL FAIL."""
+    from bgate_core.board import queue
+
+    filed = feel.escalate(root, _failing())["filed"]
+    feel.feel_dir(root).mkdir(parents=True)
+    (feel.feel_dir(root) / "scenes_a_tscn.json").write_text(
+        json.dumps(_failing()))
+    held = [queue.add(root, "art", "keeper sprite", brief="x"),
+            queue.add(root, "level", "route the alley", brief="x", kind="fix"),
+            queue.add(root, "gameplay", "noise meter", brief="x",
+                      kind="feature")]
+    free = [queue.add(root, "qa", "smoke the build", brief="x"),
+            queue.add(root, "director", "rule on the pillars", brief="x"),
+            # the work a person files from the FEEL FAIL item is how it ends,
+            # and so is that work's own follow-up
+            queue.add(root, "gameplay", "hiding costs noise", brief="x",
+                      source="human", source_ref=str(filed))]
+    free.append(queue.add(root, "level", "re-route past the bins", brief="x",
+                          source="seat:gameplay",
+                          source_ref=str(free[-1]["id"])))
+    ready_ids = {int(r["id"]) for r in queue.ready(root, limit=50)}
+    assert not {h["id"] for h in held} & ready_ids
+    assert {f["id"] for f in free} <= ready_ids
+    assert queue.claim_next(root, "art", "agent:item-999") is None
+    assert "art, level and gameplay wait" in queue.slice_hold_reason(root,
+                                                                     held[0])
+    # a person clears it: the scene is waived on record, its item closes,
+    # and the held seats dispatch again
+    with pytest.raises(ValueError):
+        feel.clear(root, "scenes/a.tscn", by="human", reason=" ")
+    got = feel.clear(root, "scenes/a.tscn", by="human", reason="the bot "
+                     "cannot see the bins; I played it and it holds up")
+    assert got["closed"] == [filed]
+    assert queue.get(root, filed)["status"] == "done"
+    ready_ids = {int(r["id"]) for r in queue.ready(root, limit=50)}
+    assert {h["id"] for h in held} <= ready_ids
+    assert queue.slice_hold_reason(root, held[0]) == ""
+
+
+def test_the_person_reads_one_sentence_and_the_changes_first(root):
+    from bgate_core.board import queue
+
+    got = feel.escalate(root, _failing(fails={
+        "FLAT": "hold-shoot matched", "NO_PRESSURE": "threatened 2%"}))
+    assert got["summary"] == (
+        "The feel check failed on scenes/a.tscn: holding one input plays as "
+        "well as deciding; nothing threatens a player who stands still. Art, "
+        "level and gameplay work is paused until it passes or you clear it.")
+    head = queue.get(root, got["filed"])["brief"].split("---")[0]
+    assert head.startswith(got["summary"])
+    assert feel.REMEDY["FLAT"] in head and feel.REMEDY["NO_PRESSURE"] in head
+    assert "Numbers:" not in head                 # the wall sits below the line
+
+
+def test_only_a_person_can_clear_a_failing_scene(root, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from bgate_core.board import queue
+    from bgate_ui.app import app
+
+    monkeypatch.setenv("BGATE_ROOT", str(root))
+    filed = feel.escalate(root, _failing())["filed"]
+    client = TestClient(app)
+    body = {"scene": "scenes/a.tscn", "reason": "played it, it holds up"}
+    monkeypatch.setenv("BGATE_WORK_ITEM", "41")
+    got = client.post("/api/feel/clear", json=body)
+    assert got.status_code == 403
+    assert queue.get(root, filed)["status"] == "queued"
+    monkeypatch.delenv("BGATE_WORK_ITEM")
+    got = client.post("/api/feel/clear", json=body)
+    assert got.status_code == 200, got.text
+    assert got.json()["data"]["closed"] == [filed]
