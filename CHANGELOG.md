@@ -10,6 +10,14 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Fixed
+- **A failing feel check stops the content it is about.** The hold read an
+  item's kind alone, so art, level and gameplay items filed with no kind or
+  as fixes kept dispatching on top of a FEEL FAIL. Those three seats now wait
+  until the scene passes or a person clears it (`POST /api/feel/clear` with
+  a reason, human-only, kept on record beside the numbers). qa and director
+  still run, and so does the work filed from the FEEL FAIL item. The item
+  opens on one sentence and the proposed changes, with the measurements
+  below them.
 - **The art tournament runs.** Nothing could start one: the start route had
   no caller, and the qa reviewer it dispatched did not hold
   `art_tournament_verdict`, so it was handed every match and no way to decide

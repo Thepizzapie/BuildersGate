@@ -299,6 +299,28 @@ REMEDY = {
 }
 
 
+#: The verdict in a person's words, for the one sentence the FEEL FAIL item
+#: opens with.
+PLAIN = {
+    "ONE_BUTTON": "one input carries the run on its own",
+    "FLAT": "holding one input plays as well as deciding",
+    "NO_PRESSURE": "nothing threatens a player who stands still",
+    "TRIVIAL": "nothing ever kills a decent run",
+    "UNFAIR": "deaths pile up on one spot",
+    "UNMEASURED": "the game does not report progress and danger, so the "
+                  "check cannot judge it",
+}
+
+
+def summary(result: dict) -> str:
+    """One sentence a person can act on, instead of the numbers."""
+    fails = result.get("fails") or {}
+    why = "; ".join(PLAIN.get(k, k) for k in fails) or "it did not pass"
+    return (f"The feel check failed on {result.get('scene') or 'the boot scene'}"
+            f": {why}. Art, level and gameplay work is paused until it passes "
+            "or you clear it.")
+
+
 def escalate(root: Any, result: dict) -> dict:
     """Put a failing scene on the director's desk; close it when it passes.
 
@@ -333,14 +355,18 @@ def escalate(root: Any, result: dict) -> dict:
         return {"open": int(open_items[0]["id"])}
     fails = result.get("fails") or {}
     s, b = result.get("smart") or {}, result.get("baseline") or {}
-    lines = [f"- {k}: {v}\n  change: {REMEDY.get(k, '')}"
-             for k, v in fails.items()]
+    # THE PERSON READS THE TOP. MEASURED (cat-cafe, 2026-10-25): the fail
+    # reached the owner as one row among 100 presentation-QA items, so the
+    # brief opens on one sentence and the proposed changes; the numbers and
+    # the instructions sit under them for whoever wants them.
+    changes = [f"- {REMEDY[k]}" for k in fails if k in REMEDY][:3]
+    lines = [f"- {k}: {v}" for k, v in fails.items()]
     brief = (
-        f"The feel check FAILED on {result.get('scene') or 'the boot scene'} "
-        f"({result.get('at')}). "
-        "This is DESIGN work: the scene can be cleared but the player's "
-        "decisions do not carry it. Do not answer it with art or polish; "
-        "polish and content are held for this project until it passes.\n\n"
+        summary(result) + "\n\nProposed changes:\n" + "\n".join(changes)
+        + "\n\n---\n"
+        f"Measured {result.get('at')}. This is DESIGN work: the scene can be "
+        "cleared but the player's decisions do not carry it. Do not answer it "
+        "with art or polish.\n\n"
         + "\n".join(lines) + "\n\n"
         f"Numbers: smart bot {s.get('decisions')} decisions, choices "
         f"{s.get('choices')}, progress {s.get('progress_max')}, deaths "
@@ -366,7 +392,7 @@ def escalate(root: Any, result: dict) -> dict:
         severity="major", size="small",
         acceptance="two or three design changes proposed for the human to "
                    "file, each naming the metric it moves")
-    return {"filed": int(item["id"])}
+    return {"filed": int(item["id"]), "summary": summary(result)}
 
 
 def _code_version(root: Any) -> str:
@@ -444,3 +470,25 @@ def waive(root: Any, scene: str, *, by: str, reason: str) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(r, indent=2), encoding="utf-8")
     return r["waived"]
+
+
+def clear(root: Any, scene: str, *, by: str, reason: str) -> dict:
+    """The person's answer to a FEEL FAIL: waive the scene and close its item,
+    which lifts the hold on art, level and gameplay dispatch."""
+    from ..board import queue as _queue
+    from ..store import db
+    from ..store.util import rows as _rows
+
+    if not str(reason or "").strip():
+        raise ValueError("say why the failing scene is cleared; the reason "
+                         "stays on record beside the numbers it overrides")
+    waived = waive(root, scene, by=by, reason=reason)
+    closed = []
+    for it in _rows(db.connect(root).execute(
+            "SELECT id FROM work_item WHERE source = ? AND source_ref = ? AND "
+            "status IN ('queued','dispatched','review','parked')",
+            (FEEL_SOURCE, _slug(scene)))):
+        _queue.complete(root, int(it["id"]), skip_gate=True,
+                        result=f"cleared by {by}: {reason}")
+        closed.append(int(it["id"]))
+    return {"waived": waived, "closed": closed}
