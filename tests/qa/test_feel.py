@@ -324,6 +324,21 @@ def test_a_fail_halts_art_level_and_gameplay_whatever_their_kind(root):
     # and the held seats dispatch again
     with pytest.raises(ValueError):
         feel.clear(root, "scenes/a.tscn", by="human", reason=" ")
+    # a scene that is not failing is refused by name: a typo used to write a
+    # waiver-only verdict file, leave the hold on and answer ok
+    for wrong in ("", "scenes/b.tscn"):
+        with pytest.raises(ValueError, match="failing: scenes/a.tscn"):
+            feel.clear(root, wrong, by="human", reason="looks fine")
+    assert sorted(p.name for p in feel.feel_dir(root).iterdir()) == [
+        "scenes_a_tscn.json"]
+    assert held[0]["id"] not in {int(r["id"]) for r in queue.ready(root, limit=50)}
+    # the board's detail panel gets the scene and the sentence to clear it by
+    from bgate_core.board import lifecycle
+    node = next(n for n in lifecycle.graph(root)["nodes"] if n["id"] == filed)
+    assert node["feel"]["scene"] == "scenes_a_tscn"
+    assert node["feel"]["summary"].startswith("The feel check failed on")
+    assert all(n["feel"] is None for n in lifecycle.graph(root)["nodes"]
+               if n["id"] == held[0]["id"])
     got = feel.clear(root, "scenes/a.tscn", by="human", reason="the bot "
                      "cannot see the bins; I played it and it holds up")
     assert got["closed"] == [filed]
@@ -356,6 +371,9 @@ def test_only_a_person_can_clear_a_failing_scene(root, monkeypatch):
 
     monkeypatch.setenv("BGATE_ROOT", str(root))
     filed = feel.escalate(root, _failing())["filed"]
+    feel.feel_dir(root).mkdir(parents=True)
+    (feel.feel_dir(root) / "scenes_a_tscn.json").write_text(
+        json.dumps(_failing()))
     client = TestClient(app)
     body = {"scene": "scenes/a.tscn", "reason": "played it, it holds up"}
     monkeypatch.setenv("BGATE_WORK_ITEM", "41")
@@ -363,6 +381,8 @@ def test_only_a_person_can_clear_a_failing_scene(root, monkeypatch):
     assert got.status_code == 403
     assert queue.get(root, filed)["status"] == "queued"
     monkeypatch.delenv("BGATE_WORK_ITEM")
+    got = client.post("/api/feel/clear", json={**body, "scene": "nope"})
+    assert got.status_code == 400 and "nope" in got.text
     got = client.post("/api/feel/clear", json=body)
     assert got.status_code == 200, got.text
     assert got.json()["data"]["closed"] == [filed]
