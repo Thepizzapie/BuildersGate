@@ -364,6 +364,9 @@ def snapshot(root: str | os.PathLike[str], batch: Iterable[dict], *,
         # Items with an OPEN ask_human question of their own: a failure that
         # ends in a question is waiting on the human, not on another run.
         "asking": _asking(root),
+        # Whether milestone QA has a checkpoint to review at; without one the
+        # per-item gate keeps running (see qa_gate.effective_scope).
+        "open_checkpoint": _qa_gate.has_open_checkpoint(root),
     }
     wanted: set[int] = set()
     for ev in events:
@@ -882,10 +885,11 @@ def _branch_qa(ev: dict, item: dict, settings: dict, board: dict) -> list[dict]:
     item_id = int(item["id"])
     qa = (board.get("qa") or {}).get(item_id) or {}
     scope = str(settings.get("qa_gate") or _qa_gate.DEFAULT_GATE_SCOPE)
-    if scope == "milestones":
+    if scope == "milestones" and board.get("open_checkpoint"):
         return [_action("skip", 2, ev, f"qa-gate:{item_id}",
                         "qa.gate is 'milestones' - this item is reviewed with "
                         "the next checkpoint, not on its own")]
+    # milestones with no checkpoint ahead falls through to the per-item gate.
     if scope == "none":
         return [_action("skip", 2, ev, f"qa-gate:{item_id}",
                         "qa.gate is 'none' - no automatic review on this board")]

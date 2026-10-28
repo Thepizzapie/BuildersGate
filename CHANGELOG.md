@@ -12,12 +12,15 @@ repository at first publication. There is no earlier release history to record.
 ### Changed
 - **QA reviews milestones, not every item.** A finished maker item no longer
   gets its own QA agent. When a human checkpoint item completes, one QA round
-  reviews everything since the previous checkpoint, and its verdict waits for
+  reviews every maker item completed since the previous checkpoint was signed
+  off, chained to it or not, and its verdict waits for
   the person signing the checkpoint off; a FAIL reopens nothing on its own.
   On cat-cafe the per-item gate was 125 of 266 items and 49% of run spend.
   `qa.gate` gains `milestones` and it is the new default: a project with no
-  stored `qa.gate` moves from per-item QA to milestone QA. `qa.gate = all`
-  turns the per-item gate back on.
+  stored `qa.gate` moves from per-item QA to milestone QA. While no
+  checkpoint item is open, items are still reviewed one by one, and
+  `project_status` and `board_digest` say so. `qa.gate = all` turns the
+  per-item gate back on.
 
 ### Fixed
 - **A failing feel check stops the content it is about.** The hold read an

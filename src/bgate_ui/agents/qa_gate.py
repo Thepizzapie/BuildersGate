@@ -110,6 +110,18 @@ def gate_scope(root: str | os.PathLike[str]) -> str:
     return got if got in GATE_SCOPES else DEFAULT_GATE_SCOPE
 
 
+has_open_checkpoint = _gates.has_open_checkpoint
+
+
+def effective_scope(root: str | os.PathLike[str]) -> str:
+    """The scope actually applied: ``milestones`` reads as ``all`` while the
+    project has no open checkpoint item (see gates.NO_CHECKPOINT_NOTE)."""
+    scope = gate_scope(root)
+    if scope == "milestones" and not has_open_checkpoint(root):
+        return "all"
+    return scope
+
+
 def is_chain_end(root: str | os.PathLike[str], item: dict) -> bool:
     """True when ``item`` is the last link of its chain.
 
@@ -346,9 +358,44 @@ def is_milestone(item: dict) -> bool:
             and str(item.get("source") or "") not in ("qa-gate", ESCALATION_SOURCE))
 
 
+def milestone_batch(root: str | os.PathLike[str], item: dict) -> list[dict]:
+    """What a milestone round reviews: the checkpoint's ancestors, plus every
+    gated maker item completed since the previous checkpoint was signed off
+    (or since the board started), deduped and in id order.
+
+    Ancestors alone missed most of the work: cat-cafe filed its maker items
+    standalone, not as dependencies of a checkpoint, so a walk up the graph
+    would never have shown the reviewer the 41 delivered-but-unwired artifacts.
+    """
+    out = {int(b["id"]): b for b in _queue.checkpoint_digest(root, int(item["id"]))}
+    seats = gated_seats(root)
+    if seats:
+        conn = db.connect(root)
+        prev = conn.execute(
+            "SELECT MAX(updated_at) AS t FROM work_item "
+            "WHERE COALESCE(checkpoint, 0) = 1 AND status = 'done' AND id != ?",
+            (int(item["id"]),)).fetchone()
+        since = str((prev["t"] if prev else "") or "")
+        marks = ", ".join("?" * len(seats))
+        rows = conn.execute(
+            f"SELECT id, seat, title, status FROM work_item "
+            f"WHERE status = 'done' AND seat IN ({marks}) "
+            f"AND source NOT IN ('qa-gate', '{ESCALATION_SOURCE}') "
+            "AND id != ? AND updated_at >= ? ORDER BY id",
+            (*seats, int(item["id"]), since)).fetchall()
+        for r in rows:
+            out.setdefault(int(r["id"]), {"id": int(r["id"]), "seat": r["seat"],
+                                          "title": str(r["title"])[:100],
+                                          "status": r["status"]})
+    return [out[k] for k in sorted(out)]
+
+
 def _milestone_brief(item: dict, batch: list[dict]) -> str:
+    shown = 60
     listed = "\n".join(f"  - #{b['id']} [{b['seat']}] {b['title']} ({b['status']})"
-                       for b in batch[:40]) or "  (nothing upstream of it)"
+                       for b in batch[:shown]) or "  (no items since the last checkpoint)"
+    if len(batch) > shown:
+        listed += f"\n  ... and {len(batch) - shown} more (queue_list shows them)"
     note = str(item.get("checkpoint_note") or "").strip()
     return (
         f"MILESTONE QA for checkpoint #{item['id']} ({item['seat']}): "
@@ -386,7 +433,7 @@ def open_milestone_round(root: str | os.PathLike[str], item: dict) -> dict:
     if _open_gate_exists(root, ref):
         return {"ok": False, "gate": 0,
                 "why": "a QA round for this checkpoint is already open"}
-    batch = _queue.checkpoint_digest(root, int(item["id"]))
+    batch = milestone_batch(root, item)
     gate = _queue.add(root, "qa",
                       f"Milestone QA: checkpoint #{item['id']} - {item['title'][:70]}",
                       brief=_milestone_brief(item, batch), priority=8,
@@ -442,7 +489,8 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
         return
     if gate_scope(root) == "milestones":
         _scan_milestones(root, cutoff_utc)
-        return
+        if effective_scope(root) == "milestones":
+            return
     conn = db.connect(root)
     cap = max_rounds(root)
     # Placeholders derived from GATED_SEATS: a hardcoded "?, ?, ?" fell out of
@@ -452,7 +500,7 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
     seats = gated_seats(root)
     if not seats:
         return                      # every seat opted out; nothing to review
-    scope = gate_scope(root)
+    scope = effective_scope(root)
     if scope == "none":
         return                      # qa.gate is 'none': no automatic rounds
     marks = ", ".join("?" * len(seats))

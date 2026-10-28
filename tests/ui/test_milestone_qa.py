@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from bgate_core.board import queue
+from bgate_core.board import gates, queue
 from bgate_core.store import db, settings
 from bgate_ui.agents import dispatch as _dispatch
 from bgate_ui.agents import followup
@@ -50,11 +50,42 @@ def test_milestones_is_the_default_scope(root):
 
 
 def test_a_done_maker_item_gets_no_round_of_its_own(root, dispatched):
+    queue.add(root, "gameplay", "first latte", checkpoint=True)
     item = queue.add(root, "tech", "a script")
     queue.set_status(root, int(item["id"]), "done", result="wired it")
     qa_gate._scan_once(str(root), EPOCH)
     assert _gates(root) == []
     assert dispatched == []
+    assert gates.qa_scope_note(root) == ""
+
+
+def test_with_no_checkpoint_ahead_items_are_reviewed_one_by_one(root, dispatched):
+    item = queue.add(root, "tech", "a script")
+    queue.set_status(root, int(item["id"]), "done", result="wired it")
+    qa_gate._scan_once(str(root), EPOCH)
+    assert [g["source_ref"] for g in _gates(root)] == [str(item["id"])]
+    assert gates.qa_scope_note(root) == gates.NO_CHECKPOINT_NOTE
+
+
+def test_the_batch_covers_standalone_work_since_the_last_signed_checkpoint(root):
+    old = queue.add(root, "art", "old prop")
+    queue.set_status(root, int(old["id"]), "done", result="drew it")
+    first = queue.add(root, "gameplay", "first rescue", checkpoint=True)
+    queue.complete(root, int(first["id"]), result="rescue works")
+    queue.approve(root, int(first["id"]), by="adrian")
+    with db.tx(root) as conn:
+        conn.execute("UPDATE work_item SET updated_at = '2000-01-01 00:00:00' "
+                     "WHERE id = ?", (int(old["id"]),))
+        conn.execute("UPDATE work_item SET updated_at = '2000-01-02 00:00:00' "
+                     "WHERE id = ?", (int(first["id"]),))
+    loose = queue.add(root, "art", "latte cup")
+    queue.set_status(root, int(loose["id"]), "done", result="drew it")
+    cp = queue.add(root, "gameplay", "first latte", checkpoint=True)
+    cp = queue.complete(root, int(cp["id"]), result="latte works")
+    ids = [b["id"] for b in qa_gate.milestone_batch(root, cp)]
+    assert int(loose["id"]) in ids
+    assert int(old["id"]) not in ids
+    assert len(ids) == len(set(ids))
 
 
 def test_a_completed_checkpoint_gets_one_round_for_the_milestone(root, dispatched):

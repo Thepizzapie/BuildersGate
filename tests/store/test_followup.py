@@ -79,9 +79,16 @@ class TestBranchTable:
 
     def test_milestone_scope_skips_the_per_item_round(self):
         got = followup.decide([_ev(1, "item.done", 41)], _settings(gate_mode="agent"),
-                              _board([_item(41, seat="tech", result="wired it")]))
+                              _board([_item(41, seat="tech", result="wired it")],
+                                     open_checkpoint=True))
         assert "qa_spawn" not in _kinds(got)
         assert any("milestones" in a["why"] for a in got if a["kind"] == "skip")
+
+    def test_milestone_scope_with_no_checkpoint_ahead_keeps_the_per_item_round(self):
+        got = followup.decide([_ev(1, "item.done", 41)], _settings(gate_mode="agent"),
+                              _board([_item(41, seat="tech", result="wired it")],
+                                     open_checkpoint=False))
+        assert "qa_spawn" in _kinds(got)
 
     def test_a_completed_checkpoint_opens_one_milestone_round(self):
         cp = _item(41, seat="gameplay", status="review", checkpoint=1)
