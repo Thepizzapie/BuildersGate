@@ -40,6 +40,21 @@ def _state(project) -> dict:
         return dict(_running.get(str(project)) or {})
 
 
+def _update(key: str, **fields) -> None:
+    with _lock:
+        _running[key] = {**(_running.get(key) or {}), **fields}
+
+
+def _source(project) -> str:
+    """The shelf the panel shows. Training reads the same one, or the panel's
+    dataset and the one actually uploaded are two different sets of images."""
+    from bgate_core.store import settings as _settings
+    try:
+        return str(_settings.get(project, "art.style_dataset") or "pins")
+    except Exception:
+        return "pins"
+
+
 @router.get("/api/art/style")
 def style_view() -> dict:
     """The trained styles, the active one, the mode, and the dataset verdict."""
@@ -76,7 +91,7 @@ def style_train(request: Request, payload: Optional[dict] = None) -> dict:
             "chose, and both are charged for", job_id=live.get("job_id", ""))
 
     names = [str(n) for n in (payload.get("names") or [])]
-    verdict = _styles.dataset(project, names or None)
+    verdict = _styles.dataset(project, names or None, source=_source(project))
     if not verdict.get("ok"):
         # 400 with the per-anchor reasons: "not enough images" without saying
         # WHICH ones were dropped and why is a dead end for the person who has
@@ -94,11 +109,21 @@ def style_train(request: Request, payload: Optional[dict] = None) -> dict:
         raise api.unavailable(reachable.get("reason")
                               or "no Krea API key on this project")
 
+    # `started` and `ended` are epoch seconds so the panel can show elapsed
+    # time against the 5-15 minute estimate; `stage` is the adapter's own
+    # report (uploading n of total, then training on a job id).
     with _lock:
         _running[key] = {"status": "running", "name": name, "job_id": "",
                          "images": len(verdict["usable"]),
+                         "stage": "starting", "done": 0,
+                         "total": len(verdict["usable"]),
+                         "started": time.time(),
                          "started_at": time.strftime("%Y-%m-%d %H:%M:%S",
                                                      time.gmtime())}
+
+    def _stage(info: dict) -> None:
+        _update(key, **{k: info[k] for k in ("stage", "done", "total", "job_id")
+                        if k in info})
 
     def _run() -> None:
         # Everything inside is guarded: this is a daemon thread, and an
@@ -110,7 +135,7 @@ def style_train(request: Request, payload: Optional[dict] = None) -> dict:
                 kind=str(payload.get("kind") or "Style"),
                 trigger_word=str(payload.get("trigger_word") or ""),
                 max_train_steps=payload.get("max_train_steps"),
-                learning_rate=payload.get("learning_rate"))
+                learning_rate=payload.get("learning_rate"), on_stage=_stage)
             if got.get("ok") and got.get("style_id"):
                 _styles.record(project, {
                     "style_id": got["style_id"], "name": name,
@@ -119,18 +144,15 @@ def style_train(request: Request, payload: Optional[dict] = None) -> dict:
                     "images": got.get("images") or 0,
                     "sources": verdict.get("usable_names") or [],
                 }, make_active=bool(payload.get("make_active", True)))
-                with _lock:
-                    _running[key] = {"status": "done", "name": name,
-                                     "style_id": got["style_id"],
-                                     "job_id": got.get("job_id", "")}
+                _update(key, status="done", stage="done",
+                        style_id=got["style_id"],
+                        job_id=got.get("job_id", ""), ended=time.time())
                 return
-            with _lock:
-                _running[key] = {"status": "failed", "name": name,
-                                 "error": got.get("error") or "training failed"}
+            _update(key, status="failed", ended=time.time(),
+                    error=got.get("error") or "training failed")
         except Exception as exc:                                # noqa: BLE001
-            with _lock:
-                _running[key] = {"status": "failed", "name": name,
-                                 "error": f"{type(exc).__name__}: {exc}"}
+            _update(key, status="failed", ended=time.time(),
+                    error=f"{type(exc).__name__}: {exc}")
         finally:
             try:
                 _activity.log(project, "style",

@@ -143,6 +143,36 @@ class TestGuards:
         assert not (project / "override.cfg").exists()
         assert not (project / ".bgate_evidence.gd").exists()
 
+    def test_override_relaxes_the_projects_warning_policy(self, tmp_path,
+                                                          monkeypatch):
+        """cat-cafe treats a GDScript warning as an error, so the injected
+        autoload failed to PARSE, Godot started the game without it, and every
+        capture reported "did not exit within 120s" — a parse error dressed as
+        a hang. The override.cfg that wires the autoload must also switch the
+        policy off for the run, in the same file, so the project is untouched."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "project.godot").write_text("config_version=5\n",
+                                               encoding="utf-8")
+        seen = {}
+
+        def peek(cmd, **kwargs):
+            seen["override"] = (project / "override.cfg").read_text(
+                encoding="utf-8")
+            raise godot.subprocess.TimeoutExpired(cmd, 1)
+
+        monkeypatch.setattr(godot.subprocess, "run", peek)
+        monkeypatch.setattr(godot, "find_godot", lambda *a, **k: "godot.exe")
+
+        godot.evidence(str(project), str(tmp_path / "out"), timeout=1)
+        text = seen["override"]
+        assert text.startswith("[autoload]\n")
+        assert "[debug]" in text
+        assert "gdscript/warnings/treat_warnings_as_errors=false" in text
+        assert "gdscript/warnings/inferred_declaration=0" in text
+        # and the leftover rule still holds
+        assert not (project / "override.cfg").exists()
+
     def test_gdscript_uses_tabs_not_spaces(self):
         """GDScript rejects mixed indentation. A space-indented line in the
         injected autoload is a parse error at capture time, in a file no editor

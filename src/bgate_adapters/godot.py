@@ -2276,6 +2276,28 @@ def inspect_resource(project_dir: str, res_path: str, timeout: int = 180, *,
 # project may legitimately have its own override.cfg and clobbering it would be
 # the same class of bug pointed the other way.
 _INJECT_MARK = "BGATE-INJECTED"
+
+# THE PROJECT'S WARNING POLICY MUST NOT APPLY TO OUR AUTOLOAD. When a GDScript
+# warning is treated as an error (cat-cafe: inferred_declaration), the injected
+# script fails to PARSE, Godot logs "Failed to instantiate an autoload" and
+# starts the game anyway — with nobody left to quit it. Every capture on that
+# project then reported "game did not exit within 120s", which sent the reader
+# to the engine lock and the viewport instead of to the parse error (MEASURED
+# 2026-10-26: godot_evidence, godot_screenshot and a playtest_feel_check
+# abandoned after 1200s). override.cfg is a ProjectSettings override, so the
+# same file that wires the autoload relaxes the policy for this one run; the
+# project's own files are untouched and the game's own scripts were already
+# compiled under its policy by the editor.
+_OVERRIDE_DEBUG = (
+    "\n[debug]\n"
+    "gdscript/warnings/treat_warnings_as_errors=false\n"
+    "gdscript/warnings/inferred_declaration=0\n"
+    "gdscript/warnings/untyped_declaration=0\n"
+    "gdscript/warnings/unsafe_call_argument=0\n"
+    "gdscript/warnings/unsafe_property_access=0\n"
+    "gdscript/warnings/unsafe_method_access=0\n"
+    "gdscript/warnings/unsafe_cast=0\n"
+    "gdscript/warnings/return_value_discarded=0\n")
 _INJECT_BANNER = (
     f"# {_INJECT_MARK} — written by Builders Gate for one capture and deleted\n"
     "# straight afterwards. If you are reading this in your project, a capture\n"
@@ -2436,8 +2458,8 @@ def _begin_injection(project: Path, script_name: str, script_body: str,
     scratch = _scratch(project)
     (scratch / script_name).write_text(script_body, encoding="utf-8")
     (project / "override.cfg").write_text(
-        f'[autoload]\n{autoload}="*res://{SCRATCH_DIR}/{script_name}"\n',
-        encoding="utf-8")
+        f'[autoload]\n{autoload}="*res://{SCRATCH_DIR}/{script_name}"\n'
+        + _OVERRIDE_DEBUG, encoding="utf-8")
     return {"recovered": recovered["removed"]}
 
 
@@ -2648,7 +2670,7 @@ func _extra_of(node: Node) -> Variant:
 		var ts := tex.get_size()
 		var out := {"texture": tex.resource_path, "texture_px": [ts.x, ts.y]}
 		if node is AnimatedSprite2D:
-			var drift := _foot_drift_raw(node as AnimatedSprite2D)
+			var drift: Variant = _foot_drift_raw(node as AnimatedSprite2D)
 			if drift != null:
 				out["foot_drift_raw"] = drift
 		return out

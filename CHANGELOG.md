@@ -10,6 +10,17 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Fixed
+- **The art tournament runs.** Nothing could start one: the start route had
+  no caller, and the qa reviewer it dispatched did not hold
+  `art_tournament_verdict`, so it was handed every match and no way to decide
+  one. The Assets drawer now has a Pairwise ranking panel: rank an asset's
+  candidates, watch the reviewer, read the standings, approve the winner, and
+  discard the open matches a dead reviewer left behind
+  (`POST /api/art-tournament/discard`, `GET /api/art-tournament/status`). The
+  reviewer reads each image once instead of twice per match (8 candidates: 8
+  reads, not 56) and records every verdict in one `art_tournament_verdict`
+  call instead of 28. Each start is its own tournament, so a second ranking no
+  longer pools with the first.
 - **One table decides a dispatched seat's tools.** The registry was the AND
   of two per-seat tables, `modules.SEAT_CRAFTS` and `seattools.SEATS`, so an
   edit to either alone did nothing and `level` was scoped by one of them only.
@@ -114,6 +125,15 @@ repository at first publication. There is no earlier release history to record.
   everything. Per-turn schema falls 4-23% depending on the seat.
 
 ### Added
+- **A Style tab in the art seat trains a house style.** The four
+  `/api/art/style` routes had no caller. The tab shows the anchors that clear
+  the 1024px floor and names the ones dropped. It trains a style by name and
+  follows the run while it goes: uploading image n of total, then training on
+  the Krea job id, with elapsed time. A failure stays on screen with its
+  reason. The tab also switches or clears the active style and forgets one.
+  `krea.train` takes an `on_stage` callback for this. Training now uses the
+  `art.style_dataset` shelf the panel shows; before, it always trained on
+  pins.
 - **`bgate studio`: one folder for every game and what they share.**
   `bgate studio init DIR` lays out `games/`, `shared/modules/<engine>/`,
   `shared/assets/` and a `studio.json` index, and remembers the folder in

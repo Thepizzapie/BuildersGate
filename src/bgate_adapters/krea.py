@@ -47,7 +47,7 @@ import base64
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from bgate_adapters import imageto3d as _i3d
 from bgate_core.store import envfile
@@ -918,7 +918,8 @@ def train_style(name: str, urls: list, *, model: str = "flux_dev",
 def train(name: str, paths: list, *, kind: str = "Style", model: str = "flux_dev",
           trigger_word: str = "", max_train_steps: Optional[int] = None,
           learning_rate: Optional[float] = None, root: Any = None,
-          timeout: float = 1800.0, wait: bool = True) -> dict:
+          timeout: float = 1800.0, wait: bool = True,
+          on_stage: Optional[Callable[[dict], None]] = None) -> dict:
     """Validate, upload, train, wait. The whole thing as one call.
 
     Order is deliberate: EVERY image is judged before ANY is uploaded, so a
@@ -927,7 +928,20 @@ def train(name: str, paths: list, *, kind: str = "Style", model: str = "flux_dev
 
     `wait=False` returns after submitting — training is 5-15 minutes, which is
     longer than an interactive caller should block for.
+
+    `on_stage` hears each step as it starts (``uploading`` per image, then
+    ``training`` with the job id), so a panel can say where a 15-minute run is
+    instead of "running". A callback that raises is ignored: reporting progress
+    must never be the thing that fails a paid run.
     """
+    def stage(**info: Any) -> None:
+        if on_stage is None:
+            return
+        try:
+            on_stage(info)
+        except Exception:                                       # noqa: BLE001
+            pass
+
     started = time.monotonic()
     verdict = check_training_set(paths)
     if not verdict["ok"]:
@@ -936,7 +950,8 @@ def train(name: str, paths: list, *, kind: str = "Style", model: str = "flux_dev
     try:
         uploaded = []
         resized = []
-        for original in verdict["usable"]:
+        for n, original in enumerate(verdict["usable"]):
+            stage(stage="uploading", done=n, total=len(verdict["usable"]))
             ready, note = prepare_training_image(original)
             got = upload(ready, description=name, root=root)
             got["path"] = original          # the ANCHOR, not the temp file
@@ -951,6 +966,7 @@ def train(name: str, paths: list, *, kind: str = "Style", model: str = "flux_dev
         job_id = str(job.get("job_id") or job.get("id") or "")
         if not job_id:
             raise KreaError(f"Krea did not return a training job id: {str(job)[:200]}")
+        stage(stage="training", job_id=job_id, total=len(uploaded))
         if not wait:
             return {"ok": True, "job_id": job_id, "style_id": "", "pending": True,
                     "images": len(uploaded), "check": verdict,

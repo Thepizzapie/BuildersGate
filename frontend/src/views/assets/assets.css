@@ -108,6 +108,15 @@ body:has(.bg4) #view-assets > [data-react] { height: 100%; min-height: 0; }
 .asset-inspector-empty b { color: var(--text); font: 600 13px var(--sans); }
 .asset-inspector-empty span { max-width: 31ch; font: 400 11px/1.55 var(--sans); }
 .asset-cross-compare { min-width: min(620px, 48vw); }
+.tournament { border-top: 1px solid var(--line); }
+.tournament-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.tournament-head strong { color: var(--text); font: 600 12px var(--sans); }
+.tournament-actions { display: flex; gap: 7px; margin-top: 7px; }
+.tournament-standings { display: grid; gap: 5px; margin: 9px 0 0; padding: 0; list-style: none; }
+.tournament-standings li { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 9px;
+  padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--text-3); font: 500 10px var(--mono); }
+.tournament-standings li.lead { border-color: var(--accent); color: var(--text); }
+.tournament-standings img { width: 44px; height: 44px; object-fit: contain; background: var(--solid-1); }
 .asset-cross-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .asset-cross-name { margin-bottom: 7px; overflow: hidden; color: var(--text); font: 600 10px var(--sans); text-overflow: ellipsis; white-space: nowrap; }
 .asset-cross-grid .revision-pane { min-width: 0; }

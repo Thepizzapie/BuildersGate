@@ -95,6 +95,7 @@ const TABS: Record<string, SeatTab[]> = {
   art: [
     { id: "sheets", label: "Sheets", icon: "photo", hint: "the sheet in progress and its measurement" },
     { id: "locks", label: "Locks", icon: "lock", hint: "binaries do not merge" },
+    { id: "style", label: "Style", icon: "palette", hint: "train a house style from the anchors" },
     { id: "work", label: "Queue", icon: "list-check" },
   ],
   audio: [
