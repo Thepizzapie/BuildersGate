@@ -75,13 +75,105 @@ jobs:
         #
         # scripts/dep_floors.py derives the pins from pyproject rather than from
         # a second list that would drift out of sync on the first bump.
+        #
+        # `--group core` is the runtime dependencies, the dev extra AND
+        # [build-system] requires. That last one is new: the script read
+        # [project] only, so the build backend's floor was never audited, and
+        # `setuptools>=68` sat there permitting four advisories at once
+        # (PYSEC-2025-49, PYSEC-2026-1918, PYSEC-2026-3447,
+        # GHSA-xmj3-9gf7-h52w) while this step reported green.
         run: |
           python -m venv .floorenv
           .floorenv/bin/python -m pip install --upgrade pip packaging
-          .floorenv/bin/python scripts/dep_floors.py > floors.txt
+          .floorenv/bin/python scripts/dep_floors.py --group core > floors.txt
           echo "--- floors under audit ---"; cat floors.txt
           .floorenv/bin/python -m pip install pip-audit
           .floorenv/bin/python -m pip_audit -r floors.txt
+
+      - name: Audit the optional extras' floors (advisory — does not gate)
+        # THE OTHER EIGHT EXTRAS, AND WHY THIS STEP IS SHAPED THE WAY IT IS.
+        #
+        # stt, voice, record, stems, desktop, floor, build and web were left out
+        # of the audit above for a reason recorded in dep_floors.py: several
+        # pull native trees that do not resolve on a plain runner, and a gate
+        # nobody can make green is a gate everyone learns to ignore. That
+        # reasoning holds. What it should not have meant is NO coverage at all,
+        # which is what it meant in practice.
+        #
+        # ONE PIN AT A TIME, because a single unresolvable requirement would
+        # otherwise blind the whole step. pip-audit resolves a requirements
+        # file as a unit and exits on the first failure, so auditing all eight
+        # together means `faster-whisper==1.0` -- whose `av` dependency wants
+        # libav headers it will not find here -- hides whatever the other seven
+        # would have said. Audited singly, that one is a line of output and the
+        # rest still report. (`--no-deps` is NOT the fix: measured against this
+        # pip-audit it changes nothing, resolving and auditing each pin's
+        # transitive tree either way.)
+        #
+        # ADVISORY, because the thing that breaks this step is a missing wheel
+        # or a missing system header, not a vulnerability. A red X here means
+        # "go read the log". The summary below is the part worth reading, and
+        # unlike the old silence a real advisory on pyinstaller or playwright
+        # now lands somewhere a person sees it.
+        continue-on-error: true
+        run: |
+          .floorenv/bin/python scripts/dep_floors.py --group isolated > extras.txt
+          echo "--- extra floors under audit (advisory) ---"; cat extras.txt
+          .floorenv/bin/python - extras.txt <<'PY'
+          import json, pathlib, subprocess, sys
+
+          # CLASSIFY ON pip-audit's JSON, NOT ON ITS EXIT CODE OR ITS PROSE.
+          # A first draft of this read the text output and treated any non-zero
+          # exit that did not look like a resolver error as a finding -- so a
+          # missing pip_audit module reported all eight floors as vulnerable.
+          # JSON is unambiguous: if it parses there was an audit, and the
+          # vulnerability lists in it are the result. Anything unparseable is
+          # infrastructure, and says so.
+          pins = [l.strip() for l in
+                  pathlib.Path(sys.argv[1]).read_text().splitlines() if l.strip()]
+          one = pathlib.Path("one.txt")
+          flagged, unresolved = {}, {}
+
+          for pin in pins:
+              print(f"\n=== {pin} ===", flush=True)
+              one.write_text(pin + "\n")
+              run = subprocess.run(
+                  [sys.executable, "-m", "pip_audit", "-r", str(one),
+                   "-f", "json", "--progress-spinner", "off"],
+                  capture_output=True, text=True)
+              try:
+                  report = json.loads(run.stdout)
+              except (json.JSONDecodeError, ValueError):
+                  reason = next(
+                      (ln.strip() for ln in reversed(run.stderr.splitlines())
+                       if "ERROR" in ln or "error:" in ln), "see log")
+                  print(f"  NOT AUDITED (resolver/environment): {reason[:200]}")
+                  unresolved[pin] = reason
+                  continue
+
+              hits = [(d["name"], d["version"], v.get("id", "?"),
+                       ",".join(v.get("fix_versions") or []) or "none")
+                      for d in report.get("dependencies", [])
+                      for v in d.get("vulns", [])]
+              if not hits:
+                  n = len(report.get("dependencies", []))
+                  print(f"  clean ({n} package(s) in this pin's tree)")
+              else:
+                  flagged[pin] = hits
+                  for name, ver, vid, fix in hits:
+                      print(f"  {name} {ver}  {vid}  fixed in: {fix}")
+
+          print("\n================ summary ================")
+          print(f"audited:    {len(pins) - len(unresolved)} of {len(pins)}")
+          print(f"advisories: {' '.join(flagged) if flagged else 'none'}")
+          print(f"not audited:{' ' + ' '.join(unresolved) if unresolved else ' none'}")
+          for pin, hits in flagged.items():
+              ids = ",".join(sorted({h[2] for h in hits}))
+              print(f"::warning::extra floor {pin} has known advisories: {ids}")
+          # Deliberately exit 0 even with findings: `continue-on-error` already
+          # makes this step non-blocking, and exiting 0 keeps the step's own
+          # annotation from reading as a failure of the job.
+          PY
 
   codeql:
     name: CodeQL

@@ -20,10 +20,24 @@ on:
       - ".github/workflows/release-exe.yml"
   workflow_dispatch:
 
-# READ BY DEFAULT. Only the job that attaches artefacts to a release needs to
-# write, and this workflow also runs on pull_request — where the checked-out
-# code is the PR's. A workflow-wide `contents: write` hands that code a token
-# that can push, for the sake of one step that only ever runs on a tag.
+# READ BY DEFAULT, AND WRITE IN EXACTLY ONE JOB. This workflow runs on
+# pull_request, where the checked-out code is the PR's, so a token that can
+# push must never be live in a job that executes it. The split is the control:
+#
+#   guard    checks tag/pyproject/CHANGELOG agree.          read
+#   build    npm, PyInstaller, Inno Setup, signing.         read   <- PR's code
+#   publish  downloads build's artifact and publishes it.   write  <- tags only
+#
+# `publish` runs no packaging script and no dependency install; its inputs are
+# one uploaded artifact and CHANGELOG.md. That is what lets `build` sit at
+# read while still producing the files a release needs.
+#
+# THIRD-PARTY ACTIONS ARE PINNED BY COMMIT SHA, with the version they were at
+# in a trailing comment. A tag is a mutable pointer the action's owner can move
+# after review, and this is the workflow holding Authenticode signing
+# credentials, so a retag here would reach the one job that can both sign and
+# publish. `actions/*` and `github/*` stay on major tags: those are GitHub's
+# own, pinned by the same org that runs the runner, and Dependabot moves them.
 permissions:
   contents: read
 
@@ -84,15 +98,17 @@ jobs:
     needs: [guard]
     runs-on: windows-latest
     timeout-minutes: 30
-    # The one job that writes, and only because "Attach to the release" lives
-    # here. That step is gated on a tag; the permission cannot be, so on a
-    # pull_request run this job holds a write token while running the PR's own
-    # code. A fork's token is downgraded to read by GitHub whatever this says,
-    # which leaves branch PRs from collaborators. Moving the attach step into
-    # its own `needs: [build]` job that downloads the artifact would close it
-    # properly.
+    # READ ONLY, AND THAT IS THE WHOLE POINT OF THE `publish` JOB BELOW. This
+    # job runs the checked-out code -- on a pull_request run, the PR's own
+    # code, including packaging/build_exe.py and the frontend's npm tree. It
+    # used to hold `contents: write`, because "Attach to the release" lived
+    # here and that step needs it. The step was gated on a tag; the permission
+    # could not be, so every PR build ran untrusted code with a token that
+    # could push. GitHub downgrades a FORK's token to read whatever the
+    # workflow says, which left branch PRs from collaborators holding the real
+    # thing. The attach step now lives in `publish`, which touches no PR code.
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -163,7 +179,7 @@ jobs:
           env.SIGN_ENDPOINT != ''
         env:
           SIGN_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-        uses: azure/trusted-signing-action@v0
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293  # v0.5.11
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -201,7 +217,7 @@ jobs:
           env.SIGN_ENDPOINT != ''
         env:
           SIGN_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-        uses: azure/trusted-signing-action@v0
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293  # v0.5.11
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -238,13 +254,60 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # THE ONLY JOB THAT CAN WRITE, AND IT NEVER RUNS THE PR'S CODE.
+  #
+  # Splitting this out is what lets `build` above run at `contents: read`.
+  # Everything here operates on the artifact `build` uploaded plus CHANGELOG.md
+  # from the checkout -- no packaging script, no npm install, no PyInstaller.
+  #
+  # The job-level `if:` IS safe here, unlike on `guard` and `build`: a skipped
+  # job skips everything that `needs:` it, and nothing needs `publish`. That
+  # also means the two steps below no longer carry their own tag conditions --
+  # the job gate replaces them.
+  publish:
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      # CHANGELOG.md only -- the release body is built from it. Shallow,
+      # because nothing here needs history.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Explicit, rather than trusting whichever `python` the runner image
+      # happens to put on PATH: the release-notes step below invokes `python`
+      # by name, and on ubuntu images that has been `python3` only before now.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Back into dist/, which is where the two steps below still expect them.
+      # upload-artifact@v4 roots the archive at the least common ancestor of
+      # the paths it was given -- all four were `dist/...`, so the artifact
+      # holds the four files at its top level and `path: dist` restores the
+      # layout the build job had.
+      - uses: actions/download-artifact@v4
+        with:
+          name: BuildersGate-windows
+          path: dist
+
+      - name: Report what was downloaded
+        run: |
+          ls -la dist/
+          cat dist/BuildersGate-windows.zip.sha256
+          cat dist/BuildersGate-setup.exe.sha256
+
       - name: Release notes, from the changelog
         # WITHOUT THIS THE RELEASE BODY IS THE TAG ANNOTATION, which is one line
         # somebody typed at 2am — v0.1.27 shipped a 10k-line release described as
         # "completion routing, notifications, and one settings surface" and
         # nothing else. The changelog entry already exists and is already the
         # thing worth reading, so the release should BE it rather than link to it.
-        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           python - "${GITHUB_REF_NAME}" <<'PY'
@@ -278,8 +341,7 @@ jobs:
           PY
 
       - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           body_path: RELEASE_NOTES.md
           # THE INSTALLER GOES FIRST BECAUSE IT IS THE DEFAULT DOWNLOAD, and it

@@ -6,7 +6,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 
 [build-system]
-requires = ["setuptools>=68"]
+# Same floor as the root pyproject, and for the same reason: setuptools
+# 68 carries four advisories (PYSEC-2025-49, PYSEC-2026-1918,
+# PYSEC-2026-3447, GHSA-xmj3-9gf7-h52w). This package is published
+# separately, so its build backend is its own exposure.
+requires = ["setuptools>=84.1.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

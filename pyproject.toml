@@ -14,6 +14,15 @@ requires-python = ">=3.11"
 # latest. security.yml audits BOTH: the resolved tree and these floors pinned
 # exactly, because a floor-only vulnerability is invisible to the resolved run.
 #
+# EXACTLY WHAT IS AUDITED, because this note used to claim more than was true.
+# "BOTH" above covers the list below, the dev extra, and [build-system]
+# requires at the bottom of this file — gating, and green or the branch does
+# not land. The eight other extras (stt, voice, record, stems, desktop, floor,
+# build, web) get a separate ADVISORY step that cannot gate: their floors pull
+# native trees that do not resolve on a plain runner. See the two steps in
+# security.yml and the group split in scripts/dep_floors.py. Treat a floor in
+# those extras as audited on a best-effort basis, not guaranteed.
+#
 # uvicorn is >=0.31.1 because mcp requires it, not because uvicorn had a
 # problem: the old >=0.29 floor could not resolve against mcp's own >=0.30 at
 # all. starlette is DIRECT because bgate_ui imports it directly (api.py,
@@ -54,7 +63,15 @@ Issues = "https://github.com/Thepizzapie/BuildersGate/issues"
 bgate = "bgate_cli.main:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+# THIS FLOOR IS AUDITED TOO, and it was the one that got away. The note above
+# [project] says floors are a security control and that security.yml audits
+# them; scripts/dep_floors.py read [project] only, so `setuptools>=68` sat here
+# unexamined and permitted four advisories at once -- PYSEC-2025-49 (path
+# traversal in PackageIndex, fixed 78.1.1), PYSEC-2026-1918 (70.0.0),
+# PYSEC-2026-3447 (83.0.0) and GHSA-xmj3-9gf7-h52w (84.1.0). A build backend is
+# not a runtime dependency but it IS code that runs on the installing machine
+# whenever there is no wheel, which is the case this floor describes.
+requires = ["setuptools>=84.1.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
