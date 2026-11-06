@@ -127,6 +127,18 @@ class TestDiscovery:
         assert "6000.0.2f1" in unity.find_unity()
         assert unity.version(unity.find_unity(project))["version"] == "2022.3.10f1"
 
+    def test_a_hub_install_without_its_binary_is_named_not_hidden(
+            self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BGATE_UNITY", raising=False)
+        monkeypatch.setattr(unity.shutil, "which", lambda name: None)
+        hub = tmp_path / "Hub" / "Editor"
+        (hub / "6000.1.7f1" / "Editor" / "Data").mkdir(parents=True)
+        monkeypatch.setattr(unity, "_hub_roots", lambda: [hub])
+        assert unity.installed_editors() == []
+        assert unity.broken_installs() == [str(hub / "6000.1.7f1")]
+        with pytest.raises(unity.UnityNotFound, match="install is incomplete"):
+            unity.find_unity()
+
     def test_project_facts_are_read_off_the_files(self, tmp_path):
         project = _unity_project(tmp_path)
         assert unity.is_project(project)

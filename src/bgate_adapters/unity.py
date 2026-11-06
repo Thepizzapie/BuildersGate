@@ -145,6 +145,25 @@ def installed_editors() -> list[dict]:
     return out
 
 
+def broken_installs() -> list[str]:
+    """Hub install folders that hold an Editor/ directory but no editor binary.
+
+    A partial download or an interrupted update leaves 7 GB of Data/ and DLLs
+    with no Unity.exe; `installed_editors` rightly skips it, and without this
+    the user is told to install an editor they can see in the Hub.
+    """
+    out: list[str] = []
+    for root in _hub_roots():
+        try:
+            entries = sorted(root.iterdir()) if root.is_dir() else []
+        except OSError:
+            continue
+        for entry in entries:
+            if (entry / "Editor").is_dir() and _editor_exe(entry) is None:
+                out.append(str(entry))
+    return out
+
+
 def _version_key(text: str) -> tuple:
     got = re.match(r"(\d+)\.(\d+)\.(\d+)([abfp])(\d+)", text or "")
     if not got:
@@ -177,6 +196,12 @@ def find_unity(project_dir: Optional[str | os.PathLike[str]] = None) -> str:
     on_path = shutil.which("Unity") or shutil.which("unity")
     if on_path:
         return on_path
+    broken = broken_installs()
+    if broken:
+        raise UnityNotFound(
+            f"Unity is installed at {broken[0]} but its editor binary is "
+            "missing (no Editor/Unity.exe): the install is incomplete. In the "
+            "Unity Hub, uninstall that version and install it again.")
     raise UnityNotFound(
         "Unity editor not found. Install one through the Unity Hub, or set "
         "BGATE_UNITY to the editor executable (Editor/Unity.exe under the "
