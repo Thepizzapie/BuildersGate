@@ -1,7 +1,7 @@
 # Everything that has to be true before a change lands.
 #
 # This replaces tests.yml, which ran pytest and nothing else. The three jobs
-# added around it are not new ideas - they are guarantees this repo already
+# added around it are not new ideas — they are guarantees this repo already
 # wrote down and then never actually ran:
 #
 #   lint         pyproject has carried a deliberately-chosen ruff rule set
@@ -20,7 +20,7 @@
 # be built from.
 #
 # Windows is first among the test jobs because it is the supported platform and
-# much of this code is about Windows specifically - process trees,
+# much of this code is about Windows specifically — process trees,
 # CREATE_NO_WINDOW, WebView2, the path handling around .bgate. A green run on
 # Linux proves less, which is exactly why it does not gate.
 name: ci
@@ -66,7 +66,7 @@ jobs:
         run: ruff check --output-format=github .
 
   frontend-drift:
-    # src/bgate_ui/static/dist/ is BUILD OUTPUT THAT IS COMMITTED - see the header
+    # src/bgate_ui/static/dist/ is BUILD OUTPUT THAT IS COMMITTED — see the header
     # comment in frontend/vite.config.ts for why (wheel and exe installs have
     # no node, so the repo carries the bundle). Committed output drifts: a fix
     # lands in frontend/src while the committed bundle stays stale, and nothing
@@ -75,7 +75,7 @@ jobs:
     #
     # This gate is only honest because the build is deterministic: fixed output
     # filenames (no content hashes), no sourcemaps, no embedded timestamps, and
-    # the whole toolchain pinned by package-lock.json - two consecutive builds
+    # the whole toolchain pinned by package-lock.json — two consecutive builds
     # hash identically. If a future vite upgrade breaks that, this job goes red
     # on every PR at once and the fix is one rebuild-and-commit.
     #
@@ -275,9 +275,9 @@ jobs:
 
       - name: pytest
         # -m "not slow" is what CONTRIBUTING tells contributors to run, so it is
-        # what CI runs. It changes nothing about which tests execute here - the
+        # what CI runs. It changes nothing about which tests execute here — the
         # slow ones skipif on a missing Blender or whisper and no hosted runner
-        # has either - but it makes that a stated choice rather than an accident
+        # has either — but it makes that a stated choice rather than an accident
         # of the runner image. The real Blender and Godot paths therefore have
         # NO coverage in this workflow; that is what a nightly job is for.
         run: python -m pytest -m "not slow" -q
@@ -289,7 +289,7 @@ jobs:
     # Linux is best-effort per CONTRIBUTING.md: the suite runs, tests that need
     # Windows tooling (taskkill, tasklist) skip, and a red result is a report
     # worth reading rather than a merge blocker. Making that true in CI is the
-    # point of this job - the claim has been in the docs for longer than any
+    # point of this job — the claim has been in the docs for longer than any
     # Linux run has existed.
     continue-on-error: true
 
@@ -315,7 +315,7 @@ jobs:
 
   wheel-smoke:
     # THE JOB tests/packaging/test_packaging.py ALREADY DOCUMENTS. That module is the fast
-    # half of the guard - it reads pyproject and asserts every shipped tree is
+    # half of the guard — it reads pyproject and asserts every shipped tree is
     # covered by a package-data pattern, without building anything. This is the
     # half that installs the artifact and looks inside it, which is the only way
     # to catch a pattern that is present, plausible, and wrong.
@@ -358,7 +358,7 @@ jobs:
         shell: bash
         # A fresh venv, NOT the job's interpreter: the checkout is on disk right
         # here, and an editable or path install would let every import resolve
-        # to the source tree - which is precisely the mistake that let a wheel
+        # to the source tree — which is precisely the mistake that let a wheel
         # with no JavaScript ship green.
         run: |
           python -m venv .wheelenv
