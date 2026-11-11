@@ -1,7 +1,7 @@
 # The scans that do not belong in the merge-blocking path.
 #
 # SECURITY.md is candid that this tool executes code and spends money on the
-# user's behalf — it shells out to Godot and Blender, runs arbitrary GDScript
+# user's behalf: it shells out to Godot and Blender, runs arbitrary GDScript
 # that can reach OS.execute(), and loads API keys from a project-local .env.
 # None of that was scanned by anything.
 #
@@ -45,8 +45,8 @@ jobs:
         # instead, which tells you nothing about what a user installs.
         #
         # NO --strict, deliberately. builders-gate itself is always reported as
-        # "not found on PyPI and could not be audited" — correct, nothing has
-        # been published to an index yet — and --strict promotes exactly that
+        # "not found on PyPI and could not be audited". That is correct, nothing has
+        # been published to an index yet, and --strict promotes exactly that
         # skip to a failure, so the job could never go green until the day the
         # package is published. The exit code still fails on an actual
         # vulnerability; --strict only governs skips.
@@ -61,12 +61,12 @@ jobs:
           .auditenv/bin/python -m pip install pip-audit
           .auditenv/bin/python -m pip_audit
 
-      - name: Audit the FLOORS — the oldest versions a user can legally install
+      - name: Audit the FLOORS, the oldest versions a user can legally install
         # THE STEP ABOVE CANNOT FAIL THE WAY THIS ONE CAN. `pip install .`
         # resolves to the newest release of everything, which is the version
         # least likely to have an open advisory, so that job stayed green while
         # the declared floors rotted to 23 known-vulnerable versions between
-        # them — mcp 1.2.0, starlette 0.36.3 via an old fastapi cap, and Pillow
+        # them: mcp 1.2.0, starlette 0.36.3 via an old fastapi cap, and Pillow
         # 10.0.0. A floor is what a constrained resolver actually serves, so it
         # is the version worth auditing.
         #
@@ -82,6 +82,69 @@ jobs:
           echo "--- floors under audit ---"; cat floors.txt
           .floorenv/bin/python -m pip install pip-audit
           .floorenv/bin/python -m pip_audit -r floors.txt
+
+      - name: Audit the release lock, the exact tree the .exe ships
+        # `pip install .` above never sees the extras, and release-exe.yml
+        # installs none of it from PyPI: build_exe.py installs
+        # packaging/build-requirements.lock with --require-hashes, so the lock
+        # IS the bundle. It held certifi, filelock, PyJWT and setuptools with
+        # 18 open advisories between them while both steps above were green.
+        #
+        # --disable-pip reads the hashed pins without installing them, which
+        # is what lets a Windows lock (comtypes, pythonnet) be audited here.
+        run: |
+          .auditenv/bin/python -m pip_audit -r packaging/build-requirements.lock --require-hashes --disable-pip
+
+      - name: Audit the release extras' floors
+        # The same floor argument as above, for the extras the release and
+        # `bgate app` install. Pins only, no install: several of these are
+        # Windows-only or pull torch.
+        run: |
+          .floorenv/bin/python scripts/dep_floors.py --extras desktop,build,record,stt > release-floors.txt
+          echo "--- release extra floors under audit ---"; cat release-floors.txt
+          .floorenv/bin/python -m pip_audit -r release-floors.txt --no-deps --disable-pip
+
+  deps-desktop:
+    name: pip-audit (.[desktop], Windows)
+    # `pip install -e ".[desktop]"` is how CLAUDE.md tells a user to get
+    # `bgate app`, and it resolves fresh against PyPI, so it is neither the
+    # lock nor the floors. Windows, because that is the platform the extra
+    # exists for and where pywebview pulls pythonnet.
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Audit the resolved desktop tree
+        shell: bash
+        run: |
+          python -m venv .auditenv
+          .auditenv/Scripts/python -m pip install --upgrade pip
+          .auditenv/Scripts/python -m pip install ".[desktop]"
+          .auditenv/Scripts/python -m pip install pip-audit
+          .auditenv/Scripts/python -m pip_audit
+
+  npm-frontend:
+    name: npm audit (frontend)
+    # release-exe.yml runs `npm ci` in frontend/ and bundles the build output,
+    # so this tree ships too.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Audit the front end's locked tree
+        working-directory: frontend
+        run: npm audit --audit-level=high
 
   codeql:
     name: CodeQL
@@ -100,7 +163,7 @@ jobs:
           languages: python
           # THE DEFAULT SUITE, after security-and-quality opened 277 alerts on
           # main in one pass. That is not a security posture, it is a wall
-          # nobody reads — the same reason pyproject does not run ruff's full
+          # nobody reads, the same reason pyproject does not run ruff's full
           # rule set, written up above [tool.ruff]. A gate nobody can make green
           # is a gate everyone learns to ignore, and 277 is well past the point
           # where a real finding hides among the rest.
@@ -109,13 +172,13 @@ jobs:
           # argument for narrowing rather than deleting:
           #
           #   REAL      py/redos in src/bgate_core/qa/feedback.py. Exponential on a run
-          #             of one letter — 41 m's took 26 seconds, and is_noise
+          #             of one letter: 41 m's took 26 seconds, and is_noise
           #             runs on every whisper segment, so humming into the mic
           #             was enough. Fixed.
           #   NOT REAL  py/command-line-injection, "Critical", in
           #             src/bgate_adapters/recorder.py. The command is a list, there
           #             is no shell, and the executable comes from
-          #             shutil.which("ffmpeg") — the tainted value lands inside
+          #             shutil.which("ffmpeg"). The tainted value lands inside
           #             one argv element as `title=<name>` and cannot become an
           #             argument of its own.
           #
