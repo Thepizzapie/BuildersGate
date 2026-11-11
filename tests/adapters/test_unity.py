@@ -544,7 +544,12 @@ class TestScaffold:
         assert got == {"ok": True, "action": "exists", "path": str(base)}
 
 
+WINDOWS_ONLY = pytest.mark.skipif(
+    os.name != "nt", reason="player builds are Windows-only (StandaloneWindows64)")
+
+
 class TestPlayer:
+    @WINDOWS_ONLY
     def test_build_installs_the_scripts_then_reuses_a_fresh_player(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")
         got = unity.build_player(project, timeout=60)
@@ -559,12 +564,14 @@ class TestPlayer:
         forced = unity.build_player(project, timeout=60, force=True)
         assert forced["cached"] is False
 
+    @WINDOWS_ONLY
     def test_an_edited_script_makes_the_player_stale(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")
         exe = Path(unity.build_player(project, timeout=60)["exe"])
         os.utime(exe, (1, 1))
         assert unity.build_player(project, timeout=60)["cached"] is False
 
+    @WINDOWS_ONLY
     def test_a_build_that_writes_no_player_fails(self, fake_editor, tmp_path, monkeypatch):
         project = _unity_project(tmp_path / "game")
         monkeypatch.setenv("FAKE_UNITY_MODE", "build_fail")
