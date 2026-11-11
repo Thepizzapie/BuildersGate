@@ -833,6 +833,7 @@ def import_asset(project_dir: str | os.PathLike[str], source: str | os.PathLike[
     if editor_open(project):
         return {"ok": False, "editor_open": True,
                 "error": "the Unity editor has this project open; close it first"}
+    existed = target.exists()
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, target)
     env = {"BGATE_IMPORT_PATH": rel,
@@ -841,7 +842,19 @@ def import_asset(project_dir: str | os.PathLike[str], source: str | os.PathLike[
            "BGATE_IMPORT_PPU": str(float(pixels_per_unit)) if pixels_per_unit else ""}
     got = _edit(project, "Import", env, timeout=timeout)
     got.setdefault("path", rel)
-    got["copied"] = str(target)
+    if got.get("ok"):
+        got["copied"] = str(target)
+    elif not existed:
+        # A failed import of a NEW file leaves nothing behind: no half-imported
+        # copy for the next editor open to trip over, no orphan .meta.
+        removed = []
+        for leftover in (target, target.with_name(target.name + ".meta")):
+            try:
+                leftover.unlink()
+                removed.append(str(leftover))
+            except OSError:
+                pass
+        got["removed"] = removed
     return got
 
 

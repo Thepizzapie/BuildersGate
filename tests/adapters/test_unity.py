@@ -683,6 +683,27 @@ class TestEdits:
         assert got["ok"] is False and got["editor_open"] is True
         assert not (project / "Assets" / "Imported").exists()
 
+    def test_a_failed_import_of_a_new_file_leaves_nothing_behind(self, fake_editor, tmp_path,
+                                                                 monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("FAKE_UNITY_MODE", "edit_fail")
+        got = unity.import_asset(project, self._png(tmp_path), "Assets/Art/", timeout=60)
+        assert got["ok"] is False
+        assert not (project / "Assets" / "Art" / "hero.png").exists()
+        assert not (project / "Assets" / "Art" / "hero.png.meta").exists()
+        assert "copied" not in got and len(got["removed"]) == 1
+
+    def test_a_failed_overwrite_keeps_the_file_that_was_there(self, fake_editor, tmp_path,
+                                                              monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        src = self._png(tmp_path)
+        assert unity.import_asset(project, src, "Assets/Art/", timeout=60)["ok"] is True
+        monkeypatch.setenv("FAKE_UNITY_MODE", "edit_fail")
+        got = unity.import_asset(project, src, "Assets/Art/", overwrite=True, timeout=60)
+        assert got["ok"] is False and "removed" not in got
+        assert (project / "Assets" / "Art" / "hero.png").is_file()
+        assert (project / "Assets" / "Art" / "hero.png.meta").is_file()
+
     def test_place_passes_the_transform_as_text(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")
         got = unity.place_prefab(project, "Assets/Prefabs/Crate.prefab",
