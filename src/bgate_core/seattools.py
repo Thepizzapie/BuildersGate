@@ -117,8 +117,8 @@ SEATS: dict[str, tuple[str, ...]] = {
         "traversal_prove", "scene_", "game_view_",
         "godot_screenshot", "godot_evidence", "godot_run", "godot_test_run",
         "godot_check_project",
-        "web_status", "unity_status", "playtest_",
-        "research_findings",
+        "web_status", "unity_status", "unity_place_prefab", "unity_set_field",
+        "playtest_", "research_findings",
     ),
     # Engine plumbing, build and performance, the same engine surface, plus
     # the project-level knobs gameplay does not touch.
@@ -139,6 +139,7 @@ SEATS: dict[str, tuple[str, ...]] = {
         # The art mission says to verify delivered meshes in the export.
         "godot_export_probe",
         "web_status", "web_dev", "unity_status", "unity_install_scripts",
+        "unity_import_asset",
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
         "canon_check", "vfx_animate", "game_view_get",

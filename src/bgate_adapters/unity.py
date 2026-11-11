@@ -39,6 +39,12 @@ THE PIECES, and which external thing each needs:
                             camera to a PNG. A still of the scene, not a
                             frame of play: batchmode does not enter play mode.
   install_scripts           puts Assets/BGate/*.cs in place.
+  import_asset / place_prefab / set_field
+                            the bundled BGateEdit editor script: copy a file
+                            into Assets/ and import it, instantiate a prefab
+                            into a scene, set one serialized field. Every
+                            write is AssetDatabase, PrefabUtility or
+                            EditorSceneManager; no YAML is written by hand.
 """
 from __future__ import annotations
 
@@ -70,6 +76,9 @@ CAPTURE_METHOD = "BGate.Editor.BGateCapture.Run"
 AGENT_FILE = "BGateAgent.cs"
 BUILD_FILE = str(Path("Editor") / "BGateBuild.cs")
 BUILD_METHOD = "BGate.Editor.BGateBuild.Player"
+#: Asset import, prefab placement and component edits, through the editor API.
+EDIT_FILE = str(Path("Editor") / "BGateEdit.cs")
+EDIT_CLASS = "BGate.Editor.BGateEdit"
 #: Where the player build lands. Builds/ is in every Unity .gitignore. Not
 #: Library/ (BuildPlayer refuses its own cache) and not Temp/ (cleared on close).
 PLAYER_REL = Path("Builds") / "BGatePlayer"
@@ -312,6 +321,7 @@ def scripts_installed(project_dir: str | os.PathLike[str]) -> dict:
             "capture": (base / CAPTURE_FILE).is_file(),
             "agent": (base / AGENT_FILE).is_file(),
             "build": (base / BUILD_FILE).is_file(),
+            "edit": (base / EDIT_FILE).is_file(),
             "dir": str(base)}
 
 
@@ -326,7 +336,7 @@ def install_scripts(project_dir: str | os.PathLike[str],
     if not is_project(base):
         return {"action": "skipped", "why": f"no {MARKER} in {project_dir}"}
     names = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE,
-             "agent": AGENT_FILE, "build": BUILD_FILE}
+             "agent": AGENT_FILE, "build": BUILD_FILE, "edit": EDIT_FILE}
     written, unchanged, missing = [], [], []
     for key in which:
         name = names.get(key)
@@ -696,6 +706,220 @@ def screenshot(project_dir: str, out_path: str, *, scene: str = "",
     got["note"] = ("a still of the saved scene rendered by the editor, not a "
                    "frame of play: nothing has run Start() or Update()")
     return got
+
+
+# ---------------------------------------------------------------------------
+# Edits: import, place, set a field. Always the editor's API, never YAML.
+# ---------------------------------------------------------------------------
+#: What import_asset copies into Assets/. A .unity, .prefab or .meta is the
+#: editor's own serialized output: copying one in from elsewhere carries a
+#: foreign GUID, which is the hand-written-YAML failure by another door.
+IMPORTABLE = frozenset({
+    ".png", ".jpg", ".jpeg", ".tga", ".psd", ".exr", ".hdr", ".bmp", ".tif", ".tiff",
+    ".fbx", ".obj", ".dae", ".blend", ".3ds",
+    ".wav", ".ogg", ".mp3", ".aif", ".aiff", ".flac",
+    ".ttf", ".otf", ".txt", ".json", ".bytes", ".csv", ".mp4", ".webm",
+})
+
+
+def _assets_rel(project: Path, rel: str, *, suffixes: tuple[str, ...] = ()) -> tuple[str, str]:
+    """(posix path under Assets/, error). Refuses anything that leaves Assets/."""
+    text = str(rel or "").strip().replace("\\", "/")
+    if not text:
+        return "", "a path under Assets/ is required"
+    if Path(text).is_absolute():
+        try:
+            text = Path(text).resolve().relative_to(project.resolve()).as_posix()
+        except ValueError:
+            return "", f"{rel} is not inside {project}"
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts or parts[0] != "Assets" or ".." in parts or len(parts) < 2:
+        return "", f"{rel} must be a path under Assets/"
+    clean = "/".join(parts)
+    if suffixes and not clean.lower().endswith(suffixes):
+        return "", f"{rel} must end with {' or '.join(suffixes)}"
+    return clean, ""
+
+
+def _vec(value, what: str) -> tuple[str, str]:
+    """A 3-vector as the "x,y,z" the editor script parses, or an error."""
+    if value is None or value == "" or value == []:
+        return "", ""
+    items = value if isinstance(value, (list, tuple)) else str(value).strip("[]() ").split(",")
+    try:
+        nums = [float(x) for x in items]
+    except (TypeError, ValueError):
+        return "", f"{what} must be three numbers, got {value!r}"
+    if len(nums) != 3:
+        return "", f"{what} must be three numbers, got {len(nums)}"
+    return ",".join(repr(n) for n in nums), ""
+
+
+def _edit(project_dir: str | os.PathLike[str], verb: str, env: dict[str, str],
+          *, timeout: int) -> dict:
+    """Run BGateEdit.<verb> and merge the JSON it writes into the result."""
+    project = Path(project_dir)
+    if not is_project(project):
+        return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
+    installed = install_scripts(project, which=("edit",))
+    # Not the project's Temp/: the editor clears files it did not make there
+    # as it quits (measured: the result was gone by the time the call returned).
+    import tempfile
+    result = Path(tempfile.gettempdir()) / f"bgate_unity_edit_{verb.lower()}_{time.time_ns()}.json"
+    got = execute_method(str(project), f"{EDIT_CLASS}.{verb}", timeout=timeout,
+                         env={**env, "BGATE_EDIT_RESULT": str(result)})
+    got["install"] = installed
+    try:
+        reported = json.loads(result.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        reported = None
+    try:
+        result.unlink()
+    except OSError:
+        pass
+    if reported is None:
+        if got.get("ok"):
+            got["ok"] = False
+            got["error"] = (f"BGateEdit.{verb} exited clean but wrote no result; "
+                            "read `output` for what it logged")
+        return got
+    run_ok = got.get("ok", False)
+    run_error = got.get("error")
+    got.update(reported)
+    got["ok"] = bool(reported.get("ok")) and run_ok
+    if not got["ok"] and not reported.get("error") and run_error:
+        got["error"] = run_error
+    return got
+
+
+def import_asset(project_dir: str | os.PathLike[str], source: str | os.PathLike[str],
+                 dest: str = "", *, sprite: bool = False, pixels_per_unit: float = 0,
+                 point_filter: bool = False, overwrite: bool = False,
+                 timeout: int = 600) -> dict:
+    """Copy an image, model or sound into Assets/ and have the editor import it.
+
+    `dest` is the path under Assets/ (a folder ending in "/" keeps the file's
+    name; empty is Assets/Imported/<name>). The editor writes the .meta and
+    reports the GUID and what the asset loaded as; `sprite` makes a texture a
+    Sprite, `point_filter` turns off filtering and compression for pixel art.
+    """
+    project = Path(project_dir)
+    if not is_project(project):
+        return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
+    src = Path(source)
+    if not src.is_file():
+        return {"ok": False, "error": f"source file not found: {source}"}
+    suffix = src.suffix.lower()
+    if suffix not in IMPORTABLE:
+        return {"ok": False, "error": (
+            f"{suffix or 'a file with no extension'} is not importable here. "
+            ".unity, .prefab and .meta files are the editor's own output and "
+            "are made in place (unity_place_prefab, unity_set_field), never "
+            "copied in.")}
+    wanted = dest.strip() or "Assets/Imported/"
+    if wanted.replace("\\", "/").endswith("/"):
+        wanted = wanted.replace("\\", "/") + src.name
+    rel, err = _assets_rel(project, wanted)
+    if err:
+        return {"ok": False, "error": err}
+    if Path(rel).suffix.lower() != suffix:
+        return {"ok": False, "error": f"{rel} must keep the source's {suffix} extension; "
+                                      "Unity picks the importer by extension"}
+    target = project / rel
+    if target.exists() and not overwrite:
+        return {"ok": False, "exists": True, "path": rel,
+                "error": f"{rel} already exists; pass overwrite=True to replace it "
+                         "(its .meta and GUID are kept, so references survive)"}
+    if editor_open(project):
+        return {"ok": False, "editor_open": True,
+                "error": "the Unity editor has this project open; close it first"}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, target)
+    env = {"BGATE_IMPORT_PATH": rel,
+           "BGATE_IMPORT_SPRITE": "1" if sprite else "",
+           "BGATE_IMPORT_POINT": "1" if point_filter else "",
+           "BGATE_IMPORT_PPU": str(float(pixels_per_unit)) if pixels_per_unit else ""}
+    got = _edit(project, "Import", env, timeout=timeout)
+    got.setdefault("path", rel)
+    got["copied"] = str(target)
+    return got
+
+
+def place_prefab(project_dir: str | os.PathLike[str], prefab: str, *, scene: str = "",
+                 name: str = "", parent: str = "", position=None, rotation=None,
+                 scale=None, timeout: int = 600) -> dict:
+    """Instantiate a prefab (or an imported model) into a scene and save it.
+
+    PrefabUtility.InstantiatePrefab keeps the prefab link, so later edits to
+    the prefab reach this instance. `scene` empty is the first Build Settings
+    scene; `parent` is a hierarchy path ("Level/Props"); position, rotation
+    (euler degrees) and scale are local, as [x, y, z].
+    """
+    project = Path(project_dir)
+    rel, err = _assets_rel(project, prefab)
+    if err:
+        return {"ok": False, "error": f"prefab: {err}"}
+    env = {"BGATE_PREFAB": rel, "BGATE_NAME": name or "", "BGATE_PARENT": parent or ""}
+    if scene:
+        srel, err = _assets_rel(project, scene, suffixes=(".unity",))
+        if err:
+            return {"ok": False, "error": f"scene: {err}"}
+        env["BGATE_SCENE"] = srel
+    for key, value, what in (("BGATE_POS", position, "position"),
+                             ("BGATE_ROT", rotation, "rotation"),
+                             ("BGATE_SCALE", scale, "scale")):
+        text, err = _vec(value, what)
+        if err:
+            return {"ok": False, "error": err}
+        env[key] = text
+    return _edit(project, "Place", env, timeout=timeout)
+
+
+def _value_text(value) -> str:
+    """The text BGateEdit.Assign parses: lists become "a,b,c", bools lower."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return ",".join(_value_text(v) for v in value)
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def set_field(project_dir: str | os.PathLike[str], component: str, field: str, value,
+              *, object_path: str = "", scene: str = "", prefab: str = "",
+              add: bool = False, timeout: int = 600) -> dict:
+    """Set one serialized field on a component, in a scene or a prefab asset.
+
+    Goes through SerializedObject, the inspector's own path, so the result
+    is exactly what typing it in the inspector would save. `field` is the
+    serialized property path (a script's field name, or m_LocalPosition on a
+    Transform). The result carries `before` and `after`; a wrong field name
+    comes back with the component's real `fields`.
+    """
+    project = Path(project_dir)
+    if not str(component or "").strip() or not str(field or "").strip():
+        return {"ok": False, "error": "component and field are required"}
+    if scene and prefab:
+        return {"ok": False, "error": "pass scene or prefab, not both"}
+    env = {"BGATE_COMPONENT": component.strip(), "BGATE_FIELD": field.strip(),
+           "BGATE_VALUE": _value_text(value), "BGATE_OBJECT": object_path or "",
+           "BGATE_ADD": "1" if add else ""}
+    if prefab:
+        rel, err = _assets_rel(project, prefab, suffixes=(".prefab",))
+        if err:
+            return {"ok": False, "error": f"prefab: {err}"}
+        env["BGATE_PREFAB"] = rel
+    else:
+        if not object_path:
+            return {"ok": False, "error": "object_path is required for a scene edit "
+                                          "(the hierarchy path, like Player)"}
+        if scene:
+            rel, err = _assets_rel(project, scene, suffixes=(".unity",))
+            if err:
+                return {"ok": False, "error": f"scene: {err}"}
+            env["BGATE_SCENE"] = rel
+    return _edit(project, "SetField", env, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
