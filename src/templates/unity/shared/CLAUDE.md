@@ -26,6 +26,15 @@ From an agent session the moves are:
 - `engine_screenshot`: the bundled editor script renders a scene's camera to a
   PNG. A still of the saved scene, not a frame of play.
 - `unity_execute`: `-executeMethod` on a static method the project ships.
+- `unity_import_asset`: copies an image, model or sound into `Assets/` and
+  has the editor import it (sprite and pixel-art settings on request). The
+  result names the GUID and whether the asset can be placed.
+- `unity_place_prefab`: instantiates a prefab or imported model into a scene
+  at a position, under a parent, and saves the scene.
+- `unity_set_field`: sets one serialized field on a component in a scene or
+  a prefab, through the inspector's own path. Returns `before` and `after`.
+  These three are how a scene changes. Never edit `.unity`, `.prefab` or
+  `.meta` text by hand.
 - `unity_build`: a Windows player of the Build Settings scenes into
   `Builds/BGatePlayer/`, reused until a file under `Assets/` changes.
 - `unity_play`: runs that player for N seconds of game time with telemetry

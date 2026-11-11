@@ -68,6 +68,27 @@ FAKE = textwrap.dedent('''
         scenes = os.path.join(opt("-projectPath"), "Assets", "Scenes")
         os.makedirs(scenes, exist_ok=True)
         open(os.path.join(scenes, "Main.unity"), "w").write("kind " + os.environ.get("BGATE_KIND", ""))
+    method = opt("-executeMethod")
+    if method.startswith("BGate.Editor.BGateEdit."):
+        import json
+        verb = method.rsplit(".", 1)[-1]
+        env = {k: v for k, v in os.environ.items() if k.startswith("BGATE_")}
+        rep = {"ok": mode != "edit_fail", "verb": verb, "env": env}
+        if mode == "edit_fail":
+            rep["error"] = "Player has no Rigidbody (pass add=true to add it)"
+            code = 2
+        elif verb == "Import":
+            rel = env["BGATE_IMPORT_PATH"]
+            open(os.path.join(opt("-projectPath"), rel + ".meta"), "w").write("guid: abc\\n")
+            rep.update({"path": rel, "guid": "abc", "main_type": "Texture2D", "placeable": False})
+        elif verb == "Place":
+            rep.update({"scene": env.get("BGATE_SCENE") or "Assets/Scenes/Main.unity",
+                        "object": env.get("BGATE_NAME") or "Crate"})
+        elif verb == "SetField":
+            rep.update({"asset": env.get("BGATE_PREFAB") or env.get("BGATE_SCENE") or "Assets/Scenes/Main.unity",
+                        "before": "5", "after": env["BGATE_VALUE"]})
+        if mode != "edit_silent":
+            open(env["BGATE_EDIT_RESULT"], "w", encoding="utf-8").write(json.dumps(rep))
     if log:
         open(log, "w", encoding="utf-8").write("\\n".join(lines) + "\\n")
     sys.exit(code)
@@ -592,3 +613,142 @@ class TestPlayer:
         (project / "Assets" / "Scripts" / "Hero.cs").write_text(
             'if (BGate.BGateInput.Held("move_right")) x += 1;', encoding="utf-8")
         assert agentplay._unity_wired(project) is True
+
+class TestEdits:
+    """Import, place and set a field: always the editor's API, never YAML."""
+
+    def _png(self, tmp_path, name="hero.png"):
+        src = tmp_path / "art" / name
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(bytes([0x89]) + b"PNG fake")
+        return src
+
+    def test_the_shipped_source_has_every_verb(self):
+        edit = (unity.TEMPLATE_DIR / unity.EDIT_FILE).read_text(encoding="utf-8")
+        ns, cls = unity.EDIT_CLASS.rsplit(".", 1)
+        assert f"namespace {ns}" in edit and f"class {cls}" in edit
+        for verb in ("Import", "Place", "SetField"):
+            assert f"public static void {verb}()" in edit
+        for api in ("AssetDatabase.ImportAsset", "PrefabUtility.InstantiatePrefab",
+                    "PrefabUtility.SaveAsPrefabAsset", "EditorSceneManager.SaveScene",
+                    "SerializedObject", "BGATE_EDIT_RESULT"):
+            assert api in edit, api
+
+    def test_import_copies_installs_the_script_and_reports_the_guid(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.import_asset(project, self._png(tmp_path), "Assets/Art/", sprite=True,
+                                 pixels_per_unit=16, point_filter=True, timeout=60)
+        assert got["ok"] is True, got
+        assert got["path"] == "Assets/Art/hero.png" and got["guid"] == "abc"
+        assert (project / "Assets" / "Art" / "hero.png").is_file()
+        assert unity.scripts_installed(project)["edit"]
+        env = got["env"]
+        assert env["BGATE_IMPORT_SPRITE"] == "1" and env["BGATE_IMPORT_POINT"] == "1"
+        assert env["BGATE_IMPORT_PPU"] == "16.0"
+        assert "BGate.Editor.BGateEdit.Import" in got["command"]
+
+    def test_import_defaults_to_assets_imported_and_will_not_clobber(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        src = self._png(tmp_path)
+        assert unity.import_asset(project, src, timeout=60)["path"] == "Assets/Imported/hero.png"
+        again = unity.import_asset(project, src, timeout=60)
+        assert again["ok"] is False and again["exists"] is True and "overwrite" in again["error"]
+        assert unity.import_asset(project, src, overwrite=True, timeout=60)["ok"] is True
+
+    @pytest.mark.parametrize("dest,needle", [
+        ("../outside.png", "under Assets/"),
+        ("Assets/../ProjectSettings/x.png", "under Assets/"),
+        ("Packages/x.png", "under Assets/"),
+        ("Assets/Art/hero.jpg", "extension"),
+    ])
+    def test_import_refuses_a_destination_outside_assets(self, fake_editor, tmp_path, dest, needle):
+        project = _unity_project(tmp_path / "game")
+        got = unity.import_asset(project, self._png(tmp_path), dest, timeout=60)
+        assert got["ok"] is False and needle in got["error"]
+        assert not (tmp_path / "outside.png").exists()
+
+    @pytest.mark.parametrize("name", ["Main.unity", "Crate.prefab", "hero.png.meta"])
+    def test_import_refuses_the_editors_own_serialized_files(self, fake_editor, tmp_path, name):
+        project = _unity_project(tmp_path / "game")
+        src = tmp_path / name
+        src.write_text("%YAML 1.1", encoding="utf-8")
+        got = unity.import_asset(project, src, timeout=60)
+        assert got["ok"] is False and "never copied in" in got["error"]
+
+    def test_import_is_refused_while_the_editor_holds_the_project(self, fake_editor, tmp_path,
+                                                                  monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        _hold_lock(monkeypatch, project)
+        got = unity.import_asset(project, self._png(tmp_path), timeout=60)
+        assert got["ok"] is False and got["editor_open"] is True
+        assert not (project / "Assets" / "Imported").exists()
+
+    def test_place_passes_the_transform_as_text(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.place_prefab(project, "Assets/Prefabs/Crate.prefab",
+                                 scene="Assets/Scenes/Main.unity", name="Crate1",
+                                 parent="Level", position=[1, 0.5, -2], rotation="0,90,0",
+                                 timeout=60)
+        assert got["ok"] is True, got
+        env = got["env"]
+        assert env["BGATE_PREFAB"] == "Assets/Prefabs/Crate.prefab"
+        assert env["BGATE_POS"] == "1.0,0.5,-2.0" and env["BGATE_ROT"] == "0.0,90.0,0.0"
+        assert env.get("BGATE_SCALE", "") == "" and env["BGATE_PARENT"] == "Level"
+        assert got["object"] == "Crate1"
+
+    def test_place_refuses_bad_input_without_starting_the_editor(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        assert "inside" in unity.place_prefab(project, str(tmp_path / "x.prefab"))["error"]
+        assert ".unity" in unity.place_prefab(project, "Assets/x.prefab",
+                                              scene="Assets/Main.txt")["error"]
+        assert "three numbers" in unity.place_prefab(project, "Assets/x.prefab",
+                                                     position=[1, 2])["error"]
+
+    def test_set_field_encodes_values_and_reports_before_and_after(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.set_field(project, "PlayerController", "speed", 7.5,
+                              object_path="Player", timeout=60)
+        assert got["ok"] is True, got
+        assert got["before"] == "5" and got["after"] == "7.5"
+        assert got["env"]["BGATE_OBJECT"] == "Player"
+        assert unity._value_text([1, 2, 3]) == "1,2,3"
+        assert unity._value_text(True) == "true" and unity._value_text(None) == "null"
+
+    def test_set_field_on_a_prefab_needs_no_object_path(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.set_field(project, "Light", "m_Intensity", "2",
+                              prefab="Assets/Prefabs/Lamp.prefab", add=True, timeout=60)
+        assert got["ok"] is True and got["asset"] == "Assets/Prefabs/Lamp.prefab"
+        assert got["env"]["BGATE_ADD"] == "1" and "BGATE_SCENE" not in got["env"]
+
+    def test_set_field_refusals(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        assert "object_path" in unity.set_field(project, "X", "y", 1)["error"]
+        assert "not both" in unity.set_field(project, "X", "y", 1, scene="Assets/a.unity",
+                                             prefab="Assets/a.prefab")["error"]
+        assert ".prefab" in unity.set_field(project, "X", "y", 1,
+                                            prefab="Assets/a.fbx")["error"]
+        assert "required" in unity.set_field(project, "", "y", 1)["error"]
+
+    def test_the_editors_error_is_the_result(self, fake_editor, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("FAKE_UNITY_MODE", "edit_fail")
+        got = unity.set_field(project, "Rigidbody", "mass", 2, object_path="Player",
+                              timeout=60)
+        assert got["ok"] is False and "no Rigidbody" in got["error"]
+
+    def test_a_clean_exit_with_no_result_is_a_failure(self, fake_editor, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("FAKE_UNITY_MODE", "edit_silent")
+        got = unity.place_prefab(project, "Assets/x.prefab", timeout=60)
+        assert got["ok"] is False and "wrote no result" in got["error"]
+
+    def test_the_tools_are_unity_owned_and_seated(self):
+        from bgate_core import seattools
+        from bgate_core.store import modules
+        for name in ("unity_import_asset", "unity_place_prefab", "unity_set_field"):
+            assert engines.tool_owner(name) == "unity"
+            assert not engines.tool_enabled(name, "godot")
+            assert name in modules.SPINE_GROUPS["engine"]
+        assert "unity_import_asset" in seattools.SEATS["art"]
+        assert "unity_place_prefab" in seattools.SEATS["level"]
