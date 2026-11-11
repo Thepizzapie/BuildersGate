@@ -59,6 +59,11 @@ FAKE = textwrap.dedent('''
         open(os.path.join(made, "ProjectSettings", "ProjectVersion.txt"), "w").write(
             "m_EditorVersion: 6000.1.7f1\\n")
         open(os.path.join(made, "Packages", "manifest.json"), "w").write('{"dependencies": {}}')
+    if opt("-executeMethod") == "BGate.Editor.BGateBuild.Player" and mode != "build_fail":
+        exe = os.environ["BGATE_BUILD_OUT"]
+        os.makedirs(os.path.dirname(exe), exist_ok=True)
+        open(exe, "w").write("fake player")
+        lines.append("BGateBuild: Succeeded " + exe)
     if opt("-executeMethod") == "BGate.Editor.BGateScaffold.Build":
         scenes = os.path.join(opt("-projectPath"), "Assets", "Scenes")
         os.makedirs(scenes, exist_ok=True)
@@ -401,7 +406,8 @@ class TestEngineAxis:
 
     def test_the_tools_are_owned_and_the_neutral_ones_reach_them(self):
         for name in ("unity_status", "unity_check", "unity_test_run",
-                     "unity_execute", "unity_install_scripts", "unity_screenshot"):
+                     "unity_execute", "unity_install_scripts", "unity_screenshot",
+                     "unity_build", "unity_play"):
             assert engines.tool_owner(name) == "unity"
             assert not engines.tool_enabled(name, "godot")
         assert engines.tool_enabled("engine_screenshot", "unity")
@@ -515,3 +521,74 @@ class TestScaffold:
         base = _unity_project(tmp_path / "game")
         got = unity.scaffold_prepare(base)
         assert got == {"ok": True, "action": "exists", "path": str(base)}
+
+
+class TestPlayer:
+    def test_build_installs_the_scripts_then_reuses_a_fresh_player(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.build_player(project, timeout=60)
+        assert got["ok"] is True and got["cached"] is False, got
+        exe = Path(got["exe"])
+        assert exe.is_file() and exe.parent == project / "Builds" / "BGatePlayer"
+        have = unity.scripts_installed(project)
+        assert have["agent"] and have["build"] and have["telemetry"]
+        os.utime(exe, (exe.stat().st_mtime + 10,) * 2)
+        again = unity.build_player(project, timeout=60)
+        assert again["ok"] is True and again["cached"] is True
+        forced = unity.build_player(project, timeout=60, force=True)
+        assert forced["cached"] is False
+
+    def test_an_edited_script_makes_the_player_stale(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        exe = Path(unity.build_player(project, timeout=60)["exe"])
+        os.utime(exe, (1, 1))
+        assert unity.build_player(project, timeout=60)["cached"] is False
+
+    def test_a_build_that_writes_no_player_fails(self, fake_editor, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("FAKE_UNITY_MODE", "build_fail")
+        got = unity.build_player(project, timeout=60)
+        assert got["ok"] is False and "no player" in got["error"]
+
+    def test_player_args_headless_draws_nothing(self, tmp_path):
+        args = unity.player_args("P.exe", log_path=tmp_path / "p.log", headless=True)
+        assert "-batchmode" in args and "-nographics" in args
+        windowed = unity.player_args("P.exe", log_path=tmp_path / "p.log")
+        assert "-batchmode" not in windowed and "-screen-fullscreen" in windowed
+
+    def test_player_log_errors_keep_the_game_and_drop_the_noise(self):
+        log = ("NullReferenceException: Object reference not set\n"
+               "loading scene\n"
+               "d3d11: failed to create staging 2D texture\n"
+               "NullReferenceException: Object reference not set\n")
+        assert unity.player_log_errors(log) == [
+            "NullReferenceException: Object reference not set"]
+
+    def test_the_agent_source_keeps_the_wire_contract(self):
+        agent = (unity.TEMPLATE_DIR / unity.AGENT_FILE).read_text(encoding="utf-8")
+        for needle in ("BGATE_AGENT_URL", "BGATE_AGENT_EVERY", "BGATE_AGENT_LOCKSTEP",
+                       "BGATE_AGENT_SECONDS", "BGATE_SCENE", "interface IBGateObserver",
+                       "class BGateInput", "DefaultExecutionOrder", "\\\"progress\\\"",
+                       "\\\"danger\\\"", "agent_decision"):
+            assert needle in agent, needle
+        build = (unity.TEMPLATE_DIR / unity.BUILD_FILE).read_text(encoding="utf-8")
+        ns, cls, method = unity.BUILD_METHOD.rsplit(".", 2)
+        assert f"namespace {ns}" in build and f"class {cls}" in build
+        assert f"public static void {method}()" in build and "BGATE_BUILD_OUT" in build
+
+    def test_the_template_players_read_the_bot(self):
+        root = unity.TEMPLATE_DIR.parents[2]
+        for rel in ("2d/Assets/Scripts/PlayerController2D.cs",
+                    "3d/Assets/Scripts/PlayerController.cs"):
+            text = (root / rel).read_text(encoding="utf-8")
+            assert "BGateInput.Declare(" in text and "BGateInput.Held(" in text
+            assert "BGateInput.Down(\"jump\")" in text
+
+    def test_wired_means_the_games_own_code_reads_the_bot(self, tmp_path):
+        from bgate_core.qa import agentplay
+        project = _unity_project(tmp_path / "game")
+        unity.install_scripts(project, which=("agent",))
+        assert agentplay._unity_wired(project) is False
+        (project / "Assets" / "Scripts" / "Hero.cs").write_text(
+            'if (BGate.BGateInput.Held("move_right")) x += 1;', encoding="utf-8")
+        assert agentplay._unity_wired(project) is True

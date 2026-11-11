@@ -57,6 +57,7 @@ namespace BGate.Editor
 
             var player = GameObject.CreatePrimitive(PrimitiveType.Capsule);
             player.name = "Player";
+            player.tag = "Player";   // what BGateAgent's generic view looks for
             player.transform.position = new Vector3(0f, 1.1f, 0f);
             Object.DestroyImmediate(player.GetComponent<CapsuleCollider>());
             var cc = player.AddComponent<CharacterController>();

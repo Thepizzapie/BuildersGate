@@ -44,6 +44,7 @@ namespace BGate.Editor
             Block("Ledge", sprite, new Vector2(4f, -1.5f), new Vector2(3f, 0.5f), new Color(0.27f, 0.31f, 0.37f));
 
             var player = new GameObject("Player");
+            player.tag = "Player";   // what BGateAgent's generic view looks for
             player.transform.position = new Vector3(-4f, -2.5f, 0f);
             player.transform.localScale = new Vector3(0.8f, 1.2f, 1f);
             var sr = player.AddComponent<SpriteRenderer>();

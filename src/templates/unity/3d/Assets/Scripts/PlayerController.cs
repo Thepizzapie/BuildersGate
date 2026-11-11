@@ -32,7 +32,12 @@ public class PlayerController : MonoBehaviour
     float _startY;
     float _peakY;
 
-    void Awake() { _cc = GetComponent<CharacterController>(); }
+    void Awake()
+    {
+        _cc = GetComponent<CharacterController>();
+        // What a playtest bot may press (BGateAgent). Inert without a bot.
+        BGate.BGateInput.Declare("move_forward", "move_back", "move_left", "move_right", "jump");
+    }
 
     void Update()
     {
@@ -79,22 +84,30 @@ public class PlayerController : MonoBehaviour
 
     static Vector2 Move()
     {
+        float x = 0f, y = 0f;
+        if (BGate.BGateInput.Held("move_left")) x -= 1f;
+        if (BGate.BGateInput.Held("move_right")) x += 1f;
+        if (BGate.BGateInput.Held("move_back")) y -= 1f;
+        if (BGate.BGateInput.Held("move_forward")) y += 1f;
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
         var k = Keyboard.current;
-        if (k == null) return Vector2.zero;
-        float x = 0f, y = 0f;
-        if (k.aKey.isPressed || k.leftArrowKey.isPressed) x -= 1f;
-        if (k.dKey.isPressed || k.rightArrowKey.isPressed) x += 1f;
-        if (k.sKey.isPressed || k.downArrowKey.isPressed) y -= 1f;
-        if (k.wKey.isPressed || k.upArrowKey.isPressed) y += 1f;
-        return new Vector2(x, y);
+        if (k != null)
+        {
+            if (k.aKey.isPressed || k.leftArrowKey.isPressed) x -= 1f;
+            if (k.dKey.isPressed || k.rightArrowKey.isPressed) x += 1f;
+            if (k.sKey.isPressed || k.downArrowKey.isPressed) y -= 1f;
+            if (k.wKey.isPressed || k.upArrowKey.isPressed) y += 1f;
+        }
 #else
-        return new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+        x += Input.GetAxisRaw("Horizontal");
+        y += Input.GetAxisRaw("Vertical");
 #endif
+        return new Vector2(Mathf.Clamp(x, -1f, 1f), Mathf.Clamp(y, -1f, 1f));
     }
 
     static bool JumpPressed()
     {
+        if (BGate.BGateInput.Down("jump")) return true;
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
         var k = Keyboard.current;
         return k != null && k.spaceKey.wasPressedThisFrame;

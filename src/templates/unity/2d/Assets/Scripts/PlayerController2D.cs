@@ -36,6 +36,8 @@ public class PlayerController2D : MonoBehaviour
     void Awake()
     {
         _body = GetComponent<Rigidbody2D>();
+        // What a playtest bot may press (BGateAgent). Inert without a bot.
+        BGate.BGateInput.Declare("move_left", "move_right", "jump");
         // Ground = a contact whose normal points up (within 45 degrees).
         _ground = new ContactFilter2D();
         _ground.SetNormalAngle(45f, 135f);
@@ -81,20 +83,25 @@ public class PlayerController2D : MonoBehaviour
 
     static float Axis()
     {
+        float x = 0f;
+        if (BGate.BGateInput.Held("move_left")) x -= 1f;
+        if (BGate.BGateInput.Held("move_right")) x += 1f;
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
         var k = Keyboard.current;
-        if (k == null) return 0f;
-        float x = 0f;
-        if (k.aKey.isPressed || k.leftArrowKey.isPressed) x -= 1f;
-        if (k.dKey.isPressed || k.rightArrowKey.isPressed) x += 1f;
-        return x;
+        if (k != null)
+        {
+            if (k.aKey.isPressed || k.leftArrowKey.isPressed) x -= 1f;
+            if (k.dKey.isPressed || k.rightArrowKey.isPressed) x += 1f;
+        }
 #else
-        return Input.GetAxisRaw("Horizontal");
+        x += Input.GetAxisRaw("Horizontal");
 #endif
+        return Mathf.Clamp(x, -1f, 1f);
     }
 
     static bool JumpPressed()
     {
+        if (BGate.BGateInput.Down("jump")) return true;
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
         var k = Keyboard.current;
         return k != null && (k.spaceKey.wasPressedThisFrame || k.wKey.wasPressedThisFrame

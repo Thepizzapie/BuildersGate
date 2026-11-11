@@ -26,6 +26,15 @@ From an agent session the moves are:
 - `engine_screenshot`: the bundled editor script renders a scene's camera to a
   PNG. A still of the saved scene, not a frame of play.
 - `unity_execute`: `-executeMethod` on a static method the project ships.
+- `unity_build`: a Windows player of the Build Settings scenes into
+  `Builds/BGatePlayer/`, reused until a file under `Assets/` changes.
+- `unity_play`: runs that player for N seconds of game time with telemetry
+  on and reports what it emitted and threw. Proof it RUNS, not just compiles.
+- `playtest_agent_run` / `playtest_feel_check`: a decision model plays the
+  player. It presses through `BGate.BGateInput` (`Declare`, `Held`, `Down`),
+  which the template players already read beside the keyboard, and sees
+  what an `IBGateObserver` MonoBehaviour returns. Give it `Progress` (0..1)
+  and `Danger`, or the feel check reports the scene unmeasured.
 
 CLOSE THE EDITOR BEFORE ANY OF THEM. Two editors cannot hold one project; a
 call made while the editor is open is refused with a sentence about

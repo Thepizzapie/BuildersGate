@@ -357,7 +357,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # The web_ trio mirrors godot_run/godot_status one engine over.
         "engine_status", "engine_screenshot",
         "web_status", "web_dev", "web_dev_stop", "web_run",
-        "unity_status", "unity_install_scripts", "unity_screenshot",
+        "unity_status", "unity_install_scripts", "unity_screenshot", "unity_play",
         "handoff_note", "handoff_read",
         # kie_status STAYS CORE: kie is one key over three capabilities, so
         # filing it under `image` would hide it from the audio seat whose

@@ -196,7 +196,7 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
     }),
     "unity": frozenset({
         "unity_status", "unity_check", "unity_test_run", "unity_execute",
-        "unity_install_scripts", "unity_screenshot",
+        "unity_install_scripts", "unity_screenshot", "unity_build", "unity_play",
     }),
     NONE: frozenset(),
 }

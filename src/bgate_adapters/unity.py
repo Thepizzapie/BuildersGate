@@ -66,6 +66,14 @@ TELEMETRY_FILE = "BGateTelemetry.cs"
 CAPTURE_FILE = str(Path("Editor") / "BGateCapture.cs")   # Editor/ makes it an editor assembly
 #: The static method the capture script exposes to -executeMethod.
 CAPTURE_METHOD = "BGate.Editor.BGateCapture.Run"
+#: The bot's runtime half (BGateAgent + BGateInput) and the player builder.
+AGENT_FILE = "BGateAgent.cs"
+BUILD_FILE = str(Path("Editor") / "BGateBuild.cs")
+BUILD_METHOD = "BGate.Editor.BGateBuild.Player"
+#: Where the player build lands. Builds/ is in every Unity .gitignore. Not
+#: Library/ (BuildPlayer refuses its own cache) and not Temp/ (cleared on close).
+PLAYER_REL = Path("Builds") / "BGatePlayer"
+PLAYER_EXE = "Player.exe"
 
 #: The bundled sources, beside the Godot addon in templates/.
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "unity" / "shared" / "Assets" / "BGate"
@@ -302,6 +310,8 @@ def scripts_installed(project_dir: str | os.PathLike[str]) -> dict:
     base = Path(project_dir) / SCRIPTS_REL
     return {"telemetry": (base / TELEMETRY_FILE).is_file(),
             "capture": (base / CAPTURE_FILE).is_file(),
+            "agent": (base / AGENT_FILE).is_file(),
+            "build": (base / BUILD_FILE).is_file(),
             "dir": str(base)}
 
 
@@ -315,7 +325,8 @@ def install_scripts(project_dir: str | os.PathLike[str],
     base = Path(project_dir)
     if not is_project(base):
         return {"action": "skipped", "why": f"no {MARKER} in {project_dir}"}
-    names = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE}
+    names = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE,
+             "agent": AGENT_FILE, "build": BUILD_FILE}
     written, unchanged, missing = [], [], []
     for key in which:
         name = names.get(key)
@@ -685,6 +696,173 @@ def screenshot(project_dir: str, out_path: str, *, scene: str = "",
     got["note"] = ("a still of the saved scene rendered by the editor, not a "
                    "frame of play: nothing has run Start() or Update()")
     return got
+
+
+# ---------------------------------------------------------------------------
+# The player: a build that runs, for the bot and for unity_play
+# ---------------------------------------------------------------------------
+#: Lines in a player log that mean the game itself went wrong.
+_PLAYER_ERROR_RE = re.compile(
+    r"^(?:\w+Exception\b.*|.*\bError\b.*|Crash!!!.*)$", re.MULTILINE)
+#: Player-log noise that matches the shape and is not the game's fault.
+_PLAYER_NOISE = ("Fallback handler could not load library",
+                 "d3d11: failed to create", "Shader Error in 'Hidden/",
+                 "FMOD failed to initialize the output device")
+
+
+def player_exe(project_dir: str | os.PathLike[str]) -> Path:
+    return Path(project_dir) / PLAYER_REL / PLAYER_EXE
+
+
+def _newest_source(project: Path) -> float:
+    """The newest mtime under what a build reads: Assets/, ProjectSettings/
+    and the package manifest."""
+    newest = 0.0
+    for sub in ("Assets", "ProjectSettings"):
+        for dirpath, _dirs, files in os.walk(project / sub):
+            for name in files:
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(dirpath, name)))
+                except OSError:
+                    continue
+    try:
+        newest = max(newest, (project / "Packages" / "manifest.json").stat().st_mtime)
+    except OSError:
+        pass
+    return newest
+
+
+def build_player(project_dir: str | os.PathLike[str], *, timeout: int = 1800,
+                 force: bool = False) -> dict:
+    """A Windows standalone player of the enabled build scenes, through the
+    bundled BGateBuild editor script, into Builds/BGatePlayer/.
+
+    CACHED: a player newer than everything under Assets/ and ProjectSettings/
+    is reused (`cached: true`), because a build is minutes and a bot run
+    straight after a check should not pay it twice. `force` rebuilds.
+    Installs the agent, telemetry and build scripts first when missing, since
+    a player without them is a game no bot can drive.
+    """
+    project = Path(project_dir)
+    if not is_project(project):
+        return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
+    if os.name != "nt":
+        return {"ok": False, "error": "player builds are Windows-only for now "
+                                      "(StandaloneWindows64)"}
+    installed = install_scripts(project, which=("telemetry", "agent", "build"))
+    exe = player_exe(project)
+    if not force and exe.is_file() and exe.stat().st_mtime >= _newest_source(project):
+        return {"ok": True, "cached": True, "exe": str(exe), "install": installed}
+    got = execute_method(str(project), BUILD_METHOD, timeout=timeout,
+                         env={"BGATE_BUILD_OUT": str(exe)})
+    got.update({"exe": str(exe), "cached": False, "install": installed})
+    if got.get("ok") and not exe.is_file():
+        got["ok"] = False
+        got["error"] = ("BGateBuild exited clean but wrote no player; read "
+                        "`output` for what it logged")
+    elif not got.get("ok") and "no enabled scene" in got.get("output", ""):
+        got["error"] = ("no enabled scene in Build Settings; add the scene to "
+                        "boot (File > Build Profiles) and build again")
+    return got
+
+
+def player_args(exe: str | os.PathLike[str], *, log_path: str | os.PathLike[str],
+                headless: bool = False) -> list[str]:
+    """The command line for a player run. Headless is -batchmode -nographics:
+    every Update() and physics step runs, nothing is drawn, no window opens."""
+    args = [str(exe), "-logFile", str(log_path)]
+    if headless:
+        args += ["-batchmode", "-nographics"]
+    else:
+        args += ["-screen-fullscreen", "0", "-screen-width", "1280",
+                 "-screen-height", "720"]
+    return args
+
+
+def player_log_errors(log: str) -> list[str]:
+    """Exceptions and errors out of a player log, noise dropped, deduplicated."""
+    out: list[str] = []
+    for got in _PLAYER_ERROR_RE.finditer(log):
+        line = got.group(0).strip()
+        if not line or any(n in line for n in _PLAYER_NOISE) or line in out:
+            continue
+        out.append(line[:300])
+    return out[:20]
+
+
+def play(project_dir: str | os.PathLike[str], *, seconds: float = 10.0,
+         scene: str = "", headless: bool = True, build_timeout: int = 1800) -> dict:
+    """Build (or reuse) the player, run it for `seconds` of game time with
+    telemetry on, and report what the game emitted and what it threw.
+
+    The Unity answer to godot_run / web_run: proof the game RUNS, as
+    against engine_check's proof that it compiles. `scene` is a Build
+    Settings scene path or name to load first; empty boots the first.
+    """
+    project = Path(project_dir)
+    built = build_player(project, timeout=build_timeout)
+    if not built.get("ok"):
+        return {**built, "ran": False}
+    out_dir = _scratch(project)
+    stamp = int(time.time())
+    telemetry = out_dir / f"play_{stamp}.jsonl"
+    log_path = out_dir / f"play_{stamp}.log"
+    env = {**os.environ, "BGATE_TELEMETRY": str(telemetry),
+           "BGATE_AUTOQUIT": str(float(seconds))}
+    if scene:
+        # BGateAgent switches scenes; with no BGATE_AGENT_URL it does only that.
+        env["BGATE_SCENE"] = scene
+    wall_cap = float(seconds) * 4 + 60
+    started = time.monotonic()
+    timed_out = False
+    try:
+        proc = subprocess.Popen(player_args(built["exe"], log_path=log_path,
+                                            headless=headless),
+                                cwd=str(Path(built["exe"]).parent), env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    except OSError as exc:
+        return {"ok": False, "ran": False, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        code = proc.wait(timeout=wall_cap)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        code, timed_out = proc.wait(), True
+    events: list[dict] = []
+    try:
+        for line in telemetry.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    try:
+        log = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log = ""
+    errors = player_log_errors(log)
+    kinds: dict[str, int] = {}
+    for e in events:
+        kinds[e.get("kind", "?")] = kinds.get(e.get("kind", "?"), 0) + 1
+    quit_clean = any(e.get("kind") == "autoquit" for e in events)
+    out = {"ok": quit_clean and not errors and not timed_out, "ran": True,
+           "exit_code": code, "seconds": round(time.monotonic() - started, 2),
+           "game_seconds": seconds, "events": kinds, "errors": errors,
+           "telemetry_path": str(telemetry), "log_path": str(log_path),
+           "exe": built["exe"], "cached_build": built.get("cached", False),
+           "headless": headless}
+    if timed_out:
+        out["error"] = (f"the player was still running after {wall_cap:.0f}s "
+                        "of wall time and was killed")
+    elif not events:
+        out["error"] = ("the player wrote no telemetry; is "
+                        f"Assets/BGate/{TELEMETRY_FILE} in the build?")
+    elif not quit_clean:
+        out["error"] = "the player exited before its autoquit (a crash?); read log_path"
+    elif errors:
+        out["error"] = f"{len(errors)} error line(s) in the player log; the first is {errors[0]}"
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -159,6 +159,48 @@ def unity_install_scripts(unity_project: str = "") -> dict:
 
 
 @_tool
+def unity_build(unity_project: str = "", force: bool = False,
+                timeout: int = 1800) -> dict:
+    """Build a Windows player of the enabled Build Settings scenes into
+    Builds/BGatePlayer/Player.exe through the bundled BGateBuild script.
+
+    Reused while nothing under Assets/ or ProjectSettings/ is newer
+    (`cached: true`); `force` rebuilds. Installs the telemetry, agent and
+    build scripts first when missing. A first build is minutes. Refused while
+    the editor has the project open.
+    """
+    target, refused = _need_project(unity_project)
+    if refused:
+        return refused
+    got = _unity.build_player(target, timeout=timeout, force=force)
+    for path in got.get("install", {}).get("written", []):
+        _note_tool_write(_root(), path)
+    _log("unity", f"player build {'reused' if got.get('cached') else ('ok' if got.get('ok') else 'FAILED')}: "
+                  f"{_Path(target).name}", ref=got.get("exe", ""))
+    return got
+
+
+@_tool
+def unity_play(seconds: float = 10.0, scene: str = "", headless: bool = True,
+               unity_project: str = "") -> dict:
+    """RUN the game: build (or reuse) the player, play it for `seconds` of
+    game time with telemetry on, and report the events it emitted and the
+    exceptions it threw. The Unity godot_run: proof it runs, where
+    unity_check only proves it compiles. Nobody presses anything; for a run
+    with inputs use playtest_agent_run. `scene` is a Build Settings path or
+    name to load first. `headless=False` opens a 1280x720 window.
+    """
+    target, refused = _need_project(unity_project)
+    if refused:
+        return refused
+    got = _unity.play(target, seconds=seconds, scene=scene, headless=headless)
+    _log("unity", f"played {seconds:g}s: {'ok' if got.get('ok') else 'FAILED'}"
+                  + (f", {len(got['errors'])} error(s)" if got.get("errors") else ""),
+         ref=got.get("log_path", ""))
+    return got
+
+
+@_tool
 def unity_screenshot(scene: str = "", label: str = "", unity_project: str = "",
                      width: int = 1280, height: int = 720,
                      timeout: int = 600) -> dict:
