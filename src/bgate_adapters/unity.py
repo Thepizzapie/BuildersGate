@@ -10,12 +10,15 @@ says what went wrong. So every call here writes the editor log to a file it
 owns and reads it back, because `-logFile -` reaches stdout only from a real
 console and this runs from none.
 
-WHAT IS DELIBERATELY NOT HERE: scaffolding. A Unity project is made by the Hub
-with a version and a render pipeline the user chose, and stamping one from a
-template would have to pick both for them. Unity projects are ADOPTED
-(`bgate adopt`), and the adapter installs its two scripts into an existing
-Assets/ tree instead: the telemetry MonoBehaviour and the editor capture
-script, both under Assets/BGate/ so a project can delete the whole folder.
+SCAFFOLDING IS UNITY'S OWN, NOT A COPIED TREE. `bgate init --engine unity`
+asks the editor to make the project (`-createProject`), so the version,
+ProjectSettings and package lock are whatever that editor writes, never a
+hand-kept copy that drifts a release behind. The template then lays down C#
+only, and a second batchmode run executes BGateScaffold.Build to save the
+starter scene from code. Hand-written .unity YAML and .meta GUIDs are the two
+things a Unity scaffold must never ship; this one ships neither. An existing
+project is still ADOPTED (`bgate adopt`), which installs only the two scripts
+under Assets/BGate/: the telemetry MonoBehaviour and the editor capture script.
 
 THE EDITOR HOLDS ITS OWN LOCK. Two editors cannot open one project
 (Temp/UnityLockfile), so a check while the editor is open fails with a
@@ -269,11 +272,30 @@ def product_name(project_dir: str | os.PathLike[str]) -> str:
 def editor_open(project_dir: str | os.PathLike[str]) -> bool:
     """Is an editor holding this project right now?
 
-    Unity writes Temp/UnityLockfile while open and deletes it on exit; a
-    crashed editor leaves it behind, which is why this is reported as a
-    likely cause rather than acted on.
+    THE FILE BEING THERE PROVES NOTHING. Unity 6 leaves Temp/UnityLockfile
+    behind after every clean batchmode exit (measured: -createProject, then
+    -executeMethod, and the file stays), so reading existence as "open"
+    refused every call after the first one. The editor holds the file open
+    with no sharing while it runs; whether WE can open it is the real test.
     """
-    return (Path(project_dir) / "Temp" / "UnityLockfile").is_file()
+    lock = Path(project_dir) / "Temp" / "UnityLockfile"
+    return lock.is_file() and _lock_held(lock)
+
+
+def _lock_held(lock: Path) -> bool:
+    """True when another process holds the lockfile (the editor, running)."""
+    try:
+        if os.name == "nt":
+            fd = os.open(lock, os.O_RDWR)
+            os.close(fd)
+        else:
+            import fcntl
+            with open(lock, "a") as fh:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fh, fcntl.LOCK_UN)
+    except OSError:
+        return True
+    return False
 
 
 def scripts_installed(project_dir: str | os.PathLike[str]) -> dict:
@@ -389,6 +411,103 @@ def _batch(project_dir: str, verb: list[str], *, timeout: int,
         out["error"] = (f"the editor exited {code}; read `output` for the "
                         "last lines of its log")
     return out
+
+
+#: The static method the scaffold template ships, which saves the starter scene.
+SCAFFOLD_METHOD = "BGate.Editor.BGateScaffold.Build"
+TEST_FRAMEWORK = "com.unity.test-framework"
+
+
+def _bundled_package_version(exe: str, package: str) -> str:
+    """The version of a package this editor bundles, read from its install.
+
+    Read, not hardcoded: a pinned version that the editor does not bundle sends
+    the package manager to the network on the first open, and fails offline.
+    """
+    manifest = (Path(exe).parent / "Data" / "Resources" / "PackageManager"
+                / "BuiltInPackages" / package / "package.json")
+    try:
+        return str(json.loads(manifest.read_text(encoding="utf-8"))["version"])
+    except (OSError, ValueError, KeyError):
+        return ""
+
+
+def scaffold_prepare(dest: str | os.PathLike[str], *, timeout: int = 1200) -> dict:
+    """Have the editor create an empty project at dest. The engine hook
+    scaffold.new_project calls before it copies the template.
+
+    A no-op on a directory that is already a Unity project, so a `--force`
+    top-up never re-creates anything. `-createProject` makes ProjectSettings,
+    Packages and the Library import; the Test Framework is then added to the
+    manifest because an empty project leaves it out and `unity_test_run`
+    needs it.
+    """
+    target = Path(dest)
+    if is_project(target):
+        return {"ok": True, "action": "exists", "path": str(target)}
+    try:
+        exe = find_unity()
+    except UnityNotFound as exc:
+        return {"ok": False, "error": str(exc)}
+    import tempfile
+    # The log cannot live in the project's Temp/: there is no project yet.
+    log_path = Path(tempfile.gettempdir()) / f"bgate_unity_create_{int(time.time())}.log"
+    args = [exe, "-batchmode", "-nographics", "-quit",
+            "-createProject", str(target), "-logFile", str(log_path)]
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              timeout=timeout, creationflags=_NO_WINDOW)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "timeout": True, "log_path": str(log_path),
+                "error": f"the editor did not finish creating the project "
+                         f"within {timeout}s"}
+    except OSError as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        log = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log = ""
+    out = {"ok": code == 0 and is_project(target), "exit_code": code,
+           "seconds": round(time.monotonic() - started, 2),
+           "log_path": str(log_path), "editor": exe,
+           "version": project_version(target) if is_project(target) else ""}
+    if not out["ok"]:
+        out["error"] = (f"Unity -createProject exited {code} without making "
+                        f"{MARKER}; read the log at {log_path}")
+        out["output"] = log[-3000:]
+        return out
+    manifest = target / "Packages" / "manifest.json"
+    wanted = _bundled_package_version(exe, TEST_FRAMEWORK)
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        deps = data.setdefault("dependencies", {})
+        if wanted and TEST_FRAMEWORK not in deps:
+            deps[TEST_FRAMEWORK] = wanted
+            manifest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            out["added_packages"] = {TEST_FRAMEWORK: wanted}
+    except (OSError, ValueError) as exc:
+        out["warning"] = f"could not add {TEST_FRAMEWORK} to the manifest: {exc}"
+    out["action"] = "created"
+    return out
+
+
+def scaffold_finish(project_dir: str | os.PathLike[str], kind: str = "2d",
+                    *, timeout: int = 1200) -> dict:
+    """Run the template's BGateScaffold.Build: saves Assets/Scenes/Main.unity
+    and puts it first in the build settings. Leaves an existing scene alone,
+    so it is safe to run again."""
+    got = execute_method(str(project_dir), SCAFFOLD_METHOD, timeout=timeout,
+                         env={"BGATE_KIND": kind})
+    scene = Path(project_dir) / "Assets" / "Scenes" / "Main.unity"
+    got["scene"] = str(scene)
+    if got.get("ok") and not scene.is_file():
+        got["ok"] = False
+        got["error"] = ("BGateScaffold.Build exited clean but saved no scene; "
+                        "read `output` for what it logged")
+    return got
 
 
 def log_errors(log: str) -> list[str]:

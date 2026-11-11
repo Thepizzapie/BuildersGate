@@ -52,6 +52,17 @@ FAKE = textwrap.dedent('''
         os.makedirs(os.path.dirname(out), exist_ok=True)
         open(out, "wb").write(b"\\x89PNG fake")
         lines.append("BGateCapture: wrote " + out)
+    made = opt("-createProject")
+    if made and mode != "create_fail":
+        os.makedirs(os.path.join(made, "ProjectSettings"), exist_ok=True)
+        os.makedirs(os.path.join(made, "Packages"), exist_ok=True)
+        open(os.path.join(made, "ProjectSettings", "ProjectVersion.txt"), "w").write(
+            "m_EditorVersion: 6000.1.7f1\\n")
+        open(os.path.join(made, "Packages", "manifest.json"), "w").write('{"dependencies": {}}')
+    if opt("-executeMethod") == "BGate.Editor.BGateScaffold.Build":
+        scenes = os.path.join(opt("-projectPath"), "Assets", "Scenes")
+        os.makedirs(scenes, exist_ok=True)
+        open(os.path.join(scenes, "Main.unity"), "w").write("kind " + os.environ.get("BGATE_KIND", ""))
     if log:
         open(log, "w", encoding="utf-8").write("\\n".join(lines) + "\\n")
     sys.exit(code)
@@ -92,11 +103,19 @@ def _unity_project(base: Path, version: str = "2022.3.10f1") -> Path:
     return base
 
 
+def _hold_lock(monkeypatch, project):
+    """An editor holding the project: the lockfile exists AND is held."""
+    temp = Path(project) / "Temp"
+    temp.mkdir(exist_ok=True)
+    (temp / "UnityLockfile").write_bytes(b"")
+    monkeypatch.setattr(unity, "_lock_held", lambda lock: True)
+
+
 class TestDiscovery:
     def test_the_registry_drives_unity_now(self):
         assert engines.supported("unity")
         assert engines.adapter("unity") is unity
-        assert engines.template_dir_name("unity") == ""
+        assert engines.template_dir_name("unity") == "unity"
         assert engines.shared_dir_name("unity") == "unity"
         assert "unity" in engines.doctor_rows("unity")
 
@@ -139,7 +158,7 @@ class TestDiscovery:
         with pytest.raises(unity.UnityNotFound, match="install is incomplete"):
             unity.find_unity()
 
-    def test_project_facts_are_read_off_the_files(self, tmp_path):
+    def test_project_facts_are_read_off_the_files(self, tmp_path, monkeypatch):
         project = _unity_project(tmp_path)
         assert unity.is_project(project)
         assert unity.project_version(project) == "2022.3.10f1"
@@ -147,6 +166,10 @@ class TestDiscovery:
         assert unity.editor_open(project) is False
         (project / "Temp").mkdir()
         (project / "Temp" / "UnityLockfile").write_bytes(b"")
+        # Unity 6 leaves the file behind after every clean batchmode exit, so
+        # a lockfile nobody holds is NOT an open editor.
+        assert unity.editor_open(project) is False
+        _hold_lock(monkeypatch, project)
         assert unity.editor_open(project) is True
 
 
@@ -170,10 +193,9 @@ class TestBatchmode:
         assert "Scripts have compiler errors" in got["errors"]
         assert "1 compile error" in got["error"] or "compile error(s)" in got["error"]
 
-    def test_an_open_editor_is_refused_not_run(self, fake_editor, tmp_path):
+    def test_an_open_editor_is_refused_not_run(self, fake_editor, tmp_path, monkeypatch):
         project = _unity_project(tmp_path)
-        (project / "Temp").mkdir()
-        (project / "Temp" / "UnityLockfile").write_bytes(b"")
+        _hold_lock(monkeypatch, project)
         got = unity.check_project(str(project), timeout=60)
         assert got["ok"] is False and got["editor_open"] is True
         assert "UnityLockfile" in got["error"]
@@ -329,8 +351,7 @@ class TestEngineAxis:
         assert playtest.game_window_hints(base) == ["Neon Drift", "Unity"]
         check = playtest.preflight(root=str(base), native=True)["checks"]["native_game"]
         assert check["engine"] == "unity" and check["ok"] is True
-        (base / "Temp").mkdir()
-        (base / "Temp" / "UnityLockfile").write_bytes(b"")
+        _hold_lock(monkeypatch, base)
         check = playtest.preflight(root=str(base), native=True)["checks"]["native_game"]
         assert check["ok"] is False and "already has this project open" in check["reason"]
 
@@ -404,7 +425,7 @@ class TestDimension:
 
 
 class TestFirstRunAdopt:
-    def test_the_card_offers_unity_as_an_adopt_path(self, tmp_path, monkeypatch):
+    def test_the_card_offers_unity_to_create_or_adopt(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
         from bgate_ui.app import app
         monkeypatch.setenv("BGATE_ROOT", str(tmp_path / "nowhere"))
@@ -412,9 +433,10 @@ class TestFirstRunAdopt:
         got = client.get("/api/project").json()
         body = got.get("data", got)
         engines = {e["name"]: e for e in body["engines"]}
-        # Unity is offered, with nothing to scaffold: the card adopts it.
-        assert engines["unity"]["adopt_only"] is True
-        assert engines["unity"]["templates"] == []
+        # Unity is scaffolded by the editor now, 2D and 3D.
+        assert engines["unity"]["adopt_only"] is False
+        assert [t["kind"] for t in engines["unity"]["templates"]
+                if t["available"]] == ["2d", "3d"]
         assert engines["godot"]["adopt_only"] is False
         assert "none" not in engines
 
@@ -454,3 +476,42 @@ class TestEngineScreenshotDispatch:
         got = tools_web.engine_screenshot.__wrapped__(scene="Assets/Scenes/Main.unity", label="t")
         assert not inspect.iscoroutine(got)
         assert got["engine"] == "unity" and got["ok"] is True and seen["scene"] == "Assets/Scenes/Main.unity"
+
+
+class TestScaffold:
+    """`bgate init --engine unity`: the editor makes the project, the template
+    overlays C#, BGateScaffold.Build saves the scene."""
+
+    def _bundle_test_framework(self, fake_editor, version="1.5.1"):
+        pkg = (Path(fake_editor).parent / "Data" / "Resources" / "PackageManager"
+               / "BuiltInPackages" / "com.unity.test-framework")
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+
+    def test_init_creates_overlays_and_builds_the_scene(self, fake_editor, tmp_path):
+        from bgate_core.store import scaffold
+        self._bundle_test_framework(fake_editor)
+        target = tmp_path / "game"
+        got = scaffold.new_project(target, "Neon Drift", kind="3d", engine="unity")
+        assert got["ok"] is True, got
+        assert got["engine_setup"]["prepare"]["action"] == "created"
+        assert (target / "Assets" / "Scripts" / "PlayerController.cs").is_file()
+        assert (target / "Assets" / "BGate" / "Editor" / "BGateScaffold.cs").is_file()
+        assert (target / "Assets" / "Tests" / "EditMode" / "StarterSceneTests.cs").is_file()
+        assert (target / "Assets" / "Scenes" / "Main.unity").read_text() == "kind 3d"
+        deps = json.loads((target / "Packages" / "manifest.json").read_text())["dependencies"]
+        assert deps["com.unity.test-framework"] == "1.5.1"
+
+    def test_a_failed_create_is_an_error_not_a_half_project(self, fake_editor, tmp_path,
+                                                            monkeypatch):
+        from bgate_core.store import scaffold
+        monkeypatch.setenv("FAKE_UNITY_MODE", "create_fail")
+        target = tmp_path / "game"
+        with pytest.raises(scaffold.EngineScaffoldError):
+            scaffold.new_project(target, "Neon Drift", kind="2d", engine="unity")
+        assert not (target / "Assets").exists()
+
+    def test_an_existing_project_is_never_recreated(self, fake_editor, tmp_path):
+        base = _unity_project(tmp_path / "game")
+        got = unity.scaffold_prepare(base)
+        assert got == {"ok": True, "action": "exists", "path": str(base)}

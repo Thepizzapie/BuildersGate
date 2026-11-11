@@ -4,10 +4,13 @@ A Builders Gate project. This file is what your Claude session reads first.
 
 ## What this is
 
-A Unity game, adopted as it stands: Builders Gate did not scaffold it and does
-not change its render pipeline, packages or editor version. Two scripts live
-under `Assets/BGate/`: the telemetry MonoBehaviour and an editor capture
-script. Delete the folder and nothing else of Builders Gate is in the project.
+A Unity game. Either `bgate init --engine unity` had the editor create it (a
+starter scene at `Assets/Scenes/Main.unity`, a template player under
+`Assets/Scripts/`, smoke tests under `Assets/Tests/EditMode/`), or `bgate
+adopt` took it as it stands, without changing its render pipeline, packages
+or editor version. Builders Gate's own scripts live under `Assets/BGate/`: the
+telemetry MonoBehaviour and the editor capture/scaffold scripts. Delete that
+folder and nothing else of Builders Gate is in the project.
 
 ## The loop
 
