@@ -357,7 +357,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # The web_ trio mirrors godot_run/godot_status one engine over.
         "engine_status", "engine_screenshot",
         "web_status", "web_dev", "web_dev_stop", "web_run",
-        "unity_status", "unity_install_scripts", "unity_screenshot",
+        "unity_status", "unity_install_scripts", "unity_screenshot", "unity_play",
         "handoff_note", "handoff_read",
         # kie_status STAYS CORE: kie is one key over three capabilities, so
         # filing it under `image` would hide it from the audio seat whose
@@ -426,7 +426,9 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         # web_build / web_payload / web_test_run are that engine's build half.
         "engine_check", "engine_scaffold", "engine_templates",
         "web_build", "web_payload", "web_test_run",
-        "unity_check", "unity_test_run", "unity_execute",
+        "unity_check", "unity_test_run", "unity_execute", "unity_build",
+        # Scene and asset edits through the editor API: scene_* one engine over.
+        "unity_import_asset", "unity_place_prefab", "unity_set_field",
         "godot_check_project", "godot_inspect_resource", "godot_scaffold",
         "godot_templates", "godot_test_run",
         # Kits are scene-and-script work: the seats that never touch a

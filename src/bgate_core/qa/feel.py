@@ -422,12 +422,15 @@ def results(root: Any) -> list[dict]:
 
 
 def applies(root: Any) -> bool:
-    """The check runs where a bot can play: a Godot project, or a web game
-    (src/bgate/agent.ts, wired into the loop by the web templates)."""
+    """The check runs where a bot can play: a Godot project, a web game
+    (src/bgate/agent.ts, wired into the loop by the web templates), or a
+    Unity project (Assets/BGate/BGateAgent.cs in a player build)."""
     try:
-        from .playtest import _godot_project_dir, _web_project_dir
+        from .playtest import (_godot_project_dir, _unity_project_dir,
+                               _web_project_dir)
         return ((_godot_project_dir(root) / "project.godot").is_file()
-                or _web_project_dir(root) is not None)
+                or _web_project_dir(root) is not None
+                or _unity_project_dir(root) is not None)
     except Exception:                                            # noqa: BLE001
         return False
 

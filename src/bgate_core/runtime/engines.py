@@ -36,7 +36,7 @@ WHAT A SPEC MEANS
               whichever one this project needs without knowing the engines.
 ``template``  Subdirectory of ``src/templates`` holding the scaffold, under the
               ``<engine>/<kind>`` layout. Empty for an engine that is adopted
-              and never scaffolded (unity).
+              and never scaffolded (none).
 ``shared``    Subdirectory of ``src/templates`` whose ``shared/`` tree adopt
               stamps (CLAUDE.md, .gitignore, the telemetry sources). Defaults
               to ``template``; set separately when an engine has the second
@@ -103,16 +103,16 @@ ENGINES: dict[str, dict] = {
     },
     "unity": {
         "label": "Unity",
-        "blurb": "Unity, adopted rather than scaffolded. Batchmode compile "
-                 "checks, the Test Framework scored into the shared history, "
-                 "editor-rendered scene stills and a telemetry MonoBehaviour "
-                 "that needs no scene wiring.",
+        "blurb": "Unity 6, scaffolded by the editor itself or adopted. "
+                 "Batchmode compile checks, the Test Framework scored into "
+                 "the shared history, editor-rendered scene stills and a "
+                 "telemetry MonoBehaviour that needs no scene wiring.",
         "markers": ("ProjectSettings/ProjectVersion.txt",),
         "adapter": "bgate_adapters.unity",
         "binary_env": "BGATE_UNITY",
-        # No scaffold: a Unity project is made by the Hub with a version and a
-        # render pipeline the user chose. `shared` is what adopt stamps.
-        "template": "",
+        # The template is C# only: the editor's -createProject makes the
+        # project and BGateScaffold.Build saves the scene (adapter hooks).
+        "template": "unity",
         "shared": "unity",
         "doctor": ("unity",),
         "consumer_suffixes": (".cs", ".unity", ".prefab", ".asset", ".mat",
@@ -196,7 +196,8 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
     }),
     "unity": frozenset({
         "unity_status", "unity_check", "unity_test_run", "unity_execute",
-        "unity_install_scripts", "unity_screenshot",
+        "unity_install_scripts", "unity_screenshot", "unity_build", "unity_play",
+        "unity_import_asset", "unity_place_prefab", "unity_set_field",
     }),
     NONE: frozenset(),
 }

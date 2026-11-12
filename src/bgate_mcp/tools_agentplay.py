@@ -60,8 +60,12 @@ def playtest_agent_run(goal: str, seconds: float = 60.0,
     """A decision model PLAYS the game for `seconds` of game time; returns
     what it chose and what the game reported.
 
-    Godot only. Installs addons/bgate/bgate_agent.gd + the BGateAgent autoload
-    if missing (off unless the run sets BGATE_AGENT_URL). Every `decide_every`
+    Godot, web and Unity. Godot: installs addons/bgate/bgate_agent.gd + the
+    BGateAgent autoload if missing (off unless the run sets BGATE_AGENT_URL).
+    Unity: builds (or reuses) a Windows player with Assets/BGate/BGateAgent.cs;
+    the game reads the bot through BGateInput.Held/Down beside its keyboard
+    and describes itself with an IBGateObserver (the template players do the
+    first; `install.wired` false means nothing reads the bot). Every `decide_every`
     physics frames the game sends its state and options to a loopback relay;
     the relay asks Jev and the game holds the pick. `lockstep` pauses the game
     while a decision is in flight. `policy="random"` needs no key and proves

@@ -2522,6 +2522,17 @@ _MIGRATIONS: list = [
     ALTER TABLE work_item ADD COLUMN split_of INTEGER;
     ALTER TABLE plan_row ADD COLUMN checkpoint INTEGER NOT NULL DEFAULT 0;
     """,
+
+    # 0059 - THE PAID-CALL BUDGET SETTING HAD NO COLUMN. settings.py declares
+    # dispatch.default_max_paid_calls with store=("limits",
+    # "default_max_paid_calls"), and 0051 documented the setting as the
+    # project default behind a NULL max_paid_calls, but no migration added the
+    # column: every read fell through to the hard-coded 30 and every write
+    # raised "no such column" (measured on cat-cafe, 2026-10-25, when the
+    # owner asked for the cap to go). NULL keeps the 30 default.
+    """
+    ALTER TABLE run_limits ADD COLUMN default_max_paid_calls INTEGER;
+    """,
 ]
 
 

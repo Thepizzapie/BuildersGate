@@ -18,7 +18,8 @@
 //     BGateTelemetry.Emit("jump", ("air_time", 0.92f), ("peak_h", 2.4f));
 //     BGateTelemetry.Emit("hit", ("enemy", "grunt"), ("damage", 12));
 //
-// BGATE_AUTOQUIT=<seconds> quits the player unattended after that long, for
+// BGATE_AUTOQUIT=<seconds> quits the player unattended after that much game
+// time, for
 // headless smoke runs where nobody is there to close the window.
 
 using System;
@@ -86,7 +87,9 @@ namespace BGate
         void Update()
         {
             var dt = Time.unscaledDeltaTime;
-            _elapsed += dt;
+            // GAME time, not wall time, the same thing the Godot autoload
+            // counts: a game paused by timeScale is not being played.
+            _elapsed += Time.deltaTime;
             if (_autoquitAfter > 0 && _elapsed >= _autoquitAfter)
             {
                 Emit("autoquit", ("after", _autoquitAfter));

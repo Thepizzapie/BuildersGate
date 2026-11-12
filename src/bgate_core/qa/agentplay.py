@@ -348,8 +348,28 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
         # a local model loads in seconds; pay that before the clock starts
         # rather than on the bot's first in-game decision
         warmed = jev.warm(root, model=model)
+    from .playtest import _unity_project_dir
+
     web_dir = _web_project_dir(root)
-    installed = install_web(web_dir) if web_dir is not None else install(root)
+    unity_dir = _unity_project_dir(root) if web_dir is None else None
+    if unity_dir is not None:
+        # A UNITY BOT PLAYS A PLAYER BUILD: batchmode never enters play mode,
+        # so the editor cannot run Update(). Built (or reused) BEFORE the relay
+        # opens, because a first build is minutes the run clock must not see.
+        from bgate_adapters import unity as _unity
+        built = _unity.build_player(unity_dir)
+        if not built.get("ok"):
+            raise RuntimeError("the Unity player build failed: "
+                               + str(built.get("error") or "unknown")
+                               + (f" (log: {built['log_path']})"
+                                  if built.get("log_path") else ""))
+        installed = {**built.get("install", {}), "player": built["exe"],
+                     "cached_build": built.get("cached", False),
+                     "wired": _unity_wired(unity_dir)}
+    elif web_dir is not None:
+        installed = install_web(web_dir)
+    else:
+        installed = install(root)
     game = _godot_project_dir(root)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = Path(root) / ".bgate" / "agentplay" / stamp
@@ -368,17 +388,30 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
                        max_decisions=max_decisions, installed=installed,
                        warmed=warmed)
     telemetry = out / "telemetry.jsonl"
-    args = [godot.find_godot(), "--path", str(game)]
-    if headless:
-        args.insert(1, "--headless")
-    if scene:
-        args.append(scene if scene.startswith("res://") else f"res://{scene}")
     env = os.environ.copy()
     env.update({"BGATE_AGENT_URL": relay.url,
                 "BGATE_AGENT_EVERY": str(max(1, int(decide_every))),
                 "BGATE_AGENT_LOCKSTEP": "1" if lockstep else "0",
-                "BGATE_TELEMETRY": str(telemetry),
-                "BGATE_AUTOQUIT": str(float(seconds))})
+                "BGATE_TELEMETRY": str(telemetry)})
+    if unity_dir is not None:
+        from bgate_adapters import unity as _unity
+        player_log = out / "player.log"
+        args = _unity.player_args(installed["player"], log_path=player_log,
+                                  headless=headless)
+        game = Path(installed["player"]).parent
+        # The agent counts game time itself (BGATE_AGENT_SECONDS): an adopted
+        # project's older telemetry script counts BGATE_AUTOQUIT in wall time.
+        env["BGATE_AGENT_SECONDS"] = str(float(seconds))
+        if scene:
+            env["BGATE_SCENE"] = scene
+    else:
+        player_log = None
+        args = [godot.find_godot(), "--path", str(game)]
+        if headless:
+            args.insert(1, "--headless")
+        if scene:
+            args.append(scene if scene.startswith("res://") else f"res://{scene}")
+        env["BGATE_AUTOQUIT"] = str(float(seconds))
     for key in ("TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY"):
         env.pop(key, None)   # the game never needs it; the relay holds it
     wall_cap = float(seconds) * 10 + 60
@@ -412,6 +445,19 @@ def run(root: Any, *, goal: str, seconds: float = 60.0, decide_every: int = 6,
                     timed_out = True
                     kill_tree(proc)
                     break
+        if player_log is not None:
+            # summarize() reads ERROR lines out of game.log; a Unity player
+            # writes its own log, so its exceptions are carried over in that shape.
+            from bgate_adapters import unity as _unity
+            try:
+                text = player_log.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            for line in _unity.player_log_errors(text):
+                log.write(f"ERROR: {line}\n")
+            if relay.count == 0:
+                log.write("ERROR: no decision was requested - is "
+                          "Assets/BGate/BGateAgent.cs in the build?\n")
     return _finish(relay, out, t0, timed_out, proc.returncode, policy=policy,
                    goal=goal, seconds=seconds, max_usd=max_usd,
                    max_decisions=max_decisions, installed=installed,
@@ -456,6 +502,24 @@ def install_web(web_dir: Path, *, refresh: bool = False) -> dict:
                 for f in (Path(web_dir) / "src").rglob("*.ts")
                 if f.name != "agent.ts")
     return {**placed, "wired": wired}
+
+
+def _unity_wired(unity_dir: Path) -> bool:
+    """Does any of the game's own C# read the bot (BGateInput) or describe
+    the game to it (IBGateObserver)? Without either the bot's choices press
+    nothing, which is the Unity shape of the web game that never calls
+    agent.tick."""
+    assets = Path(unity_dir) / "Assets"
+    for f in assets.rglob("*.cs"):
+        if f.relative_to(assets).parts[0] == "BGate":
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "BGateInput." in text or "IBGateObserver" in text:
+            return True
+    return False
 
 
 def _play_web(web_dir: Path, relay: "Relay", out: Path, *, seconds: float,

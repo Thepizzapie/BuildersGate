@@ -10,12 +10,15 @@ says what went wrong. So every call here writes the editor log to a file it
 owns and reads it back, because `-logFile -` reaches stdout only from a real
 console and this runs from none.
 
-WHAT IS DELIBERATELY NOT HERE: scaffolding. A Unity project is made by the Hub
-with a version and a render pipeline the user chose, and stamping one from a
-template would have to pick both for them. Unity projects are ADOPTED
-(`bgate adopt`), and the adapter installs its two scripts into an existing
-Assets/ tree instead: the telemetry MonoBehaviour and the editor capture
-script, both under Assets/BGate/ so a project can delete the whole folder.
+SCAFFOLDING IS UNITY'S OWN, NOT A COPIED TREE. `bgate init --engine unity`
+asks the editor to make the project (`-createProject`), so the version,
+ProjectSettings and package lock are whatever that editor writes, never a
+hand-kept copy that drifts a release behind. The template then lays down C#
+only, and a second batchmode run executes BGateScaffold.Build to save the
+starter scene from code. Hand-written .unity YAML and .meta GUIDs are the two
+things a Unity scaffold must never ship; this one ships neither. An existing
+project is still ADOPTED (`bgate adopt`), which installs only the two scripts
+under Assets/BGate/: the telemetry MonoBehaviour and the editor capture script.
 
 THE EDITOR HOLDS ITS OWN LOCK. Two editors cannot open one project
 (Temp/UnityLockfile), so a check while the editor is open fails with a
@@ -36,6 +39,12 @@ THE PIECES, and which external thing each needs:
                             camera to a PNG. A still of the scene, not a
                             frame of play: batchmode does not enter play mode.
   install_scripts           puts Assets/BGate/*.cs in place.
+  import_asset / place_prefab / set_field
+                            the bundled BGateEdit editor script: copy a file
+                            into Assets/ and import it, instantiate a prefab
+                            into a scene, set one serialized field. Every
+                            write is AssetDatabase, PrefabUtility or
+                            EditorSceneManager; no YAML is written by hand.
 """
 from __future__ import annotations
 
@@ -63,6 +72,17 @@ TELEMETRY_FILE = "BGateTelemetry.cs"
 CAPTURE_FILE = str(Path("Editor") / "BGateCapture.cs")   # Editor/ makes it an editor assembly
 #: The static method the capture script exposes to -executeMethod.
 CAPTURE_METHOD = "BGate.Editor.BGateCapture.Run"
+#: The bot's runtime half (BGateAgent + BGateInput) and the player builder.
+AGENT_FILE = "BGateAgent.cs"
+BUILD_FILE = str(Path("Editor") / "BGateBuild.cs")
+BUILD_METHOD = "BGate.Editor.BGateBuild.Player"
+#: Asset import, prefab placement and component edits, through the editor API.
+EDIT_FILE = str(Path("Editor") / "BGateEdit.cs")
+EDIT_CLASS = "BGate.Editor.BGateEdit"
+#: Where the player build lands. Builds/ is in every Unity .gitignore. Not
+#: Library/ (BuildPlayer refuses its own cache) and not Temp/ (cleared on close).
+PLAYER_REL = Path("Builds") / "BGatePlayer"
+PLAYER_EXE = "Player.exe"
 
 #: The bundled sources, beside the Godot addon in templates/.
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "unity" / "shared" / "Assets" / "BGate"
@@ -145,6 +165,25 @@ def installed_editors() -> list[dict]:
     return out
 
 
+def broken_installs() -> list[str]:
+    """Hub install folders that hold an Editor/ directory but no editor binary.
+
+    A partial download or an interrupted update leaves 7 GB of Data/ and DLLs
+    with no Unity.exe; `installed_editors` rightly skips it, and without this
+    the user is told to install an editor they can see in the Hub.
+    """
+    out: list[str] = []
+    for root in _hub_roots():
+        try:
+            entries = sorted(root.iterdir()) if root.is_dir() else []
+        except OSError:
+            continue
+        for entry in entries:
+            if (entry / "Editor").is_dir() and _editor_exe(entry) is None:
+                out.append(str(entry))
+    return out
+
+
 def _version_key(text: str) -> tuple:
     got = re.match(r"(\d+)\.(\d+)\.(\d+)([abfp])(\d+)", text or "")
     if not got:
@@ -177,6 +216,12 @@ def find_unity(project_dir: Optional[str | os.PathLike[str]] = None) -> str:
     on_path = shutil.which("Unity") or shutil.which("unity")
     if on_path:
         return on_path
+    broken = broken_installs()
+    if broken:
+        raise UnityNotFound(
+            f"Unity is installed at {broken[0]} but its editor binary is "
+            "missing (no Editor/Unity.exe): the install is incomplete. In the "
+            "Unity Hub, uninstall that version and install it again.")
     raise UnityNotFound(
         "Unity editor not found. Install one through the Unity Hub, or set "
         "BGATE_UNITY to the editor executable (Editor/Unity.exe under the "
@@ -244,17 +289,39 @@ def product_name(project_dir: str | os.PathLike[str]) -> str:
 def editor_open(project_dir: str | os.PathLike[str]) -> bool:
     """Is an editor holding this project right now?
 
-    Unity writes Temp/UnityLockfile while open and deletes it on exit; a
-    crashed editor leaves it behind, which is why this is reported as a
-    likely cause rather than acted on.
+    THE FILE BEING THERE PROVES NOTHING. Unity 6 leaves Temp/UnityLockfile
+    behind after every clean batchmode exit (measured: -createProject, then
+    -executeMethod, and the file stays), so reading existence as "open"
+    refused every call after the first one. The editor holds the file open
+    with no sharing while it runs; whether WE can open it is the real test.
     """
-    return (Path(project_dir) / "Temp" / "UnityLockfile").is_file()
+    lock = Path(project_dir) / "Temp" / "UnityLockfile"
+    return lock.is_file() and _lock_held(lock)
+
+
+def _lock_held(lock: Path) -> bool:
+    """True when another process holds the lockfile (the editor, running)."""
+    try:
+        if os.name == "nt":
+            fd = os.open(lock, os.O_RDWR)
+            os.close(fd)
+        else:
+            import fcntl
+            with open(lock, "a") as fh:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fh, fcntl.LOCK_UN)
+    except OSError:
+        return True
+    return False
 
 
 def scripts_installed(project_dir: str | os.PathLike[str]) -> dict:
     base = Path(project_dir) / SCRIPTS_REL
     return {"telemetry": (base / TELEMETRY_FILE).is_file(),
             "capture": (base / CAPTURE_FILE).is_file(),
+            "agent": (base / AGENT_FILE).is_file(),
+            "build": (base / BUILD_FILE).is_file(),
+            "edit": (base / EDIT_FILE).is_file(),
             "dir": str(base)}
 
 
@@ -268,7 +335,8 @@ def install_scripts(project_dir: str | os.PathLike[str],
     base = Path(project_dir)
     if not is_project(base):
         return {"action": "skipped", "why": f"no {MARKER} in {project_dir}"}
-    names = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE}
+    names = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE,
+             "agent": AGENT_FILE, "build": BUILD_FILE, "edit": EDIT_FILE}
     written, unchanged, missing = [], [], []
     for key in which:
         name = names.get(key)
@@ -364,6 +432,103 @@ def _batch(project_dir: str, verb: list[str], *, timeout: int,
         out["error"] = (f"the editor exited {code}; read `output` for the "
                         "last lines of its log")
     return out
+
+
+#: The static method the scaffold template ships, which saves the starter scene.
+SCAFFOLD_METHOD = "BGate.Editor.BGateScaffold.Build"
+TEST_FRAMEWORK = "com.unity.test-framework"
+
+
+def _bundled_package_version(exe: str, package: str) -> str:
+    """The version of a package this editor bundles, read from its install.
+
+    Read, not hardcoded: a pinned version that the editor does not bundle sends
+    the package manager to the network on the first open, and fails offline.
+    """
+    manifest = (Path(exe).parent / "Data" / "Resources" / "PackageManager"
+                / "BuiltInPackages" / package / "package.json")
+    try:
+        return str(json.loads(manifest.read_text(encoding="utf-8"))["version"])
+    except (OSError, ValueError, KeyError):
+        return ""
+
+
+def scaffold_prepare(dest: str | os.PathLike[str], *, timeout: int = 1200) -> dict:
+    """Have the editor create an empty project at dest. The engine hook
+    scaffold.new_project calls before it copies the template.
+
+    A no-op on a directory that is already a Unity project, so a `--force`
+    top-up never re-creates anything. `-createProject` makes ProjectSettings,
+    Packages and the Library import; the Test Framework is then added to the
+    manifest because an empty project leaves it out and `unity_test_run`
+    needs it.
+    """
+    target = Path(dest)
+    if is_project(target):
+        return {"ok": True, "action": "exists", "path": str(target)}
+    try:
+        exe = find_unity()
+    except UnityNotFound as exc:
+        return {"ok": False, "error": str(exc)}
+    import tempfile
+    # The log cannot live in the project's Temp/: there is no project yet.
+    log_path = Path(tempfile.gettempdir()) / f"bgate_unity_create_{int(time.time())}.log"
+    args = [exe, "-batchmode", "-nographics", "-quit",
+            "-createProject", str(target), "-logFile", str(log_path)]
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              timeout=timeout, creationflags=_NO_WINDOW)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "timeout": True, "log_path": str(log_path),
+                "error": f"the editor did not finish creating the project "
+                         f"within {timeout}s"}
+    except OSError as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        log = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log = ""
+    out = {"ok": code == 0 and is_project(target), "exit_code": code,
+           "seconds": round(time.monotonic() - started, 2),
+           "log_path": str(log_path), "editor": exe,
+           "version": project_version(target) if is_project(target) else ""}
+    if not out["ok"]:
+        out["error"] = (f"Unity -createProject exited {code} without making "
+                        f"{MARKER}; read the log at {log_path}")
+        out["output"] = log[-3000:]
+        return out
+    manifest = target / "Packages" / "manifest.json"
+    wanted = _bundled_package_version(exe, TEST_FRAMEWORK)
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        deps = data.setdefault("dependencies", {})
+        if wanted and TEST_FRAMEWORK not in deps:
+            deps[TEST_FRAMEWORK] = wanted
+            manifest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            out["added_packages"] = {TEST_FRAMEWORK: wanted}
+    except (OSError, ValueError) as exc:
+        out["warning"] = f"could not add {TEST_FRAMEWORK} to the manifest: {exc}"
+    out["action"] = "created"
+    return out
+
+
+def scaffold_finish(project_dir: str | os.PathLike[str], kind: str = "2d",
+                    *, timeout: int = 1200) -> dict:
+    """Run the template's BGateScaffold.Build: saves Assets/Scenes/Main.unity
+    and puts it first in the build settings. Leaves an existing scene alone,
+    so it is safe to run again."""
+    got = execute_method(str(project_dir), SCAFFOLD_METHOD, timeout=timeout,
+                         env={"BGATE_KIND": kind})
+    scene = Path(project_dir) / "Assets" / "Scenes" / "Main.unity"
+    got["scene"] = str(scene)
+    if got.get("ok") and not scene.is_file():
+        got["ok"] = False
+        got["error"] = ("BGateScaffold.Build exited clean but saved no scene; "
+                        "read `output` for what it logged")
+    return got
 
 
 def log_errors(log: str) -> list[str]:
@@ -541,6 +706,400 @@ def screenshot(project_dir: str, out_path: str, *, scene: str = "",
     got["note"] = ("a still of the saved scene rendered by the editor, not a "
                    "frame of play: nothing has run Start() or Update()")
     return got
+
+
+# ---------------------------------------------------------------------------
+# Edits: import, place, set a field. Always the editor's API, never YAML.
+# ---------------------------------------------------------------------------
+#: What import_asset copies into Assets/. A .unity, .prefab or .meta is the
+#: editor's own serialized output: copying one in from elsewhere carries a
+#: foreign GUID, which is the hand-written-YAML failure by another door.
+IMPORTABLE = frozenset({
+    ".png", ".jpg", ".jpeg", ".tga", ".psd", ".exr", ".hdr", ".bmp", ".tif", ".tiff",
+    ".fbx", ".obj", ".dae", ".blend", ".3ds",
+    ".wav", ".ogg", ".mp3", ".aif", ".aiff", ".flac",
+    ".ttf", ".otf", ".txt", ".json", ".bytes", ".csv", ".mp4", ".webm",
+})
+
+
+def _assets_rel(project: Path, rel: str, *, suffixes: tuple[str, ...] = ()) -> tuple[str, str]:
+    """(posix path under Assets/, error). Refuses anything that leaves Assets/."""
+    text = str(rel or "").strip().replace("\\", "/")
+    if not text:
+        return "", "a path under Assets/ is required"
+    if Path(text).is_absolute():
+        try:
+            text = Path(text).resolve().relative_to(project.resolve()).as_posix()
+        except ValueError:
+            return "", f"{rel} is not inside {project}"
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    if not parts or parts[0] != "Assets" or ".." in parts or len(parts) < 2:
+        return "", f"{rel} must be a path under Assets/"
+    clean = "/".join(parts)
+    if suffixes and not clean.lower().endswith(suffixes):
+        return "", f"{rel} must end with {' or '.join(suffixes)}"
+    return clean, ""
+
+
+def _vec(value, what: str) -> tuple[str, str]:
+    """A 3-vector as the "x,y,z" the editor script parses, or an error."""
+    if value is None or value == "" or value == []:
+        return "", ""
+    items = value if isinstance(value, (list, tuple)) else str(value).strip("[]() ").split(",")
+    try:
+        nums = [float(x) for x in items]
+    except (TypeError, ValueError):
+        return "", f"{what} must be three numbers, got {value!r}"
+    if len(nums) != 3:
+        return "", f"{what} must be three numbers, got {len(nums)}"
+    return ",".join(repr(n) for n in nums), ""
+
+
+def _edit(project_dir: str | os.PathLike[str], verb: str, env: dict[str, str],
+          *, timeout: int) -> dict:
+    """Run BGateEdit.<verb> and merge the JSON it writes into the result."""
+    project = Path(project_dir)
+    if not is_project(project):
+        return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
+    installed = install_scripts(project, which=("edit",))
+    # Not the project's Temp/: the editor clears files it did not make there
+    # as it quits (measured: the result was gone by the time the call returned).
+    import tempfile
+    result = Path(tempfile.gettempdir()) / f"bgate_unity_edit_{verb.lower()}_{time.time_ns()}.json"
+    got = execute_method(str(project), f"{EDIT_CLASS}.{verb}", timeout=timeout,
+                         env={**env, "BGATE_EDIT_RESULT": str(result)})
+    got["install"] = installed
+    try:
+        reported = json.loads(result.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        reported = None
+    try:
+        result.unlink()
+    except OSError:
+        pass
+    if reported is None:
+        if got.get("ok"):
+            got["ok"] = False
+            got["error"] = (f"BGateEdit.{verb} exited clean but wrote no result; "
+                            "read `output` for what it logged")
+        return got
+    run_ok = got.get("ok", False)
+    run_error = got.get("error")
+    got.update(reported)
+    got["ok"] = bool(reported.get("ok")) and run_ok
+    if not got["ok"] and not reported.get("error") and run_error:
+        got["error"] = run_error
+    return got
+
+
+def import_asset(project_dir: str | os.PathLike[str], source: str | os.PathLike[str],
+                 dest: str = "", *, sprite: bool = False, pixels_per_unit: float = 0,
+                 point_filter: bool = False, overwrite: bool = False,
+                 timeout: int = 600) -> dict:
+    """Copy an image, model or sound into Assets/ and have the editor import it.
+
+    `dest` is the path under Assets/ (a folder ending in "/" keeps the file's
+    name; empty is Assets/Imported/<name>). The editor writes the .meta and
+    reports the GUID and what the asset loaded as; `sprite` makes a texture a
+    Sprite, `point_filter` turns off filtering and compression for pixel art.
+    """
+    project = Path(project_dir)
+    if not is_project(project):
+        return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
+    src = Path(source)
+    if not src.is_file():
+        return {"ok": False, "error": f"source file not found: {source}"}
+    suffix = src.suffix.lower()
+    if suffix not in IMPORTABLE:
+        return {"ok": False, "error": (
+            f"{suffix or 'a file with no extension'} is not importable here. "
+            ".unity, .prefab and .meta files are the editor's own output and "
+            "are made in place (unity_place_prefab, unity_set_field), never "
+            "copied in.")}
+    wanted = dest.strip() or "Assets/Imported/"
+    if wanted.replace("\\", "/").endswith("/"):
+        wanted = wanted.replace("\\", "/") + src.name
+    rel, err = _assets_rel(project, wanted)
+    if err:
+        return {"ok": False, "error": err}
+    if Path(rel).suffix.lower() != suffix:
+        return {"ok": False, "error": f"{rel} must keep the source's {suffix} extension; "
+                                      "Unity picks the importer by extension"}
+    target = project / rel
+    if target.exists() and not overwrite:
+        return {"ok": False, "exists": True, "path": rel,
+                "error": f"{rel} already exists; pass overwrite=True to replace it "
+                         "(its .meta and GUID are kept, so references survive)"}
+    if editor_open(project):
+        return {"ok": False, "editor_open": True,
+                "error": "the Unity editor has this project open; close it first"}
+    existed = target.exists()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, target)
+    env = {"BGATE_IMPORT_PATH": rel,
+           "BGATE_IMPORT_SPRITE": "1" if sprite else "",
+           "BGATE_IMPORT_POINT": "1" if point_filter else "",
+           "BGATE_IMPORT_PPU": str(float(pixels_per_unit)) if pixels_per_unit else ""}
+    got = _edit(project, "Import", env, timeout=timeout)
+    got.setdefault("path", rel)
+    if got.get("ok"):
+        got["copied"] = str(target)
+    elif not existed:
+        # A failed import of a NEW file leaves nothing behind: no half-imported
+        # copy for the next editor open to trip over, no orphan .meta.
+        removed = []
+        for leftover in (target, target.with_name(target.name + ".meta")):
+            try:
+                leftover.unlink()
+                removed.append(str(leftover))
+            except OSError:
+                pass
+        got["removed"] = removed
+    return got
+
+
+def place_prefab(project_dir: str | os.PathLike[str], prefab: str, *, scene: str = "",
+                 name: str = "", parent: str = "", position=None, rotation=None,
+                 scale=None, timeout: int = 600) -> dict:
+    """Instantiate a prefab (or an imported model) into a scene and save it.
+
+    PrefabUtility.InstantiatePrefab keeps the prefab link, so later edits to
+    the prefab reach this instance. `scene` empty is the first Build Settings
+    scene; `parent` is a hierarchy path ("Level/Props"); position, rotation
+    (euler degrees) and scale are local, as [x, y, z].
+    """
+    project = Path(project_dir)
+    rel, err = _assets_rel(project, prefab)
+    if err:
+        return {"ok": False, "error": f"prefab: {err}"}
+    env = {"BGATE_PREFAB": rel, "BGATE_NAME": name or "", "BGATE_PARENT": parent or ""}
+    if scene:
+        srel, err = _assets_rel(project, scene, suffixes=(".unity",))
+        if err:
+            return {"ok": False, "error": f"scene: {err}"}
+        env["BGATE_SCENE"] = srel
+    for key, value, what in (("BGATE_POS", position, "position"),
+                             ("BGATE_ROT", rotation, "rotation"),
+                             ("BGATE_SCALE", scale, "scale")):
+        text, err = _vec(value, what)
+        if err:
+            return {"ok": False, "error": err}
+        env[key] = text
+    return _edit(project, "Place", env, timeout=timeout)
+
+
+def _value_text(value) -> str:
+    """The text BGateEdit.Assign parses: lists become "a,b,c", bools lower."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return ",".join(_value_text(v) for v in value)
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def set_field(project_dir: str | os.PathLike[str], component: str, field: str, value,
+              *, object_path: str = "", scene: str = "", prefab: str = "",
+              add: bool = False, timeout: int = 600) -> dict:
+    """Set one serialized field on a component, in a scene or a prefab asset.
+
+    Goes through SerializedObject, the inspector's own path, so the result
+    is exactly what typing it in the inspector would save. `field` is the
+    serialized property path (a script's field name, or m_LocalPosition on a
+    Transform). The result carries `before` and `after`; a wrong field name
+    comes back with the component's real `fields`.
+    """
+    project = Path(project_dir)
+    if not str(component or "").strip() or not str(field or "").strip():
+        return {"ok": False, "error": "component and field are required"}
+    if scene and prefab:
+        return {"ok": False, "error": "pass scene or prefab, not both"}
+    env = {"BGATE_COMPONENT": component.strip(), "BGATE_FIELD": field.strip(),
+           "BGATE_VALUE": _value_text(value), "BGATE_OBJECT": object_path or "",
+           "BGATE_ADD": "1" if add else ""}
+    if prefab:
+        rel, err = _assets_rel(project, prefab, suffixes=(".prefab",))
+        if err:
+            return {"ok": False, "error": f"prefab: {err}"}
+        env["BGATE_PREFAB"] = rel
+    else:
+        if not object_path:
+            return {"ok": False, "error": "object_path is required for a scene edit "
+                                          "(the hierarchy path, like Player)"}
+        if scene:
+            rel, err = _assets_rel(project, scene, suffixes=(".unity",))
+            if err:
+                return {"ok": False, "error": f"scene: {err}"}
+            env["BGATE_SCENE"] = rel
+    return _edit(project, "SetField", env, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# The player: a build that runs, for the bot and for unity_play
+# ---------------------------------------------------------------------------
+#: Lines in a player log that mean the game itself went wrong.
+_PLAYER_ERROR_RE = re.compile(
+    r"^(?:\w+Exception\b.*|.*\bError\b.*|Crash!!!.*)$", re.MULTILINE)
+#: Player-log noise that matches the shape and is not the game's fault.
+_PLAYER_NOISE = ("Fallback handler could not load library",
+                 "d3d11: failed to create", "Shader Error in 'Hidden/",
+                 "FMOD failed to initialize the output device")
+
+
+def player_exe(project_dir: str | os.PathLike[str]) -> Path:
+    return Path(project_dir) / PLAYER_REL / PLAYER_EXE
+
+
+def _newest_source(project: Path) -> float:
+    """The newest mtime under what a build reads: Assets/, ProjectSettings/
+    and the package manifest."""
+    newest = 0.0
+    for sub in ("Assets", "ProjectSettings"):
+        for dirpath, _dirs, files in os.walk(project / sub):
+            for name in files:
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(dirpath, name)))
+                except OSError:
+                    continue
+    try:
+        newest = max(newest, (project / "Packages" / "manifest.json").stat().st_mtime)
+    except OSError:
+        pass
+    return newest
+
+
+def build_player(project_dir: str | os.PathLike[str], *, timeout: int = 1800,
+                 force: bool = False) -> dict:
+    """A Windows standalone player of the enabled build scenes, through the
+    bundled BGateBuild editor script, into Builds/BGatePlayer/.
+
+    CACHED: a player newer than everything under Assets/ and ProjectSettings/
+    is reused (`cached: true`), because a build is minutes and a bot run
+    straight after a check should not pay it twice. `force` rebuilds.
+    Installs the agent, telemetry and build scripts first when missing, since
+    a player without them is a game no bot can drive.
+    """
+    project = Path(project_dir)
+    if not is_project(project):
+        return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
+    if os.name != "nt":
+        return {"ok": False, "error": "player builds are Windows-only for now "
+                                      "(StandaloneWindows64)"}
+    installed = install_scripts(project, which=("telemetry", "agent", "build"))
+    exe = player_exe(project)
+    if not force and exe.is_file() and exe.stat().st_mtime >= _newest_source(project):
+        return {"ok": True, "cached": True, "exe": str(exe), "install": installed}
+    got = execute_method(str(project), BUILD_METHOD, timeout=timeout,
+                         env={"BGATE_BUILD_OUT": str(exe)})
+    got.update({"exe": str(exe), "cached": False, "install": installed})
+    if got.get("ok") and not exe.is_file():
+        got["ok"] = False
+        got["error"] = ("BGateBuild exited clean but wrote no player; read "
+                        "`output` for what it logged")
+    elif not got.get("ok") and "no enabled scene" in got.get("output", ""):
+        got["error"] = ("no enabled scene in Build Settings; add the scene to "
+                        "boot (File > Build Profiles) and build again")
+    return got
+
+
+def player_args(exe: str | os.PathLike[str], *, log_path: str | os.PathLike[str],
+                headless: bool = False) -> list[str]:
+    """The command line for a player run. Headless is -batchmode -nographics:
+    every Update() and physics step runs, nothing is drawn, no window opens."""
+    args = [str(exe), "-logFile", str(log_path)]
+    if headless:
+        args += ["-batchmode", "-nographics"]
+    else:
+        args += ["-screen-fullscreen", "0", "-screen-width", "1280",
+                 "-screen-height", "720"]
+    return args
+
+
+def player_log_errors(log: str) -> list[str]:
+    """Exceptions and errors out of a player log, noise dropped, deduplicated."""
+    out: list[str] = []
+    for got in _PLAYER_ERROR_RE.finditer(log):
+        line = got.group(0).strip()
+        if not line or any(n in line for n in _PLAYER_NOISE) or line in out:
+            continue
+        out.append(line[:300])
+    return out[:20]
+
+
+def play(project_dir: str | os.PathLike[str], *, seconds: float = 10.0,
+         scene: str = "", headless: bool = True, build_timeout: int = 1800) -> dict:
+    """Build (or reuse) the player, run it for `seconds` of game time with
+    telemetry on, and report what the game emitted and what it threw.
+
+    The Unity answer to godot_run / web_run: proof the game RUNS, as
+    against engine_check's proof that it compiles. `scene` is a Build
+    Settings scene path or name to load first; empty boots the first.
+    """
+    project = Path(project_dir)
+    built = build_player(project, timeout=build_timeout)
+    if not built.get("ok"):
+        return {**built, "ran": False}
+    out_dir = _scratch(project)
+    stamp = int(time.time())
+    telemetry = out_dir / f"play_{stamp}.jsonl"
+    log_path = out_dir / f"play_{stamp}.log"
+    env = {**os.environ, "BGATE_TELEMETRY": str(telemetry),
+           "BGATE_AUTOQUIT": str(float(seconds))}
+    if scene:
+        # BGateAgent switches scenes; with no BGATE_AGENT_URL it does only that.
+        env["BGATE_SCENE"] = scene
+    wall_cap = float(seconds) * 4 + 60
+    started = time.monotonic()
+    timed_out = False
+    try:
+        proc = subprocess.Popen(player_args(built["exe"], log_path=log_path,
+                                            headless=headless),
+                                cwd=str(Path(built["exe"]).parent), env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    except OSError as exc:
+        return {"ok": False, "ran": False, "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        code = proc.wait(timeout=wall_cap)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        code, timed_out = proc.wait(), True
+    events: list[dict] = []
+    try:
+        for line in telemetry.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    try:
+        log = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log = ""
+    errors = player_log_errors(log)
+    kinds: dict[str, int] = {}
+    for e in events:
+        kinds[e.get("kind", "?")] = kinds.get(e.get("kind", "?"), 0) + 1
+    quit_clean = any(e.get("kind") == "autoquit" for e in events)
+    out = {"ok": quit_clean and not errors and not timed_out, "ran": True,
+           "exit_code": code, "seconds": round(time.monotonic() - started, 2),
+           "game_seconds": seconds, "events": kinds, "errors": errors,
+           "telemetry_path": str(telemetry), "log_path": str(log_path),
+           "exe": built["exe"], "cached_build": built.get("cached", False),
+           "headless": headless}
+    if timed_out:
+        out["error"] = (f"the player was still running after {wall_cap:.0f}s "
+                        "of wall time and was killed")
+    elif not events:
+        out["error"] = ("the player wrote no telemetry; is "
+                        f"Assets/BGate/{TELEMETRY_FILE} in the build?")
+    elif not quit_clean:
+        out["error"] = "the player exited before its autoquit (a crash?); read log_path"
+    elif errors:
+        out["error"] = f"{len(errors)} error line(s) in the player log; the first is {errors[0]}"
+    return out
 
 
 # ---------------------------------------------------------------------------

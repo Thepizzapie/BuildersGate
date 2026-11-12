@@ -105,6 +105,14 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
               "prop kit and a ground plane, jump/land telemetry, feel tunables "
               "in one module - vite dev server, TypeScript, vitest.",
     },
+    "unity": {
+        "2d": "Unity 6 project made by the editor: side-on scene with a "
+              "Rigidbody2D player, ground and ledge, jump/land telemetry, "
+              "EditMode smoke tests. Takes a minute or two to create.",
+        "3d": "Unity 6 project made by the editor: CharacterController walker, "
+              "ground, ledge, sun and camera, jump/land telemetry, EditMode "
+              "smoke tests. Takes a minute or two to create.",
+    },
 }
 
 
@@ -151,7 +159,30 @@ _NEXT: dict[str, list[str]] = {
         "web_dev to serve it, engine_screenshot to see it running",
         "telemetry.emit(kind, data) from your own code (src/bgate/telemetry.ts)",
     ],
+    "unity": [
+        "engine_check to compile it, unity_test_run for the smoke tests",
+        "engine_screenshot to see Assets/Scenes/Main.unity",
+        "BGate.BGateTelemetry.Emit(kind, (key, value)) from your own code",
+    ],
 }
+
+
+class EngineScaffoldError(ValueError):
+    """The engine's own project-creation step failed (Unity -createProject).
+
+    A ValueError so every existing caller that reports a bad scaffold request
+    reports this one too, instead of a traceback."""
+
+
+def _engine_hooks(engine: str):
+    """The adapter, when the engine creates its own project around the
+    template (scaffold_prepare / scaffold_finish). None for a pure copy."""
+    from ..runtime import engines as _engines
+    try:
+        mod = _engines.adapter(engine)
+    except Exception:
+        return None
+    return mod if hasattr(mod, "scaffold_prepare") else None
 
 
 def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
@@ -199,6 +230,16 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
         raise FileExistsError(
             f"{target} is not empty: pass force=True to scaffold into it anyway"
         )
+    # AN ENGINE THAT MAKES ITS OWN PROJECT goes first: Unity's -createProject
+    # writes ProjectSettings and Packages itself, and the template is overlaid
+    # on what it made. A no-op when the directory is already that engine's.
+    hooks = _engine_hooks(engine)
+    engine_setup: dict = {}
+    if hooks is not None:
+        prep = hooks.scaffold_prepare(target)
+        engine_setup["prepare"] = prep
+        if not prep.get("ok"):
+            raise EngineScaffoldError(prep.get("error") or "engine project creation failed")
     target.mkdir(parents=True, exist_ok=True)
 
     written: list[str] = []
@@ -311,6 +352,15 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
         "skipped": sorted(skipped, key=lambda s: s["file"]),
         "next": _NEXT.get(engine, _NEXT["godot"]),
     }
+    if hooks is not None and hasattr(hooks, "scaffold_finish"):
+        fin = hooks.scaffold_finish(target, kind)
+        engine_setup["finish"] = fin
+        if not fin.get("ok"):
+            result["ok"] = False
+            result["error"] = ("the project was created but its starter scene "
+                               "was not: " + str(fin.get("error") or "unknown"))
+    if engine_setup:
+        result["engine_setup"] = engine_setup
     # A caller that only prints result["files"] would otherwise report "0 files"
     # on a run that deliberately left the user's work alone, which reads as a
     # no-op rather than as a decision. Give it one line it can print verbatim.

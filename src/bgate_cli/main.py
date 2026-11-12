@@ -1,6 +1,6 @@
 """bgate, the console entrypoint.
 
-    bgate init NAME [--kind 2d|3d] [--engine godot|web] [--dir DIR] [--pitch TEXT] [--without floor,music,...]
+    bgate init NAME [--kind 2d|3d] [--engine godot|web|unity] [--dir DIR] [--pitch TEXT] [--without floor,music,...]
                     [--brief FILE] [--ref IMAGE ...] [--force] [--replace]
                                 create a project + a runnable game, and print where
     bgate adopt [DIR] [--name N] [--pitch TEXT] [--kind 2d|3d|2d+3d] [--json] [--without floor,music,...]

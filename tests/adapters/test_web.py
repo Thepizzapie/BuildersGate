@@ -246,9 +246,10 @@ class TestScaffold:
         assert all(t["engine"] == "web" for t in got.values())
 
     def test_an_engine_with_no_template_lists_nothing(self):
-        assert scaffold.list_templates("unity") == []
+        # Unity has templates since phase 1; "none" is the engine with none.
+        assert scaffold.list_templates(engines.NONE) == []
         with pytest.raises(ValueError):
-            scaffold.engine_dir("unity")
+            scaffold.engine_dir(engines.NONE)
 
     def test_it_stamps_a_runnable_shape(self, tmp_path):
         made = scaffold.new_project(tmp_path / "g", "Neon Drift", kind="2d",
