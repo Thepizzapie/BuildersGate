@@ -1,12 +1,13 @@
-"""First run — the path from nothing to a project.
+"""First run: the path from nothing to a project.
 
 The audit's single blocker: every way into the product assumed a project that
-already existed. These tests pin the three things that were missing — an
+already existed. These tests pin the three things that were missing: an
 /api/state that can say "no project" without erroring the page out, an HTTP
 create, and a CLI that prints the absolute path it wrote to.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -59,7 +60,7 @@ _PNG_DATA_URL = "data:image/png;base64," + __import__("base64").b64encode(_png_b
 class TestStateWithoutAProject:
     def test_answers_200_with_a_null_project_and_a_hint(self, client):
         response = client.get("/api/state")
-        assert response.status_code == 200      # NOT 503 — the page has to render
+        assert response.status_code == 200      # NOT 503, the page has to render
         body = response.json()
         assert body["project"] is None
         assert body["hint"]
@@ -71,9 +72,17 @@ class TestStateWithoutAProject:
             assert body[key] == []
 
     def test_project_endpoint_reports_where_it_would_create_one(self, client, empty):
+        assert not (empty / ".bgate").exists()
         got = data(client.get("/api/project"))
         assert got["project"] is None
-        assert got["cwd"] == str(empty)
+        # FLAKY ON CI ONCE (#125, windows py3.11): cwd came back as the PARENT
+        # of `empty`, which is default_parent()'s "beside the active project"
+        # branch, so something put a .bgate/game.db in `empty` mid-test. Not
+        # reproduced locally; this message says what was there next time.
+        db_file = empty / ".bgate" / "game.db"
+        assert got["cwd"] == str(empty), (
+            f"game.db in empty: {db_file.is_file()}, "
+            f"BGATE_ROOT={os.environ.get('BGATE_ROOT')!r}, cwd={Path.cwd()}")
         assert "2d" in got["kinds"]
 
 
@@ -229,7 +238,7 @@ class TestOpeningOneThatExists:
     """The first-run screen could only CREATE.
 
     Someone with six registered games who opened the dashboard from the wrong
-    directory was told there was no project and invited to make a seventh — and
+    directory was told there was no project and invited to make a seventh, and
     the registry the screen needed was already in the GET's ``known``.
     """
 
@@ -250,7 +259,7 @@ class TestOpeningOneThatExists:
         # reload, because the dashboard token is minted per project and this
         # page was served against the old one.
         assert got["reload"] is True
-        # and the SERVER now agrees, which is the whole point — the old screen
+        # and the SERVER now agrees, which is the whole point. The old screen
         # could not do this at all.
         assert client.get("/api/state").json()["project"]["name"] == "Other Game"
 
@@ -321,7 +330,7 @@ class TestCli:
         printed = capsys.readouterr().out
         root = empty / "ember-run"
 
-        # The path is the whole point of the command — it must be absolute and
+        # The path is the whole point of the command: it must be absolute and
         # on a line of its own, greppable by a setup script.
         assert str(root) in printed
         assert any(line.strip() == str(root) for line in printed.splitlines())
