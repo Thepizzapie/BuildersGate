@@ -100,7 +100,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     # and proves it with the engine rather than by reading.
     "gameplay": (
         "kit_",
-        "godot_", "web_", "unity_", "scene_",
+        "godot_", "web_", "unity_", "scene_", "tscn_export",
         "traversal_prove", "playtest_",
         "iteration_", "telemetry", "game_view_",
         # What the comparable games got right and wrong, cited. Read-only.
@@ -114,7 +114,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     # and room_audit are what the seat reaches for.
     "level": (
         "room_", "blockout_",
-        "traversal_prove", "scene_", "game_view_",
+        "traversal_prove", "scene_", "tscn_export", "game_view_",
         "godot_screenshot", "godot_evidence", "godot_run", "godot_test_run",
         "godot_check_project",
         "web_status", "unity_status", "unity_place_prefab", "unity_set_field",
@@ -124,7 +124,7 @@ SEATS: dict[str, tuple[str, ...]] = {
     # the project-level knobs gameplay does not touch.
     "tech": (
         "kit_",
-        "godot_", "web_", "unity_", "scene_", "playtest_",
+        "godot_", "web_", "unity_", "scene_", "tscn_export", "playtest_",
         "iteration_", "aseprite_status", "project_set_engine", "game_view_get",
     ),
     # The visual pipeline. The biggest list, and it earns it: this is the only

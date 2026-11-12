@@ -78,7 +78,7 @@ def _terrain(layout: str, source: int, atlas_x: int, atlas_y: int,
 # _res_pair lives in server with the shared plumbing - the scene tools
 # there and the tests' monkeypatch seam both need server's binding.
 
-#: What each prop IS, in words a generator can draw. The CAMERA is not here —
+#: What each prop IS, in words a generator can draw. The CAMERA is not here -
 #: it comes from the project's view, per mount, so a prop set generated for a
 #: top-down game and one generated for a platformer differ by declaration
 #: rather than by whoever wrote the prompt that day.
@@ -236,7 +236,7 @@ def prop_generate(name: str, style: str = "", types: str = "",
         man_path = out_dir / f"{name}_props.json"
         man_path.write_text(_json.dumps(manifest, indent=1), encoding="utf-8")
 
-        # EVERY AI-GENERATED SHEET GETS AN ASEPRITE MASTER — house rule, not
+        # EVERY AI-GENERATED SHEET GETS AN ASEPRITE MASTER, house rule, not
         # a convenience. The props atlas was the one generated sheet that
         # skipped the cleanup path; a human fixing one bad prop edits the
         # master and aseprite_export brings it back, same as characters.
@@ -297,7 +297,7 @@ def _player_jump(godot_dir: _Path, scene_disk: _Path) -> dict:
     Two layers, same precedence the engine uses: the script's ``@export``
     defaults, overridden by any value the scene file sets on its root node.
     Returns ``{speed, jump_velocity, gravity, fall_multiplier, script}`` or
-    raises naming exactly what is missing — a guessed default here would
+    raises naming exactly what is missing, a guessed default here would
     rebuild the drift this function exists to close.
     """
     text = scene_disk.read_text(encoding="utf-8", errors="replace")
@@ -332,7 +332,7 @@ def _player_jump(godot_dir: _Path, scene_disk: _Path) -> dict:
     missing = [k for k in _JUMP_TUNABLES if k not in vals]
     if missing:
         raise ValueError(
-            f"{scene_disk.name} does not declare {missing} — looked at the "
+            f"{scene_disk.name} does not declare {missing}, looked at the "
             f"scene's root node and {script_rel or 'no attached script'}. The "
             "level is built FROM these numbers; without them there is nothing "
             "to build for. templates/2d's player.gd exports all three.")
@@ -388,7 +388,7 @@ def sidescroll_generate(godot_project: Annotated[str, Field(description='Directo
         if view != "side_scroller":
             return {"ok": False, "error": (
                 f"this project's view is {view!r}. A side-scrolling level in a "
-                f"{view} game is the wrong geometry, not a style choice — set "
+                f"{view} game is the wrong geometry, not a style choice, set "
                 "it with game_view_set if that is what you meant.")}
 
         scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
@@ -403,7 +403,7 @@ def sidescroll_generate(godot_project: Annotated[str, Field(description='Directo
             return {"ok": False, "error": (
                 f"{tiles_res} is not a square-tile set (shape "
                 f"{parsed_set['shape']}). A platformer's cells are the squares "
-                "the jump arithmetic runs on — this tileset belongs to a "
+                "the jump arithmetic runs on, this tileset belongs to a "
                 "different projection.")}
 
         jump_source = "arguments"
@@ -413,7 +413,7 @@ def sidescroll_generate(godot_project: Annotated[str, Field(description='Directo
                                                 ".tscn")
             if not player_disk.is_file():
                 return {"ok": False, "error": (
-                    f"no player scene at {player_res} — the jump is read from "
+                    f"no player scene at {player_res}, the jump is read from "
                     "the player, so the player has to exist first. "
                     "godot_scaffold's 2d template ships one.")}
             tw, th = parsed_set["tile_size"]
@@ -443,7 +443,7 @@ def sidescroll_generate(godot_project: Annotated[str, Field(description='Directo
         if not verdict["ok"]:
             return {"ok": False, "error": (
                 "this level cannot be played by the character it was built "
-                "for — that is a generator bug, not a difficulty setting"),
+                "for, that is a generator bug, not a difficulty setting"),
                 "findings": verdict["findings"],
                 "ascii": _sidescroll.ascii_map(level, width=min(length, 120))}
 
@@ -487,7 +487,7 @@ def sidescroll_generate(godot_project: Annotated[str, Field(description='Directo
             want = tuple(man["types"])
             # GROUND MOUNTS ONLY. A side view has no floor plane to stand a
             # prop on except the surface itself, and `jump.surfaces` already
-            # knows which cells those are — the same function the reachability
+            # knows which cells those are, the same function the reachability
             # gate uses, so a prop can never sit where the player cannot.
             stand = sorted(_jumpmod.surfaces(solid, body=spec.body))
             import random as _random
@@ -538,7 +538,7 @@ def sidescroll_generate(godot_project: Annotated[str, Field(description='Directo
         goal_px = [round((level["goal"][0] + 0.5) * tw, 1),
                    round((level["goal"][1] + 0.5) * th, 1)]
         if player_scene:
-            # The player goes INTO the scene, at spawn — placed here rather
+            # The player goes INTO the scene, at spawn, placed here rather
             # than left as a coordinate in the result, because a returned
             # number is a step someone forgets and a placed node is not.
             # Re-running MOVES the existing instance instead of stacking a
@@ -595,10 +595,10 @@ def sidescroll_generate(godot_project: Annotated[str, Field(description='Directo
                 "created": bool(written.get("created")),
                 "ascii": _sidescroll.ascii_map(level, width=min(length, 120)),
                 "next": (("the player is in the scene with the jump the level "
-                          "was checked against — godot_run it")
+                          "was checked against, godot_run it")
                          if player_scene else
                          ("give your player scene the SAME run/jump_speed/"
-                          "gravity — or pass player_scene= and both halves "
+                          "gravity, or pass player_scene= and both halves "
                           "of that sentence happen for you"))}
     except Exception as exc:
         return _fail(exc)
@@ -632,7 +632,7 @@ def game_view_get() -> dict:
 def game_view_set(view: str) -> dict:
     """Declare which 2D view this game is: top_down, side_scroller, isometric.
 
-    DIRECTOR CALL, and it should be made before any level or prop art exists —
+    DIRECTOR CALL, and it should be made before any level or prop art exists -
     changing it later invalidates every prop that was drawn to the old camera,
     because a sprite cannot be re-projected after the fact.
 
@@ -646,7 +646,7 @@ def game_view_set(view: str) -> dict:
         out = _gameview.describe(spec["view"])
         out["ok"] = True
         out["warning"] = ("Art already drawn to a different camera cannot be "
-                          "re-projected — it has to be regenerated.")
+                          "re-projected, it has to be regenerated.")
         return out
     except Exception as exc:
         return _fail(exc)
@@ -795,7 +795,7 @@ def tileset_synth(name: Annotated[str, Field(description='Tileset name; the atla
             side["blocks"] = first_wall["blocks"]
             # THE BLOCKS NAME THEIR OWN SOURCE. Sources here are sequential,
             # floors first, so a two-floor set puts its wall panels at
-            # source 2 — and level_generate/level_reskin read
+            # source 2, and level_generate/level_reskin read
             # side["wall_source"] with a default of 1, which silently painted
             # walls and terraces from the second floor material at panel
             # coordinates that happened to exist there.
@@ -865,7 +865,7 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
         if parsed_set["shape"] != want_shape:
             return {"ok": False, "error": (
                 f"{tiles_res} has tile shape {parsed_set['shape']} and this "
-                f"project's view is {view!r} — the re-skin would draw the "
+                f"project's view is {view!r}, the re-skin would draw the "
                 "layout in the wrong projection")}
 
         text = src_disk.read_text(encoding="utf-8", errors="replace")
@@ -881,7 +881,7 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
                                for c in _tilemap.decode_cells(hit.group(1))}
         if not found:
             return {"ok": False, "error": (
-                f"{src_res} has no TileMapLayer carrying cells — there is no "
+                f"{src_res} has no TileMapLayer carrying cells, there is no "
                 "layout in it to re-skin")}
 
         # WHICH LAYER IS THE FLOOR: named, or the biggest one that is not the
@@ -892,7 +892,7 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
              if n != wall_layer), "")
         if floor_name not in found:
             return {"ok": False, "error": (
-                f"no layer named {floor_name!r} in {src_res} — it has "
+                f"no layer named {floor_name!r} in {src_res}, it has "
                 f"{sorted(found)}")}
         floor_cells = found[floor_name]
         wall_cells = found.get(wall_layer, set())
@@ -910,8 +910,8 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
         side = _iso_blocks(tiles_disk)
         layers = []
         # CLIP THE FLOOR TO WHAT THE WALLS ENCLOSE. A designed level paints
-        # floor past its own perimeter — margin, underlay, whatever the
-        # original wall art covered — and the original covers it because its
+        # floor past its own perimeter, margin, underlay, whatever the
+        # original wall art covered, and the original covers it because its
         # wall tiles are tall enough to hide the strip. Re-emitted honestly,
         # that strip leaks out beyond the boundary as a fringe of carpet
         # floating outside the building. The enclosed region is the walkable
@@ -936,8 +936,8 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
             if len(comp) > len(keep):
                 keep = comp
         # WHAT IS OUTSIDE IS WHAT YOU CAN REACH FROM OUTSIDE. The shell
-        # heuristic this replaces — drop wall cells with no walkable
-        # neighbour — left a fringe anywhere the perimeter was two cells
+        # heuristic this replaces, drop wall cells with no walkable
+        # neighbour, left a fringe anywhere the perimeter was two cells
         # thick or stepped, because the inner of the two still touched the
         # room. Flooding inward from beyond the bounding box answers the
         # actual question: a cell is outside the building when open air
@@ -962,7 +962,7 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
         floor_cells = floor_cells - air
         # KEEP THE ART THAT IS ALREADY THERE. This defaulted to re-autotiling
         # every floor cell against a generated set, which on a project that
-        # already ships correct tiles is not a re-skin, it is a downgrade —
+        # already ships correct tiles is not a re-skin, it is a downgrade -
         # and it was: the tiles it replaced were hand-made, in the game's own
         # palette, and the ones it painted were invented. A layout tool has
         # no business inventing colours for a game that has them. Pass an
@@ -982,7 +982,7 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
 
         # KEEP THE SURFACES THE LAYOUT ALREADY HAD. A designed floor changes
         # underfoot at every threshold and says so by drawing those cells
-        # from a different atlas source — this floor uses fifteen. Collapsing
+        # from a different atlas source, this floor uses fifteen. Collapsing
         # them all onto one material is what makes a re-skin read as bland
         # when the original did not, so `material_map` carries the original
         # source id onto a generated material and the thresholds survive.
@@ -1033,8 +1033,8 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
                 return {"ok": False, "error": (
                     f"the sunken region {sunken!r} holds no floor cells")}
             # WALKABLE IS NOT THE SAME AS FLOORED. A designed level paints
-            # floor UNDER its walls — downsizing ships a `floor_underwall`
-            # tile for exactly that — so the floor layer alone says the
+            # floor UNDER its walls, downsizing ships a `floor_underwall`
+            # tile for exactly that, so the floor layer alone says the
             # basement's whole rim touches open ground and ramps it, all
             # forty cells of it. The walls are what make a doorway a doorway,
             # so they decide where the two heights are allowed to meet.
@@ -1052,7 +1052,7 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
             if len(got) != len(walk):
                 return {"ok": False, "error": (
                     f"{len(walk) - len(got)} walkable cells cannot be reached "
-                    "once that region is sunk — the hole has no way in"),
+                    "once that region is sunk, the hole has no way in"),
                     "unreachable": sorted(walk - got)[:20]}
             side_blocks = (side or {}).get("blocks") or {}
             if not side_blocks.get("terrace"):
@@ -1098,8 +1098,8 @@ def level_reskin(godot_project: Annotated[str, Field(description='Directory hold
                 blocks = (side or {}).get("blocks") or {}
                 # PER-AREA WALLS, the same way the floors work. A partition,
                 # a glazed meeting room and an exec office are different
-                # surfaces in the original too — it draws them from different
-                # atlases — and a re-skin that puts one panel everywhere
+                # surfaces in the original too, it draws them from different
+                # atlases, and a re-skin that puts one panel everywhere
                 # throws away the reading that tells you which room you are
                 # standing in.
                 wsets = (side or {}).get("wall_sets") or {}
@@ -1189,7 +1189,7 @@ def level_plan(width: Annotated[int, Field(description='Map width in cells. Defa
     """
     try:
         # A PARTITION OR A ROUTE. BSP gives rooms that are all the same KIND
-        # of thing — every one a box off a corridor, none first or last — and
+        # of thing, every one a box off a corridor, none first or last, and
         # a designed floor is not that. Shown a real tutorial floor its author
         # described it as five main rooms with a side room and drew the path
         # through them, which is a sequence with branches; `layout="path"`
@@ -1221,7 +1221,7 @@ def _read_prop_manifest(root, ref: str) -> dict:
     """A prop manifest written by `prop_generate`, by res:// path or disk path.
 
     Refuses a manifest whose view disagrees with the project's, because that is
-    art drawn to a camera this game does not use — every sprite in it shows the
+    art drawn to a camera this game does not use, every sprite in it shows the
     wrong faces, and no placement rule can correct a projection after the fact.
     """
     from bgate_core.art import gameview as _gv
@@ -1234,14 +1234,14 @@ def _read_prop_manifest(root, ref: str) -> dict:
                 path = base / path
                 break
     if not path.exists():
-        raise ValueError(f"no prop manifest at {ref!r} — prop_generate writes "
+        raise ValueError(f"no prop manifest at {ref!r}, prop_generate writes "
                          "one beside the atlas it packs")
     man = _json.loads(path.read_text(encoding="utf-8"))
     want = _gv.load(root)
     if man.get("view") and man["view"] != want:
         raise ValueError(
             f"that prop sheet was drawn for a {man['view']} game and this "
-            f"project is {want} — the sprites show the wrong faces, and a "
+            f"project is {want}, the sprites show the wrong faces, and a "
             "projection cannot be corrected after the fact. Regenerate it.")
     man["atlas"] = {k: ({f: tuple(c) for f, c in v.items()}
                         if isinstance(v, dict) else tuple(v))
@@ -1251,7 +1251,7 @@ def _read_prop_manifest(root, ref: str) -> dict:
 
 #: Which wall tile a cell wants, from the wall cells around it. A run of wall
 #: along the cell x axis renders down-right, along y down-left, and a corner
-#: gets stubs on exactly the two sides that continue — a tile that always
+#: gets stubs on exactly the two sides that continue, a tile that always
 #: reached all four ways put a nub out into open floor at every corner.
 def _panel_mask(cell, wall_cells) -> int:
     from bgate_core.art import tilemask as _tm
@@ -1270,7 +1270,7 @@ def _panel_mask(cell, wall_cells) -> int:
 
 
 def _wall_tile_at(blocks: dict, cell, wall_cells):
-    """The atlas coordinate for one wall cell — a masked panel when the set
+    """The atlas coordinate for one wall cell, a masked panel when the set
     has them, the solid block when it does not."""
     if not blocks:
         return None
@@ -1278,7 +1278,7 @@ def _wall_tile_at(blocks: dict, cell, wall_cells):
     if at is None:
         at = blocks.get("wall")
     # A LIST MEANS STAGGER THEM. These tiles carry a vertical panel joint,
-    # and one tile repeated down a run puts that joint on every cell — a
+    # and one tile repeated down a run puts that joint on every cell, a
     # regular rib that reads as a waffle rather than a wall. The set ships
     # two variants with the joint on opposite sides for exactly this, and
     # the original level alternates them; picking by cell parity reproduces
@@ -1485,7 +1485,7 @@ def _scatter_variants(cells: list, tiles_disk: _Path) -> int:
 
     Reads the ``<name>.tiles.json`` sidecar tileset_generate writes; without
     one this is a no-op, so hand-built tilesets are untouched. Deterministic
-    by coordinate — the same seed keeps producing byte-identical scenes.
+    by coordinate, the same seed keeps producing byte-identical scenes.
     """
     side = tiles_disk.with_name(tiles_disk.stem + ".tiles.json")
     if not side.is_file():
@@ -1513,7 +1513,7 @@ def _manifest_source(tiles_disk: _Path, man: dict) -> int:
     """The tileset source id of the manifest's atlas, ADDING it if absent.
 
     The seam nobody closed: prop_generate installs an atlas and writes a
-    manifest, the level generators place cells referencing it by source id —
+    manifest, the level generators place cells referencing it by source id -
     and the tileset had never been told the atlas exists, so every prop cell
     pointed at a source the resource did not define. The manifest carries
     everything a source needs (texture, tiles, spans, origins, animation);
@@ -1539,7 +1539,7 @@ def _manifest_source(tiles_disk: _Path, man: dict) -> int:
 
 
 #: THE MEDIUM IS PART OF THE ORDER. Every prompt here used to name a material
-#: and nothing else — "worn olive office carpet, soft even light" — so the
+#: and nothing else, "worn olive office carpet, soft even light", so the
 #: models did the sensible thing and returned a PHOTOGRAPH of a floor, one of
 #: them with a vanishing point in it. Downscaling a photograph to a 64x32
 #: diamond gives exactly what it sounds like: mush with no readable detail,
@@ -1603,14 +1603,14 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
         prop_name = str(names.get("props") or "Props")
 
         # THE SAME GATE sidescroll_generate holds in the other direction.
-        # Under gravity a connected floor guarantees nothing — you cannot
-        # walk upward — so rooms-and-corridors geometry in a platformer is
+        # Under gravity a connected floor guarantees nothing, you cannot
+        # walk upward, so rooms-and-corridors geometry in a platformer is
         # the wrong geometry, not a style choice.
         view = _gameview.load(_root())
         if view == "side_scroller":
             return {"ok": False, "error": (
                 "this project's view is 'side_scroller'. Rooms and corridors "
-                "are top-down geometry — use sidescroll_generate, which "
+                "are top-down geometry, use sidescroll_generate, which "
                 "builds for this character's jump, or game_view_set if the "
                 "declared view is wrong.")}
         iso = view == "isometric"
@@ -1623,8 +1623,8 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
         parsed_set = _tilemap.parse_tileset(
             tiles_disk.read_text(encoding="utf-8", errors="replace"))
         # THE TILESET'S SHAPE MUST AGREE WITH THE VIEW. A square set on an
-        # isometric project renders a plausible, wrong-looking grid — the
-        # exact silent failure tilemap.py documents — and the inverse draws
+        # isometric project renders a plausible, wrong-looking grid, the
+        # exact silent failure tilemap.py documents, and the inverse draws
         # diamonds flat. Neither errors in the engine, so it errors here.
         want_shape = _tilemap.ISOMETRIC if iso else _tilemap.SQUARE
         if parsed_set["shape"] != want_shape:
@@ -1632,7 +1632,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
                 f"{tiles_res} has tile shape {parsed_set['shape']} and this "
                 f"project's view is {view!r} (wants shape {want_shape}). "
                 "Godot renders the mismatch without complaint and it looks "
-                "wrong everywhere — fix the tileset or the declared view, "
+                "wrong everywhere, fix the tileset or the declared view, "
                 "not this call.")
         # THE SHEET DESCRIBES ITSELF, AND THAT IS THE WHOLE POINT.
         #
@@ -1669,7 +1669,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
         # neighbours do, and the cell in front covers what it should because
         # the layer is y-sorted. So those layouts are not reduced here, they
         # are meaningless. The blocks live in the tileset's second source,
-        # which is where tileset_generate writes them — and a set that has no
+        # which is where tileset_generate writes them, and a set that has no
         # block source draws its floor and says so, rather than refusing over
         # a default the caller never typed.
         iso_walls = None
@@ -1692,7 +1692,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
             side = _iso_blocks(tiles_disk)
             # THE SIDECAR NAMES ITS OWN SOURCE. Source 1 is where this tool
             # writes blocks; a project's hand-built set numbers them however
-            # it likes — downsizing's wall panels are source 41 — and the
+            # it likes, downsizing's wall panels are source 41, and the
             # whole point of the sidecar is that a set can describe itself
             # instead of matching one tool's habits.
             block_at = (int(side.get("wall_source", 1))
@@ -1743,8 +1743,8 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
                 "or point at an existing scene to add the layers to.")
 
         # A PARTITION OR A ROUTE. BSP gives rooms that are all the same
-        # KIND of thing — every one a box off a corridor, none first or
-        # last — and a designed floor is not that. Shown a real tutorial
+        # KIND of thing, every one a box off a corridor, none first or
+        # last, and a designed floor is not that. Shown a real tutorial
         # floor its author described it as five main rooms with a side
         # room and drew the path through them: a sequence with branches,
         # which no partition of a rectangle contains.
@@ -1760,7 +1760,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
                                    corridor_width=corridor_width,
                                    room_fill=room_fill)
         # A PARTITION IS A LINE, ROCK IS A MASS. wall_fill paints every
-        # non-floor cell, which is right for a dungeon carved out of stone —
+        # non-floor cell, which is right for a dungeon carved out of stone -
         # the wall has rock behind it and the boundary is drawn once. An
         # office is the other case: its walls are one cell thick with floor
         # on both sides, and filling every gap rendered the space BETWEEN
@@ -1778,15 +1778,15 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
         if iso:
             # Isometric is a depth sort or it is a lie: a wall drawn after
             # the player standing south of it reads as the player inside the
-            # wall. The floor stays flat — nothing ever stands behind a
-            # floor — everything above it y-sorts.
+            # wall. The floor stays flat, nothing ever stands behind a
+            # floor, everything above it y-sorts.
             for ly in layers:
                 if ly["name"] != floor_name:
                     ly["props"] = {**(ly.get("props") or {}),
                                    "y_sort_enabled": True}
         # ELEVATION, and the ramps that make it terrain rather than scenery.
         # The heights go on AFTER the flat plan because every guarantee the
-        # BSP gives — rooms that do not touch, a floor that is one region —
+        # BSP gives, rooms that do not touch, a floor that is one region -
         # is still wanted; what changes is that `connected` now has to mean
         # "a walker can get there", which is a different question the moment
         # two adjacent cells sit at different altitudes.
@@ -1797,7 +1797,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
             if not terraced["connected"]:
                 return {"ok": False, "error": (
                     f"{len(terraced['unreachable'])} floor cells cannot be "
-                    "walked to once the terraces are placed — that is a "
+                    "walked to once the terraces are placed, that is a "
                     "generator bug, not a layout to ship"),
                     "unreachable": terraced["unreachable"][:20]}
             side = _iso_blocks(tiles_disk)
@@ -1812,7 +1812,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
             # elevation as shipped. tileset_synth sidecars carry only
             # panel0..15, so every lookup below would miss, `continue`, and
             # leave no Terrace layer while the result still claimed
-            # raised_cells and reachable=true — level_reskin's sunken path
+            # raised_cells and reachable=true, level_reskin's sunken path
             # already refuses on exactly these keys; the generator must too.
             if not side["blocks"].get("terrace"):
                 return {"ok": False, "error": (
@@ -1823,7 +1823,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
                     ".tiles.json, or pass levels=1.")}
             # The blocks' own source, the same key the wall path reads: a
             # hardcoded 1 painted terraces from whatever source 1 happens to
-            # be — in a two-floor synth set, a floor material; in
+            # be, in a two-floor synth set, a floor material; in
             # downsizing's hand-built set, carpet.
             terr_src = int(side.get("wall_source", 1))
             heights = {tuple(int(v) for v in k.split(",")): h
@@ -1854,8 +1854,8 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
         # A FLOOR PER ROOM. One surface across a whole level is the other
         # half of why a generated floor reads as generated: a building
         # changes underfoot at every threshold, and the layout already knows
-        # where its rooms are. The sources to deal out — the project's own
-        # carpets, walkway, breakroom, whatever it ships — are a fact about
+        # where its rooms are. The sources to deal out, the project's own
+        # carpets, walkway, breakroom, whatever it ships, are a fact about
         # the SHEET, so they come off the sheet's manifest rather than off a
         # string retyped per call; the route gets the first one so the
         # critical path stays legible as you walk it.
@@ -1877,7 +1877,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
                         c["source"] = src
 
         # PER-CELL WALL TILES HERE TOO. The iso wall path routes to a SOLID
-        # layout, which paints one atlas coordinate at every wall cell — and
+        # layout, which paints one atlas coordinate at every wall cell, and
         # with a set whose straights are thin panels that renders as a picket
         # fence with daylight between the posts. level_reskin already chose a
         # tile per cell from its neighbours; the generator has to do the same
@@ -1927,7 +1927,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
                                      view=_gameview.load(_root()))
             # ONE LAYER PER DRAW LEVEL. A TileMapLayer holds a single tile
             # per coordinate, so a crack in the floor and the barrel standing
-            # on it can only coexist as two layers — and the decals have to be
+            # on it can only coexist as two layers, and the decals have to be
             # under, which is what the LAYERS order is.
             built = {"types": {}, "mirrored": 0, "cells": []}
             for lname in _props.LAYERS:
@@ -1953,7 +1953,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
                            "checks": plan_props["checks"]}
             if not plan_props["checks"]["still_connected"]:
                 raise ValueError(
-                    "the props broke the level into more than one region — "
+                    "the props broke the level into more than one region, "
                     "this should be impossible, every solid prop is gated on a "
                     "flood fill, so treat it as a bug and not as a dial")
 
@@ -1985,7 +1985,7 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
         # THE LAYERS THIS GENERATOR OWNS, so a run that produces fewer than the
         # last one removes what it no longer makes. Turning props off left the
         # old prop and decal layers in the scene, still drawing, and the scene
-        # loads perfectly — the level just quietly keeps dressing nobody asked
+        # loads perfectly, the level just quietly keeps dressing nobody asked
         # for.
         owns = [floor_name, wall_name, prop_name,
                 f"{prop_name}{'decals'.title()}",
@@ -2024,8 +2024,8 @@ def level_generate(godot_project: Annotated[str, Field(description='Directory ho
             "corridors": len(level["corridors"]),
             "tile_variants": varied,
             # WHICH ROOMS ARE THE ROUTE AND WHICH ARE THE DETOUR. A caller
-            # dressing a floor wants that distinction — the critical path
-            # earns the set pieces — and it is free here because the layout
+            # dressing a floor wants that distinction, the critical path
+            # earns the set pieces, and it is free here because the layout
             # knew it while it was building.
             **({"main_path": level["main_path"],
                 "side_rooms": level["side"]}
@@ -2318,7 +2318,7 @@ def evidence_check_ui(manifest_path: str, expect: dict,
 
 
 # ---------------------------------------------------------------------------
-# Traversal — can the player actually GET THERE
+# Traversal, can the player actually GET THERE
 # ---------------------------------------------------------------------------
 # A NEW VERB, AND THE ONLY ONE THIS PASS ADDS. Nothing existing could express
 # it: `godot_run` runs a script, `godot_evidence` photographs a frame, and the
@@ -2396,7 +2396,7 @@ def traversal_prove(godot_project: Annotated[str, Field(description='Directory h
     verdict["driver_output"] = str(out_path)
     verdict["engine_contended"] = bool(ran.get("engine_contended"))
     _log("traversal",
-         f"{name}: {'REACHABLE' if verdict['ok'] else 'NOT REACHABLE'} — "
+         f"{name}: {'REACHABLE' if verdict['ok'] else 'NOT REACHABLE'}, "
          f"{verdict.get('why') or 'settled in the destination volume'}",
          ref=scene)
     return verdict
@@ -2473,5 +2473,77 @@ def room_audit(godot_project: Annotated[str, Field(description='Directory holdin
         _log("level", f"room_audit {scene}: {out['counts']['fail']} fail, "
                       f"{out['counts']['warn']} warn")
         return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+#: The largest export handed back inline. A 300-cell town is ~25 KB of JSON;
+#: the 2,700-cell overworld of the port that asked for this is 185 KB, and
+#: that much text in a tool result costs more context than the port it serves.
+_TSCN_INLINE_MAX = 40_000
+
+
+@_tool
+def tscn_export(godot_project: Annotated[str, Field(description='Directory holding project.godot.')],
+                scene: Annotated[str, Field(description='res:// path (or relative to the Godot project) of the .tscn to export; never modified.')],
+                out_path: Annotated[str, Field(description='A .json file to write the export to (parents are created). Empty returns it inline when it is small enough.')] = "") -> dict:
+    """A Godot scene as engine-neutral JSON, for porting a map to Unity or web.
+
+    Reads the .tscn and every TileSet .tres it references, as text, no engine.
+    Output: `layers` (one per TileMapLayer: tileset key, z_index, and every
+    cell as [x, y, source, atlas_x, atlas_y, alt]), `tilesets` (tile size,
+    shape, custom-data and physics layer names, and per atlas source: texture,
+    region size, margins, separation, and each tile's custom data, collision
+    polygons and other per-tile properties), and `nodes` (path, type, the
+    instanced scene and its root script, groups, `global_position`, and every
+    property decoded: Vector2 -> [x, y], Rect2 -> {position, size}, Color ->
+    [r, g, b, a], ExtResource -> {res, type}). `global_position` sums parent
+    positions; `global_approx` marks a node under a rotated or scaled parent.
+    Full notes: docs/tools.md#tscn_export
+    """
+    from bgate_core.level import sceneexport as _sceneexport
+    try:
+        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+        if not scene_disk.is_file():
+            raise ValueError(f"no scene at {scene_res}")
+        gd = _Path(godot_project).expanduser().resolve()
+
+        def _read(res: str):
+            rel = res[len("res://"):] if res.startswith("res://") else res
+            disk = (gd / rel).resolve()
+            if gd not in disk.parents or not disk.is_file():
+                return None
+            return disk.read_text(encoding="utf-8", errors="replace")
+
+        doc = _sceneexport.export_scene(
+            scene_disk.read_text(encoding="utf-8", errors="replace"),
+            scene_res, _read)
+        text = _json.dumps(doc, indent=1, allow_nan=False)
+        summary = {
+            "ok": True, "scene": scene_res, "bytes": len(text),
+            "layers": len(doc["layers"]),
+            "cells": sum(len(lay["cells"]) for lay in doc["layers"]),
+            "nodes": len(doc["nodes"]),
+            "instances": sum(1 for n in doc["nodes"] if n.get("instance")),
+            "tilesets": sorted(doc["tilesets"]),
+            "warnings": doc["warnings"],
+        }
+        if out_path.strip():
+            _contained_path(out_path, "out_path")
+            dest = _Path(out_path).expanduser().resolve()
+            if dest.suffix.lower() != ".json":
+                raise ValueError(f"out_path must be a .json file, got {dest.name}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(text, encoding="utf-8", newline="\n")
+            summary["written"] = str(dest)
+            _log("level", f"tscn_export {scene_res} -> {dest.name}")
+            return summary
+        if len(text) > _TSCN_INLINE_MAX:
+            summary.update(ok=False, error=(
+                f"the export is {len(text):,} bytes, past the "
+                f"{_TSCN_INLINE_MAX:,} inline cap; pass out_path to write it"))
+            return summary
+        summary["export"] = doc
+        return summary
     except Exception as exc:
         return _fail(exc)

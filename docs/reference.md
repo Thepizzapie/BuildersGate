@@ -687,6 +687,7 @@ a timestamped backup on every write.
 | `scene_attach_script` | Attach a `.gd` to a node that exists |
 | `scene_rename_node` | Rename, and repair every path that named it |
 | `scene_reparent_node` | Move a node and its subtree under a different parent |
+| `tscn_export` | The scene as JSON (tile layers, tilesets, node instances), for a port |
 
 ```bash
 scene_outline(godot_project, scene="scenes/floor.tscn", match="desk")
