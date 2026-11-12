@@ -67,6 +67,12 @@ LOSS_STATUS = re.compile(r"fired|dead|died|lost|lose|game_?over|failed|defeat", 
 #: "nobody died" a verdict rather than a short window.
 END_KIND = re.compile(r"(^|_)(end|ended|over|finish|finished|complete|completed|"
                       r"result|victory|win|won)($|_)", re.I)
+#: The HARNESS's own lifecycle events. `session_end` matches END_KIND, and
+#: measured on ff-b67-unity it came after the game's `battle_end {status: won}`
+#: and overwrote the win with "unknown": TRIVIAL stayed unjudged on a run that
+#: reported its result. The harness ending the window is not the game ending.
+HARNESS_KINDS = {"session_start", "session_end", "session_open", "session_close",
+                 "autoquit", "agent_decision", "fps"}
 #: A run-ending status that says the player came through. An end event with a
 #: status the check cannot read either way (measured Turf War: `match_end
 #: {turn: 23, winner: 1}`, the CPU had knocked out every athlete) is NOT a
@@ -126,6 +132,8 @@ def measure(run_dir: str | Path) -> dict:
     end_status = None            # None: never ended; else lost | won | unknown
     for e in events:
         kind = str(e.get("kind") or "")
+        if kind in HARNESS_KINDS:
+            continue
         data = e.get("data") if isinstance(e.get("data"), dict) else {}
         status = " ".join(str(data.get(k) or "") for k in
                           ("status", "result", "outcome", "reason"))
