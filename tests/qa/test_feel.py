@@ -173,6 +173,21 @@ def test_a_run_of_only_forced_frames_still_measures_danger(tmp_path):
     assert got["danger_share"] == 0.5 and got["progress_max"] == 0.9
 
 
+def test_progress_reported_only_on_a_one_option_frame_still_counts(tmp_path):
+    """A "level clear" screen offers one option and may be the only frame that
+    carries progress 1.0; reading progress over decided frames would drop it
+    and under-read FLAT and TRIVIAL."""
+    real = [{"choice": c, "ts": 1000 + i, "progress": 0.5 * i / 30,
+             "danger": i % 2 == 0, "options": ["dash", "jump"]}
+            for i, c in enumerate(["dash", "jump"] * 15)]
+    clear = [{"choice": "next", "ts": 1030, "progress": 1.0, "danger": False,
+              "options": ["next"]}]
+    got = feel.measure(_run(tmp_path, "s", real + clear))
+    assert got["progress_max"] == 1.0
+    # control: without the clear frame the same run tops out below it
+    assert feel.measure(_run(tmp_path, "s2", real))["progress_max"] < 0.5
+
+
 def test_unfair_needs_deaths_on_one_spot(tmp_path):
     rows = _decisions(["shoot", "jump", "dash"] * 20)
     # three deaths right after decision 30 (progress 0.5) - one spot

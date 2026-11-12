@@ -108,16 +108,19 @@ def measure(run_dir: str | Path) -> dict:
     top, top_n = (choices.most_common(1)[0] if choices else ("", 0))
     if not top and rows:
         top = Counter(r.get("choice") for r in rows).most_common(1)[0][0]
-    # PRESSURE AND PROGRESS ARE READ OVER THE SAME FRAMES AS THE CHOICES. A
-    # baseline that died in 6 s and then sat 99 of its 138 rows on the over and
-    # title screens (one option each, danger false) read 9% threatened, when
-    # it was threatened on 33% of the frames where it had a decision to make
+    # PRESSURE IS READ OVER THE SAME FRAMES AS THE CHOICES. A baseline that
+    # died in 6 s and then sat 99 of its 138 rows on the over and title screens
+    # (one option each, danger false) read 9% threatened, when it was
+    # threatened on 33% of the frames where it had a decision to make
     # (measured, Lost & Found). A run with no multi-option frame at all falls
     # back to every row, so it still measures something.
-    basis = decided or rows
-    progress = [float(r["progress"]) for r in basis
+    # PROGRESS STAYS OVER EVERY ROW: it is a max, so menu frames cannot dilute
+    # it, and a "level clear" screen with one option may be the only frame
+    # that carries the run's highest progress.
+    progress = [float(r["progress"]) for r in rows
                 if isinstance(r.get("progress"), (int, float))]
-    danger = [bool(r["danger"]) for r in basis if r.get("danger") is not None]
+    danger = [bool(r["danger"]) for r in (decided or rows)
+              if r.get("danger") is not None]
     deaths = []
     ended = False
     end_status = None            # None: never ended; else lost | won | unknown
