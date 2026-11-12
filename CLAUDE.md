@@ -61,15 +61,16 @@ a no-op. It prints what it detected: Godot version, main scene, 2D or 3D, scene
 and script counts. **Read that back to the user.** If the dimension is wrong,
 pass `--kind`. It also records the engine it found (godot, web, unity, none);
 `project_set_engine` corrects it, and the engine decides which tools register.
-A Unity project is only ever adopted; after adopting, `unity_install_scripts`
-puts the telemetry script in `Assets/BGate/` and the editor must be closed
-before `engine_check` or `unity_test_run` (two editors cannot hold one project).
+An adopted Unity project needs `unity_install_scripts` to put the telemetry
+script in `Assets/BGate/`. The editor must be closed before `engine_check` or
+`unity_test_run` (two editors cannot hold one project).
 
 New game:
 
 ```bash
 bgate init emberfall --kind 2d                # Godot
 bgate init emberfall --kind 2d --engine web   # vite + TypeScript; needs Node 20+
+bgate init emberfall --kind 2d --engine unity # the Unity editor creates it; ~60 s
 ```
 
 Creates a NEW directory named after the project. It does not scaffold into the

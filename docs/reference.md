@@ -473,10 +473,12 @@ A web project's seats get lanes in its own layout (`src/**`, `public/**`,
 and a browser tab, the Tests tab runs vitest, and the asset scan reads
 `.ts` and `.html` for references.
 
-A Unity project is adopted, never scaffolded: `bgate adopt` records
-`engine=unity`, stamps a Unity briefing, and `unity_install_scripts` puts
-the telemetry MonoBehaviour and the editor capture script under
-`Assets/BGate/`. `engine_check` is a batchmode compile, `unity_test_run` the
+A Unity project is either scaffolded or adopted. `bgate init --engine unity`
+has the editor create the project (`-createProject`) and builds
+`Assets/Scenes/Main.unity` from code, so no hand-written scene YAML ships.
+`bgate adopt` records `engine=unity` on an existing one, stamps a Unity
+briefing, and `unity_install_scripts` puts the telemetry MonoBehaviour and the
+editor capture script under `Assets/BGate/`. `engine_check` is a batchmode compile, `unity_test_run` the
 Test Framework scored into the shared history, `engine_screenshot` an
 editor-rendered still of the scene, and `playtest_start` opens the editor
 with `BGATE_TELEMETRY` set so pressing Play records. Lanes land on
