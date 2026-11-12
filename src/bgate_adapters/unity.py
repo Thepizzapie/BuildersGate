@@ -359,7 +359,7 @@ def lease_holder(project_dir: str | os.PathLike[str]) -> dict:
 
 @contextlib.contextmanager
 def editor_lease(project_dir: str | os.PathLike[str], what: str, *,
-                 wait: Optional[float] = None, poll: float = 1.0):
+                 wait: Optional[float] = None, poll: float = 1.0, sleep=None):
     """Take the project's editor turn: one bgate editor run at a time, the rest queue.
 
     Yields None when this call holds the turn, or a refusal dict when the wait
@@ -371,6 +371,7 @@ def editor_lease(project_dir: str | os.PathLike[str], what: str, *,
     knows it was queued, not hung.
     """
     project = Path(project_dir)
+    nap = sleep or time.sleep
     scratch = _scratch(project)
     info = scratch / LEASE_NAME
     budget = _wait_budget() if wait is None else max(0.0, float(wait))
@@ -392,19 +393,22 @@ def editor_lease(project_dir: str | os.PathLike[str], what: str, *,
                 break
             if time.monotonic() >= deadline:
                 if held:
-                    holder = "an editor bgate did not start (Temp/UnityLockfile is held)"
+                    error = ("the Unity editor has this project open, held by an editor "
+                             "bgate did not start (Temp/UnityLockfile is present). "
+                             f"Waited {budget:.0f}s ({WAIT_ENV}). Close it, or if it "
+                             "crashed, delete that file, then retry: two editors cannot "
+                             "hold one project.")
                 else:
                     other = lease_holder(project)
                     holder = (f"{other.get('seat') or 'pid ' + str(other.get('pid', '?'))} "
                               f"({other.get('what', '?')})")
+                    error = (f"another bgate editor run holds this project: {holder}. "
+                             f"Waited {budget:.0f}s ({WAIT_ENV}); retry when it finishes.")
                 yield {"ok": False, "editor_open": True,
                        "queued_seconds": round(time.monotonic() - started, 1),
-                       "error": f"the Unity editor has this project open, held by {holder} "
-                                f"(Temp/UnityLockfile is present). Waited {budget:.0f}s "
-                                f"({WAIT_ENV}). Close it, or if it crashed, delete that "
-                                "file, then retry: two editors cannot hold one project."}
+                       "error": error}
                 return
-            time.sleep(poll)
+            nap(poll)
         yield None
     finally:
         if held:

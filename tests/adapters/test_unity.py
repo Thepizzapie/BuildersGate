@@ -266,8 +266,9 @@ class TestBatchmode:
             if polls["n"] == 3:           # the holder finishes while we wait
                 unity._unlock(other)
                 other.close()
-        monkeypatch.setattr(unity.time, "sleep", sleep)
-        with unity.editor_lease(project, "check", wait=60) as refused:
+        # Injected, not monkeypatched: a process-wide time.sleep patch also counts
+        # stray threads' sleeps from earlier tests (CI: 162 polls, not 3).
+        with unity.editor_lease(project, "check", wait=60, sleep=sleep) as refused:
             assert refused is None
             assert unity.lease_holder(project)["pid"] == os.getpid()
         assert polls["n"] == 3
