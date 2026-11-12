@@ -327,18 +327,21 @@ def scripts_installed(project_dir: str | os.PathLike[str]) -> dict:
 
 
 #: sha256[:16] (CRLF folded to LF) of EVERY version of each bundled script
-#: Builders Gate has shipped. A copy in a project that matches one of these is
-#: ours and unedited, so a newer bundled version replaces it; anything else is
-#: the human's edit and is kept. Without this an install was frozen at the
+#: Builders Gate has shipped, OLDEST FIRST. A copy in a project that matches
+#: one of these is ours and unedited, so a LATER bundled version replaces it;
+#: a copy that is a later version than the bundled one is kept (an older bgate
+#: must never downgrade a project a newer one installed into: measured, a
+#: build without BGateBuild.WebGL reverted a project's WebGL script, 2026-11-12);
+#: anything else is the human's edit and is kept. Without this an install was frozen at the
 #: day it happened: a project scaffolded before BGateBuild.WebGL existed could
 #: never build for the web. test_every_bundled_script_is_a_known_version
 #: fails when a template changes and its hash is not added here.
-SHIPPED_HASHES: dict[str, frozenset[str]] = {
-    TELEMETRY_FILE: frozenset({"a3f26bc0ce697f88", "d72dd60abc9b83ae"}),
-    CAPTURE_FILE: frozenset({"b669a83849984b27"}),
-    AGENT_FILE: frozenset({"d16c470f99aac312", "b020c0e7ab17a2bd", "e9b1d91b689ef254"}),
-    BUILD_FILE: frozenset({"6da1fda34fb2eaf9", "e6732f248718e849"}),
-    EDIT_FILE: frozenset({"9d47cbdda3435ede", "339b84d04d7a64f3"}),  # 339b: #127's verbs
+SHIPPED_HASHES: dict[str, tuple[str, ...]] = {
+    TELEMETRY_FILE: ("a3f26bc0ce697f88", "d72dd60abc9b83ae"),
+    CAPTURE_FILE: ("b669a83849984b27",),
+    AGENT_FILE: ("d16c470f99aac312", "b020c0e7ab17a2bd", "e9b1d91b689ef254"),  # #123
+    BUILD_FILE: ("6da1fda34fb2eaf9", "e6732f248718e849"),          # e673: #121's WebGL
+    EDIT_FILE: ("9d47cbdda3435ede", "339b84d04d7a64f3"),           # 339b: #127's verbs
 }
 _SCRIPT_NAMES = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE,
                  "agent": AGENT_FILE, "build": BUILD_FILE, "edit": EDIT_FILE}
@@ -363,7 +366,7 @@ def install_scripts(project_dir: str | os.PathLike[str],
     base = Path(project_dir)
     if not is_project(base):
         return {"action": "skipped", "why": f"no {MARKER} in {project_dir}"}
-    written, updated, unchanged, edited, missing = [], [], [], [], []
+    written, updated, unchanged, edited, newer, missing = [], [], [], [], [], []
     # Asked-for keys install; every BGate script already present refreshes.
     keys = list(dict.fromkeys(list(which) + [
         k for k, n in _SCRIPT_NAMES.items() if (base / SCRIPTS_REL / n).is_file()]))
@@ -377,12 +380,20 @@ def install_scripts(project_dir: str | os.PathLike[str],
             continue
         target = base / SCRIPTS_REL / name
         if target.is_file():
-            have = script_hash(target)
-            if have == script_hash(source):
+            have, bundled = script_hash(target), script_hash(source)
+            versions = SHIPPED_HASHES.get(name, ())
+            if have == bundled:
                 unchanged.append(str(target))
-            elif have in SHIPPED_HASHES.get(name, ()):
-                shutil.copyfile(source, target)
-                updated.append(str(target))
+            elif have in versions:
+                at = versions.index(have)
+                # The bundled copy's place in the history; one missing from
+                # it is newer than anything listed.
+                ours = versions.index(bundled) if bundled in versions else len(versions)
+                if at < ours:
+                    shutil.copyfile(source, target)
+                    updated.append(str(target))
+                else:
+                    newer.append(str(target))
             else:
                 edited.append(str(target))
             continue
@@ -390,11 +401,14 @@ def install_scripts(project_dir: str | os.PathLike[str],
         shutil.copyfile(source, target)
         written.append(str(target))
     action = ("installed" if written else "updated" if updated
-              else "unchanged" if (unchanged or edited) else "skipped")
+              else "unchanged" if (unchanged or edited or newer) else "skipped")
     # `written` carries every file this call changed, so the callers that
     # record tool writes see the updates too.
     out = {"action": action, "written": written + updated, "updated": updated,
            "unchanged": unchanged, "dir": str(base / SCRIPTS_REL)}
+    if newer:
+        # A newer Builders Gate installed these; this one leaves them alone.
+        out["newer"] = newer
     if edited:
         out["edited"] = edited
         out["edited_note"] = ("these differ from every version Builders Gate "

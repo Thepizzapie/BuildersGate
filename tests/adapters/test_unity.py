@@ -321,7 +321,7 @@ class TestScripts:
         build.write_text("// the human's own build script\n", encoding="utf-8")
         (base / "Editor" / "BGateBuild.cs.meta").write_text("guid: keep\n", encoding="utf-8")
         monkeypatch.setitem(unity.SHIPPED_HASHES, unity.TELEMETRY_FILE,
-                            frozenset({unity.script_hash(telemetry)}))
+                            (unity.script_hash(telemetry),))
         # Asking for capture alone still refreshes what is already there.
         got = unity.install_scripts(project, which=("capture",))
         assert got["updated"] == [str(telemetry)]
@@ -331,6 +331,24 @@ class TestScripts:
         assert got["edited"] == [str(build)]
         assert build.read_text(encoding="utf-8") == "// the human's own build script\n"
         assert (base / "Editor" / "BGateBuild.cs.meta").read_text(encoding="utf-8") == "guid: keep\n"
+
+    def test_a_newer_shipped_copy_is_never_downgraded(self, tmp_path, monkeypatch):
+        """Measured (FF-B67, 2026-11-12): a bgate without BGateBuild.WebGL
+        replaced a project's WebGL build script with its own older copy."""
+        project = _unity_project(tmp_path)
+        unity.install_scripts(project, which=("build",))
+        build = project / "Assets" / "BGate" / unity.BUILD_FILE
+        build.write_text("// a later BGateBuild\n", encoding="utf-8")
+        bundled = unity.script_hash(unity.TEMPLATE_DIR / unity.BUILD_FILE)
+        monkeypatch.setitem(unity.SHIPPED_HASHES, unity.BUILD_FILE,
+                            (bundled, unity.script_hash(build)))
+        got = unity.install_scripts(project, which=("build",))
+        assert got["newer"] == [str(build)] and got["updated"] == []
+        assert build.read_text(encoding="utf-8") == "// a later BGateBuild\n"
+        # control: the same copy listed BEFORE the bundled one is updated
+        monkeypatch.setitem(unity.SHIPPED_HASHES, unity.BUILD_FILE,
+                            (unity.script_hash(build), bundled))
+        assert unity.install_scripts(project, which=("build",))["updated"] == [str(build)]
 
     def test_every_bundled_script_is_a_known_version(self):
         """Changed a template? Add its script_hash to SHIPPED_HASHES, or the
