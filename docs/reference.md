@@ -478,12 +478,12 @@ has the editor create the project (`-createProject`) and builds
 `Assets/Scenes/Main.unity` from code, so no hand-written scene YAML ships.
 `bgate adopt` records `engine=unity` on an existing one, stamps a Unity
 briefing, and `unity_install_scripts` puts the telemetry MonoBehaviour and the
-editor capture script under `Assets/BGate/`. `engine_check` is a batchmode compile, `unity_test_run` the
-Test Framework scored into the shared history, `engine_screenshot` an
-editor-rendered still of the scene, and `playtest_start` opens the editor
-with `BGATE_TELEMETRY` set so pressing Play records. Lanes land on
-`Assets/Scripts`, `Assets/Art`, `Assets/Tests` and so on, and the asset scan
-follows `.meta` GUIDs instead of filenames.
+editor capture script under `Assets/BGate/`. `engine_check` is a batchmode
+compile, `unity_test_run` the Test Framework scored into the shared history,
+`engine_screenshot` an editor-rendered still of the scene, and `playtest_start`
+opens the editor with `BGATE_TELEMETRY` set so pressing Play records. Lanes
+land on `Assets/Scripts`, `Assets/Art`, `Assets/Tests` and so on, and the
+asset scan follows `.meta` GUIDs instead of filenames.
 
 The 2D slice is a side-on platformer reading exactly three actions: `move_left`
 (A or left arrow), `move_right` (D or right arrow), `jump` (Space). Anything
