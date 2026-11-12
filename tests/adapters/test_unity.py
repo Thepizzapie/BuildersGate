@@ -64,6 +64,12 @@ FAKE = textwrap.dedent('''
         os.makedirs(os.path.dirname(exe), exist_ok=True)
         open(exe, "w").write("fake player")
         lines.append("BGateBuild: Succeeded " + exe)
+    if opt("-executeMethod") == "BGate.Editor.BGateBuild.WebGL" and mode != "build_fail":
+        out = os.environ["BGATE_BUILD_OUT"]
+        os.makedirs(os.path.join(out, "Build"), exist_ok=True)
+        open(os.path.join(out, "Build", "web.wasm"), "wb").write(b"\\0asm")
+        open(os.path.join(out, "index.html"), "w").write("<canvas></canvas>")
+        lines.append("BGateBuild: Succeeded WebGL " + out)
     if opt("-executeMethod") == "BGate.Editor.BGateScaffold.Build":
         scenes = os.path.join(opt("-projectPath"), "Assets", "Scenes")
         os.makedirs(scenes, exist_ok=True)
@@ -620,6 +626,47 @@ class TestPlayer:
         (project / "Assets" / "Scripts" / "Hero.cs").write_text(
             'if (BGate.BGateInput.Held("move_right")) x += 1;', encoding="utf-8")
         assert agentplay._unity_wired(project) is True
+
+class TestWebGL:
+    @staticmethod
+    def _module(fake_editor):
+        (fake_editor.parent / "Data" / "PlaybackEngines" / "WebGLSupport").mkdir(parents=True)
+
+    def test_a_missing_module_is_refused_before_the_editor_runs(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.build_webgl(project, tmp_path / "export" / "web", timeout=60)
+        assert got["ok"] is False and "WebGL Build Support" in got["error"]
+        assert not (tmp_path / "export" / "web").exists()
+
+    @WINDOWS_ONLY
+    def test_builds_into_the_out_dir_then_reuses_it(self, fake_editor, tmp_path):
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        out = tmp_path / "export" / "web"
+        got = unity.build_webgl(project, out, timeout=60)
+        assert got["ok"] is True and got["cached"] is False, got
+        assert (out / "index.html").is_file() and got["bytes"] > 0
+        assert unity.scripts_installed(project)["build"]
+        page = out / "index.html"
+        os.utime(page, (page.stat().st_mtime + 10,) * 2)
+        assert unity.build_webgl(project, out, timeout=60)["cached"] is True
+        os.utime(page, (1, 1))
+        assert unity.build_webgl(project, out, timeout=60)["cached"] is False
+
+    @WINDOWS_ONLY
+    def test_a_build_that_writes_no_page_fails(self, fake_editor, tmp_path, monkeypatch):
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("FAKE_UNITY_MODE", "build_fail")
+        got = unity.build_webgl(project, tmp_path / "web", timeout=60)
+        assert got["ok"] is False and "index.html" in got["error"]
+
+    def test_the_build_script_has_the_webgl_entry(self):
+        build = (unity.TEMPLATE_DIR / unity.BUILD_FILE).read_text(encoding="utf-8")
+        method = unity.WEBGL_METHOD.rsplit(".", 1)[-1]
+        assert f"public static void {method}()" in build
+        assert "WebGLCompressionFormat.Disabled" in build
+
 
 class TestEdits:
     """Import, place and set a field: always the editor's API, never YAML."""

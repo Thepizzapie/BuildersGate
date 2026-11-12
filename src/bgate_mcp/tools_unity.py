@@ -160,18 +160,36 @@ def unity_install_scripts(unity_project: str = "") -> dict:
 
 @_tool
 def unity_build(unity_project: str = "", force: bool = False,
-                timeout: int = 1800) -> dict:
-    """Build a Windows player of the enabled Build Settings scenes into
-    Builds/BGatePlayer/Player.exe through the bundled BGateBuild script.
+                timeout: int = 1800, platform: str = "windows") -> dict:
+    """Build the enabled Build Settings scenes through the bundled BGateBuild
+    script.
+
+    platform: windows (default) is Builds/BGatePlayer/Player.exe, what
+    unity_play and the bot run. webgl is the browser build into the
+    project's export/web/, what /play, the arcade (`bgate publish`) and the
+    phone serve; it needs the editor's WebGL Build Support module, and is
+    built uncompressed so a plain static host serves it.
 
     Reused while nothing under Assets/ or ProjectSettings/ is newer
-    (`cached: true`); `force` rebuilds. Installs the telemetry, agent and
-    build scripts first when missing. A first build is minutes. Refused while
-    the editor has the project open.
+    (`cached: true`); `force` rebuilds. Installs the BGate scripts first
+    when missing. A first build is minutes (WebGL more). Refused while the
+    editor has the project open.
     """
     target, refused = _need_project(unity_project)
     if refused:
         return refused
+    platform = (platform or "windows").strip().lower()
+    if platform == "webgl":
+        from bgate_ui import webbuild as _webbuild
+        out = _webbuild.play_dir(_root())
+        got = _unity.build_webgl(target, out, timeout=2400 if timeout == 1800 else timeout, force=force)
+        for path in got.get("install", {}).get("written", []):
+            _note_tool_write(_root(), path)
+        _log("unity", f"WebGL build {'reused' if got.get('cached') else ('ok' if got.get('ok') else 'FAILED')}: "
+                      f"{_Path(target).name}", ref=got.get("out_dir", ""))
+        return got
+    if platform != "windows":
+        return {"ok": False, "error": f"platform must be windows or webgl, not {platform!r}"}
     got = _unity.build_player(target, timeout=timeout, force=force)
     for path in got.get("install", {}).get("written", []):
         _note_tool_write(_root(), path)

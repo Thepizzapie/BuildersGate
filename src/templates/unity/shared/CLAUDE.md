@@ -37,6 +37,9 @@ From an agent session the moves are:
   `.meta` text by hand.
 - `unity_build`: a Windows player of the Build Settings scenes into
   `Builds/BGatePlayer/`, reused until a file under `Assets/` changes.
+  `platform="webgl"` builds for the browser into `export/web/` instead,
+  uncompressed: what `/play`, the arcade and the phone serve. Needs the
+  editor's WebGL Build Support module.
 - `unity_play`: runs that player for N seconds of game time with telemetry
   on and reports what it emitted and threw. Proof it RUNS, not just compiles.
 - `playtest_agent_run` / `playtest_feel_check`: a decision model plays the
