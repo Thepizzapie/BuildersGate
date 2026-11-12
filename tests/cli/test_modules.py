@@ -2,7 +2,7 @@
 
 The contract under test: a disabled module's MCP tools are not registered,
 its doctor rows stop being requirements, the choice is stored/delivered like
-any setting, and the wizard/CLI can only disable REAL modules — a typo must
+any setting, and the wizard/CLI can only disable REAL modules: a typo must
 not silently disable the nearest feature.
 """
 from __future__ import annotations
@@ -185,6 +185,12 @@ class TestTheSpineSplit:
     def test_the_director_can_unlock_a_craft_it_parked(self, monkeypatch):
         from bgate_mcp import server
 
+        # _MODULES_OFF is computed once per process, from whatever project
+        # BGATE_ROOT named on the first _module_registers call. Run after
+        # tests/board/test_mcp_server.py it is {'three_d'}, cached from that
+        # file's fixture project, so the blender_rig check below failed on
+        # state this test never set. Pin it empty, as the gate test above does.
+        monkeypatch.setattr(server, "_MODULES_OFF", set())
         # The process under test booted seatless, so image_* is parked.
         parked = [n for n in server._PARKED if n.startswith("image_")]
         if not parked:
@@ -328,7 +334,7 @@ class TestEveryToolIsClassified:
     """The accident P0 exists to forbid.
 
     CRAFTS is a prefix table, so a tool whose name matched no prefix joined the
-    shared spine SILENTLY — nobody decided it was universal, nobody noticed it
+    shared spine SILENTLY. Nobody decided it was universal, nobody noticed it
     was not. `sidescroll_generate` (27 params) and `godot_deliver_asset` (713
     docstring words) rode in the audio seat's context that way. The registry is
     read from source rather than from a live FastMCP instance on purpose:
@@ -367,7 +373,7 @@ class TestEveryToolIsClassified:
         assert not missing, (
             "these MCP tools match no craft prefix and are not on the SPINE "
             "allowlist, so they joined the shared spine by accident and now "
-            "cost every seat context on every turn — add each to "
+            "cost every seat context on every turn. Add each to "
             "modules.CRAFTS or modules.SPINE: " + ", ".join(missing))
 
     def test_the_spine_allowlist_has_no_ghosts(self):
@@ -434,7 +440,7 @@ class TestTheDirectorOnlySplit:
         assert modules.seat_tool_enabled("image_generate", "mystery-seat")
 
     def test_the_workers_lifelines_are_not_in_it(self):
-        # Considered and rejected — hiding any of these breaks a workflow
+        # Considered and rejected: hiding any of these breaks a workflow
         # silently, which costs more than the docstring words save.
         for name in ("ask_human", "queue_claim_next", "queue_add",
                      "queue_complete", "board_digest", "plan_status",
