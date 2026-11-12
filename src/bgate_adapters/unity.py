@@ -1073,10 +1073,17 @@ def build_webgl(project_dir: str | os.PathLike[str], out_dir: str | os.PathLike[
     got = execute_method(str(project), WEBGL_METHOD, timeout=timeout,
                          env={"BGATE_BUILD_OUT": str(out)})
     got.update({"out_dir": str(out), "cached": False, "install": installed})
-    if got.get("ok") and not (page.is_file() and webgl_stamp(out) > before):
+    if got.get("ok") and not page.is_file():
         got["ok"] = False
         got["error"] = ("BGateBuild exited clean but wrote no index.html; read "
                         "`output` for what it logged")
+    elif got.get("ok") and webgl_stamp(out) <= before:
+        # A clean incremental build with nothing to update ("0 items updated")
+        # rewrites no file. The build IS current with the source now, so the
+        # stamp says so; otherwise the cache and the Play pane read it stale
+        # after every touch-only change, forever.
+        os.utime(page, None)
+        got["unchanged"] = True
     elif not got.get("ok") and "no enabled scene" in got.get("output", ""):
         got["error"] = ("no enabled scene in Build Settings; add the scene to "
                         "boot (File > Build Profiles) and build again")

@@ -668,6 +668,24 @@ class TestWebGL:
         page.unlink()
         assert unity.webgl_stamp(out) == 0.0
 
+    def test_a_clean_build_with_nothing_to_update_is_current(self, fake_editor, tmp_path,
+                                                             monkeypatch):
+        """Unity's "0 items updated" writes no file; that build still succeeded."""
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        out = tmp_path / "export" / "web"
+        (out / "Build").mkdir(parents=True)
+        page = out / "index.html"
+        page.write_text("<html></html>", encoding="utf-8")
+        os.utime(page, (1, 1))
+        monkeypatch.setattr(unity, "execute_method", lambda *a, **k: {"ok": True})
+        got = unity.build_webgl(project, out, timeout=60)
+        assert got["ok"] is True and got.get("unchanged") is True, got
+        assert unity.webgl_stamp(out) >= unity._newest_source(project)
+        # control: no page after a clean exit is still a failure
+        page.unlink()
+        assert unity.build_webgl(project, out, timeout=60)["ok"] is False
+
     def test_a_missing_module_is_refused_before_the_editor_runs(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")
         got = unity.build_webgl(project, tmp_path / "export" / "web", timeout=60)
