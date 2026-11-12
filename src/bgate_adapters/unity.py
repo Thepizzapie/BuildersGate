@@ -305,6 +305,10 @@ def editor_open(project_dir: str | os.PathLike[str]) -> bool:
 #: human left open never frees the project, so the wait is bounded.
 WAIT_ENV = "BGATE_UNITY_WAIT"
 DEFAULT_WAIT = 600
+#: The turn itself: an OS byte-range lock on this file. The OS drops it the
+#: moment the holder dies, so there is no stale lease to judge or take over.
+LOCK_NAME = "editor.lock"
+#: Who holds the turn, for the refusal's sentence only. Never decides anything.
 LEASE_NAME = "editor.lease"
 
 
@@ -315,37 +319,42 @@ def _wait_budget() -> float:
         return float(DEFAULT_WAIT)
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
-        if not handle:
-            return False
-        code = ctypes.c_ulong()
-        ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return bool(ok) and code.value == 259  # STILL_ACTIVE
+def _try_lock(fh) -> bool:
+    """Take a non-blocking exclusive lock on byte 0 of an open file."""
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
         return False
-    except PermissionError:
-        return True
     return True
 
 
+def _unlock(fh) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
 def lease_holder(project_dir: str | os.PathLike[str]) -> dict:
-    """Who holds this project's bgate editor lease: {} when nobody (or a dead holder)."""
+    """What the current holder wrote about itself (pid, seat, what, since), or {}."""
     path = Path(project_dir) / "Temp" / "bgate" / LEASE_NAME
     try:
         got = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    if not isinstance(got, dict) or not _pid_alive(int(got.get("pid", 0) or 0)):
-        return {}
-    return got
+    return got if isinstance(got, dict) else {}
 
 
 @contextlib.contextmanager
@@ -354,33 +363,31 @@ def editor_lease(project_dir: str | os.PathLike[str], what: str, *,
     """Take the project's editor turn: one bgate editor run at a time, the rest queue.
 
     Yields None when this call holds the turn, or a refusal dict when the wait
-    ran out. Two things are waited on, in order: the bgate lease
-    (Temp/bgate/editor.lease, O_EXCL, holder pid/seat/what/since; a dead
-    holder's lease is taken over), then Unity's own lockfile, which an editor
-    started outside bgate (a human, a raw Unity.exe run) also holds.
+    ran out. Two things are waited on, in order: the bgate turn (an OS lock on
+    Temp/bgate/editor.lock, released by the OS if the holder dies), then
+    Unity's own lockfile, which an editor started outside bgate (a human, a
+    raw Unity.exe run) also holds. The wait comes ON TOP of the run's own
+    `timeout`; a refusal carries `queued_seconds` so a caller that gave up
+    knows it was queued, not hung.
     """
     project = Path(project_dir)
-    lease = _scratch(project) / LEASE_NAME
+    scratch = _scratch(project)
+    info = scratch / LEASE_NAME
     budget = _wait_budget() if wait is None else max(0.0, float(wait))
-    deadline = time.monotonic() + budget
+    started = time.monotonic()
+    deadline = started + budget
     me = {"pid": os.getpid(), "what": what, "since": round(time.time(), 1),
           "seat": os.environ.get("BGATE_SEAT") or os.environ.get("PULSIRON_CALLSIGN") or ""}
+    fh = open(scratch / LOCK_NAME, "a+b")
     held = False
-    started = time.monotonic()
     try:
         while True:
-            try:
-                fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(me, fh)
+            if not held and _try_lock(fh):
                 held = True
-            except FileExistsError:
-                if not lease_holder(project):
-                    try:
-                        lease.unlink()  # a dead holder's lease
-                    except OSError:
-                        pass
-                    continue
+                try:
+                    info.write_text(json.dumps(me), encoding="utf-8")
+                except OSError:
+                    pass
             if held and not editor_open(project):
                 break
             if time.monotonic() >= deadline:
@@ -388,10 +395,10 @@ def editor_lease(project_dir: str | os.PathLike[str], what: str, *,
                     holder = "an editor bgate did not start (Temp/UnityLockfile is held)"
                 else:
                     other = lease_holder(project)
-                    holder = (f"{other.get('seat') or 'pid ' + str(other.get('pid'))} "
+                    holder = (f"{other.get('seat') or 'pid ' + str(other.get('pid', '?'))} "
                               f"({other.get('what', '?')})")
                 yield {"ok": False, "editor_open": True,
-                       "waited": round(time.monotonic() - started, 1),
+                       "queued_seconds": round(time.monotonic() - started, 1),
                        "error": f"the Unity editor has this project open, held by {holder} "
                                 f"(Temp/UnityLockfile is present). Waited {budget:.0f}s "
                                 f"({WAIT_ENV}). Close it, or if it crashed, delete that "
@@ -402,10 +409,12 @@ def editor_lease(project_dir: str | os.PathLike[str], what: str, *,
     finally:
         if held:
             try:
-                if json.loads(lease.read_text(encoding="utf-8")).get("pid") == me["pid"]:
-                    lease.unlink()
-            except (OSError, ValueError):
+                if lease_holder(project).get("pid") == me["pid"]:
+                    info.unlink()
+            except OSError:
                 pass
+            _unlock(fh)
+        fh.close()
 
 
 def _lock_held(lock: Path) -> bool:

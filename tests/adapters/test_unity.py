@@ -246,51 +246,67 @@ class TestBatchmode:
         assert got["ok"] is True, got
         assert busy["n"] <= 0
 
-    def test_a_second_call_queues_behind_a_live_lease(self, tmp_path, monkeypatch):
-        project = _unity_project(tmp_path)
-        lease = project / "Temp" / "bgate" / unity.LEASE_NAME
-        lease.parent.mkdir(parents=True)
-        lease.write_text(json.dumps({"pid": os.getpid() + 1, "seat": "SQUID-1",
-                                     "what": "build"}), encoding="utf-8")
-        alive = {"left": 2}
+    @staticmethod
+    def _hold_turn(project, holder: dict):
+        """Another process's turn: the OS lock taken on a second handle, plus its note."""
+        scratch = project / "Temp" / "bgate"
+        scratch.mkdir(parents=True, exist_ok=True)
+        (scratch / unity.LEASE_NAME).write_text(json.dumps(holder), encoding="utf-8")
+        fh = open(scratch / unity.LOCK_NAME, "a+b")
+        assert unity._try_lock(fh)
+        return fh
 
-        def pid_alive(pid):
-            alive["left"] -= 1
-            return alive["left"] > 0
-        monkeypatch.setattr(unity, "_pid_alive", pid_alive)
-        monkeypatch.setattr(unity.time, "sleep", lambda s: None)
+    def test_a_second_call_queues_behind_a_held_turn(self, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path)
+        other = self._hold_turn(project, {"pid": 4242, "seat": "SQUID-1", "what": "build"})
+        polls = {"n": 0}
+
+        def sleep(_):
+            polls["n"] += 1
+            if polls["n"] == 3:           # the holder finishes while we wait
+                unity._unlock(other)
+                other.close()
+        monkeypatch.setattr(unity.time, "sleep", sleep)
         with unity.editor_lease(project, "check", wait=60) as refused:
             assert refused is None
-            assert json.loads(lease.read_text(encoding="utf-8"))["pid"] == os.getpid()
-        assert not lease.exists()
+            assert unity.lease_holder(project)["pid"] == os.getpid()
+        assert polls["n"] == 3
+        assert not (project / "Temp" / "bgate" / unity.LEASE_NAME).exists()
 
-    def test_a_lease_that_never_frees_names_its_holder(self, tmp_path, monkeypatch):
+    def test_a_turn_that_never_frees_names_its_holder(self, tmp_path):
         project = _unity_project(tmp_path)
-        lease = project / "Temp" / "bgate" / unity.LEASE_NAME
-        lease.parent.mkdir(parents=True)
-        lease.write_text(json.dumps({"pid": 4242, "seat": "SQUID-1", "what": "build"}),
-                         encoding="utf-8")
-        monkeypatch.setattr(unity, "_pid_alive", lambda pid: True)
-        with unity.editor_lease(project, "check", wait=0) as refused:
-            assert refused["editor_open"] is True
-            assert "SQUID-1 (build)" in refused["error"]
-        # Someone else's lease is never removed by the one that gave up.
-        assert lease.exists()
+        other = self._hold_turn(project, {"pid": 4242, "seat": "SQUID-1", "what": "build"})
+        try:
+            with unity.editor_lease(project, "check", wait=0) as refused:
+                assert refused["editor_open"] is True
+                assert "SQUID-1 (build)" in refused["error"]
+                assert "queued_seconds" in refused
+            # The one that gave up never touches the holder's note.
+            assert unity.lease_holder(project)["seat"] == "SQUID-1"
+        finally:
+            unity._unlock(other)
+            other.close()
 
-    def test_a_dead_holders_lease_is_taken_over(self, tmp_path, monkeypatch):
+    def test_a_dead_holders_note_does_not_block(self, tmp_path):
+        """A crashed holder leaves its note behind; the OS already dropped its lock."""
         project = _unity_project(tmp_path)
-        lease = project / "Temp" / "bgate" / unity.LEASE_NAME
-        lease.parent.mkdir(parents=True)
-        lease.write_text(json.dumps({"pid": 4242, "what": "build"}), encoding="utf-8")
-        monkeypatch.setattr(unity, "_pid_alive", lambda pid: pid == os.getpid())
+        scratch = project / "Temp" / "bgate"
+        scratch.mkdir(parents=True)
+        (scratch / unity.LEASE_NAME).write_text(json.dumps({"pid": 4242, "what": "build"}),
+                                                encoding="utf-8")
         with unity.editor_lease(project, "check", wait=0) as refused:
             assert refused is None
-        assert not lease.exists()
+            assert unity.lease_holder(project)["pid"] == os.getpid()
 
-    def test_this_process_counts_as_alive(self):
-        assert unity._pid_alive(os.getpid()) is True
-        assert unity._pid_alive(0) is False
-
+    def test_two_waiters_never_hold_the_turn_together(self, tmp_path):
+        """PATSTA-1's race: two waiters that both saw a free turn. The OS lock lets one in."""
+        project = _unity_project(tmp_path)
+        with unity.editor_lease(project, "a", wait=0) as first:
+            assert first is None
+            with unity.editor_lease(project, "b", wait=0) as second:
+                assert second is not None and second["editor_open"] is True
+            # The loser's exit left the winner's note alone.
+            assert unity.lease_holder(project)["what"] == "a"
     def test_a_hang_is_a_timeout_with_advice(self, fake_editor, tmp_path, monkeypatch):
         monkeypatch.setenv("FAKE_UNITY_MODE", "hang")
         project = _unity_project(tmp_path)
