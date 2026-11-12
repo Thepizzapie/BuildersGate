@@ -142,9 +142,11 @@ def unity_execute(method: str, unity_project: str = "", timeout: int = 600,
 def unity_install_scripts(unity_project: str = "") -> dict:
     """Put Assets/BGate/BGateTelemetry.cs and Editor/BGateCapture.cs in place.
 
-    Two files, never overwritten once present, no .meta files (the editor
-    generates them on import). The telemetry script boots itself on the
-    first scene load; the capture script is what engine_screenshot calls.
+    No .meta files (the editor generates them on import). Every BGate script
+    already in Assets/BGate/ is brought up to the bundled version when it is
+    an unedited copy Builders Gate shipped (`updated`); an edited one is kept
+    and listed under `edited`. The telemetry script boots itself on the first
+    scene load; the capture script is what engine_screenshot calls.
     """
     target, refused = _need_project(unity_project)
     if refused:
