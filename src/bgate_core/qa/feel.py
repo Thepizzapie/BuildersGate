@@ -110,7 +110,11 @@ def measure(run_dir: str | Path) -> dict:
         top = Counter(r.get("choice") for r in rows).most_common(1)[0][0]
     progress = [float(r["progress"]) for r in rows
                 if isinstance(r.get("progress"), (int, float))]
-    danger = [bool(r["danger"]) for r in rows if r.get("danger") is not None]
+    # Pressure is read over the same frames as top_share. Measured (Lost &
+    # Found): a baseline that died in 6 s spent 99 of 138 rows on one-option
+    # over/title screens reporting danger=false, so the share read 9% when the
+    # bot was threatened on 33% of the frames where it had a choice.
+    danger = [bool(r["danger"]) for r in (decided or rows) if r.get("danger") is not None]
     deaths = []
     ended = False
     end_status = None            # None: never ended; else lost | won | unknown

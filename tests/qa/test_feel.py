@@ -114,6 +114,23 @@ def test_an_end_event_without_a_status_leaves_trivial_unjudged(tmp_path):
     assert ko["deaths"] == 1
 
 
+def test_a_quick_death_then_menus_is_not_read_as_no_pressure(tmp_path):
+    """Measured (Lost & Found): 39 real frames at 33% danger, then 99 one-option
+    over/title frames with danger=false, read as 9% and FAIL NO_PRESSURE."""
+    real = [{"choice": c, "ts": 1000 + i, "progress": i / 100,
+             "danger": i % 3 == 0, "options": ["left", "right", "sort"]}
+            for i, c in enumerate(["left", "right", "sort"] * 13)]
+    menus = [{"choice": "confirm", "ts": 1039 + i, "progress": 0.38,
+              "danger": False, "options": ["confirm"]} for i in range(99)]
+    got = feel.measure(_run(tmp_path, "b", real + menus,
+                            events=[{"kind": "shift_over", "ts": 1039,
+                                     "data": {"status": "lost"}}]))
+    assert got["danger_share"] == round(13 / 39, 3)
+    # control: a run with no real decisions still measures over what it has
+    only_menus = feel.measure(_run(tmp_path, "m", menus))
+    assert only_menus["danger_share"] == 0.0
+
+
 def test_one_button_counts_only_frames_that_offered_a_choice(tmp_path):
     """Measured (Turf War): "done" was the only option in retreat/resolve
     frames, and counting those made a turn-based game read as one-button."""
