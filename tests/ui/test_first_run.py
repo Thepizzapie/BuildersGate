@@ -8,6 +8,7 @@ create, and a CLI that prints the absolute path it wrote to.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,7 @@ class TestStateWithoutAProject:
 
     def test_project_endpoint_reports_where_it_would_create_one(self, client, empty):
         assert not (empty / ".bgate").exists()
+        threads = sorted(th.name for th in threading.enumerate())
         got = data(client.get("/api/project"))
         assert got["project"] is None
         # FLAKY ON CI ONCE (#125, windows py3.11): cwd came back as the PARENT
@@ -82,7 +84,9 @@ class TestStateWithoutAProject:
         db_file = empty / ".bgate" / "game.db"
         assert got["cwd"] == str(empty), (
             f"game.db in empty: {db_file.is_file()}, "
-            f"BGATE_ROOT={os.environ.get('BGATE_ROOT')!r}, cwd={Path.cwd()}")
+            f"BGATE_ROOT={os.environ.get('BGATE_ROOT')!r}, cwd={Path.cwd()}, "
+            f"threads at start: {threads}, now: "
+            f"{sorted(th.name for th in threading.enumerate())}")
         assert "2d" in got["kinds"]
 
 
