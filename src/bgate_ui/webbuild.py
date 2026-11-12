@@ -127,6 +127,42 @@ def _web_rebuild(root, game: Path, timeout: int) -> dict:
             "stderr": str(got.get("stderr") or "")[-4000:]}
 
 
+def _unity(root: str | os.PathLike[str]) -> bool:
+    try:
+        from bgate_adapters import unity as _u
+        return _u.is_project(root)
+    except Exception:                                             # noqa: BLE001
+        return False
+
+
+def _unity_status(root) -> dict:
+    """A Unity project's WebGL build in export/web, against Assets/ and
+    ProjectSettings/. Without this the phone's Play pane read NOT BUILT beside
+    a WebGL build that /play/ was already serving (FF-B67, 2026-11-12)."""
+    from bgate_adapters import unity as _u
+    page = play_dir(root) / "index.html"
+    if not page.exists():
+        return {"built": False, "stale": True, "engine": "unity", "reason": "never built"}
+    src = _u._newest_source(Path(root))
+    built = page.stat().st_mtime
+    stale = built < src
+    return {"built": True, "stale": stale, "engine": "unity",
+            "build_mtime": built, "source_mtime": src, "newest_source": "",
+            "reason": "a file under Assets/ is newer than the build" if stale else "",
+            "blocked": "" if _u.webgl_supported(project_dir=root) else
+                       "WebGL Build Support is not installed for this project's Unity"}
+
+
+def _unity_rebuild(root, timeout: int) -> dict:
+    """The WebGL build through BGateBuild.WebGL. A WebGL build is minutes, not
+    the seconds a Godot export takes, so the floor is the adapter's own."""
+    from bgate_adapters import unity as _u
+    got = _u.build_webgl(root, play_dir(root), timeout=max(int(timeout), 2400))
+    return {"ok": bool(got.get("ok")), "engine": "unity",
+            "output": str(got.get("output", ""))[-3000:],
+            "error": got.get("error", ""), "cached": got.get("cached", False)}
+
+
 def status(root: str | os.PathLike[str]) -> dict:
     """Is there a build, is it current with the source, and CAN one be made?
 
@@ -142,6 +178,8 @@ def status(root: str | os.PathLike[str]) -> dict:
         web = _web_game(root)
         if web is not None:
             return _web_status(root, web)
+        if _unity(root):
+            return _unity_status(root)
         return {"built": False, "stale": True, "reason": "no game project"}
     if not pck.exists():
         return {"built": False, "stale": True, "reason": "never exported"}
@@ -213,7 +251,8 @@ def rebuild(root: str | os.PathLike[str], timeout: int = 240) -> dict:
     """
     game = _game(root)
     web = _web_game(root) if game is None else None
-    if game is None and web is None:
+    unity_root = game is None and web is None and _unity(root)
+    if game is None and web is None and not unity_root:
         return {"ok": False, "error": "no game project at this root"}
     try:
         from bgate_core.design import greenlight as _greenlight
@@ -228,6 +267,8 @@ def rebuild(root: str | os.PathLike[str], timeout: int = 240) -> dict:
         return {"ok": False, "error": str(exc), "refused": "presentation"}
     if web is not None:
         return _web_rebuild(root, web, timeout)
+    if unity_root:
+        return _unity_rebuild(root, timeout)
     if not (game / "export_presets.cfg").exists():
         return {"ok": False, "error": "no export_presets.cfg — copy the Web "
                                       "preset the scaffold ships "

@@ -632,6 +632,25 @@ class TestWebGL:
     def _module(fake_editor):
         (fake_editor.parent / "Data" / "PlaybackEngines" / "WebGLSupport").mkdir(parents=True)
 
+    def test_the_play_pane_reads_a_unity_webgl_build(self, fake_editor, tmp_path):
+        """Measured (FF-B67, 2026-11-12): the phone's Play pane said NOT BUILT
+        beside a WebGL build /play/ was already serving."""
+        from bgate_ui import webbuild
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        assert webbuild.status(project) == {"built": False, "stale": True,
+                                            "engine": "unity", "reason": "never built"}
+        page = webbuild.play_dir(project) / "index.html"
+        page.parent.mkdir(parents=True)
+        page.write_text("<html></html>", encoding="utf-8")
+        os.utime(page, (unity._newest_source(project) + 10,) * 2)
+        got = webbuild.status(project)
+        assert got["built"] is True and got["stale"] is False and got["engine"] == "unity"
+        assert got["blocked"] == ""
+        # control: a source newer than the page reads stale
+        os.utime(page, (1, 1))
+        assert webbuild.status(project)["stale"] is True
+
     def test_a_missing_module_is_refused_before_the_editor_runs(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")
         got = unity.build_webgl(project, tmp_path / "export" / "web", timeout=60)
