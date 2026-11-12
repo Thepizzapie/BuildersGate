@@ -124,12 +124,6 @@ def _build_facts(root: Path, engine: str = "") -> dict:
     from bgate_ui import webbuild
     status = webbuild.status(root)
     web = webbuild.play_dir(root)
-    page = web / "index.html"
-    if engine == "unity" and status.get("reason") == "no game project":
-        status = ({"built": True, "stale": False, "build_mtime": page.stat().st_mtime,
-                   "reason": ""} if page.is_file()
-                  else {"built": False, "stale": True,
-                        "reason": "no WebGL build in export/web (build one from Unity)"})
     total = 0
     if web.is_dir():
         total = sum(p.stat().st_size for p in web.rglob("*") if p.is_file())

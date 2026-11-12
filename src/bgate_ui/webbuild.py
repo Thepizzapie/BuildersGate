@@ -78,6 +78,31 @@ def _web_game(root: str | os.PathLike[str]) -> Path | None:
         return None
 
 
+def _unity(root: str | os.PathLike[str]) -> bool:
+    from bgate_core.store import project
+    return project.engine_of(root) == "unity"
+
+
+#: What the panel says when a Unity project has no WebGL build to serve.
+UNITY_NO_BUILD = "no WebGL build in export/web (build one from Unity)"
+
+
+def _unity_status(root: str | os.PathLike[str]) -> dict:
+    """A Unity project: nothing here can export it, so a WebGL build somebody
+    made into export/web counts as built and is never called stale.
+
+    THIS LIVED ONLY IN bgate_site's collect, so the arcade card said "built"
+    while /api/play/status, the phone's Play panel, answered "no game project"
+    for the same directory - measured on ff-b67-unity: /play/ served the game
+    with a 200 and the panel offered a BUILD IT button that could do nothing.
+    """
+    page = Path(root) / "export" / "web" / "index.html"
+    if page.is_file():
+        return {"built": True, "stale": False, "build_mtime": page.stat().st_mtime,
+                "reason": ""}
+    return {"built": False, "stale": True, "reason": UNITY_NO_BUILD}
+
+
 def play_dir(root: str | os.PathLike[str]) -> Path:
     """Where /play/ serves from: Godot's export/web, or for a web project the
     vite build under .bgate_out/ (already gitignored, so building to play
@@ -142,6 +167,8 @@ def status(root: str | os.PathLike[str]) -> dict:
         web = _web_game(root)
         if web is not None:
             return _web_status(root, web)
+        if _unity(root):
+            return _unity_status(root)
         return {"built": False, "stale": True, "reason": "no game project"}
     if not pck.exists():
         return {"built": False, "stale": True, "reason": "never exported"}
