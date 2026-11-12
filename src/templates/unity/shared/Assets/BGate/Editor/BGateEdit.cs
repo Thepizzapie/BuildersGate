@@ -1,4 +1,5 @@
-// Builders Gate edits: import an asset, place a prefab, set a component field.
+// Builders Gate edits: import an asset, place a prefab, set a component field,
+// create a scene, add or remove a scene object.
 //
 // Invoked by the adapter as
 //     Unity -batchmode -quit -projectPath X -executeMethod BGate.Editor.BGateEdit.<Verb>
@@ -27,6 +28,13 @@
 //             BGATE_FIELD         serialized property path (speed, m_LocalPosition)
 //             BGATE_VALUE         the value as text, see Assign
 //             BGATE_ADD           "1": add the component when it is missing
+//   NewScene  BGATE_SCENE         the .unity to create under Assets/ (refused if it exists)
+//             BGATE_CAMERA        "2d" (orthographic), "3d" (camera + sun), "none"
+//             BGATE_FIRST_IN_BUILD "1": make it the first enabled Build Settings scene
+//   AddObject BGATE_SCENE, BGATE_NAME, BGATE_PARENT, BGATE_POS/ROT/SCALE as in Place
+//             BGATE_COMPONENTS    comma-separated component type names
+//   RemoveObject BGATE_SCENE, BGATE_OBJECT (hierarchy path)
+//             BGATE_KEEP_CAMERA   "1": refuse when it holds the MainCamera
 //
 // Lives under Editor/ so it compiles into the editor assembly only.
 
@@ -231,6 +239,164 @@ namespace BGate.Editor
         }
 
         // ------------------------------------------------------------------
+        // NewScene
+        // ------------------------------------------------------------------
+        public static void NewScene()
+        {
+            var r = new Result("new_scene");
+            var path = (Env("BGATE_SCENE") ?? "").Replace('\\', '/');
+            if (!UnderAssets(path) || !path.EndsWith(".unity", StringComparison.OrdinalIgnoreCase)) { Fail(r, "BGATE_SCENE must be a .unity path under Assets/"); return; }
+            if (File.Exists(path)) { Fail(r, path + " already exists"); return; }
+            var camera = (Env("BGATE_CAMERA") ?? "2d").Trim().ToLowerInvariant();
+            if (camera != "2d" && camera != "3d" && camera != "none") { Fail(r, "BGATE_CAMERA must be 2d, 3d or none, not " + camera); return; }
+
+            var scene = EditorSceneManager.NewScene(
+                camera == "3d" ? NewSceneSetup.DefaultGameObjects : NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            if (camera == "2d")
+            {
+                var go = new GameObject("Main Camera");
+                go.tag = "MainCamera";
+                var cam = go.AddComponent<Camera>();
+                cam.orthographic = true;
+                cam.orthographicSize = 5f;
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = new Color(0.19f, 0.30f, 0.47f, 1f);
+                cam.nearClipPlane = 0.3f;
+                cam.farClipPlane = 1000f;
+                go.AddComponent<AudioListener>();
+                go.transform.position = new Vector3(0f, 0f, -10f);
+            }
+
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            }
+            if (!EditorSceneManager.SaveScene(scene, path)) { Fail(r, "could not save " + path); return; }
+
+            if (Env("BGATE_FIRST_IN_BUILD") == "1")
+            {
+                var list = new List<EditorBuildSettingsScene> { new EditorBuildSettingsScene(path, true) };
+                foreach (var e in EditorBuildSettings.scenes)
+                    if (e.path != path) list.Add(e);
+                EditorBuildSettings.scenes = list.ToArray();
+            }
+            r.Add("scene", path);
+            r.Add("guid", AssetDatabase.AssetPathToGUID(path));
+            r.Add("camera", camera);
+            var roots = new List<string>();
+            foreach (var g in scene.GetRootGameObjects()) roots.Add(g.name);
+            r.AddList("roots", roots);
+            r.AddList("build_scenes", BuildScenes());
+            Done(r);
+        }
+
+        // ------------------------------------------------------------------
+        // AddObject
+        // ------------------------------------------------------------------
+        public static void AddObject()
+        {
+            var r = new Result("add_object");
+            var name = (Env("BGATE_NAME") ?? "").Trim();
+            if (name == "" || name.Contains("/")) { Fail(r, "BGATE_NAME is required and cannot contain '/'"); return; }
+
+            // Resolve every type before touching the scene: a typo adds nothing.
+            var types = new List<Type>();
+            foreach (var raw in (Env("BGATE_COMPONENTS") ?? "").Split(','))
+            {
+                var tn = raw.Trim();
+                if (tn == "" || tn == "Transform") continue;
+                var t = FindComponentType(tn);
+                if (t == null) { Fail(r, "no Component type named " + tn + " compiles in this project"); return; }
+                types.Add(t);
+            }
+
+            Scene scene;
+            if (!OpenScene(r, out scene)) return;
+            Transform parent = null;
+            var parentPath = Env("BGATE_PARENT");
+            if (!string.IsNullOrEmpty(parentPath))
+            {
+                var p = FindInScene(scene, parentPath);
+                if (p == null) { Fail(r, "no object at '" + parentPath + "' in " + scene.path); return; }
+                parent = p.transform;
+            }
+            // Paths are how every other verb finds an object; a twin makes them ambiguous.
+            if (parent != null ? parent.Find(name) != null : FindInScene(scene, name) != null)
+            { Fail(r, "an object named '" + name + "' already exists there in " + scene.path); return; }
+
+            var go = new GameObject(name);
+            SceneManager.MoveGameObjectToScene(go, scene);
+            if (parent != null) go.transform.SetParent(parent, false);
+            foreach (var t in types)
+            {
+                if (go.GetComponent(t) != null) continue;   // pulled in by a RequireComponent
+                if (go.AddComponent(t) == null) { Object.DestroyImmediate(go); Fail(r, "Unity refused to add " + t.Name); return; }
+            }
+            Vector3 v;
+            if (TryVec3(Env("BGATE_POS"), out v)) go.transform.localPosition = v;
+            if (TryVec3(Env("BGATE_ROT"), out v)) go.transform.localRotation = Quaternion.Euler(v);
+            if (TryVec3(Env("BGATE_SCALE"), out v)) go.transform.localScale = v;
+
+            EditorSceneManager.MarkSceneDirty(scene);
+            if (!EditorSceneManager.SaveScene(scene)) { Fail(r, "could not save " + scene.path); return; }
+            r.Add("scene", scene.path);
+            r.Add("object", PathOf(go.transform));
+            var have = new List<string>();
+            foreach (var c in go.GetComponents<Component>()) if (c != null) have.Add(c.GetType().Name);
+            r.AddList("components", have);
+            r.Add("position", Vec(go.transform.position));
+            Done(r);
+        }
+
+        // ------------------------------------------------------------------
+        // RemoveObject
+        // ------------------------------------------------------------------
+        public static void RemoveObject()
+        {
+            var r = new Result("remove_object");
+            var objectPath = Env("BGATE_OBJECT");
+            if (string.IsNullOrEmpty(objectPath)) { Fail(r, "BGATE_OBJECT is required"); return; }
+            Scene scene;
+            if (!OpenScene(r, out scene)) return;
+            var go = FindInScene(scene, objectPath);
+            if (go == null)
+            {
+                var roots = new List<string>();
+                foreach (var g in scene.GetRootGameObjects()) roots.Add(g.name);
+                r.AddList("roots", roots);
+                Fail(r, "no object at '" + objectPath + "' in " + scene.path);
+                return;
+            }
+            if (Env("BGATE_KEEP_CAMERA") == "1")
+                foreach (var cam in go.GetComponentsInChildren<Camera>(true))
+                    if (cam.CompareTag("MainCamera")) { Fail(r, PathOf(cam.transform) + " is the MainCamera; refused (keep_camera)"); return; }
+            if (PrefabUtility.IsPartOfPrefabInstance(go) && !PrefabUtility.IsOutermostPrefabInstanceRoot(go))
+            { Fail(r, PathOf(go.transform) + " is inside a prefab instance; remove the instance root or edit the prefab"); return; }
+
+            var removedPath = PathOf(go.transform);
+            var count = go.GetComponentsInChildren<Transform>(true).Length;
+            Object.DestroyImmediate(go);
+            EditorSceneManager.MarkSceneDirty(scene);
+            if (!EditorSceneManager.SaveScene(scene)) { Fail(r, "could not save " + scene.path); return; }
+            r.Add("scene", scene.path);
+            r.Add("removed", removedPath);
+            r.Add("objects_removed", count.ToString(Inv), raw: true);
+            var left = new List<string>();
+            foreach (var g in scene.GetRootGameObjects()) left.Add(g.name);
+            r.AddList("roots", left);
+            Done(r);
+        }
+
+        static List<string> BuildScenes()
+        {
+            var out_ = new List<string>();
+            foreach (var e in EditorBuildSettings.scenes) out_.Add((e.enabled ? "" : "(off) ") + e.path);
+            return out_;
+        }
+
+        // ------------------------------------------------------------------
         // Values
         // ------------------------------------------------------------------
         // Text in, typed value out. Numbers and bools as written; vectors and
@@ -409,6 +575,26 @@ namespace BGate.Editor
                     if (t.Name == name || t.FullName == name) return t;
             }
             return null;
+        }
+
+        // A concrete Component type by short or full name. UnityEngine's own
+        // type wins a name clash, so "Camera" is never some editor class.
+        static Type FindComponentType(string name)
+        {
+            Type found = null;
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try { types = asm.GetTypes(); } catch { continue; }
+                foreach (var t in types)
+                {
+                    if (t.Name != name && t.FullName != name) continue;
+                    if (!typeof(Component).IsAssignableFrom(t) || t.IsAbstract || t.IsGenericTypeDefinition) continue;
+                    if (t.Namespace == "UnityEngine") return t;
+                    if (found == null) found = t;
+                }
+            }
+            return found;
         }
 
         static string PathOf(Transform t)

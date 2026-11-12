@@ -118,6 +118,7 @@ SEATS: dict[str, tuple[str, ...]] = {
         "godot_screenshot", "godot_evidence", "godot_run", "godot_test_run",
         "godot_check_project",
         "web_status", "unity_status", "unity_place_prefab", "unity_set_field",
+        "unity_new_scene", "unity_add_object", "unity_remove_object",
         "playtest_", "research_findings",
     ),
     # Engine plumbing, build and performance, the same engine surface, plus

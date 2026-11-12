@@ -198,6 +198,7 @@ ENGINE_TOOLS: dict[str, frozenset[str]] = {
         "unity_status", "unity_check", "unity_test_run", "unity_execute",
         "unity_install_scripts", "unity_screenshot", "unity_build", "unity_play",
         "unity_import_asset", "unity_place_prefab", "unity_set_field",
+        "unity_new_scene", "unity_add_object", "unity_remove_object",
     }),
     NONE: frozenset(),
 }

@@ -762,6 +762,18 @@ def _edit(project_dir: str | os.PathLike[str], verb: str, env: dict[str, str],
     if not is_project(project):
         return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
     installed = install_scripts(project, which=("edit",))
+    # A copy installed by an older bgate lacks newer verbs, and -executeMethod
+    # on a missing method is only "the editor exited 1". Say what is wrong.
+    script = project / SCRIPTS_REL / EDIT_FILE
+    try:
+        has_verb = f"public static void {verb}()" in script.read_text(encoding="utf-8-sig")
+    except OSError:
+        has_verb = True
+    if not has_verb:
+        return {"ok": False, "stale_script": True, "install": installed,
+                "error": (f"{SCRIPTS_REL.as_posix()}/{Path(EDIT_FILE).as_posix()} has no {verb}(): "
+                          "it was installed by an older bgate. Delete it (it is reinstalled "
+                          "on the next edit) or run unity_install_scripts to update it")}
     # Not the project's Temp/: the editor clears files it did not make there
     # as it quits (measured: the result was gone by the time the call returned).
     import tempfile
@@ -933,6 +945,98 @@ def set_field(project_dir: str | os.PathLike[str], component: str, field: str, v
                 return {"ok": False, "error": f"scene: {err}"}
             env["BGATE_SCENE"] = rel
     return _edit(project, "SetField", env, timeout=timeout)
+
+
+SCENE_CAMERAS = ("2d", "3d", "none")
+
+
+def new_scene(project_dir: str | os.PathLike[str], path: str, *, camera: str = "2d",
+              first_in_build: bool = True, timeout: int = 600) -> dict:
+    """Create and save a new scene, optionally first in Build Settings.
+
+    `camera` "2d" is an orthographic Main Camera, "3d" Unity's default camera
+    plus directional light, "none" an empty scene. An existing scene is never
+    replaced. The result lists the scene's roots and the Build Settings order.
+    """
+    project = Path(project_dir)
+    rel, err = _assets_rel(project, path, suffixes=(".unity",))
+    if err:
+        return {"ok": False, "error": f"scene: {err}"}
+    cam = str(camera or "").strip().lower()
+    if cam not in SCENE_CAMERAS:
+        return {"ok": False, "error": f"camera must be one of {', '.join(SCENE_CAMERAS)}, not {camera!r}"}
+    if (project / rel).exists():
+        return {"ok": False, "exists": True, "scene": rel,
+                "error": f"{rel} already exists; edit it with unity_add_object / "
+                         "unity_remove_object, or pick a new path"}
+    env = {"BGATE_SCENE": rel, "BGATE_CAMERA": cam,
+           "BGATE_FIRST_IN_BUILD": "1" if first_in_build else ""}
+    return _edit(project, "NewScene", env, timeout=timeout)
+
+
+def _component_names(components) -> tuple[list[str], str]:
+    if components is None or components == "":
+        return [], ""
+    items = components if isinstance(components, (list, tuple)) else str(components).split(",")
+    names = [str(c).strip() for c in items if str(c).strip()]
+    bad = [n for n in names if not re.fullmatch(r"[A-Za-z_][\w.]*", n)]
+    if bad:
+        return [], f"not component type names: {', '.join(bad)}"
+    return names, ""
+
+
+def add_object(project_dir: str | os.PathLike[str], name: str, *, components=None,
+               scene: str = "", parent: str = "", position=None, rotation=None,
+               scale=None, timeout: int = 600) -> dict:
+    """Add a new GameObject with the listed components to a scene and save it.
+
+    `components` are type names ("SpriteRenderer", "PlowGame"); every one is
+    resolved before the scene changes, so a typo adds nothing. A sibling with
+    the same name is refused, since hierarchy paths are how objects are found.
+    The result's `object` is the new hierarchy path.
+    """
+    project = Path(project_dir)
+    clean = str(name or "").strip()
+    if not clean or "/" in clean:
+        return {"ok": False, "error": "name is required and cannot contain '/'"}
+    names, err = _component_names(components)
+    if err:
+        return {"ok": False, "error": err}
+    env = {"BGATE_NAME": clean, "BGATE_COMPONENTS": ",".join(names),
+           "BGATE_PARENT": parent or ""}
+    if scene:
+        srel, err = _assets_rel(project, scene, suffixes=(".unity",))
+        if err:
+            return {"ok": False, "error": f"scene: {err}"}
+        env["BGATE_SCENE"] = srel
+    for key, value, what in (("BGATE_POS", position, "position"),
+                             ("BGATE_ROT", rotation, "rotation"),
+                             ("BGATE_SCALE", scale, "scale")):
+        text, err = _vec(value, what)
+        if err:
+            return {"ok": False, "error": err}
+        env[key] = text
+    return _edit(project, "AddObject", env, timeout=timeout)
+
+
+def remove_object(project_dir: str | os.PathLike[str], object_path: str, *,
+                  scene: str = "", keep_camera: bool = False,
+                  timeout: int = 600) -> dict:
+    """Delete a scene object and its children, then save the scene.
+
+    `keep_camera` refuses when the object is or holds the MainCamera. A miss
+    returns the scene's `roots`.
+    """
+    project = Path(project_dir)
+    if not str(object_path or "").strip():
+        return {"ok": False, "error": "object_path is required (the hierarchy path, like Player)"}
+    env = {"BGATE_OBJECT": object_path.strip(), "BGATE_KEEP_CAMERA": "1" if keep_camera else ""}
+    if scene:
+        srel, err = _assets_rel(project, scene, suffixes=(".unity",))
+        if err:
+            return {"ok": False, "error": f"scene: {err}"}
+        env["BGATE_SCENE"] = srel
+    return _edit(project, "RemoveObject", env, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------

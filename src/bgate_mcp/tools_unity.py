@@ -296,6 +296,74 @@ def unity_set_field(component: str, field: str, value: str = "",
 
 
 @_tool
+def unity_new_scene(path: str, camera: str = "2d", first_in_build: bool = True,
+                    unity_project: str = "", timeout: int = 600) -> dict:
+    """Create and save a new scene; by default it becomes the first Build Settings scene.
+
+    `path` is a new .unity under Assets/ (an existing one is refused).
+    `camera`: "2d" an orthographic Main Camera, "3d" Unity's default camera
+    plus directional light, "none" empty. The result lists the scene's roots
+    and the Build Settings order.
+    """
+    target, refused = _need_project(unity_project)
+    if refused:
+        return refused
+    got = _unity.new_scene(target, path, camera=camera, first_in_build=first_in_build,
+                           timeout=timeout)
+    scene = got.get("scene", "")
+    _note_edit(got, target, scene, f"{scene}.meta" if scene else "",
+               "ProjectSettings/EditorBuildSettings.asset" if first_in_build else "")
+    _log("unity", f"new scene {scene or path}: {'ok' if got.get('ok') else 'FAILED'}")
+    return got
+
+
+@_tool
+def unity_add_object(name: str, components: Optional[list] = None, scene: str = "",
+                     parent: str = "", position: Optional[list] = None,
+                     rotation: Optional[list] = None, scale: Optional[list] = None,
+                     unity_project: str = "", timeout: int = 600) -> dict:
+    """Add a new GameObject with components to a scene and save the scene.
+
+    `components` are type names (["SpriteRenderer", "PlowGame"]), all
+    resolved before the scene changes, so a typo adds nothing. `scene` empty
+    is the first Build Settings scene; `parent` a hierarchy path; position,
+    rotation (euler degrees) and scale are local [x, y, z]. A sibling with the
+    same name is refused. The result's `object` is the hierarchy path, for
+    unity_set_field.
+    """
+    target, refused = _need_project(unity_project)
+    if refused:
+        return refused
+    got = _unity.add_object(target, name, components=components, scene=scene,
+                            parent=parent, position=position, rotation=rotation,
+                            scale=scale, timeout=timeout)
+    _note_edit(got, target, got.get("scene", ""))
+    _log("unity", f"added {got.get('object') or name} to {got.get('scene') or scene or 'the first build scene'}: "
+                  f"{'ok' if got.get('ok') else 'FAILED'}")
+    return got
+
+
+@_tool
+def unity_remove_object(object_path: str, scene: str = "", keep_camera: bool = False,
+                        unity_project: str = "", timeout: int = 600) -> dict:
+    """Delete a scene object and all its children, then save the scene.
+
+    `object_path` is the hierarchy path ("Player", "Level/Ledge"); `scene`
+    empty is the first Build Settings scene. `keep_camera` refuses when the
+    object is or holds the MainCamera. A miss returns the scene's `roots`.
+    """
+    target, refused = _need_project(unity_project)
+    if refused:
+        return refused
+    got = _unity.remove_object(target, object_path, scene=scene, keep_camera=keep_camera,
+                               timeout=timeout)
+    _note_edit(got, target, got.get("scene", ""))
+    _log("unity", f"removed {object_path} from {got.get('scene') or scene or 'the first build scene'}: "
+                  f"{'ok' if got.get('ok') else 'FAILED'}")
+    return got
+
+
+@_tool
 def unity_screenshot(scene: str = "", label: str = "", unity_project: str = "",
                      width: int = 1280, height: int = 720,
                      timeout: int = 600) -> dict:

@@ -33,8 +33,14 @@ From an agent session the moves are:
   at a position, under a parent, and saves the scene.
 - `unity_set_field`: sets one serialized field on a component in a scene or
   a prefab, through the inspector's own path. Returns `before` and `after`.
-  These three are how a scene changes. Never edit `.unity`, `.prefab` or
-  `.meta` text by hand.
+- `unity_new_scene`: creates and saves a scene with a 2D, 3D or no camera,
+  first in Build Settings by default. Never replaces an existing scene.
+- `unity_add_object`: a new GameObject with the listed components (type
+  names) under a parent, saved. Returns its hierarchy path.
+- `unity_remove_object`: deletes an object and its children, saved;
+  `keep_camera` refuses the MainCamera.
+  These are how a scene changes. Never edit `.unity`, `.prefab` or `.meta`
+  text by hand.
 - `unity_build`: a Windows player of the Build Settings scenes into
   `Builds/BGatePlayer/`, reused until a file under `Assets/` changes.
 - `unity_play`: runs that player for N seconds of game time with telemetry
