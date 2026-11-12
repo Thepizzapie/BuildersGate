@@ -60,7 +60,7 @@ def _fake_spawn(monkeypatch, procs):
     """Fake the claude spawn and NOTHING else.
 
     dispatch.subprocess is the subprocess module itself, so a blanket Popen
-    patch also decapitates the git calls the dispatcher makes on the way — real
+    patch also decapitates the git calls the dispatcher makes on the way, real
     git commands pass straight through.
     """
     real_popen = subprocess.Popen
@@ -86,7 +86,7 @@ def fake_claude(monkeypatch):
 
 
 def _git_repo(path):
-    """A real repo with one commit — the boundary every diff test needs."""
+    """A real repo with one commit: the boundary every diff test needs."""
     env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
     import os
@@ -215,6 +215,32 @@ class TestConcurrencyCap:
         assert queue.get(root, second["id"])["status"] == "queued"
 
 
+def _fake_clock(monkeypatch, step, on_tick):
+    """Patch dispatch's sleep and monotonic onto a fake clock that only the
+    calling thread advances.
+
+    The patch lands on the time module itself, so every thread in the process
+    sleeps through it. A watchdog left over from another test used to advance
+    this clock too, and on CI that ended a run early or late (#120 guarded one
+    test; test_codex_prompt_eof_is_not_completion kept flaking on Linux). Any
+    other thread gets a short real sleep instead. Returns the clock, a
+    one-element list, so the test can read it.
+    """
+    clock = [0.0]
+    me = threading.get_ident()
+    real_sleep = time.sleep
+
+    def tick(s):
+        if threading.get_ident() != me:
+            return real_sleep(min(s, 0.01))
+        clock[0] += step
+        on_tick(clock[0])
+
+    monkeypatch.setattr(dispatch.time, "sleep", tick)
+    monkeypatch.setattr(dispatch.time, "monotonic", lambda: clock[0])
+    return clock
+
+
 class TestWatchdog:
     @pytest.mark.parametrize("status,should_kill", [
         ("dispatched", False), ("done", True), ("failed", True),
@@ -226,16 +252,13 @@ class TestWatchdog:
         entry = self._entry("unused", runner="codex", started_at=0,
                             max_runtime_s=1800)
         dispatch._live[item["id"]] = entry
-        clock = [0]
         killed = []
 
-        def tick(_):
-            clock[0] += 100
-            if clock[0] > 300:
+        def end_after_300(now):
+            if now > 300:
                 dispatch._live.pop(item["id"], None)
 
-        monkeypatch.setattr(dispatch.time, "sleep", tick)
-        monkeypatch.setattr(dispatch.time, "monotonic", lambda: clock[0])
+        _fake_clock(monkeypatch, 100, end_after_300)
         monkeypatch.setattr(dispatch, "_last_output_age_s", lambda *a: 0)
         monkeypatch.setattr(dispatch, "_kill_tree", killed.append)
         monkeypatch.setattr(dispatch._assets, "heartbeat", lambda *a: None)
@@ -292,23 +315,13 @@ class TestWatchdog:
         entry = self._entry(log, stdin_closed=False, started_at=0,
                             max_runtime_s=3600)
         dispatch._live[item["id"]] = entry
-        clock = [0.0]
-        me = threading.get_ident()
-        real_sleep = time.sleep
 
-        def tick(s):
-            # The patch is on the time module itself, so a thread left over
-            # from another test sleeps through here too. Only the watchdog
-            # under test advances the fake clock.
-            if threading.get_ident() != me:
-                return real_sleep(min(s, 0.01))
-            clock[0] += 30
-            if entry.get("stdin_closed") or clock[0] > 1000:
+        def end_when_closed(now):
+            if entry.get("stdin_closed") or now > 1000:
                 dispatch._live.pop(item["id"], None)
 
         commits = []
-        monkeypatch.setattr(dispatch.time, "sleep", tick)
-        monkeypatch.setattr(dispatch.time, "monotonic", lambda: clock[0])
+        clock = _fake_clock(monkeypatch, 30, end_when_closed)
         monkeypatch.setattr(dispatch, "_last_output_age_s", lambda *a: 0)
         monkeypatch.setattr(dispatch, "_terminal_error", lambda *a: "")
         monkeypatch.setattr(dispatch, "_auto_commit",
@@ -378,7 +391,7 @@ class TestGitSurface:
 
     def test_conflicting_branch_is_abandoned_after_the_ceiling(self, root):
         """A branch that cannot merge is offered a bounded number of times,
-        then fails — not re-asked every five minutes for the life of the
+        then fails, not re-asked every five minutes for the life of the
         server. A dirty working branch does not count against it."""
         (root / "game.txt").write_text("base\n", encoding="utf-8")
         _git_repo(root)
@@ -500,7 +513,7 @@ class TestGitSurface:
     def test_dispatch_route_carries_allow_dirty(self, client, root, monkeypatch):
         """The refusal told the operator to "dispatch with allow_dirty" and the
         route then dropped the field, so there was no way to do that from the
-        browser — env var and a restart, or nothing. static/dirtygate.js turns
+        browser: env var and a restart, or nothing. static/dirtygate.js turns
         the refusal into a dialog and retries through here."""
         _git_repo(root)
         (root / "wip.txt").write_text("half a thought\n", encoding="utf-8")
