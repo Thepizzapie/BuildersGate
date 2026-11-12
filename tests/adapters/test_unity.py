@@ -631,6 +631,22 @@ class TestPlayer:
         assert f"namespace {ns}" in build and f"class {cls}" in build
         assert f"public static void {method}()" in build and "BGATE_BUILD_OUT" in build
 
+    def test_scripted_inputs_are_checked_before_a_build(self, tmp_path):
+        assert unity.script_text(["1:confirm", "1.5:+throttle", "4:-throttle"]) == \
+            "1:confirm;1.5:+throttle;4:-throttle"
+        assert unity.script_text("2:jump; 3:+move_right") == "2:jump;3:+move_right"
+        assert unity.script_text(None) == ""
+        with pytest.raises(ValueError, match="throttle at 2"):
+            unity.script_text(["throttle at 2"])
+        got = unity.play(_unity_project(tmp_path / "game"), inputs=["soon:jump"])
+        assert got["ok"] is False and got["ran"] is False and "bad input step" in got["error"]
+
+    def test_the_agent_reads_scripts_and_captures_frames(self):
+        agent = (unity.TEMPLATE_DIR / unity.AGENT_FILE).read_text(encoding="utf-8")
+        for needle in ("BGATE_SCRIPT", "BGATE_CAPTURE_DIR", "BGATE_CAPTURE_EVERY",
+                       "ScreenCapture.CaptureScreenshot", "frame_"):
+            assert needle in agent, needle
+
     def test_the_template_players_read_the_bot(self):
         root = unity.TEMPLATE_DIR.parents[2]
         for rel in ("2d/Assets/Scripts/PlayerController2D.cs",

@@ -39,6 +39,10 @@ From an agent session the moves are:
   `Builds/BGatePlayer/`, reused until a file under `Assets/` changes.
 - `unity_play`: runs that player for N seconds of game time with telemetry
   on and reports what it emitted and threw. Proof it RUNS, not just compiles.
+  `inputs=["1:confirm", "1.5:+throttle", "4:-throttle"]` scripts presses
+  (tap, hold, release) through `BGateInput`; `capture_every=2` saves a frame
+  every 2 game seconds and returns their paths. Read the frames: that is
+  the only way to SEE the running game.
 - `playtest_agent_run` / `playtest_feel_check`: a decision model plays the
   player. It presses through `BGate.BGateInput` (`Declare`, `Held`, `Down`),
   which the template players already read beside the keyboard, and sees

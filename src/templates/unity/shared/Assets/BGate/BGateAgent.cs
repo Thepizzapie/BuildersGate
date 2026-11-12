@@ -37,6 +37,14 @@
 // BGATE_SCENE (a build-settings scene path or name) loads that scene first.
 // BGATE_AGENT_SECONDS quits after that much game time (physics steps run).
 // Every decision is emitted to BGateTelemetry as `agent_decision`.
+//
+// SCRIPTED INPUT, no model (unity_play's `inputs`): BGATE_SCRIPT is a list
+// of `seconds:action` steps separated by ';', in game time. `+a` presses
+// and holds, `-a` releases, a bare `a` taps (pressed for one frame, so
+// Down() sees it). `1:confirm;1.5:+throttle;4:-throttle`.
+// FRAMES: BGATE_CAPTURE_DIR + BGATE_CAPTURE_EVERY (game seconds) write
+// frame_000.png, frame_001.png... there: what the player saw, which a
+// batchmode screenshot of the saved scene cannot show. Needs a window.
 
 using System;
 using System.Collections.Generic;
@@ -131,6 +139,11 @@ namespace BGate
         float _played;
         BGateObservation _obs;
         readonly List<string> _pending = new List<string>();
+        readonly List<(float at, string step)> _script = new List<(float, string)>();
+        readonly List<string> _tapped = new List<string>();
+        string _captureDir;
+        float _captureEvery, _nextCapture;
+        int _captured;
 
         [Serializable]
         class Reply
@@ -144,8 +157,11 @@ namespace BGate
         {
             if (_instance != null) return;
             var url = Environment.GetEnvironmentVariable("BGATE_AGENT_URL");
-            // BGATE_SCENE alone (unity_play) boots it to switch scenes and nothing more.
-            if (string.IsNullOrEmpty(url) && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BGATE_SCENE")))
+            // BGATE_SCENE, BGATE_SCRIPT or BGATE_CAPTURE_DIR alone (unity_play)
+            // boot it without a model.
+            if (string.IsNullOrEmpty(url) && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BGATE_SCENE"))
+                && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BGATE_SCRIPT"))
+                && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BGATE_CAPTURE_DIR")))
                 return;
             var go = new GameObject("BGateAgent");
             DontDestroyOnLoad(go);
@@ -158,6 +174,57 @@ namespace BGate
             _instance._scene = Environment.GetEnvironmentVariable("BGATE_SCENE");
             float.TryParse(Environment.GetEnvironmentVariable("BGATE_AGENT_SECONDS"), NumberStyles.Float,
                            CultureInfo.InvariantCulture, out _instance._seconds);
+            _instance.ParseScript(Environment.GetEnvironmentVariable("BGATE_SCRIPT"));
+            _instance._captureDir = Environment.GetEnvironmentVariable("BGATE_CAPTURE_DIR");
+            float.TryParse(Environment.GetEnvironmentVariable("BGATE_CAPTURE_EVERY"), NumberStyles.Float,
+                           CultureInfo.InvariantCulture, out _instance._captureEvery);
+            if (!string.IsNullOrEmpty(_instance._captureDir) && _instance._captureEvery <= 0f)
+                _instance._captureEvery = 1f;
+            _instance._nextCapture = _instance._captureEvery;
+        }
+
+        void ParseScript(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            foreach (var raw in text.Split(';'))
+            {
+                var part = raw.Trim();
+                var colon = part.IndexOf(':');
+                if (colon <= 0) continue;
+                if (!float.TryParse(part.Substring(0, colon), NumberStyles.Float, CultureInfo.InvariantCulture, out var at))
+                    continue;
+                var step = part.Substring(colon + 1).Trim();
+                if (step.Length > 0) _script.Add((at, step));
+            }
+            _script.Sort((a, b) => a.at.CompareTo(b.at));
+        }
+
+        // Runs first in the frame (execution order), so a press made here is
+        // the frame's Down() edge for every game script.
+        void RunScript()
+        {
+            foreach (var a in _tapped) BGateInput.Release(a);
+            _tapped.Clear();
+            while (_script.Count > 0 && _script[0].at <= _played)
+            {
+                var step = _script[0].step;
+                _script.RemoveAt(0);
+                if (step[0] == '+') BGateInput.Press(step.Substring(1));
+                else if (step[0] == '-') BGateInput.Release(step.Substring(1));
+                else { BGateInput.Release(step); BGateInput.Press(step); _tapped.Add(step); }
+                BGateTelemetry.Emit("script_step", ("at", _played), ("step", step));
+            }
+        }
+
+        void Capture()
+        {
+            if (string.IsNullOrEmpty(_captureDir) || _played < _nextCapture) return;
+            _nextCapture += _captureEvery;
+            System.IO.Directory.CreateDirectory(_captureDir);
+            var path = System.IO.Path.Combine(_captureDir, "frame_" + _captured.ToString("000") + ".png");
+            _captured++;
+            ScreenCapture.CaptureScreenshot(path);
+            BGateTelemetry.Emit("frame", ("at", _played), ("path", path));
         }
 
         void Start()
@@ -177,6 +244,8 @@ namespace BGate
                 foreach (var a in _pending) BGateInput.Press(a);
                 _pending.Clear();
             }
+            RunScript();
+            Capture();
             if (_req == null || !_req.isDone) return;
             var req = _req;
             _req = null;
