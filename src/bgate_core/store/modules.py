@@ -428,7 +428,7 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "web_build", "web_payload", "web_test_run",
         "unity_check", "unity_test_run", "unity_execute", "unity_build",
         # Scene and asset edits through the editor API: scene_* one engine over.
-        "unity_import_asset", "unity_place_prefab", "unity_set_field",
+        "unity_import_asset", "unity_import_assets", "unity_place_prefab", "unity_set_field",
         "godot_check_project", "godot_inspect_resource", "godot_scaffold",
         "godot_templates", "godot_test_run",
         # Kits are scene-and-script work: the seats that never touch a

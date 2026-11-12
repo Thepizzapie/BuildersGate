@@ -139,7 +139,7 @@ SEATS: dict[str, tuple[str, ...]] = {
         # The art mission says to verify delivered meshes in the export.
         "godot_export_probe",
         "web_status", "web_dev", "unity_status", "unity_install_scripts",
-        "unity_import_asset",
+        "unity_import_asset", "unity_import_assets",
         "scale_", "sprite_", "tileset_", "item_", "prop_generate",
         "character_generate", "cutout_", "aseprite_", "consistency_check",
         "canon_check", "vfx_animate", "game_view_get",

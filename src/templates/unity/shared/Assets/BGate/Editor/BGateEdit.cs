@@ -16,7 +16,10 @@
 //             BGATE_IMPORT_SPRITE "1": texture becomes a Sprite (2D)
 //             BGATE_IMPORT_PPU    sprite pixels per unit (default 100)
 //             BGATE_IMPORT_POINT  "1": point filtering, no compression (pixel art)
-//   Place     BGATE_SCENE         scene under Assets/ (empty: first build scene)
+//   ImportMany BGATE_IMPORT_LIST  a text file, one Assets/ path per line, all
+//                                 already copied; the SPRITE/PPU/POINT flags
+//                                 apply to every texture in it. One editor run.
+//   Place    BGATE_SCENE         scene under Assets/ (empty: first build scene)
 //             BGATE_PREFAB        prefab or model asset under Assets/
 //             BGATE_NAME, BGATE_PARENT (hierarchy path), BGATE_POS,
 //             BGATE_ROT (euler degrees), BGATE_SCALE: "x,y,z"
@@ -95,6 +98,82 @@ namespace BGate.Editor
                 if (a != null && a != main) subs.Add(a.GetType().Name + ":" + a.name);
             r.AddList("sub_assets", subs);
             r.Add("placeable", main is GameObject ? "true" : "false", raw: true);
+            Done(r);
+        }
+
+        // ------------------------------------------------------------------
+        // ImportMany: one editor run for a whole folder of art or sound.
+        // ------------------------------------------------------------------
+        public static void ImportMany()
+        {
+            var r = new Result("import_many");
+            var listPath = Env("BGATE_IMPORT_LIST");
+            if (string.IsNullOrEmpty(listPath) || !File.Exists(listPath))
+            { Fail(r, "BGATE_IMPORT_LIST must name a file listing one Assets/ path per line"); return; }
+            var paths = new List<string>();
+            foreach (var raw in File.ReadAllLines(listPath, Encoding.UTF8))
+            {
+                var p = raw.Trim().Replace('\\', '/');
+                if (p.Length == 0) continue;
+                if (!UnderAssets(p)) { Fail(r, p + " is not a path under Assets/"); return; }
+                paths.Add(p);
+            }
+            if (paths.Count == 0) { Fail(r, "BGATE_IMPORT_LIST names no files"); return; }
+
+            var sprite = Env("BGATE_IMPORT_SPRITE") == "1";
+            var point = Env("BGATE_IMPORT_POINT") == "1";
+            var ppu = ParseFloat(Env("BGATE_IMPORT_PPU"), 100f);
+
+            // The files are already on disk: one Refresh imports them all, then
+            // the texture settings are queued and reimported in one batch.
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            AssetDatabase.StartAssetEditing();
+            try
+            {
+                foreach (var p in paths)
+                {
+                    var tex = AssetImporter.GetAtPath(p) as TextureImporter;
+                    if (tex == null || (!sprite && !point)) continue;
+                    if (sprite)
+                    {
+                        tex.textureType = TextureImporterType.Sprite;
+                        tex.spriteImportMode = SpriteImportMode.Single;
+                        if (ppu > 0f) tex.spritePixelsPerUnit = ppu;
+                    }
+                    if (point)
+                    {
+                        tex.filterMode = FilterMode.Point;
+                        tex.textureCompression = TextureImporterCompression.Uncompressed;
+                        tex.mipmapEnabled = false;
+                    }
+                    tex.SaveAndReimport();
+                }
+            }
+            finally { AssetDatabase.StopAssetEditing(); }
+
+            var items = new List<string>();
+            var failed = new List<string>();
+            foreach (var p in paths)
+            {
+                var importer = File.Exists(p) ? AssetImporter.GetAtPath(p) : null;
+                var main = importer != null ? AssetDatabase.LoadMainAssetAtPath(p) : null;
+                if (main == null)
+                {
+                    failed.Add(p + (importer == null ? ": Unity has no importer for it" : ": it loaded as nothing; read the log"));
+                    continue;
+                }
+                var tex = importer as TextureImporter;
+                items.Add("{\"path\":" + Result.Q(p)
+                          + ",\"guid\":" + Result.Q(AssetDatabase.AssetPathToGUID(p))
+                          + ",\"importer\":" + Result.Q(importer.GetType().Name)
+                          + ",\"main_type\":" + Result.Q(main.GetType().Name)
+                          + (tex != null ? ",\"texture_type\":" + Result.Q(tex.textureType.ToString()) : "")
+                          + "}");
+            }
+            r.Add("imported", "[" + string.Join(",", items.ToArray()) + "]", raw: true);
+            r.AddList("failed", failed);
+            r.Add("count", items.Count.ToString(Inv), raw: true);
+            if (failed.Count > 0) { Fail(r, failed.Count + " of " + paths.Count + " files did not import: " + failed[0]); return; }
             Done(r);
         }
 
@@ -508,7 +587,7 @@ namespace BGate.Editor
                 File.WriteAllText(path, text, new UTF8Encoding(false));
             }
 
-            static string Q(string s)
+            public static string Q(string s)
             {
                 var sb = new StringBuilder("\"");
                 foreach (var ch in s)
