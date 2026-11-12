@@ -536,38 +536,47 @@ def _play_web(web_dir: Path, relay: "Relay", out: Path, *, seconds: float,
     dev = web.dev_start(str(web_dir))
     if not dev.get("ok"):
         raise RuntimeError(f"the dev server would not start: {dev.get('error')}")
-    url = dev["url"].rstrip("/") + "/" + str(scene or "").lstrip("/")
-    sep = "&" if "?" in url else "?"
-    url += sep + urlencode({"bgate_agent": relay.url, "bgate_seconds": seconds,
-                            "bgate_every": round(every_s, 4)})
-    from playwright.sync_api import sync_playwright
+    # STOP WHAT THIS RUN STARTED. Every bot run used to leave its vite (a node
+    # process) serving after the run ended, one more per project per run.
+    # A server that was already up is the human's or another tool's, so it
+    # is left alone.
+    started_here = not dev.get("already_running")
+    try:
+        url = dev["url"].rstrip("/") + "/" + str(scene or "").lstrip("/")
+        sep = "&" if "?" in url else "?"
+        url += sep + urlencode({"bgate_agent": relay.url, "bgate_seconds": seconds,
+                                "bgate_every": round(every_s, 4)})
+        from playwright.sync_api import sync_playwright
 
-    wall_cap = float(seconds) * 10 + 60
-    t0 = time.time()
-    timed_out = False
-    with open(out / "game.log", "w", encoding="utf-8") as log, \
-            sync_playwright() as play:
-        channel = web._system_channel() or None
-        browser = (play.chromium.launch(channel=channel, headless=headless)
-                   if channel else play.chromium.launch(headless=headless))
-        try:
-            page = browser.new_page(viewport={"width": 1280, "height": 720})
-            page.on("console", lambda m: log.write(
-                f"{m.type.upper()}: {m.text[:500]}\n"))
-            page.on("pageerror", lambda e: log.write(f"ERROR: {e}\n"))
-            page.goto(url, wait_until="load")
-            while not relay.done and not relay.exhausted:
-                if time.time() - t0 > wall_cap:
-                    timed_out = True
-                    break
-                page.wait_for_timeout(500)
-            # A run that never decided anything usually means the game never
-            # calls agent.tick - say so instead of reporting an empty run.
-            if relay.count == 0:
-                log.write("ERROR: no decision was requested - is agent.tick "
-                          "called from the game loop?\n")
-        finally:
-            browser.close()
+        wall_cap = float(seconds) * 10 + 60
+        t0 = time.time()
+        timed_out = False
+        with open(out / "game.log", "w", encoding="utf-8") as log, \
+                sync_playwright() as play:
+            channel = web._system_channel() or None
+            browser = (play.chromium.launch(channel=channel, headless=headless)
+                       if channel else play.chromium.launch(headless=headless))
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 720})
+                page.on("console", lambda m: log.write(
+                    f"{m.type.upper()}: {m.text[:500]}\n"))
+                page.on("pageerror", lambda e: log.write(f"ERROR: {e}\n"))
+                page.goto(url, wait_until="load")
+                while not relay.done and not relay.exhausted:
+                    if time.time() - t0 > wall_cap:
+                        timed_out = True
+                        break
+                    page.wait_for_timeout(500)
+                # A run that never decided anything usually means the game never
+                # calls agent.tick - say so instead of reporting an empty run.
+                if relay.count == 0:
+                    log.write("ERROR: no decision was requested - is agent.tick "
+                              "called from the game loop?\n")
+            finally:
+                browser.close()
+    finally:
+        if started_here:
+            web.dev_stop(str(web_dir))
     return (0 if relay.done else None), timed_out
 
 
