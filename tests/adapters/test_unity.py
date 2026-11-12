@@ -431,6 +431,18 @@ class TestEngineAxis:
         got = assets.integration(base)
         assert got["unreferenced"] == ["Assets/Textures/unused.png"]
 
+    def test_a_godot_res_path_is_not_a_dangling_unity_asset(self, tmp_path):
+        """Measured (FF-B67, 2026-11-12): maps ported with tscn_export keep
+        res://assets/tiles/x.png as data, and the release gate refused every
+        WebGL build over files the Unity game never loads."""
+        from bgate_core.store import assets
+        base = _unity_project(tmp_path)
+        maps = base / "Assets" / "Resources" / "Maps"
+        maps.mkdir(parents=True)
+        (maps / "valley.json").write_text(
+            '{"texture": "res://assets/tiles/kingsburg.png"}', encoding="utf-8")
+        assert assets.integration(base)["dangling"] == []
+
     def test_the_tools_are_owned_and_the_neutral_ones_reach_them(self):
         for name in ("unity_status", "unity_check", "unity_test_run",
                      "unity_execute", "unity_install_scripts", "unity_screenshot",

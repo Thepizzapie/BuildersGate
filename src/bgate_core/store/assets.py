@@ -862,6 +862,14 @@ def integration(root: str | os.PathLike[str]) -> dict:
     for ref in sorted(literal_paths):
         if not ref.lower().endswith(SHIPPED_SUFFIXES):
             continue
+        if which == "unity":
+            # A res:// PATH IS GODOT'S, AND UNITY NEVER RESOLVES ONE. A game
+            # ported from Godot keeps them as data (a map exported by
+            # tscn_export names its tileset texture res://assets/tiles/x.png),
+            # and the release gate refused every WebGL build over files the
+            # Unity game never asks for (FF-B67, 2026-11-12). Unity loads by
+            # GUID and Resources path; neither is a res:// string.
+            continue
         if ref.lower() in on_disk or (engine / ref).exists():
             continue
         dangling.append(ref)
