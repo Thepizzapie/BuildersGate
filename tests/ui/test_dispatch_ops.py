@@ -10,6 +10,7 @@ import io
 import json
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -292,8 +293,15 @@ class TestWatchdog:
                             max_runtime_s=3600)
         dispatch._live[item["id"]] = entry
         clock = [0.0]
+        me = threading.get_ident()
+        real_sleep = time.sleep
 
-        def tick(_):
+        def tick(s):
+            # The patch is on the time module itself, so a thread left over
+            # from another test sleeps through here too. Only the watchdog
+            # under test advances the fake clock.
+            if threading.get_ident() != me:
+                return real_sleep(min(s, 0.01))
             clock[0] += 30
             if entry.get("stdin_closed") or clock[0] > 1000:
                 dispatch._live.pop(item["id"], None)
