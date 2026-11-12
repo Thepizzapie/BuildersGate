@@ -85,6 +85,9 @@ def _unity(root: str | os.PathLike[str]) -> bool:
 
 #: What the panel says when a Unity project has no WebGL build to serve.
 UNITY_NO_BUILD = "no WebGL build in export/web (build one from Unity)"
+#: And what rebuild() answers: nothing here can drive a Unity WebGL build yet.
+UNITY_REBUILD_REFUSED = ("this is a Unity project: make the WebGL build from Unity "
+                         "into export/web, and /play serves it")
 
 
 def _unity_status(root: str | os.PathLike[str]) -> dict:
@@ -241,6 +244,9 @@ def rebuild(root: str | os.PathLike[str], timeout: int = 240) -> dict:
     game = _game(root)
     web = _web_game(root) if game is None else None
     if game is None and web is None:
+        if _unity(root):
+            # Say what to do instead of "no game project": the panel shows this.
+            return {"ok": False, "engine": "unity", "error": UNITY_REBUILD_REFUSED}
         return {"ok": False, "error": "no game project at this root"}
     try:
         from bgate_core.design import greenlight as _greenlight

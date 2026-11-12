@@ -54,6 +54,18 @@ def test_control_the_same_build_under_another_engine_is_still_no_project(root, m
     assert webbuild.status(root)["reason"] == "no game project"
 
 
+def test_rebuild_refuses_a_unity_project_with_the_way_forward(root, monkeypatch):
+    _engine(monkeypatch, "unity")
+    got = webbuild.rebuild(root)
+    assert got["ok"] is False
+    assert got["error"] == webbuild.UNITY_REBUILD_REFUSED
+
+
+def test_control_rebuild_without_any_project_still_says_so(root, monkeypatch):
+    _engine(monkeypatch, "godot")
+    assert webbuild.rebuild(root)["error"] == "no game project at this root"
+
+
 def test_the_arcade_card_and_the_play_panel_agree(root, monkeypatch):
     from bgate_site import collect
     _engine(monkeypatch, "unity")
