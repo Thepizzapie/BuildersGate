@@ -338,7 +338,7 @@ SHIPPED_HASHES: dict[str, frozenset[str]] = {
     CAPTURE_FILE: frozenset({"b669a83849984b27"}),
     AGENT_FILE: frozenset({"d16c470f99aac312", "b020c0e7ab17a2bd"}),
     BUILD_FILE: frozenset({"6da1fda34fb2eaf9", "e6732f248718e849"}),
-    EDIT_FILE: frozenset({"9d47cbdda3435ede"}),
+    EDIT_FILE: frozenset({"9d47cbdda3435ede", "339b84d04d7a64f3"}),  # 339b: #127's verbs
 }
 _SCRIPT_NAMES = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE,
                  "agent": AGENT_FILE, "build": BUILD_FILE, "edit": EDIT_FILE}
