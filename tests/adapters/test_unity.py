@@ -87,6 +87,20 @@ FAKE = textwrap.dedent('''
         elif verb == "SetField":
             rep.update({"asset": env.get("BGATE_PREFAB") or env.get("BGATE_SCENE") or "Assets/Scenes/Main.unity",
                         "before": "5", "after": env["BGATE_VALUE"]})
+        elif verb == "NewScene":
+            path = os.path.join(opt("-projectPath"), env["BGATE_SCENE"])
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").write("scene")
+            rep.update({"scene": env["BGATE_SCENE"], "roots": ["Main Camera"],
+                        "build_scenes": [env["BGATE_SCENE"]]})
+        elif verb == "AddObject":
+            parent = env.get("BGATE_PARENT", "")
+            rep.update({"scene": env.get("BGATE_SCENE") or "Assets/Scenes/Main.unity",
+                        "object": (parent + "/" if parent else "") + env["BGATE_NAME"],
+                        "components": ["Transform"] + [c for c in env.get("BGATE_COMPONENTS", "").split(",") if c]})
+        elif verb == "RemoveObject":
+            rep.update({"scene": env.get("BGATE_SCENE") or "Assets/Scenes/Main.unity",
+                        "removed": env["BGATE_OBJECT"], "objects_removed": 1})
         if mode != "edit_silent":
             open(env["BGATE_EDIT_RESULT"], "w", encoding="utf-8").write(json.dumps(rep))
     if log:
@@ -634,10 +648,11 @@ class TestEdits:
         edit = (unity.TEMPLATE_DIR / unity.EDIT_FILE).read_text(encoding="utf-8")
         ns, cls = unity.EDIT_CLASS.rsplit(".", 1)
         assert f"namespace {ns}" in edit and f"class {cls}" in edit
-        for verb in ("Import", "Place", "SetField"):
+        for verb in ("Import", "Place", "SetField", "NewScene", "AddObject", "RemoveObject"):
             assert f"public static void {verb}()" in edit
         for api in ("AssetDatabase.ImportAsset", "PrefabUtility.InstantiatePrefab",
                     "PrefabUtility.SaveAsPrefabAsset", "EditorSceneManager.SaveScene",
+                    "EditorSceneManager.NewScene", "EditorBuildSettings.scenes",
                     "SerializedObject", "BGATE_EDIT_RESULT"):
             assert api in edit, api
 
@@ -774,9 +789,114 @@ class TestEdits:
     def test_the_tools_are_unity_owned_and_seated(self):
         from bgate_core import seattools
         from bgate_core.store import modules
-        for name in ("unity_import_asset", "unity_place_prefab", "unity_set_field"):
+        for name in ("unity_import_asset", "unity_place_prefab", "unity_set_field",
+                     "unity_new_scene", "unity_add_object", "unity_remove_object"):
             assert engines.tool_owner(name) == "unity"
             assert not engines.tool_enabled(name, "godot")
             assert name in modules.SPINE_GROUPS["engine"]
         assert "unity_import_asset" in seattools.SEATS["art"]
-        assert "unity_place_prefab" in seattools.SEATS["level"]
+        for name in ("unity_place_prefab", "unity_new_scene", "unity_add_object",
+                     "unity_remove_object"):
+            assert name in seattools.SEATS["level"]
+
+
+class TestSceneEdits:
+    """New scene, add and remove objects: the editor's API, never YAML."""
+
+    def test_new_scene_passes_camera_and_build_order(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.new_scene(project, "Assets/Scenes/Town.unity", camera="2D", timeout=60)
+        assert got["ok"] is True, got
+        env = got["env"]
+        assert env["BGATE_SCENE"] == "Assets/Scenes/Town.unity"
+        assert env["BGATE_CAMERA"] == "2d" and env["BGATE_FIRST_IN_BUILD"] == "1"
+        assert "BGate.Editor.BGateEdit.NewScene" in got["command"]
+        assert unity.scripts_installed(project)["edit"]
+
+    def test_new_scene_can_stay_out_of_the_build(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.new_scene(project, "Assets/Scenes/Lab.unity", camera="none",
+                              first_in_build=False, timeout=60)
+        assert got["ok"] is True and got["env"]["BGATE_FIRST_IN_BUILD"] == ""
+
+    def test_new_scene_never_replaces_one(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        assert unity.new_scene(project, "Assets/Scenes/Town.unity", timeout=60)["ok"] is True
+        again = unity.new_scene(project, "Assets/Scenes/Town.unity", timeout=60)
+        assert again["ok"] is False and again["exists"] is True
+        assert "command" not in again
+
+    @pytest.mark.parametrize("path,camera,needle", [
+        ("Assets/Scenes/Town.txt", "2d", ".unity"),
+        ("Scenes/Town.unity", "2d", "under Assets/"),
+        ("Assets/../Town.unity", "2d", "under Assets/"),
+        ("Assets/Scenes/Town.unity", "iso", "camera must be"),
+    ])
+    def test_new_scene_refusals(self, fake_editor, tmp_path, path, camera, needle):
+        project = _unity_project(tmp_path / "game")
+        got = unity.new_scene(project, path, camera=camera, timeout=60)
+        assert got["ok"] is False and needle in got["error"]
+
+    def test_add_object_passes_components_and_transform(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.add_object(project, "Town", components=["SpriteRenderer", " PlowGame "],
+                               scene="Assets/Scenes/Town.unity", parent="World",
+                               position=[0, 1, 0], scale="2,2,1", timeout=60)
+        assert got["ok"] is True, got
+        env = got["env"]
+        assert env["BGATE_NAME"] == "Town" and env["BGATE_PARENT"] == "World"
+        assert env["BGATE_COMPONENTS"] == "SpriteRenderer,PlowGame"
+        assert env["BGATE_POS"] == "0.0,1.0,0.0" and env["BGATE_SCALE"] == "2.0,2.0,1.0"
+        assert got["object"] == "World/Town"
+
+    def test_add_object_takes_a_comma_string_or_nothing(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.add_object(project, "Lights", components="Light, AudioSource", timeout=60)
+        assert got["env"]["BGATE_COMPONENTS"] == "Light,AudioSource"
+        assert unity.add_object(project, "Empty", timeout=60)["env"]["BGATE_COMPONENTS"] == ""
+
+    @pytest.mark.parametrize("kwargs,needle", [
+        ({"name": ""}, "name is required"),
+        ({"name": "A/B"}, "cannot contain"),
+        ({"name": "A", "components": ["Sprite Renderer"]}, "not component type names"),
+        ({"name": "A", "components": ["x;rm"]}, "not component type names"),
+        ({"name": "A", "position": [1, 2]}, "three numbers"),
+        ({"name": "A", "scene": "Assets/a.prefab"}, ".unity"),
+    ])
+    def test_add_object_refusals(self, fake_editor, tmp_path, kwargs, needle):
+        project = _unity_project(tmp_path / "game")
+        got = unity.add_object(project, timeout=60, **kwargs)
+        assert got["ok"] is False and needle in got["error"]
+        assert "command" not in got
+
+    def test_remove_object_passes_the_path_and_the_camera_guard(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.remove_object(project, "Level/Ledge", scene="Assets/Scenes/Main.unity",
+                                  keep_camera=True, timeout=60)
+        assert got["ok"] is True, got
+        assert got["env"]["BGATE_OBJECT"] == "Level/Ledge"
+        assert got["env"]["BGATE_KEEP_CAMERA"] == "1"
+        assert got["removed"] == "Level/Ledge"
+        plain = unity.remove_object(project, "Player", timeout=60)
+        assert plain["env"]["BGATE_KEEP_CAMERA"] == "" and "BGATE_SCENE" not in plain["env"]
+
+    def test_remove_object_refusals(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        assert "object_path" in unity.remove_object(project, " ")["error"]
+        assert ".unity" in unity.remove_object(project, "Player", scene="Assets/x.prefab")["error"]
+
+    def test_an_older_installed_script_is_named_not_run(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        script = project / unity.SCRIPTS_REL / unity.EDIT_FILE
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("public static void Place() {}", encoding="utf-8")
+        got = unity.new_scene(project, "Assets/Scenes/Town.unity", timeout=60)
+        assert got["ok"] is False and got["stale_script"] is True
+        assert "NewScene()" in got["error"] and "command" not in got
+        assert unity.place_prefab(project, "Assets/x.prefab", timeout=60).get("stale_script") is None
+
+    def test_the_editors_refusal_is_the_result(self, fake_editor, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("FAKE_UNITY_MODE", "edit_fail")
+        got = unity.remove_object(project, "Main Camera", keep_camera=True, timeout=60)
+        assert got["ok"] is False and got["error"]
