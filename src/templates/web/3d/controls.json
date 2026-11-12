@@ -1,0 +1,9 @@
+{
+  "actions": [
+    {"action": "move_forward", "keys": ["ArrowUp", "KeyW"]},
+    {"action": "move_back", "keys": ["ArrowDown", "KeyS"]},
+    {"action": "move_left", "keys": ["ArrowLeft", "KeyA"]},
+    {"action": "move_right", "keys": ["ArrowRight", "KeyD"]},
+    {"action": "jump", "keys": ["Space"]}
+  ]
+}

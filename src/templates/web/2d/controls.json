@@ -1,0 +1,7 @@
+{
+  "actions": [
+    {"action": "move_left", "keys": ["ArrowLeft", "KeyA"]},
+    {"action": "move_right", "keys": ["ArrowRight", "KeyD"]},
+    {"action": "jump", "keys": ["Space", "ArrowUp", "KeyW"]}
+  ]
+}
