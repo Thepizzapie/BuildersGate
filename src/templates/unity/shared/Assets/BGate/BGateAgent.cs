@@ -277,6 +277,12 @@ namespace BGate
             {
                 if (!BGateInput.Held(a)) _pending.Add(a);
             }
+            // A tap is released above and pressed next frame: a fresh Down()
+            // edge. Before this, a tap-only option (a menu's "confirm") was
+            // released and never pressed, and a bot sat on a title screen
+            // choosing it 316 times (PLOW, measured).
+            foreach (var a in tap)
+                if (!_pending.Contains(a)) _pending.Add(a);
             BGateTelemetry.Emit("agent_decision", ("choice", got.choice),
                 ("confidence", got.confidence),
                 ("ms", (int)((Time.realtimeSinceStartup - _sentAt) * 1000f)),
