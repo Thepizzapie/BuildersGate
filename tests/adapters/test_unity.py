@@ -812,6 +812,8 @@ class TestEdits:
         edit = (unity.TEMPLATE_DIR / unity.EDIT_FILE).read_text(encoding="utf-8")
         assert "public static void ImportMany()" in edit and "BGATE_IMPORT_LIST" in edit
         assert "StartAssetEditing" in edit and "StopAssetEditing" in edit
+        # Pixel art keeps full resolution: a 2560px sheet must not be halved.
+        assert edit.count("tex.maxTextureSize = 16384;") == 2
 
     def test_place_passes_the_transform_as_text(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")

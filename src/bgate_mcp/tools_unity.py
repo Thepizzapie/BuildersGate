@@ -222,8 +222,8 @@ def unity_import_asset(source: str, dest: str = "", sprite: bool = False,
     empty is Assets/Imported/<name>. The editor writes the .meta: the result
     names the GUID, the importer, what the asset loaded as and whether it
     can be placed (`placeable`, true for a model). `sprite` makes a texture
-    a Sprite (2D), `point_filter` turns off filtering and compression for
-    pixel art. .unity, .prefab and .meta files are refused: those are made
+    a Sprite (2D), `point_filter` turns off filtering, compression and mips
+    and keeps full resolution for pixel art. .unity, .prefab and .meta files are refused: those are made
     in place, never copied in. Refused while the editor has the project open.
     """
     target, refused = _need_project(unity_project)

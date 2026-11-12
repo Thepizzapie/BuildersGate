@@ -15,7 +15,8 @@
 //   Import    BGATE_IMPORT_PATH   asset already copied under Assets/
 //             BGATE_IMPORT_SPRITE "1": texture becomes a Sprite (2D)
 //             BGATE_IMPORT_PPU    sprite pixels per unit (default 100)
-//             BGATE_IMPORT_POINT  "1": point filtering, no compression (pixel art)
+//             BGATE_IMPORT_POINT  "1": point filtering, no compression, no mips,
+//                                 full resolution (max size 16384) for pixel art
 //   ImportMany BGATE_IMPORT_LIST  a text file, one Assets/ path per line, all
 //                                 already copied; the SPRITE/PPU/POINT flags
 //                                 apply to every texture in it. One editor run.
@@ -81,6 +82,9 @@ namespace BGate.Editor
                     tex.filterMode = FilterMode.Point;
                     tex.textureCompression = TextureImporterCompression.Uncompressed;
                     tex.mipmapEnabled = false;
+                    // Pixel art keeps every source pixel: the 2048 default halves a 2560px sheet
+                    // and every atlas region read in source pixels then lands on the wrong cell.
+                    tex.maxTextureSize = 16384;
                     changed = true;
                 }
                 if (changed) tex.SaveAndReimport();
@@ -145,6 +149,9 @@ namespace BGate.Editor
                         tex.filterMode = FilterMode.Point;
                         tex.textureCompression = TextureImporterCompression.Uncompressed;
                         tex.mipmapEnabled = false;
+                        // Pixel art keeps every source pixel: the 2048 default halves a 2560px sheet
+                        // and every atlas region read in source pixels then lands on the wrong cell.
+                        tex.maxTextureSize = 16384;
                     }
                     tex.SaveAndReimport();
                 }

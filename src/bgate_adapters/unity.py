@@ -801,7 +801,8 @@ def import_asset(project_dir: str | os.PathLike[str], source: str | os.PathLike[
     `dest` is the path under Assets/ (a folder ending in "/" keeps the file's
     name; empty is Assets/Imported/<name>). The editor writes the .meta and
     reports the GUID and what the asset loaded as; `sprite` makes a texture a
-    Sprite, `point_filter` turns off filtering and compression for pixel art.
+    Sprite, `point_filter` turns off filtering, compression and mips and
+    keeps full resolution (a 2560px sheet is not halved) for pixel art.
     """
     project = Path(project_dir)
     if not is_project(project):
