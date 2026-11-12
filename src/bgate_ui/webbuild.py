@@ -144,7 +144,7 @@ def _unity_status(root) -> dict:
     if not page.exists():
         return {"built": False, "stale": True, "engine": "unity", "reason": "never built"}
     src = _u._newest_source(Path(root))
-    built = page.stat().st_mtime
+    built = _u.webgl_stamp(play_dir(root))
     stale = built < src
     return {"built": True, "stale": stale, "engine": "unity",
             "build_mtime": built, "source_mtime": src, "newest_source": "",

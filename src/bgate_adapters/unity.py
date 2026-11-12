@@ -1018,6 +1018,27 @@ def webgl_supported(exe: Optional[str] = None,
     return (Path(exe).parent / "Data" / "PlaybackEngines" / "WebGLSupport").is_dir()
 
 
+def webgl_stamp(out_dir: str | os.PathLike[str]) -> float:
+    """When the WebGL build in `out_dir` was last written: the newest of
+    index.html and Build/*, 0 when there is no page.
+
+    Not index.html alone. Measured (FF-B67, 2026-11-12): an incremental WebGL
+    build rewrites Build/web.data and leaves index.html, the loader and
+    TemplateData untouched, so a page-mtime check failed a good build and read
+    a fresh one as stale."""
+    out = Path(out_dir)
+    page = out / "index.html"
+    if not page.is_file():
+        return 0.0
+    newest = page.stat().st_mtime
+    for p in (out / "Build").glob("*"):
+        try:
+            newest = max(newest, p.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
 def build_webgl(project_dir: str | os.PathLike[str], out_dir: str | os.PathLike[str],
                 *, timeout: int = 2400, force: bool = False) -> dict:
     """A WebGL build of the enabled build scenes into `out_dir` (index.html,
@@ -1045,14 +1066,14 @@ def build_webgl(project_dir: str | os.PathLike[str], out_dir: str | os.PathLike[
     out = Path(out_dir)
     installed = install_scripts(project, which=("telemetry", "build"))
     page = out / "index.html"
-    if not force and page.is_file() and page.stat().st_mtime >= _newest_source(project):
+    if not force and page.is_file() and webgl_stamp(out) >= _newest_source(project):
         return {"ok": True, "cached": True, "out_dir": str(out), "install": installed}
     out.mkdir(parents=True, exist_ok=True)
-    before = page.stat().st_mtime if page.is_file() else 0.0
+    before = webgl_stamp(out)
     got = execute_method(str(project), WEBGL_METHOD, timeout=timeout,
                          env={"BGATE_BUILD_OUT": str(out)})
     got.update({"out_dir": str(out), "cached": False, "install": installed})
-    if got.get("ok") and not (page.is_file() and page.stat().st_mtime > before):
+    if got.get("ok") and not (page.is_file() and webgl_stamp(out) > before):
         got["ok"] = False
         got["error"] = ("BGateBuild exited clean but wrote no index.html; read "
                         "`output` for what it logged")

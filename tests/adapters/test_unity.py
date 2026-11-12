@@ -651,6 +651,23 @@ class TestWebGL:
         os.utime(page, (1, 1))
         assert webbuild.status(project)["stale"] is True
 
+    def test_an_incremental_build_that_skips_the_page_still_counts(self, tmp_path):
+        """Unity rewrites Build/web.data and leaves index.html alone on an
+        incremental WebGL build; the stamp follows the newest output file."""
+        out = tmp_path / "web"
+        assert unity.webgl_stamp(out) == 0.0
+        (out / "Build").mkdir(parents=True)
+        page = out / "index.html"
+        page.write_text("<html></html>", encoding="utf-8")
+        data = out / "Build" / "web.data"
+        data.write_bytes(b"x")
+        os.utime(page, (100, 100))
+        os.utime(data, (500, 500))
+        assert unity.webgl_stamp(out) == 500
+        # control: no page is no build, whatever Build/ holds
+        page.unlink()
+        assert unity.webgl_stamp(out) == 0.0
+
     def test_a_missing_module_is_refused_before_the_editor_runs(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")
         got = unity.build_webgl(project, tmp_path / "export" / "web", timeout=60)
@@ -669,7 +686,8 @@ class TestWebGL:
         page = out / "index.html"
         os.utime(page, (page.stat().st_mtime + 10,) * 2)
         assert unity.build_webgl(project, out, timeout=60)["cached"] is True
-        os.utime(page, (1, 1))
+        for p in [page, *(out / "Build").glob("*")]:
+            os.utime(p, (1, 1))       # the whole build is older than the source
         assert unity.build_webgl(project, out, timeout=60)["cached"] is False
 
     @WINDOWS_ONLY
