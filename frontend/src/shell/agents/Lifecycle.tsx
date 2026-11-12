@@ -37,6 +37,7 @@ type Node = {
   spawned_by?: number | null;
   created_at: string; updated_at: string; acceptance: string; hold: string;
   waiting_on: number[]; result: string;
+  feel?: { scene: string; summary: string } | null;
 };
 type Graph = {
   nodes: Node[]; edges: { from: number; to: number }[]; lanes: number;
@@ -270,6 +271,19 @@ function Detail({ n, byId, onClose, onChanged }: {
     toast(r.ok ? `#${n.id} started` : r.error || "refused", r.ok ? "ok" : undefined);
     if (r.ok) onChanged();
   }
+  /* A FEEL FAIL holds art, level and gameplay until it passes or a person
+     clears it, and the reason stays on record beside the numbers. */
+  async function clearFeel() {
+    if (!n.feel) return;
+    const reason = await askText({ title: `clear the feel check on ${n.feel.scene}`,
+      body: "Art, level and gameplay dispatch again. The failing numbers stay on record.",
+      label: "Why is this scene good enough?", ok: "clear feel check" });
+    if (reason === null || reason === undefined) return;
+    if (!reason.trim()) { toast("a reason is required to clear a feel check"); return; }
+    const r = await mutate("/api/feel/clear", { body: { scene: n.feel.scene, reason }, quiet: true });
+    toast(r.ok ? `feel check cleared on ${n.feel.scene}` : r.error || "refused", r.ok ? "ok" : undefined);
+    if (r.ok) onChanged();
+  }
   const open = !["done", "cancelled"].includes(n.status) && n.id > 0;
   async function reject() {
     const reason = await askText({ title: `send #${n.id} back`,
@@ -300,6 +314,7 @@ function Detail({ n, byId, onClose, onChanged }: {
         {n.split_of && <span>split of #{n.split_of}</span>}
       </div>
       {n.hold && <div className="bgl-dline warn">{n.hold}</div>}
+      {n.feel && open && <div className="bgl-dline warn">{n.feel.summary}</div>}
       {!!n.waiting_on.length && <div className="bgl-dline">waiting on {n.waiting_on.map((p) =>
         `#${p} ${byId.get(p)?.title?.slice(0, 40) || ""}`).join(", ")}</div>}
       {n.acceptance && n.source !== "human-task" && <div className="bgl-dline"><b>acceptance</b> {n.acceptance}</div>}
@@ -329,6 +344,8 @@ function Detail({ n, byId, onClose, onChanged }: {
           <button className="bgs-btn" onClick={approve}><Ti name="check" size={13} /> Approve</button>
           <button className="bgs-btn" onClick={reject}><Ti name="arrow-back-up" size={13} /> Send back</button>
         </>}
+        {n.feel && open &&
+          <button className="bgs-btn" onClick={clearFeel}><Ti name="check" size={13} /> Clear feel check</button>}
         {n.state === "human" &&
           <button className="bgs-btn" onClick={humanDone}><Ti name="check" size={13} /> Mark done</button>}
         {n.state === "question" &&

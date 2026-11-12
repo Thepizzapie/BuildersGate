@@ -104,6 +104,76 @@ class TestManifestShape:
         assert set(MANIFEST["buffers"]) <= allowed
 
 
+# --- an injected autoload that fails to load (no engine needed) ------------
+
+
+# Verbatim from Godot 4.4.1 on a project with unused_variable=2: the script
+# fails to parse, the autoload is skipped, and the game runs on with nothing to
+# quit it.
+GODOT_441_PARSE_FAILURE = (
+    "Godot Engine v4.4.1.stable.official.49a5bc7b6 - https://godotengine.org\n"
+    'SCRIPT ERROR: Parse Error: The local variable "unused" is declared but '
+    'never used in the block. If this is intended, prefix it with an '
+    'underscore: "_unused". (Warning treated as error.)\n'
+    "   at: GDScript::reload (res://.godot/bgate_run/bgate_evidence.gd:4)\n"
+    'ERROR: Failed to load script "res://.godot/bgate_run/bgate_evidence.gd" '
+    'with error "Parse error".\n'
+    "   at: load (modules/gdscript/gdscript.cpp:3022)\n"
+    "ERROR: Failed to instantiate an autoload, script "
+    "'res://.godot/bgate_run/bgate_evidence.gd' does not inherit from 'Node'.\n"
+    "   at: start (main/main.cpp:4075)\n")
+
+
+class TestAutoloadFailure:
+    def test_names_the_parse_error_file_and_line(self):
+        got = godot.autoload_failure(GODOT_441_PARSE_FAILURE, "bgate_evidence.gd")
+        assert got["autoload_failed"] is True
+        assert got["parse_error"] == {
+            "message": got["parse_error"]["message"],
+            "file": "res://.godot/bgate_run/bgate_evidence.gd", "line": 4}
+        assert "declared but never used" in got["parse_error"]["message"]
+        assert "res://.godot/bgate_run/bgate_evidence.gd:4" in got["error"]
+
+    def test_another_scripts_error_is_not_ours(self):
+        """A parse error in the game's own script is the game's to report; the
+        capture autoload still loaded and will still quit."""
+        other = GODOT_441_PARSE_FAILURE.replace("bgate_evidence.gd", "player.gd")
+        assert godot.autoload_failure(other, "bgate_evidence.gd") is None
+        assert godot.autoload_failure("Godot Engine v4.4.1\n", "bgate_evidence.gd") is None
+
+    def test_a_load_failure_without_a_parse_line_is_still_reported(self):
+        text = ("ERROR: Failed to instantiate an autoload, script "
+                "'res://.godot/bgate_run/bgate_shot.gd' does not inherit from 'Node'.\n")
+        got = godot.autoload_failure(text, "bgate_shot.gd")
+        assert got["autoload_failed"] is True and "parse_error" not in got
+        assert "does not inherit" in got["error"]
+
+    def test_the_run_ends_at_the_failure_not_at_the_timeout(self, tmp_path):
+        """A child that prints the failure and then never exits, like the game
+        does once its quitting autoload is gone."""
+        import sys
+        import time
+        child = tmp_path / "game.py"
+        child.write_text("import sys, time\n"
+                         f"sys.stderr.write({GODOT_441_PARSE_FAILURE!r})\n"
+                         "sys.stderr.flush()\n"
+                         "time.sleep(120)\n", encoding="utf-8")
+        t0 = time.monotonic()
+        with pytest.raises(godot.AutoloadFailed) as caught:
+            godot._run_capture([sys.executable, str(child)], timeout=60,
+                               env=None, script_name="bgate_evidence.gd")
+        assert time.monotonic() - t0 < 20
+        assert caught.value.info["parse_error"]["line"] == 4
+
+    def test_a_clean_run_returns_its_output(self, tmp_path):
+        import sys
+        child = tmp_path / "game.py"
+        child.write_text("print('BGATE_EV_DONE')\n", encoding="utf-8")
+        proc = godot._run_capture([sys.executable, str(child)], timeout=60,
+                                  env=None, script_name="bgate_evidence.gd")
+        assert proc.returncode == 0 and "BGATE_EV_DONE" in proc.stdout
+
+
 # --- guard rails (no engine needed) ----------------------------------------
 
 
@@ -135,7 +205,7 @@ class TestGuards:
         def boom(cmd, **kwargs):
             raise godot.subprocess.TimeoutExpired(cmd, 1)
 
-        monkeypatch.setattr(godot.subprocess, "run", boom)
+        monkeypatch.setattr(godot, "_run_capture", boom)
         monkeypatch.setattr(godot, "find_godot", lambda *a, **k: "godot.exe")
 
         got = godot.evidence(str(project), str(tmp_path / "out"), timeout=1)
@@ -161,16 +231,37 @@ class TestGuards:
                 encoding="utf-8")
             raise godot.subprocess.TimeoutExpired(cmd, 1)
 
-        monkeypatch.setattr(godot.subprocess, "run", peek)
+        monkeypatch.setattr(godot, "_run_capture", peek)
         monkeypatch.setattr(godot, "find_godot", lambda *a, **k: "godot.exe")
 
         godot.evidence(str(project), str(tmp_path / "out"), timeout=1)
         text = seen["override"]
         assert text.startswith("[autoload]\n")
         assert "[debug]" in text
+        assert "gdscript/warnings/enable=false" in text
         assert "gdscript/warnings/treat_warnings_as_errors=false" in text
         assert "gdscript/warnings/inferred_declaration=0" in text
         # and the leftover rule still holds
+        assert not (project / "override.cfg").exists()
+
+    def test_a_parse_failure_comes_back_as_the_parse_error(self, tmp_path,
+                                                           monkeypatch):
+        """The capture used to wait out its timeout and say "did not exit"."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "project.godot").write_text("config_version=5\n",
+                                               encoding="utf-8")
+
+        def fails(cmd, **kwargs):
+            raise godot.AutoloadFailed(
+                godot.autoload_failure(GODOT_441_PARSE_FAILURE, "bgate_evidence.gd"))
+
+        monkeypatch.setattr(godot, "_run_capture", fails)
+        monkeypatch.setattr(godot, "find_godot", lambda *a, **k: "godot.exe")
+        got = godot.evidence(str(project), str(tmp_path / "out"), timeout=1)
+        assert got["ok"] is False and got["autoload_failed"] is True
+        assert "did not exit" not in got["error"]
+        assert "bgate_evidence.gd:4" in got["error"]
         assert not (project / "override.cfg").exists()
 
     def test_gdscript_uses_tabs_not_spaces(self):
@@ -205,6 +296,40 @@ HAYMAKER = os.path.join(_REAL_PROJECT, "game") if _REAL_PROJECT else ""
 @pytest.mark.skipif(not godot.available()["available"],
                     reason="Godot not installed")
 class TestLiveCapture:
+    @staticmethod
+    def _strict_project(root):
+        """A scratch project that raises a warning #110's list does not name."""
+        root.mkdir()
+        (root / "project.godot").write_text(
+            'config_version=5\n\n[application]\nrun/main_scene="res://main.tscn"\n'
+            "\n[debug]\ngdscript/warnings/unused_variable=2\n", encoding="utf-8")
+        (root / "main.tscn").write_text(
+            '[gd_scene format=3]\n\n[node name="Main" type="Node2D"]\n',
+            encoding="utf-8")
+        return root
+
+    def test_the_projects_warning_policy_cannot_fail_the_capture(self, tmp_path,
+                                                                 monkeypatch):
+        project = self._strict_project(tmp_path / "strict")
+        monkeypatch.setattr(godot, "_SHOT_GD", godot._SHOT_GD.replace(
+            "func _shoot() -> void:\n", "func _shoot() -> void:\n\tvar unused := 3\n"))
+        got = godot.screenshot(str(project), str(tmp_path / "shot.png"),
+                               at=0.2, timeout=60)
+        assert got["ok"] is True, got
+
+    def test_a_broken_autoload_returns_its_parse_error_fast(self, tmp_path,
+                                                            monkeypatch):
+        import time
+        project = self._strict_project(tmp_path / "strict")
+        monkeypatch.setattr(godot, "_SHOT_GD", godot._SHOT_GD + "\nfunc broken(:\n")
+        t0 = time.monotonic()
+        got = godot.screenshot(str(project), str(tmp_path / "shot.png"),
+                               at=0.2, timeout=60)
+        assert time.monotonic() - t0 < 30
+        assert got["ok"] is False and got["autoload_failed"] is True, got
+        assert got["parse_error"]["file"].endswith("/bgate_shot.gd"), got
+        assert not (project / "override.cfg").exists()
+
     def test_captures_manifest_from_a_real_project(self, tmp_path):
         import os
         if not os.path.exists(os.path.join(HAYMAKER, "project.godot")):

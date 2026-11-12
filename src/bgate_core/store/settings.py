@@ -262,7 +262,7 @@ DESCRIPTIONS: dict[str, str] = {
     "qa.require_evidence": "Require a screenshot or render before scene changes can finish.",
     "qa.max_rounds": "Maximum automatic review and revision rounds before asking you.",
     "qa.gated_seats": "Worker seats whose completed items are sent to QA.",
-    "qa.gate": "Review every completed item, only the last link of each chain, or nothing automatically.",
+    "qa.gate": "Review each finished checkpoint, every completed item, only the last link of each chain, or nothing automatically.",
     "board.brief_chars": "How long a work-item brief may be before it is graded as more than one deliverable.",
     "board.brief_lanes": "How many seats' folders a brief may name before it is graded as more than one deliverable.",
     "signoff.hours": "How long completed items remain highlighted for your sign-off.",
@@ -670,10 +670,14 @@ SETTINGS: tuple[Setting, ...] = (
              "made quality structurally uneven by seat. director and qa are "
              "never gated: that is recursion, not review."),
     Setting(
-        key="qa.gate", group="Gates", kind=ENUM, default="all",
-        choices=("all", "chains", "none"), store=("registry", "qa.gate"),
-        human_only=True,
-        help="How many completed items get an automatic QA reviewer. all: one "
+        key="qa.gate", group="Gates", kind=ENUM, default="milestones",
+        choices=("milestones", "all", "chains", "none"),
+        store=("registry", "qa.gate"), human_only=True,
+        help="How many completed items get an automatic QA reviewer. "
+             "milestones: one round when a human checkpoint item completes, "
+             "covering everything since the previous checkpoint; its verdict "
+             "goes to the person signing the checkpoint off. Measured on "
+             "cat-cafe: per-item QA was 49% of run spend. all: one "
              "round per completed maker item (the original behaviour). "
              "chains: only the last link of a chain, so a feature filed as a "
              "chain gets one verdict instead of one per step and a single "

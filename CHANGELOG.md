@@ -9,7 +9,28 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Changed
+- **QA reviews milestones, not every item.** A finished maker item no longer
+  gets its own QA agent. When a human checkpoint item completes, one QA round
+  reviews every maker item completed since the previous checkpoint was signed
+  off, chained to it or not, and its verdict waits for
+  the person signing the checkpoint off; a FAIL reopens nothing on its own.
+  On cat-cafe the per-item gate was 125 of 266 items and 49% of run spend.
+  `qa.gate` gains `milestones` and it is the new default: a project with no
+  stored `qa.gate` moves from per-item QA to milestone QA. While no
+  checkpoint item is open, items are still reviewed one by one, and
+  `project_status` and `board_digest` say so. `qa.gate = all` turns the
+  per-item gate back on.
+
 ### Fixed
+- **A failing feel check stops the content it is about.** The hold read an
+  item's kind alone, so art, level and gameplay items filed with no kind or
+  as fixes kept dispatching on top of a FEEL FAIL. Those three seats now wait
+  until the scene passes or a person clears it (`POST /api/feel/clear` with
+  a reason, human-only, kept on record beside the numbers). qa and director
+  still run, and so does the work filed from the FEEL FAIL item. The item
+  opens on one sentence and the proposed changes, with the measurements
+  below them.
 - **The art tournament runs.** Nothing could start one: the start route had
   no caller, and the qa reviewer it dispatched did not hold
   `art_tournament_verdict`, so it was handed every match and no way to decide

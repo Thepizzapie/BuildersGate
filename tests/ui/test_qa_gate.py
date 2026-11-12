@@ -15,13 +15,19 @@ import time
 
 import pytest
 
-from bgate_core.store import db
+from bgate_core.store import db, settings
 from bgate_core.board import queue
 from bgate_ui.agents import dispatch as _dispatch
 from bgate_ui.agents import followup
 from bgate_ui.agents import qa_gate
 
 EPOCH = "1970-01-01 00:00:00"
+
+
+@pytest.fixture(autouse=True)
+def per_item_gate(root):
+    """These tests measure the per-item gate, which is opt-in since milestone QA."""
+    settings.set(root, "qa.gate", "all")
 
 
 @pytest.fixture()

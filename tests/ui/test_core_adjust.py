@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from bgate_cli import hook
 from bgate_cli.main import HOOK_COMMAND, HOOK_MATCHER, install_hook
-from bgate_core.store import assets, db
+from bgate_core.store import assets, db, settings
 from bgate_core.design import bible
 from bgate_core.qa import feedback, playtest
 from bgate_core.board import iterations, queue
@@ -242,6 +242,10 @@ class TestQaGateCap:
                             lambda root, item_id, **kw: calls.append(item_id) or
                             {"ok": True, "item_id": item_id})
         return calls
+
+    @pytest.fixture(autouse=True)
+    def per_item_gate(self, root):
+        settings.set(root, "qa.gate", "all")
 
     def _round(self, root, item_id: int, n: int) -> None:
         """One fail -> reopen -> re-done cycle, as the reviewer drives it.

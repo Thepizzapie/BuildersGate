@@ -85,6 +85,93 @@ def _spawn(cmd: list[str], timeout: int, cwd: Optional[str] = None,
                 pass
 
 
+class AutoloadFailed(RuntimeError):
+    """The autoload a capture depends on did not load, so nothing quits the game."""
+
+    def __init__(self, info: dict):
+        super().__init__(info["error"])
+        self.info = info
+
+
+# Godot 4: 'SCRIPT ERROR: Parse Error: <why>' then '   at: GDScript::reload
+# (res://<file>:<line>)'. MEASURED 4.4.1, a warning raised to an error.
+_SCRIPT_ERROR = re.compile(r"SCRIPT ERROR: (?P<msg>[^\n]*)\n\s*at: [^\n]*?"
+                           r"\((?P<file>res://[^)\n]+?):(?P<line>\d+)\)")
+
+
+def autoload_failure(output: str, script_name: str) -> Optional[dict]:
+    """Did the autoload ``script_name`` fail to load? The reason, or None.
+
+    A capture's autoload is what quits the game. When it fails to parse, Godot
+    logs it and runs the game anyway, so the capture used to wait out its whole
+    timeout and report "did not exit" (cat-cafe, 2026-10-26: three agents read
+    that as an engine hang; none read the parse error above it). Seeing the
+    failure in the output ends the run with the parse error, file and line.
+    """
+    if script_name not in output:
+        return None
+    failed = re.search(r"Failed to (?:load script|instantiate an autoload)[^\n]*"
+                       + re.escape(script_name) + r"[^\n]*", output)
+    if not failed:
+        return None
+    for m in _SCRIPT_ERROR.finditer(output):
+        if m["file"].rsplit("/", 1)[-1] == script_name:
+            return {"error": f"the injected autoload {script_name} failed to "
+                             f"parse, so nothing would quit the game: "
+                             f"{m['msg']} at {m['file']}:{m['line']}",
+                    "autoload_failed": True,
+                    "parse_error": {"message": m["msg"], "file": m["file"],
+                                    "line": int(m["line"])}}
+    return {"error": f"the injected autoload {script_name} did not load, so "
+                     f"nothing would quit the game: {failed.group(0).strip()}",
+            "autoload_failed": True}
+
+
+def _run_capture(cmd: list[str], *, timeout: int, env: Optional[dict],
+                 script_name: str) -> subprocess.CompletedProcess:
+    """``subprocess.run`` for a run whose autoload we injected, except that the
+    autoload failing to load ends it at once with :class:`AutoloadFailed`
+    instead of after ``timeout`` with a hang that is not one."""
+    import threading
+    import time as _time
+
+    proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=_NO_WINDOW, **_TEXT)
+    out: list[str] = []
+    err: list[str] = []
+
+    def pump(stream, sink: list[str]) -> None:
+        for line in stream:
+            sink.append(line)
+
+    readers = [threading.Thread(target=pump, args=(proc.stdout, out), daemon=True),
+               threading.Thread(target=pump, args=(proc.stderr, err), daemon=True)]
+    for reader in readers:
+        reader.start()
+    deadline = _time.monotonic() + timeout
+    try:
+        while proc.poll() is None:
+            failed = autoload_failure("".join(out) + "".join(err), script_name)
+            if failed:
+                raise AutoloadFailed(failed)
+            if _time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            _time.sleep(0.2)
+    except BaseException:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:                                         # noqa: BLE001
+            pass
+        raise
+    finally:
+        for reader in readers:
+            reader.join(timeout=5)
+    return subprocess.CompletedProcess(cmd, proc.returncode, "".join(out),
+                                       "".join(err))
+
+
 _SEARCH_GLOBS = (
     os.path.expandvars(r"%LOCALAPPDATA%\Programs\Godot\Godot*.exe"),
     os.path.expandvars(r"%LOCALAPPDATA%\Godot\Godot*.exe"),
@@ -2288,8 +2375,12 @@ _INJECT_MARK = "BGATE-INJECTED"
 # same file that wires the autoload relaxes the policy for this one run; the
 # project's own files are untouched and the game's own scripts were already
 # compiled under its policy by the editor.
+# enable=false switches every GDScript warning off, so a policy that raises one
+# this list does not name (unused_variable=2, MEASURED 4.4.1) cannot fail the
+# parse either; the named keys stay for an engine that ignores the switch.
 _OVERRIDE_DEBUG = (
     "\n[debug]\n"
+    "gdscript/warnings/enable=false\n"
     "gdscript/warnings/treat_warnings_as_errors=false\n"
     "gdscript/warnings/inferred_declaration=0\n"
     "gdscript/warnings/untyped_declaration=0\n"
@@ -2521,9 +2612,10 @@ def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
         # Windows and look exactly like a hang — see bgate_core.runtime.enginelock.
         try:
             with _enginelock.hold(project, what="godot_screenshot") as waited:
-                proc = subprocess.run(cmd, capture_output=True,
-                                      timeout=timeout, stdin=subprocess.DEVNULL,
-                                      env=env, creationflags=_NO_WINDOW, **_TEXT)
+                proc = _run_capture(cmd, timeout=timeout, env=env,
+                                    script_name=_SHOT_SCRIPT)
+        except AutoloadFailed as exc:
+            return {"ok": False, **exc.info}
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"game did not exit within {timeout}s — "
                                           "the shot autoload should quit after capture"}
@@ -2953,9 +3045,10 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
         }
         try:
             with _enginelock.hold(project, what="godot_evidence") as waited:
-                proc = subprocess.run(cmd, capture_output=True,
-                                      timeout=timeout, stdin=subprocess.DEVNULL,
-                                      env=env, creationflags=_NO_WINDOW, **_TEXT)
+                proc = _run_capture(cmd, timeout=timeout, env=env,
+                                    script_name=_EVIDENCE_SCRIPT)
+        except AutoloadFailed as exc:
+            return {"ok": False, **exc.info}
         except subprocess.TimeoutExpired:
             return {"ok": False,
                     "error": f"game did not exit within {timeout}s — "

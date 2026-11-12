@@ -2729,7 +2729,7 @@ def ready(root: str | os.PathLike[str], seat: str = "",
            if (c["source"] == planning
                or (c["seat"] not in held and c["seat"] not in unplanned))
            and (not in_slice or _admitted_in_slice(c, slice_items, root))
-           and not (feel_failing and _feel_holds(c))
+           and not (feel_failing and _feel_holds(c, root))
            and not c.get("exhausted_at")
            and not over_attempt_cap(root, c)
            and blocker(root, int(c["id"])) is None]
@@ -2836,22 +2836,49 @@ def _feel_failing(root: str | os.PathLike[str]) -> list[str]:
         return []
 
 
-def _feel_holds(item: dict) -> bool:
-    return (str(item.get("kind") or "") in ("polish", "content")
-            and item.get("source") not in FIX_SOURCES
-            and item.get("source") not in PROCESS_SOURCES)
+#: Seats a failing feel check stops whatever the item's kind. MEASURED
+#: (cat-cafe, 2026-10-25): the hold read kind alone, the art, level and
+#: gameplay items were filed kind '' or fix, and the board built two days of
+#: content on top of a FEEL FAIL. qa and director still run.
+FEEL_HELD_SEATS = frozenset({"art", "level", "gameplay"})
+
+
+def _feel_holds(item: dict, root: str | os.PathLike[str] | None = None) -> bool:
+    if item.get("source") in FIX_SOURCES or item.get("source") in PROCESS_SOURCES:
+        return False
+    if str(item.get("seat") or "") in FEEL_HELD_SEATS:
+        # The work a person filed FROM the feel item is how the fail ends.
+        return not (root is not None and _from_feel_item(root, item))
+    return str(item.get("kind") or "") in ("polish", "content")
+
+
+def _from_feel_item(root: str | os.PathLike[str], item: dict,
+                    _seen: Optional[set[int]] = None) -> bool:
+    seen = _seen if _seen is not None else {int(item["id"])}
+    for pid in _lineage_ids(item):
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            parent = get(root, pid)
+        except Exception:                                         # noqa: BLE001
+            continue
+        if parent.get("source") == FEEL_SOURCE_NAME or _from_feel_item(
+                root, parent, seen):
+            return True
+    return False
 
 
 def feel_hold_reason(root: str | os.PathLike[str], item: dict) -> str:
     """Why a failing feel check is holding this item, or ''."""
-    if not _feel_holds(item):
+    if not _feel_holds(item, root):
         return ""
     failing = _feel_failing(root)
     if not failing:
         return ""
     return ("held: the feel check is failing on " + ", ".join(failing[:3])
-            + " - polish and content wait until the design passes "
-            "(playtest_feel_check); the director's feel-check item says what "
+            + " - art, level and gameplay wait until it passes or a person "
+            "clears it (POST /api/feel/clear); the FEEL FAIL item says what "
             "to change")
 
 

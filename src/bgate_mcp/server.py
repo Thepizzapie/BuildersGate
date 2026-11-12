@@ -1641,7 +1641,19 @@ def project_status() -> dict:
         # scaffold dir, a deleted checkout) used to just be silently dropped
         # from every listing that filters on disk presence.
         out["registered_but_missing"] = missing
+    qa_note = _qa_scope_note(root)
+    if qa_note:
+        out["qa_gate"] = qa_note
     return out
+
+
+def _qa_scope_note(root) -> str:
+    """gates.qa_scope_note, never raising into a status read."""
+    try:
+        from bgate_core.board import gates as _gates_mod
+        return _gates_mod.qa_scope_note(root)
+    except Exception:                                             # noqa: BLE001
+        return ""
 
 
 def _canon_summary(root) -> dict:
@@ -9292,6 +9304,9 @@ def board_digest(hours: int = 12) -> dict:
             out["orphaned"] = lost[:10]
     except Exception:                                             # noqa: BLE001
         pass
+    qa_note = _qa_scope_note(root)
+    if qa_note:
+        out["qa_gate"] = qa_note
     return _bounded(out, more=f"board_digest(hours={hours})")
 
 

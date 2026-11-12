@@ -228,6 +228,11 @@ def graph(root: str | os.PathLike[str], *, hours: float = 48,
             "hold": hold,
             "waiting_on": unresolved,
             "result": str(it.get("result") or "")[-280:],
+            # A FEEL FAIL is cleared by a person from the detail panel, so the
+            # panel needs the scene and the sentence the brief opens with.
+            "feel": ({"scene": str(it.get("source_ref") or ""),
+                      "summary": str(it.get("brief") or "").split("\n\n")[0][:400]}
+                     if it.get("source") == "feel-check" else None),
         })
     # OPEN QUESTIONS an agent put to the human, hung off the item that asked.
     # Not dependencies - the asker keeps working - but they are the human's
