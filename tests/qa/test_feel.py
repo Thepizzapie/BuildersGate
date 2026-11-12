@@ -138,6 +138,41 @@ def test_one_button_counts_only_frames_that_offered_a_choice(tmp_path):
     assert "ONE_BUTTON" in feel.verdict(old, base)["fails"]
 
 
+def test_menu_frames_after_a_quick_death_do_not_dilute_pressure(tmp_path):
+    """Measured (Lost & Found): the hold-one-option baseline died in about 6 s,
+    then spent 99 of its 138 rows on one-option over/title screens reporting
+    danger false. Over every row that read 9% (NO_PRESSURE); over its 39 real
+    decisions it was threatened 33% of the time."""
+    real = [{"choice": "down", "ts": 1000 + i, "progress": (i + 1) / 100,
+             "danger": i % 3 == 0, "options": ["down", "left", "right"]}
+            for i in range(39)]
+    menus = [{"choice": "confirm", "ts": 1039 + i, "progress": 0.0,
+              "danger": False, "options": ["confirm"]} for i in range(99)]
+    smart = feel.measure(_run(tmp_path, "s", _decisions(
+        ["left", "right", "down"] * 20, danger_every=4),
+        events=[{"kind": "player_death", "ts": 1030}]))
+    base = feel.measure(_run(tmp_path, "b", real + menus,
+                             events=[{"kind": "shift_over", "ts": 1006,
+                                      "data": {"status": "lost"}}]))
+    assert base["danger_share"] == round(13 / 39, 3)
+    assert base["progress_max"] == 0.39
+    assert "NO_PRESSURE" not in feel.verdict(smart, base)["fails"]
+    # control: the same baseline with the menus offering a choice IS measured
+    # over all 138 rows, and reads as pressureless
+    chosen = [{**r, "options": ["confirm", "quit"]} for r in menus]
+    diluted = feel.measure(_run(tmp_path, "b2", real + chosen))
+    assert diluted["danger_share"] == round(13 / 138, 3)
+    assert "NO_PRESSURE" in feel.verdict(smart, diluted)["fails"]
+
+
+def test_a_run_of_only_forced_frames_still_measures_danger(tmp_path):
+    rows = [{"choice": "next", "ts": 1000 + i, "progress": i / 10,
+             "danger": i % 2 == 0, "options": ["next"]} for i in range(10)]
+    got = feel.measure(_run(tmp_path, "s", rows))
+    assert got["decisions_with_choice"] == 0
+    assert got["danger_share"] == 0.5 and got["progress_max"] == 0.9
+
+
 def test_unfair_needs_deaths_on_one_spot(tmp_path):
     rows = _decisions(["shoot", "jump", "dash"] * 20)
     # three deaths right after decision 30 (progress 0.5) - one spot
