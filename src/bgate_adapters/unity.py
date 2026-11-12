@@ -1070,9 +1070,23 @@ def build_webgl(project_dir: str | os.PathLike[str], out_dir: str | os.PathLike[
         return {"ok": True, "cached": True, "out_dir": str(out), "install": installed}
     out.mkdir(parents=True, exist_ok=True)
     before = webgl_stamp(out)
+    # BGateBuild.WebGL flips the compression setting and restores it, and the
+    # editor re-saves ProjectSettings.asset with the same bytes and a new
+    # mtime: without this every build reads stale against its own settings.
+    settings = project / "ProjectSettings" / "ProjectSettings.asset"
+    try:
+        settings_was = (settings.read_bytes(), settings.stat().st_mtime)
+    except OSError:
+        settings_was = None
     got = execute_method(str(project), WEBGL_METHOD, timeout=timeout,
                          env={"BGATE_BUILD_OUT": str(out)})
     got.update({"out_dir": str(out), "cached": False, "install": installed})
+    if settings_was is not None:
+        try:
+            if settings.read_bytes() == settings_was[0]:
+                os.utime(settings, (settings_was[1], settings_was[1]))
+        except OSError:
+            pass
     if got.get("ok") and not page.is_file():
         got["ok"] = False
         got["error"] = ("BGateBuild exited clean but wrote no index.html; read "

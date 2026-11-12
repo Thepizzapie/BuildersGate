@@ -686,6 +686,35 @@ class TestWebGL:
         page.unlink()
         assert unity.build_webgl(project, out, timeout=60)["ok"] is False
 
+    def test_a_same_bytes_settings_resave_does_not_make_the_build_stale(
+            self, fake_editor, tmp_path, monkeypatch):
+        """The WebGL build re-saves ProjectSettings.asset unchanged; its mtime
+        is put back, or every build reads stale against itself."""
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        settings = project / "ProjectSettings" / "ProjectSettings.asset"
+        os.utime(settings, (1000, 1000))
+        out = tmp_path / "export" / "web"
+
+        def build(*a, **k):
+            settings.write_bytes(settings.read_bytes())       # same bytes, new mtime
+            (out / "Build").mkdir(parents=True, exist_ok=True)
+            (out / "index.html").write_text("<html></html>", encoding="utf-8")
+            return {"ok": True}
+        monkeypatch.setattr(unity, "execute_method", build)
+        assert unity.build_webgl(project, out, timeout=60)["ok"] is True
+        assert settings.stat().st_mtime == 1000
+        assert unity.webgl_stamp(out) >= unity._newest_source(project)
+
+        # control: a real settings change keeps its new mtime
+        def change(*a, **k):
+            settings.write_text(settings.read_text(encoding="utf-8") + "x: 1\n",
+                                encoding="utf-8")
+            return {"ok": True}
+        monkeypatch.setattr(unity, "execute_method", change)
+        unity.build_webgl(project, out, timeout=60, force=True)
+        assert settings.stat().st_mtime > 1000
+
     def test_a_missing_module_is_refused_before_the_editor_runs(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")
         got = unity.build_webgl(project, tmp_path / "export" / "web", timeout=60)
