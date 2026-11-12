@@ -339,7 +339,7 @@ def scripts_installed(project_dir: str | os.PathLike[str]) -> dict:
 SHIPPED_HASHES: dict[str, tuple[str, ...]] = {
     TELEMETRY_FILE: ("a3f26bc0ce697f88", "d72dd60abc9b83ae"),
     CAPTURE_FILE: ("b669a83849984b27",),
-    AGENT_FILE: ("d16c470f99aac312",),
+    AGENT_FILE: ("d16c470f99aac312", "b020c0e7ab17a2bd", "e9b1d91b689ef254"),  # #123
     BUILD_FILE: ("6da1fda34fb2eaf9", "e6732f248718e849"),          # e673: #121's WebGL
     EDIT_FILE: ("9d47cbdda3435ede", "339b84d04d7a64f3"),           # 339b: #127's verbs
 }
@@ -1085,15 +1085,44 @@ def player_log_errors(log: str) -> list[str]:
     return out[:20]
 
 
+_STEP_RE = re.compile(r"^\d+(?:\.\d+)?:[+-]?[A-Za-z0-9_.]+$")
+
+
+def script_text(inputs) -> str:
+    """unity_play's `inputs` as BGATE_SCRIPT: a list (or a ';'-joined
+    string) of `seconds:action` steps, `+a` hold, `-a` release, bare
+    `a` tap. Raises ValueError naming the first malformed step, so a typo
+    is a sentence before a build, not a silently ignored press."""
+    steps = inputs.split(";") if isinstance(inputs, str) else list(inputs or [])
+    clean = [str(s).strip() for s in steps if str(s).strip()]
+    for s in clean:
+        if not _STEP_RE.match(s):
+            raise ValueError(f"bad input step {s!r}: want 'seconds:action', "
+                             "'seconds:+action' (hold) or 'seconds:-action' (release)")
+    return ";".join(clean)
+
+
 def play(project_dir: str | os.PathLike[str], *, seconds: float = 10.0,
-         scene: str = "", headless: bool = True, build_timeout: int = 1800) -> dict:
+         scene: str = "", headless: bool = True, build_timeout: int = 1800,
+         inputs=None, capture_every: float = 0.0) -> dict:
     """Build (or reuse) the player, run it for `seconds` of game time with
     telemetry on, and report what the game emitted and what it threw.
 
     The Unity answer to godot_run / web_run: proof the game RUNS, as
     against engine_check's proof that it compiles. `scene` is a Build
     Settings scene path or name to load first; empty boots the first.
+
+    `inputs` scripts presses through BGateInput (see script_text), so a
+    run can get past a title screen and drive. `capture_every` > 0 writes a
+    frame every that many game seconds (`frames` in the result): what the
+    player SAW. Capturing needs a window, so it overrides `headless`.
     """
+    try:
+        script = script_text(inputs)
+    except ValueError as exc:
+        return {"ok": False, "ran": False, "error": str(exc)}
+    if capture_every and capture_every > 0:
+        headless = False
     project = Path(project_dir)
     built = build_player(project, timeout=build_timeout)
     if not built.get("ok"):
@@ -1107,6 +1136,16 @@ def play(project_dir: str | os.PathLike[str], *, seconds: float = 10.0,
     if scene:
         # BGateAgent switches scenes; with no BGATE_AGENT_URL it does only that.
         env["BGATE_SCENE"] = scene
+    frames_dir = out_dir / f"frames_{stamp}"
+    if script or capture_every > 0:
+        # The agent quits on game time; the telemetry autoquit stays as the
+        # fallback for an older agent script that knows neither variable.
+        env["BGATE_AGENT_SECONDS"] = str(float(seconds))
+    if script:
+        env["BGATE_SCRIPT"] = script
+    if capture_every > 0:
+        env["BGATE_CAPTURE_DIR"] = str(frames_dir)
+        env["BGATE_CAPTURE_EVERY"] = str(float(capture_every))
     wall_cap = float(seconds) * 4 + 60
     started = time.monotonic()
     timed_out = False
@@ -1147,6 +1186,13 @@ def play(project_dir: str | os.PathLike[str], *, seconds: float = 10.0,
            "telemetry_path": str(telemetry), "log_path": str(log_path),
            "exe": built["exe"], "cached_build": built.get("cached", False),
            "headless": headless}
+    if capture_every > 0:
+        out["frames"] = sorted(str(p) for p in frames_dir.glob("frame_*.png"))
+        if not out["frames"] and out["ok"]:
+            out["ok"] = False
+            out["error"] = ("no frames were written; the agent script in "
+                            "Assets/BGate/ may predate capture "
+                            "(unity_install_scripts updates it)")
     if timed_out:
         out["error"] = (f"the player was still running after {wall_cap:.0f}s "
                         "of wall time and was killed")

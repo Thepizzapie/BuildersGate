@@ -184,18 +184,29 @@ def unity_build(unity_project: str = "", force: bool = False,
 
 @_tool
 def unity_play(seconds: float = 10.0, scene: str = "", headless: bool = True,
-               unity_project: str = "") -> dict:
+               unity_project: str = "", inputs: Optional[list] = None,
+               capture_every: float = 0.0) -> dict:
     """RUN the game: build (or reuse) the player, play it for `seconds` of
     game time with telemetry on, and report the events it emitted and the
     exceptions it threw. The Unity godot_run: proof it runs, where
     unity_check only proves it compiles. Nobody presses anything; for a run
     with inputs use playtest_agent_run. `scene` is a Build Settings path or
     name to load first. `headless=False` opens a 1280x720 window.
+
+    `inputs` scripts presses in game seconds, no model: `["1:confirm",
+    "1.5:+throttle", "4:-throttle"]` taps confirm, then holds throttle for
+    2.5 s. Actions are the ones the game reads through BGateInput.
+    `capture_every` > 0 saves a frame every that many game seconds and
+    returns their paths in `frames`: Read them to SEE the running game
+    (engine_screenshot only renders the saved scene). Opens a window.
     """
     target, refused = _need_project(unity_project)
     if refused:
         return refused
-    got = _unity.play(target, seconds=seconds, scene=scene, headless=headless)
+    got = _unity.play(target, seconds=seconds, scene=scene, headless=headless,
+                      inputs=inputs, capture_every=capture_every)
+    for frame in got.get("frames", []):
+        _note_tool_write(_root(), frame)
     _log("unity", f"played {seconds:g}s: {'ok' if got.get('ok') else 'FAILED'}"
                   + (f", {len(got['errors'])} error(s)" if got.get("errors") else ""),
          ref=got.get("log_path", ""))
