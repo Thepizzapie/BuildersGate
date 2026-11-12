@@ -794,6 +794,24 @@ def _templates(paths: set[str]):
     return compiled, literal
 
 
+def _unity_carries(ref: str, on_disk: set[str]) -> bool:
+    """A Godot `res://assets/...` path that a Unity port still names in its data.
+
+    A port of a Godot game keeps the original resource paths in its exported
+    maps and dialogue (they are ids there) and resolves them at run time under
+    its own Resources folder. Measured on ff-b67-unity: 9 BLOCKING "dangling"
+    findings for `assets/tiles/datacenter.png` and friends, every one of them
+    present at `Assets/Resources/Art/tiles/...`, and the release rebuild
+    refused. The path counts as delivered when a shipped file ends with the
+    part after `assets/`.
+    """
+    tail = ref.lower()
+    if tail.startswith("assets/"):
+        tail = tail[len("assets/"):]
+    tail = "/" + tail
+    return any(path.endswith(tail) for path in on_disk)
+
+
 def integration(root: str | os.PathLike[str]) -> dict:
     """Which shipped assets nothing uses, and which references point at nothing.
 
@@ -863,6 +881,8 @@ def integration(root: str | os.PathLike[str]) -> dict:
         if not ref.lower().endswith(SHIPPED_SUFFIXES):
             continue
         if ref.lower() in on_disk or (engine / ref).exists():
+            continue
+        if which == "unity" and _unity_carries(ref, on_disk):
             continue
         dangling.append(ref)
     dynamic += len(templates)

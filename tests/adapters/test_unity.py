@@ -425,6 +425,25 @@ class TestEngineAxis:
         got = assets.integration(base)
         assert got["unreferenced"] == ["Assets/Textures/unused.png"]
 
+    def test_a_ported_godot_path_resolves_under_resources(self, tmp_path):
+        # A Godot port keeps res://assets/... ids in its data and loads them from
+        # Resources/Art; the scan must not call them dangling (ff-b67-unity: 9
+        # false BLOCKING findings refused the release rebuild).
+        from bgate_core.store import assets
+        base = _unity_project(tmp_path)
+        art = base / "Assets" / "Resources" / "Art" / "tiles"
+        art.mkdir(parents=True)
+        (art / "datacenter.png").write_bytes(bytes([0x89]) + b"PNG")
+        maps = base / "Assets" / "Resources" / "Maps"
+        maps.mkdir(parents=True)
+        (maps / "f1.json").write_text(
+            '{"texture": "res://assets/tiles/datacenter.png",'
+            ' "other": "res://assets/tiles/missing.png"}', encoding="utf-8")
+        got = assets.integration(base)
+        assert "assets/tiles/datacenter.png" not in got["dangling"]
+        # Control: a path with no file anywhere under Assets is still dangling.
+        assert "assets/tiles/missing.png" in got["dangling"]
+
     def test_the_tools_are_owned_and_the_neutral_ones_reach_them(self):
         for name in ("unity_status", "unity_check", "unity_test_run",
                      "unity_execute", "unity_install_scripts", "unity_screenshot",
