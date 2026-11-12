@@ -135,6 +135,8 @@ def _hold_lock(monkeypatch, project):
     temp.mkdir(exist_ok=True)
     (temp / "UnityLockfile").write_bytes(b"")
     monkeypatch.setattr(unity, "_lock_held", lambda lock: True)
+    # A held editor never frees in a test; refuse at once instead of queueing.
+    monkeypatch.setenv(unity.WAIT_ENV, "0")
 
 
 class TestDiscovery:
@@ -220,11 +222,74 @@ class TestBatchmode:
         assert "1 compile error" in got["error"] or "compile error(s)" in got["error"]
 
     def test_an_open_editor_is_refused_not_run(self, fake_editor, tmp_path, monkeypatch):
+        monkeypatch.setenv(unity.WAIT_ENV, "0")
         project = _unity_project(tmp_path)
         _hold_lock(monkeypatch, project)
         got = unity.check_project(str(project), timeout=60)
         assert got["ok"] is False and got["editor_open"] is True
         assert "UnityLockfile" in got["error"]
+        # The refused call leaves no lease behind for the next one to wait on.
+        assert not (project / "Temp" / "bgate" / unity.LEASE_NAME).exists()
+
+    def test_a_busy_editor_is_waited_for_not_refused(self, fake_editor, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path)
+        busy = {"n": 3}
+
+        def held(lock):
+            busy["n"] -= 1
+            return busy["n"] > 0
+        monkeypatch.setattr(unity, "_lock_held", held)
+        monkeypatch.setattr(unity.time, "sleep", lambda s: None)
+        (project / "Temp").mkdir(exist_ok=True)
+        (project / "Temp" / "UnityLockfile").write_bytes(b"")
+        got = unity.check_project(str(project), timeout=60)
+        assert got["ok"] is True, got
+        assert busy["n"] <= 0
+
+    def test_a_second_call_queues_behind_a_live_lease(self, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path)
+        lease = project / "Temp" / "bgate" / unity.LEASE_NAME
+        lease.parent.mkdir(parents=True)
+        lease.write_text(json.dumps({"pid": os.getpid() + 1, "seat": "SQUID-1",
+                                     "what": "build"}), encoding="utf-8")
+        alive = {"left": 2}
+
+        def pid_alive(pid):
+            alive["left"] -= 1
+            return alive["left"] > 0
+        monkeypatch.setattr(unity, "_pid_alive", pid_alive)
+        monkeypatch.setattr(unity.time, "sleep", lambda s: None)
+        with unity.editor_lease(project, "check", wait=60) as refused:
+            assert refused is None
+            assert json.loads(lease.read_text(encoding="utf-8"))["pid"] == os.getpid()
+        assert not lease.exists()
+
+    def test_a_lease_that_never_frees_names_its_holder(self, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path)
+        lease = project / "Temp" / "bgate" / unity.LEASE_NAME
+        lease.parent.mkdir(parents=True)
+        lease.write_text(json.dumps({"pid": 4242, "seat": "SQUID-1", "what": "build"}),
+                         encoding="utf-8")
+        monkeypatch.setattr(unity, "_pid_alive", lambda pid: True)
+        with unity.editor_lease(project, "check", wait=0) as refused:
+            assert refused["editor_open"] is True
+            assert "SQUID-1 (build)" in refused["error"]
+        # Someone else's lease is never removed by the one that gave up.
+        assert lease.exists()
+
+    def test_a_dead_holders_lease_is_taken_over(self, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path)
+        lease = project / "Temp" / "bgate" / unity.LEASE_NAME
+        lease.parent.mkdir(parents=True)
+        lease.write_text(json.dumps({"pid": 4242, "what": "build"}), encoding="utf-8")
+        monkeypatch.setattr(unity, "_pid_alive", lambda pid: pid == os.getpid())
+        with unity.editor_lease(project, "check", wait=0) as refused:
+            assert refused is None
+        assert not lease.exists()
+
+    def test_this_process_counts_as_alive(self):
+        assert unity._pid_alive(os.getpid()) is True
+        assert unity._pid_alive(0) is False
 
     def test_a_hang_is_a_timeout_with_advice(self, fake_editor, tmp_path, monkeypatch):
         monkeypatch.setenv("FAKE_UNITY_MODE", "hang")

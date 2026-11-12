@@ -48,6 +48,7 @@ THE PIECES, and which external thing each needs:
 """
 from __future__ import annotations
 
+import contextlib
 import glob
 import json
 import os
@@ -299,6 +300,114 @@ def editor_open(project_dir: str | os.PathLike[str]) -> bool:
     return lock.is_file() and _lock_held(lock)
 
 
+#: Seconds a tool waits for another editor run on the same project before it
+#: refuses. 0 refuses at once (the old behaviour). An interactive editor the
+#: human left open never frees the project, so the wait is bounded.
+WAIT_ENV = "BGATE_UNITY_WAIT"
+DEFAULT_WAIT = 600
+LEASE_NAME = "editor.lease"
+
+
+def _wait_budget() -> float:
+    try:
+        return max(0.0, float(os.environ.get(WAIT_ENV, DEFAULT_WAIT)))
+    except ValueError:
+        return float(DEFAULT_WAIT)
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def lease_holder(project_dir: str | os.PathLike[str]) -> dict:
+    """Who holds this project's bgate editor lease: {} when nobody (or a dead holder)."""
+    path = Path(project_dir) / "Temp" / "bgate" / LEASE_NAME
+    try:
+        got = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(got, dict) or not _pid_alive(int(got.get("pid", 0) or 0)):
+        return {}
+    return got
+
+
+@contextlib.contextmanager
+def editor_lease(project_dir: str | os.PathLike[str], what: str, *,
+                 wait: Optional[float] = None, poll: float = 1.0):
+    """Take the project's editor turn: one bgate editor run at a time, the rest queue.
+
+    Yields None when this call holds the turn, or a refusal dict when the wait
+    ran out. Two things are waited on, in order: the bgate lease
+    (Temp/bgate/editor.lease, O_EXCL, holder pid/seat/what/since; a dead
+    holder's lease is taken over), then Unity's own lockfile, which an editor
+    started outside bgate (a human, a raw Unity.exe run) also holds.
+    """
+    project = Path(project_dir)
+    lease = _scratch(project) / LEASE_NAME
+    budget = _wait_budget() if wait is None else max(0.0, float(wait))
+    deadline = time.monotonic() + budget
+    me = {"pid": os.getpid(), "what": what, "since": round(time.time(), 1),
+          "seat": os.environ.get("BGATE_SEAT") or os.environ.get("PULSIRON_CALLSIGN") or ""}
+    held = False
+    started = time.monotonic()
+    try:
+        while True:
+            try:
+                fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(me, fh)
+                held = True
+            except FileExistsError:
+                if not lease_holder(project):
+                    try:
+                        lease.unlink()  # a dead holder's lease
+                    except OSError:
+                        pass
+                    continue
+            if held and not editor_open(project):
+                break
+            if time.monotonic() >= deadline:
+                if held:
+                    holder = "an editor bgate did not start (Temp/UnityLockfile is held)"
+                else:
+                    other = lease_holder(project)
+                    holder = (f"{other.get('seat') or 'pid ' + str(other.get('pid'))} "
+                              f"({other.get('what', '?')})")
+                yield {"ok": False, "editor_open": True,
+                       "waited": round(time.monotonic() - started, 1),
+                       "error": f"the Unity editor has this project open, held by {holder} "
+                                f"(Temp/UnityLockfile is present). Waited {budget:.0f}s "
+                                f"({WAIT_ENV}). Close it, or if it crashed, delete that "
+                                "file, then retry: two editors cannot hold one project."}
+                return
+            time.sleep(poll)
+        yield None
+    finally:
+        if held:
+            try:
+                if json.loads(lease.read_text(encoding="utf-8")).get("pid") == me["pid"]:
+                    lease.unlink()
+            except (OSError, ValueError):
+                pass
+
+
 def _lock_held(lock: Path) -> bool:
     """True when another process holds the lockfile (the editor, running)."""
     try:
@@ -373,16 +482,28 @@ def _scratch(project_dir: Path) -> Path:
 def _batch(project_dir: str, verb: list[str], *, timeout: int,
            stem: str, graphics: bool = False,
            env: Optional[dict[str, str]] = None, quit: bool = True) -> dict:
-    """One batchmode editor run. Returns {ok, exit_code, seconds, log, log_path, errors}."""
+    """One batchmode editor run. Returns {ok, exit_code, seconds, log, log_path, errors}.
+
+    Runs inside the project's editor lease: a second call on the same project
+    queues behind the first instead of being refused (editor_lease).
+    """
     project = Path(project_dir)
     if not is_project(project):
         return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
-    if editor_open(project):
-        return {"ok": False, "editor_open": True,
-                "error": "the Unity editor has this project open "
-                         "(Temp/UnityLockfile is present). Close it, or if it "
-                         "crashed, delete that file, then retry: two editors "
-                         "cannot hold one project."}
+    queued = time.monotonic()
+    with editor_lease(project, stem) as refused:
+        if refused:
+            return refused
+        out = _batch_run(project, verb, timeout=timeout, stem=stem,
+                         graphics=graphics, env=env, quit=quit)
+        waited = round(time.monotonic() - queued - out.get("seconds", 0), 1)
+        if waited >= 1:
+            out["queued_seconds"] = waited
+        return out
+
+
+def _batch_run(project: Path, verb: list[str], *, timeout: int, stem: str,
+               graphics: bool, env: Optional[dict[str, str]], quit: bool) -> dict:
     try:
         exe = find_unity(project)
     except UnityNotFound as exc:

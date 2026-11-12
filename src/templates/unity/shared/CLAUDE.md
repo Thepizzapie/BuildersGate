@@ -45,9 +45,11 @@ From an agent session the moves are:
   what an `IBGateObserver` MonoBehaviour returns. Give it `Progress` (0..1)
   and `Danger`, or the feel check reports the scene unmeasured.
 
-CLOSE THE EDITOR BEFORE ANY OF THEM. Two editors cannot hold one project; a
-call made while the editor is open is refused with a sentence about
-`Temp/UnityLockfile`, not run.
+CLOSE THE EDITOR BEFORE ANY OF THEM. Two editors cannot hold one project.
+Calls on one project take turns: a call made while another bgate call (or a
+batchmode run started by hand) holds the editor queues behind it for up to
+`BGATE_UNITY_WAIT` seconds (600 by default), then is refused with a sentence
+naming who holds it. An editor a human left open never frees, so close it.
 
 The first batchmode open of a project imports every asset and can take
 minutes. Pass a longer `timeout` before reading a slow first check as a hang.
