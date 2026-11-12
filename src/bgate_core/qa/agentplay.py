@@ -38,6 +38,24 @@ TEMPLATE = (Path(__file__).resolve().parents[2] / "templates" / "godot"
 #: "hold:<option>" always picks that option when it is offered (else the
 #: first offered one) - the do-nothing-clever baseline the feel check races.
 POLICIES = ("jev", "random", "hold")
+
+
+def instructions(hold: float) -> str:
+    """What the decision model is told every decision.
+
+    SURVIVAL IS NOT THE OBJECTIVE, IT IS THE CONSTRAINT. The first wording put
+    "avoid taking damage first, then make progress", and in a turn-based game
+    with a DEFEND command that ordering IS the answer every turn: measured on
+    ff-b67-unity's first boss, DEFEND took 97% of 111 decisions, the boss lost
+    4% of its HP, and the feel check failed ONE_BUTTON on the bot, not the game.
+    Real-time games lose nothing by the change: dodging still keeps the run
+    alive, and a run that only dodges still never finishes the scene.
+    """
+    return ("You are playing this video game. Pick the input to hold "
+            f"for the next {hold:.2f} seconds that best advances the GOAL. "
+            "Stay alive, but an input that only avoids damage never finishes "
+            "the scene: take the option that makes progress whenever the "
+            "player can afford it.")
 #: Three, not more: measured on HARDCOVER, a longer history let one early
 #: choice (dash_left) reinforce itself into 90% of 511 decisions.
 HISTORY = 3
@@ -177,10 +195,7 @@ class Relay:
             from bgate_adapters import jev
             got = jev.decide(text, {"action": {
                 "type": "choice",
-                "instructions": (
-                    "You are playing this video game. Pick the input to hold "
-                    f"for the next {hold:.2f} seconds that best advances the "
-                    "GOAL: avoid taking damage first, then make progress."),
+                "instructions": instructions(hold),
                 "criteria": {str(k): (str(v) or None)
                              for k, v in options.items()}}},
                 root=self.root, model=self.model)
