@@ -114,6 +114,22 @@ def test_an_end_event_without_a_status_leaves_trivial_unjudged(tmp_path):
     assert ko["deaths"] == 1
 
 
+def test_the_harness_session_end_does_not_overwrite_the_games_result(tmp_path):
+    """Measured (ff-b67-unity): `battle_end {status: won}` then the harness's
+    own `session_end {}`, and the run read end_status "unknown"."""
+    won_then_closed = [
+        {"kind": "battle_end", "ts": 1020, "data": {"status": "won"}},
+        {"kind": "autoquit", "ts": 1059, "data": {}},
+        {"kind": "session_end", "ts": 1060, "data": {}}]
+    got = feel.measure(_run(tmp_path, "w", _decisions(["fight"] * 60),
+                            events=won_then_closed))
+    assert got["ended"] is True and got["end_status"] == "won"
+    # control: a run whose only end is the harness closing never ended
+    closed = feel.measure(_run(tmp_path, "c", _decisions(["fight"] * 60),
+                               events=won_then_closed[1:]))
+    assert closed["ended"] is False and closed["end_status"] is None
+
+
 def test_one_button_counts_only_frames_that_offered_a_choice(tmp_path):
     """Measured (Turf War): "done" was the only option in retreat/resolve
     frames, and counting those made a turn-based game read as one-button."""
