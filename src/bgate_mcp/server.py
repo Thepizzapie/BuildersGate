@@ -821,7 +821,7 @@ def _tool(fn: Optional[Callable] = None, *,
                                   "fail the item naming the ruling."),
                         "section_id": forbidden["id"],
                         "ruling": forbidden["title"], "seat": _seat()}
-            # ITEM 9b — a HUMAN who rejected this tool's output three times in
+            # ITEM 9b: a HUMAN who rejected this tool's output three times in
             # 24h is refused a fourth round from a dispatched seat, until a
             # human clears it (tool_unlock's rejections_clear). Fail-open on
             # any error and skip entirely for the director (_seat() unset):
@@ -837,7 +837,7 @@ def _tool(fn: Optional[Callable] = None, *,
                                 "rejections": _rejections.recent(
                                     flight_root, fn.__name__),
                                 "note": f"a human rejected {fn.__name__}'s "
-                                        "output 3+ times in the last 24h — "
+                                        "output 3+ times in the last 24h. "
                                         "STOP AND ASK a human rather than "
                                         "trying again. rejections_clear"
                                         f"(tool='{fn.__name__}') unblocks it, "
@@ -1508,7 +1508,7 @@ def project_init(name: str, pitch: str = "", engine: str = "godot",
                  dimension: str = "2d", root: Optional[str] = None) -> dict:
     """Create a Builders Gate project (.bgate/game.db) at root (default: cwd).
 
-    engine: godot | none. dimension: 2d | 3d | 2d+3d. Safe to re-run.
+    engine: godot | web | unity | none. dimension: 2d | 3d | 2d+3d. Safe to re-run.
     root is where the project is CREATED; it wins over project_dir here, since
     on this one tool the directory is the thing being made, not looked up.
     """
@@ -3611,7 +3611,7 @@ def _concept_compare_image(result: dict) -> list[str]:
 
 @_tool(images=_concept_compare_image)
 def concept_compare(candidate: str, concept_ref: str, out_name: str = "") -> dict:
-    """ITEM 37 — the landing check for any art item: does this read as the
+    """ITEM 37: the landing check for any art item: does this read as the
     SAME GAME beside the pinned concept sheet. Composes `candidate` beside
     `concept_ref` (a ref_pin name, kind='concept', or a raw path) at equal
     height into one review image under .bgate_out/art/checks/, plus cheap
@@ -5101,9 +5101,9 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                                  f"{ref_reason}. Not spending on poses against a "
                                  "broken anchor - adjust character_prompt and retry."}
         result["reference"] = ref_path
-        # ITEMS 2/3 — PROVENANCE. Every file this run writes gets a sidecar
+        # ITEMS 2/3: PROVENANCE. Every file this run writes gets a sidecar
         # recording the anchor it was generated against (by content hash, not
-        # path — the same identity kie's content-hash upload naming, de59d3a,
+        # path, the same identity kie's content-hash upload naming, de59d3a,
         # uses). "regenerate only what is wrong" then has something to check
         # a stale frame against instead of trusting whatever sits in the
         # folder forever.
@@ -5361,7 +5361,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
             # resize cannot fix.
             fixed = _spritekit.normalise_heights(
                 [p for p, _ in pose_files], pose_path)
-            # ITEMS 2/3 — PROVENANCE REFUSAL. A frame whose sidecar disagrees
+            # ITEMS 2/3: PROVENANCE REFUSAL. A frame whose sidecar disagrees
             # with (or is missing against) the CURRENT anchor is dropped from
             # the stitch rather than trusted - this is what stops a stale
             # 05:xx frame from a since-replaced anchor riding in next to
@@ -5631,7 +5631,7 @@ def image_sprites(character_prompt: Annotated[str, Field(description='The charac
                     "installed as-is - tighten character_prompt on the drifting "
                     "detail, or lower the floor if this is as good as the model gets.")
 
-            # ITEM 1/5/6 — THE IDENTITY GATE. Arithmetic, no model call: every
+            # ITEM 1/5/6: THE IDENTITY GATE. Arithmetic, no model call: every
             # frame vs THIS character's own anchor (silhouette ratio, palette
             # distance, translucency/second-head/component-count ghosts, and
             # for a prop subject, limb-growth). This is what the vision judge
@@ -7642,7 +7642,7 @@ def pending_decisions(limit: int = 40) -> dict:
     try:
         # GRIPE 39b(1). Its own list, not a filter the caller has to run: a
         # question addressed to the director is waiting on the LIVE SESSION,
-        # not on the human reading this — surfacing it separately (with age)
+        # not on the human reading this. Surfacing it separately (with age)
         # is what lets a human tell "the director owes this" from "I do".
         questions_for_director = _steerbox.questions_for_director(root)[:cap]
     except Exception:
@@ -8068,7 +8068,7 @@ def decision_add(title: str, acceptance: str, leaves_dark: str,
 
 @_tool
 def board_focus_set(focus: str) -> dict:
-    """ITEM 36 — set/clear board.focus, the ONE biome/vertical slice the board
+    """ITEM 36: set/clear board.focus, the ONE biome/vertical slice the board
     works to shippable before a second opens (a slice-and-after rule;
     nothing before it). Free text, e.g. "Canal vertical slice"; "" clears
     it. Same authority as decision_add(state='settled') - a dispatched agent
@@ -8670,7 +8670,7 @@ def queue_get(item_id: int) -> dict:
     root = _root()
     item = _q.get(root, int(item_id))
     # Item 31c: per-run cost history, oldest first. Named 'attempts_detail'
-    # rather than 'attempts' — that key is already the round COUNTER
+    # rather than 'attempts', because that key is already the round COUNTER
     # (work_item.attempts, an int every caller in this codebase reads as a
     # number) and overwriting it with a list would break every one of them.
     try:
@@ -8784,7 +8784,7 @@ def _filed_this_run(row: dict, own_item: str) -> bool:
 
 
 def _focus_warning(root, title: str, brief: str) -> str:
-    """ITEM 36 — non-blocking nudge when a new brief names a different slice
+    """ITEM 36: non-blocking nudge when a new brief names a different slice
     than board.focus. Never refuses: the human's ruling was ONE biome at a
     time, not a hard lock the harness enforces by rejecting filings."""
     from bgate_core.store import project as _project
@@ -10093,7 +10093,7 @@ def queue_unpark(item_id: int) -> dict:
 
 @_tool
 def queue_cancel(item_id: int, reason: str = "") -> dict:
-    """A human calling work off for good — distinct from queue_park (may come
+    """A human calling work off for good, distinct from queue_park (may come
     back) and from stopping a live run (that is a kill; this is for work that
     should simply never run).
     Full notes: docs/tools.md#queue_cancel

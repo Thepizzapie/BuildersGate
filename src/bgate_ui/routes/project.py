@@ -308,8 +308,7 @@ def project_create(request: Request, payload: dict) -> dict:
 def project_adopt(request: Request, payload: dict) -> dict:
     """Adopt an existing game directory and make it the active project.
 
-    The card's path for an engine that is never scaffolded (Unity), and for
-    any game that already exists. Same rules as `bgate adopt`: additive
+    The card's path for any game that already exists, whatever its engine. Same rules as `bgate adopt`: additive
     only, never overwrites, records the engine it detects. A human act, like
     creating one.
     """
