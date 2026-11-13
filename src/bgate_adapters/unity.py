@@ -48,6 +48,7 @@ THE PIECES, and which external thing each needs:
 """
 from __future__ import annotations
 
+import contextlib
 import glob
 import json
 import os
@@ -299,6 +300,127 @@ def editor_open(project_dir: str | os.PathLike[str]) -> bool:
     return lock.is_file() and _lock_held(lock)
 
 
+#: Seconds a tool waits for another editor run on the same project before it
+#: refuses. 0 refuses at once (the old behaviour). An interactive editor the
+#: human left open never frees the project, so the wait is bounded.
+WAIT_ENV = "BGATE_UNITY_WAIT"
+DEFAULT_WAIT = 600
+#: The turn itself: an OS byte-range lock on this file. The OS drops it the
+#: moment the holder dies, so there is no stale lease to judge or take over.
+LOCK_NAME = "editor.lock"
+#: Who holds the turn, for the refusal's sentence only. Never decides anything.
+LEASE_NAME = "editor.lease"
+
+
+def _wait_budget() -> float:
+    try:
+        return max(0.0, float(os.environ.get(WAIT_ENV, DEFAULT_WAIT)))
+    except ValueError:
+        return float(DEFAULT_WAIT)
+
+
+def _try_lock(fh) -> bool:
+    """Take a non-blocking exclusive lock on byte 0 of an open file."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(fh) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def lease_holder(project_dir: str | os.PathLike[str]) -> dict:
+    """What the current holder wrote about itself (pid, seat, what, since), or {}."""
+    path = Path(project_dir) / "Temp" / "bgate" / LEASE_NAME
+    try:
+        got = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+@contextlib.contextmanager
+def editor_lease(project_dir: str | os.PathLike[str], what: str, *,
+                 wait: Optional[float] = None, poll: float = 1.0, sleep=None):
+    """Take the project's editor turn: one bgate editor run at a time, the rest queue.
+
+    Yields None when this call holds the turn, or a refusal dict when the wait
+    ran out. Two things are waited on, in order: the bgate turn (an OS lock on
+    Temp/bgate/editor.lock, released by the OS if the holder dies), then
+    Unity's own lockfile, which an editor started outside bgate (a human, a
+    raw Unity.exe run) also holds. The wait comes ON TOP of the run's own
+    `timeout`; a refusal carries `queued_seconds` so a caller that gave up
+    knows it was queued, not hung.
+    """
+    project = Path(project_dir)
+    nap = sleep or time.sleep
+    scratch = _scratch(project)
+    info = scratch / LEASE_NAME
+    budget = _wait_budget() if wait is None else max(0.0, float(wait))
+    started = time.monotonic()
+    deadline = started + budget
+    me = {"pid": os.getpid(), "what": what, "since": round(time.time(), 1),
+          "seat": os.environ.get("BGATE_SEAT") or os.environ.get("PULSIRON_CALLSIGN") or ""}
+    fh = open(scratch / LOCK_NAME, "a+b")
+    held = False
+    try:
+        while True:
+            if not held and _try_lock(fh):
+                held = True
+                try:
+                    info.write_text(json.dumps(me), encoding="utf-8")
+                except OSError:
+                    pass
+            if held and not editor_open(project):
+                break
+            if time.monotonic() >= deadline:
+                if held:
+                    error = ("the Unity editor has this project open, held by an editor "
+                             "bgate did not start (Temp/UnityLockfile is present). "
+                             f"Waited {budget:.0f}s ({WAIT_ENV}). Close it, or if it "
+                             "crashed, delete that file, then retry: two editors cannot "
+                             "hold one project.")
+                else:
+                    other = lease_holder(project)
+                    holder = (f"{other.get('seat') or 'pid ' + str(other.get('pid', '?'))} "
+                              f"({other.get('what', '?')})")
+                    error = (f"another bgate editor run holds this project: {holder}. "
+                             f"Waited {budget:.0f}s ({WAIT_ENV}); retry when it finishes.")
+                yield {"ok": False, "editor_open": True,
+                       "queued_seconds": round(time.monotonic() - started, 1),
+                       "error": error}
+                return
+            nap(poll)
+        yield None
+    finally:
+        if held:
+            try:
+                if lease_holder(project).get("pid") == me["pid"]:
+                    info.unlink()
+            except OSError:
+                pass
+            _unlock(fh)
+        fh.close()
+
+
 def _lock_held(lock: Path) -> bool:
     """True when another process holds the lockfile (the editor, running)."""
     try:
@@ -373,16 +495,28 @@ def _scratch(project_dir: Path) -> Path:
 def _batch(project_dir: str, verb: list[str], *, timeout: int,
            stem: str, graphics: bool = False,
            env: Optional[dict[str, str]] = None, quit: bool = True) -> dict:
-    """One batchmode editor run. Returns {ok, exit_code, seconds, log, log_path, errors}."""
+    """One batchmode editor run. Returns {ok, exit_code, seconds, log, log_path, errors}.
+
+    Runs inside the project's editor lease: a second call on the same project
+    queues behind the first instead of being refused (editor_lease).
+    """
     project = Path(project_dir)
     if not is_project(project):
         return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
-    if editor_open(project):
-        return {"ok": False, "editor_open": True,
-                "error": "the Unity editor has this project open "
-                         "(Temp/UnityLockfile is present). Close it, or if it "
-                         "crashed, delete that file, then retry: two editors "
-                         "cannot hold one project."}
+    queued = time.monotonic()
+    with editor_lease(project, stem) as refused:
+        if refused:
+            return refused
+        out = _batch_run(project, verb, timeout=timeout, stem=stem,
+                         graphics=graphics, env=env, quit=quit)
+        waited = round(time.monotonic() - queued - out.get("seconds", 0), 1)
+        if waited >= 1:
+            out["queued_seconds"] = waited
+        return out
+
+
+def _batch_run(project: Path, verb: list[str], *, timeout: int, stem: str,
+               graphics: bool, env: Optional[dict[str, str]], quit: bool) -> dict:
     try:
         exe = find_unity(project)
     except UnityNotFound as exc:

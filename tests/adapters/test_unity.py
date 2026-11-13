@@ -146,6 +146,8 @@ def _hold_lock(monkeypatch, project):
     temp.mkdir(exist_ok=True)
     (temp / "UnityLockfile").write_bytes(b"")
     monkeypatch.setattr(unity, "_lock_held", lambda lock: True)
+    # A held editor never frees in a test; refuse at once instead of queueing.
+    monkeypatch.setenv(unity.WAIT_ENV, "0")
 
 
 class TestDiscovery:
@@ -231,12 +233,92 @@ class TestBatchmode:
         assert "1 compile error" in got["error"] or "compile error(s)" in got["error"]
 
     def test_an_open_editor_is_refused_not_run(self, fake_editor, tmp_path, monkeypatch):
+        monkeypatch.setenv(unity.WAIT_ENV, "0")
         project = _unity_project(tmp_path)
         _hold_lock(monkeypatch, project)
         got = unity.check_project(str(project), timeout=60)
         assert got["ok"] is False and got["editor_open"] is True
         assert "UnityLockfile" in got["error"]
+        # The refused call leaves no lease behind for the next one to wait on.
+        assert not (project / "Temp" / "bgate" / unity.LEASE_NAME).exists()
 
+    def test_a_busy_editor_is_waited_for_not_refused(self, fake_editor, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path)
+        busy = {"n": 3}
+
+        def held(lock):
+            busy["n"] -= 1
+            return busy["n"] > 0
+        monkeypatch.setattr(unity, "_lock_held", held)
+        monkeypatch.setattr(unity.time, "sleep", lambda s: None)
+        (project / "Temp").mkdir(exist_ok=True)
+        (project / "Temp" / "UnityLockfile").write_bytes(b"")
+        got = unity.check_project(str(project), timeout=60)
+        assert got["ok"] is True, got
+        assert busy["n"] <= 0
+
+    @staticmethod
+    def _hold_turn(project, holder: dict):
+        """Another process's turn: the OS lock taken on a second handle, plus its note."""
+        scratch = project / "Temp" / "bgate"
+        scratch.mkdir(parents=True, exist_ok=True)
+        (scratch / unity.LEASE_NAME).write_text(json.dumps(holder), encoding="utf-8")
+        fh = open(scratch / unity.LOCK_NAME, "a+b")
+        assert unity._try_lock(fh)
+        return fh
+
+    def test_a_second_call_queues_behind_a_held_turn(self, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path)
+        other = self._hold_turn(project, {"pid": 4242, "seat": "SQUID-1", "what": "build"})
+        polls = {"n": 0}
+
+        def sleep(_):
+            polls["n"] += 1
+            if polls["n"] == 3:           # the holder finishes while we wait
+                unity._unlock(other)
+                other.close()
+        # Injected, not monkeypatched: a process-wide time.sleep patch also counts
+        # stray threads' sleeps from earlier tests (CI: 162 polls, not 3).
+        with unity.editor_lease(project, "check", wait=60, sleep=sleep) as refused:
+            assert refused is None
+            assert unity.lease_holder(project)["pid"] == os.getpid()
+        assert polls["n"] == 3
+        assert not (project / "Temp" / "bgate" / unity.LEASE_NAME).exists()
+
+    def test_a_turn_that_never_frees_names_its_holder(self, tmp_path):
+        project = _unity_project(tmp_path)
+        other = self._hold_turn(project, {"pid": 4242, "seat": "SQUID-1", "what": "build"})
+        try:
+            with unity.editor_lease(project, "check", wait=0) as refused:
+                assert refused["editor_open"] is True
+                assert "SQUID-1 (build)" in refused["error"]
+                assert "queued_seconds" in refused
+            # The one that gave up never touches the holder's note.
+            assert unity.lease_holder(project)["seat"] == "SQUID-1"
+        finally:
+            unity._unlock(other)
+            other.close()
+
+    def test_a_dead_holders_note_does_not_block(self, tmp_path):
+        """A crashed holder leaves its note behind; the OS already dropped its lock."""
+        project = _unity_project(tmp_path)
+        scratch = project / "Temp" / "bgate"
+        scratch.mkdir(parents=True)
+        (scratch / unity.LEASE_NAME).write_text(json.dumps({"pid": 4242, "what": "build"}),
+                                                encoding="utf-8")
+        with unity.editor_lease(project, "check", wait=0) as refused:
+            assert refused is None
+            assert unity.lease_holder(project)["pid"] == os.getpid()
+
+    def test_two_waiters_never_hold_the_turn_together(self, tmp_path):
+        """PATSTA-1's race: two waiters that both saw a free turn. The OS lock lets one in."""
+        project = _unity_project(tmp_path)
+        with unity.editor_lease(project, "a", wait=0) as first:
+            assert first is None
+            with unity.editor_lease(project, "b", wait=0) as second:
+                assert second is not None and second["editor_open"] is True
+            # The loser's exit left the winner's note alone.
+            assert unity.lease_holder(project)["what"] == "a"
     def test_a_hang_is_a_timeout_with_advice(self, fake_editor, tmp_path, monkeypatch):
         monkeypatch.setenv("FAKE_UNITY_MODE", "hang")
         project = _unity_project(tmp_path)
