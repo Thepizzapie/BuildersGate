@@ -64,6 +64,12 @@ FAKE = textwrap.dedent('''
         os.makedirs(os.path.dirname(exe), exist_ok=True)
         open(exe, "w").write("fake player")
         lines.append("BGateBuild: Succeeded " + exe)
+    if opt("-executeMethod") == "BGate.Editor.BGateBuild.WebGL" and mode != "build_fail":
+        out = os.environ["BGATE_BUILD_OUT"]
+        os.makedirs(os.path.join(out, "Build"), exist_ok=True)
+        open(os.path.join(out, "Build", "web.wasm"), "wb").write(b"\\0asm")
+        open(os.path.join(out, "index.html"), "w").write("<canvas></canvas>")
+        lines.append("BGateBuild: Succeeded WebGL " + out)
     if opt("-executeMethod") == "BGate.Editor.BGateScaffold.Build":
         scenes = os.path.join(opt("-projectPath"), "Assets", "Scenes")
         os.makedirs(scenes, exist_ok=True)
@@ -518,6 +524,18 @@ class TestEngineAxis:
         got = assets.integration(base)
         assert got["unreferenced"] == ["Assets/Textures/unused.png"]
 
+    def test_a_godot_res_path_is_not_a_dangling_unity_asset(self, tmp_path):
+        """Measured (FF-B67, 2026-11-12): maps ported with tscn_export keep
+        res://assets/tiles/x.png as data, and the release gate refused every
+        WebGL build over files the Unity game never loads."""
+        from bgate_core.store import assets
+        base = _unity_project(tmp_path)
+        maps = base / "Assets" / "Resources" / "Maps"
+        maps.mkdir(parents=True)
+        (maps / "valley.json").write_text(
+            '{"texture": "res://assets/tiles/kingsburg.png"}', encoding="utf-8")
+        assert assets.integration(base)["dangling"] == []
+
     def test_the_tools_are_owned_and_the_neutral_ones_reach_them(self):
         for name in ("unity_status", "unity_check", "unity_test_run",
                      "unity_execute", "unity_install_scripts", "unity_screenshot",
@@ -713,6 +731,131 @@ class TestPlayer:
         (project / "Assets" / "Scripts" / "Hero.cs").write_text(
             'if (BGate.BGateInput.Held("move_right")) x += 1;', encoding="utf-8")
         assert agentplay._unity_wired(project) is True
+
+class TestWebGL:
+    @staticmethod
+    def _module(fake_editor):
+        (fake_editor.parent / "Data" / "PlaybackEngines" / "WebGLSupport").mkdir(parents=True)
+
+    def test_the_play_pane_reads_a_unity_webgl_build(self, fake_editor, tmp_path):
+        """Measured (FF-B67, 2026-11-12): the phone's Play pane said NOT BUILT
+        beside a WebGL build /play/ was already serving."""
+        from bgate_ui import webbuild
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        assert webbuild.status(project) == {"built": False, "stale": True,
+                                            "engine": "unity", "reason": "never built"}
+        page = webbuild.play_dir(project) / "index.html"
+        page.parent.mkdir(parents=True)
+        page.write_text("<html></html>", encoding="utf-8")
+        os.utime(page, (unity._newest_source(project) + 10,) * 2)
+        got = webbuild.status(project)
+        assert got["built"] is True and got["stale"] is False and got["engine"] == "unity"
+        assert got["blocked"] == ""
+        # control: a source newer than the page reads stale
+        os.utime(page, (1, 1))
+        assert webbuild.status(project)["stale"] is True
+
+    def test_an_incremental_build_that_skips_the_page_still_counts(self, tmp_path):
+        """Unity rewrites Build/web.data and leaves index.html alone on an
+        incremental WebGL build; the stamp follows the newest output file."""
+        out = tmp_path / "web"
+        assert unity.webgl_stamp(out) == 0.0
+        (out / "Build").mkdir(parents=True)
+        page = out / "index.html"
+        page.write_text("<html></html>", encoding="utf-8")
+        data = out / "Build" / "web.data"
+        data.write_bytes(b"x")
+        os.utime(page, (100, 100))
+        os.utime(data, (500, 500))
+        assert unity.webgl_stamp(out) == 500
+        # control: no page is no build, whatever Build/ holds
+        page.unlink()
+        assert unity.webgl_stamp(out) == 0.0
+
+    def test_a_clean_build_with_nothing_to_update_is_current(self, fake_editor, tmp_path,
+                                                             monkeypatch):
+        """Unity's "0 items updated" writes no file; that build still succeeded."""
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        out = tmp_path / "export" / "web"
+        (out / "Build").mkdir(parents=True)
+        page = out / "index.html"
+        page.write_text("<html></html>", encoding="utf-8")
+        os.utime(page, (1, 1))
+        monkeypatch.setattr(unity, "execute_method", lambda *a, **k: {"ok": True})
+        got = unity.build_webgl(project, out, timeout=60)
+        assert got["ok"] is True and got.get("unchanged") is True, got
+        assert unity.webgl_stamp(out) >= unity._newest_source(project)
+        # control: no page after a clean exit is still a failure
+        page.unlink()
+        assert unity.build_webgl(project, out, timeout=60)["ok"] is False
+
+    def test_a_same_bytes_settings_resave_does_not_make_the_build_stale(
+            self, fake_editor, tmp_path, monkeypatch):
+        """The WebGL build re-saves ProjectSettings.asset unchanged; its mtime
+        is put back, or every build reads stale against itself."""
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        settings = project / "ProjectSettings" / "ProjectSettings.asset"
+        os.utime(settings, (1000, 1000))
+        out = tmp_path / "export" / "web"
+
+        def build(*a, **k):
+            settings.write_bytes(settings.read_bytes())       # same bytes, new mtime
+            (out / "Build").mkdir(parents=True, exist_ok=True)
+            (out / "index.html").write_text("<html></html>", encoding="utf-8")
+            return {"ok": True}
+        monkeypatch.setattr(unity, "execute_method", build)
+        assert unity.build_webgl(project, out, timeout=60)["ok"] is True
+        assert settings.stat().st_mtime == 1000
+        assert unity.webgl_stamp(out) >= unity._newest_source(project)
+
+        # control: a real settings change keeps its new mtime
+        def change(*a, **k):
+            settings.write_text(settings.read_text(encoding="utf-8") + "x: 1\n",
+                                encoding="utf-8")
+            return {"ok": True}
+        monkeypatch.setattr(unity, "execute_method", change)
+        unity.build_webgl(project, out, timeout=60, force=True)
+        assert settings.stat().st_mtime > 1000
+
+    def test_a_missing_module_is_refused_before_the_editor_runs(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.build_webgl(project, tmp_path / "export" / "web", timeout=60)
+        assert got["ok"] is False and "WebGL Build Support" in got["error"]
+        assert not (tmp_path / "export" / "web").exists()
+
+    @WINDOWS_ONLY
+    def test_builds_into_the_out_dir_then_reuses_it(self, fake_editor, tmp_path):
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        out = tmp_path / "export" / "web"
+        got = unity.build_webgl(project, out, timeout=60)
+        assert got["ok"] is True and got["cached"] is False, got
+        assert (out / "index.html").is_file() and got["bytes"] > 0
+        assert unity.scripts_installed(project)["build"]
+        page = out / "index.html"
+        os.utime(page, (page.stat().st_mtime + 10,) * 2)
+        assert unity.build_webgl(project, out, timeout=60)["cached"] is True
+        for p in [page, *(out / "Build").glob("*")]:
+            os.utime(p, (1, 1))       # the whole build is older than the source
+        assert unity.build_webgl(project, out, timeout=60)["cached"] is False
+
+    @WINDOWS_ONLY
+    def test_a_build_that_writes_no_page_fails(self, fake_editor, tmp_path, monkeypatch):
+        self._module(fake_editor)
+        project = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("FAKE_UNITY_MODE", "build_fail")
+        got = unity.build_webgl(project, tmp_path / "web", timeout=60)
+        assert got["ok"] is False and "index.html" in got["error"]
+
+    def test_the_build_script_has_the_webgl_entry(self):
+        build = (unity.TEMPLATE_DIR / unity.BUILD_FILE).read_text(encoding="utf-8")
+        method = unity.WEBGL_METHOD.rsplit(".", 1)[-1]
+        assert f"public static void {method}()" in build
+        assert "WebGLCompressionFormat.Disabled" in build
+
 
 class TestEdits:
     """Import, place and set a field: always the editor's API, never YAML."""

@@ -118,8 +118,9 @@ def _build_facts(root: Path, engine: str = "") -> dict:
     THIS READ export/web UNCONDITIONALLY, and a web project builds to
     .bgate_out/play (webbuild.play_dir), so every vite game reported "not
     built" with a current build on disk. The directory is asked, not assumed.
-    Unity has no exporter here: a WebGL build the human made into export/web
-    counts as built and is never called stale, because nothing can rebuild it.
+    Unity builds through unity_build(platform="webgl") into export/web. Any
+    index.html there counts as built and is never called stale here: the
+    tool owns staleness, comparing the build against Assets/.
     """
     from bgate_ui import webbuild
     status = webbuild.status(root)
@@ -129,7 +130,7 @@ def _build_facts(root: Path, engine: str = "") -> dict:
         status = ({"built": True, "stale": False, "build_mtime": page.stat().st_mtime,
                    "reason": ""} if page.is_file()
                   else {"built": False, "stale": True,
-                        "reason": "no WebGL build in export/web (build one from Unity)"})
+                        "reason": "no WebGL build in export/web (unity_build platform=webgl)"})
     total = 0
     if web.is_dir():
         total = sum(p.stat().st_size for p in web.rglob("*") if p.is_file())

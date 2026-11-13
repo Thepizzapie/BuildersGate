@@ -1240,6 +1240,111 @@ def build_player(project_dir: str | os.PathLike[str], *, timeout: int = 1800,
     return got
 
 
+WEBGL_METHOD = "BGate.Editor.BGateBuild.WebGL"
+
+
+def webgl_supported(exe: Optional[str] = None,
+                    project_dir: Optional[str | os.PathLike[str]] = None) -> bool:
+    """Is WebGL Build Support installed beside this editor? The module lives
+    in Editor/Data/PlaybackEngines/WebGLSupport; asked of the disk so a
+    missing module is a sentence before a multi-minute batch call, not after."""
+    try:
+        exe = exe or find_unity(project_dir)
+    except UnityNotFound:
+        return False
+    return (Path(exe).parent / "Data" / "PlaybackEngines" / "WebGLSupport").is_dir()
+
+
+def webgl_stamp(out_dir: str | os.PathLike[str]) -> float:
+    """When the WebGL build in `out_dir` was last written: the newest of
+    index.html and Build/*, 0 when there is no page.
+
+    Not index.html alone. Measured (FF-B67, 2026-11-12): an incremental WebGL
+    build rewrites Build/web.data and leaves index.html, the loader and
+    TemplateData untouched, so a page-mtime check failed a good build and read
+    a fresh one as stale."""
+    out = Path(out_dir)
+    page = out / "index.html"
+    if not page.is_file():
+        return 0.0
+    newest = page.stat().st_mtime
+    for p in (out / "Build").glob("*"):
+        try:
+            newest = max(newest, p.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+def build_webgl(project_dir: str | os.PathLike[str], out_dir: str | os.PathLike[str],
+                *, timeout: int = 2400, force: bool = False) -> dict:
+    """A WebGL build of the enabled build scenes into `out_dir` (index.html,
+    Build/, TemplateData/): the directory the arcade publishes and /play
+    serves, export/web for a Builders Gate project.
+
+    Uncompressed, so any static host serves it without Content-Encoding
+    headers; the project's own compression setting is restored after.
+    Cached like build_player on index.html's mtime. The module check comes
+    first: without it Unity fails the build ten minutes in.
+    """
+    project = Path(project_dir)
+    if not is_project(project):
+        return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
+    try:
+        exe = find_unity(project)
+    except UnityNotFound as exc:
+        return {"ok": False, "error": str(exc)}
+    if not webgl_supported(exe):
+        return {"ok": False, "error": "WebGL Build Support is not installed for "
+                                      f"{Path(exe).parent.parent.name}; add the "
+                                      "module (Unity Hub > Installs > Add modules, "
+                                      "or the TargetSupportInstaller for this "
+                                      "version) and build again"}
+    out = Path(out_dir)
+    installed = install_scripts(project, which=("telemetry", "build"))
+    page = out / "index.html"
+    if not force and page.is_file() and webgl_stamp(out) >= _newest_source(project):
+        return {"ok": True, "cached": True, "out_dir": str(out), "install": installed}
+    out.mkdir(parents=True, exist_ok=True)
+    before = webgl_stamp(out)
+    # BGateBuild.WebGL flips the compression setting and restores it, and the
+    # editor re-saves ProjectSettings.asset with the same bytes and a new
+    # mtime: without this every build reads stale against its own settings.
+    settings = project / "ProjectSettings" / "ProjectSettings.asset"
+    try:
+        settings_was = (settings.read_bytes(), settings.stat().st_mtime)
+    except OSError:
+        settings_was = None
+    got = execute_method(str(project), WEBGL_METHOD, timeout=timeout,
+                         env={"BGATE_BUILD_OUT": str(out)})
+    got.update({"out_dir": str(out), "cached": False, "install": installed})
+    if settings_was is not None:
+        try:
+            if settings.read_bytes() == settings_was[0]:
+                os.utime(settings, (settings_was[1], settings_was[1]))
+        except OSError:
+            pass
+    if got.get("ok") and not page.is_file():
+        got["ok"] = False
+        got["error"] = ("BGateBuild exited clean but wrote no index.html; read "
+                        "`output` for what it logged")
+    elif got.get("ok") and webgl_stamp(out) <= before:
+        # A clean incremental build with nothing to update ("0 items updated")
+        # rewrites no file. The build IS current with the source now, so the
+        # stamp says so; otherwise the cache and the Play pane read it stale
+        # after every touch-only change, forever.
+        os.utime(page, None)
+        got["unchanged"] = True
+    elif not got.get("ok") and "no enabled scene" in got.get("output", ""):
+        got["error"] = ("no enabled scene in Build Settings; add the scene to "
+                        "boot (File > Build Profiles) and build again")
+    elif not got.get("ok") and "WebGL Build Support is not installed" in got.get("output", ""):
+        got["error"] = "the editor reports WebGL Build Support is not installed"
+    if got.get("ok"):
+        got["bytes"] = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
+    return got
+
+
 def player_args(exe: str | os.PathLike[str], *, log_path: str | os.PathLike[str],
                 headless: bool = False) -> list[str]:
     """The command line for a player run. Headless is -batchmode -nographics:

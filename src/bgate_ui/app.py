@@ -2134,6 +2134,15 @@ def play_files(file_path: str = "") -> FileResponse:
     if not target.is_file():
         raise _api.not_found(f"no file {file_path} in the web build",
                              path=file_path)
+    # A Unity WebGL build with decompressionFallback ships gzip streams named
+    # .unityweb. Served bare, the loader inflates them in JavaScript, which on a
+    # phone takes minutes for a 27 MB data file and looks like a progress bar
+    # stuck near the end. Labelled, the browser inflates them natively.
+    if target.suffix == ".unityweb":
+        with open(target, "rb") as fh:
+            if fh.read(2) == b"\x1f\x8b":
+                return FileResponse(target, headers={"Content-Encoding": "gzip"},
+                                    media_type="application/octet-stream")
     return FileResponse(target)
 
 
