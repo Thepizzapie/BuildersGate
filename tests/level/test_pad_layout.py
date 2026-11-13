@@ -2,6 +2,8 @@
 mapping: roles from action names, DOM key events from Godot keycodes."""
 from __future__ import annotations
 
+import pytest
+
 from bgate_core.level import controls
 
 _KEY = ('Object(InputEventKey,"keycode":0,"physical_keycode":{code},"pressed":false)')
@@ -67,3 +69,31 @@ def test_a_web_game_ships_controls_json_with_dom_codes(tmp_path):
     hint = controls.for_project(tmp_path)
     assert hint[0] == {"action": "move_left", "keys": ["A", "\u2190"], "buttons": [], "codes": ["KeyA", "ArrowLeft"]}
     assert controls.pad_for_project(tmp_path / "nowhere") == {"dpad": {}, "buttons": [], "dropped": []}
+
+
+@pytest.mark.parametrize("kind", ["2d", "3d"])
+def test_a_scaffolded_web_project_gets_a_pad_matching_its_starter(tmp_path, kind):
+    """A fresh `bgate init --engine web` used to ship no controls.json, so the
+    handheld drew an empty pad over a game bound to arrows, WASD and Space.
+    The file must exist, give a d-pad plus a jump button, and name exactly the
+    codes the starter's main.ts reads, so neither can drift from the other."""
+    import json
+    import re
+
+    from bgate_core.store import scaffold
+
+    root = tmp_path / "g"
+    scaffold.new_project(root, "Pad Check", kind=kind, engine="web")
+    pad = controls.pad_for_project(root)
+    assert {"left", "right"} <= set(pad["dpad"])
+    assert [b["code"] for b in pad["buttons"]] == ["Space"]
+    if kind == "3d":
+        assert set(pad["dpad"]) == {"up", "down", "left", "right"}
+
+    declared = {c for a in json.loads((root / "controls.json").read_text(encoding="utf-8"))["actions"]
+                for c in a["keys"]}
+    main = (root / "src" / "main.ts").read_text(encoding="utf-8")
+    reads = set()
+    for call in re.findall(r"(?:held\.has|on)\(([^)]*)\)", main):
+        reads |= set(re.findall(r'"([A-Za-z]+)"', call))
+    assert declared == reads
