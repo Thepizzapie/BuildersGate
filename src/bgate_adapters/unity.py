@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import contextlib
 import glob
+import hashlib
 import json
 import os
 import re
@@ -447,21 +448,52 @@ def scripts_installed(project_dir: str | os.PathLike[str]) -> dict:
             "dir": str(base)}
 
 
+#: sha256[:16] (CRLF folded to LF) of EVERY version of each bundled script
+#: Builders Gate has shipped, OLDEST FIRST. A copy in a project that matches
+#: one of these is ours and unedited, so a LATER bundled version replaces it;
+#: a copy that is a later version than the bundled one is kept (an older bgate
+#: must never downgrade a project a newer one installed into: measured, a
+#: build without BGateBuild.WebGL reverted a project's WebGL script, 2026-11-12);
+#: anything else is the human's edit and is kept. Without this an install was frozen at the
+#: day it happened: a project scaffolded before BGateBuild.WebGL existed could
+#: never build for the web. test_every_bundled_script_is_a_known_version
+#: fails when a template changes and its hash is not added here.
+SHIPPED_HASHES: dict[str, tuple[str, ...]] = {
+    TELEMETRY_FILE: ("a3f26bc0ce697f88", "d72dd60abc9b83ae"),
+    CAPTURE_FILE: ("b669a83849984b27",),
+    AGENT_FILE: ("d16c470f99aac312",),
+    BUILD_FILE: ("6da1fda34fb2eaf9", "e6732f248718e849"),          # e673: #121's WebGL
+    EDIT_FILE: ("9d47cbdda3435ede", "339b84d04d7a64f3"),           # 339b: #127's verbs
+}
+_SCRIPT_NAMES = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE,
+                 "agent": AGENT_FILE, "build": BUILD_FILE, "edit": EDIT_FILE}
+
+
+def script_hash(path: str | os.PathLike[str]) -> str:
+    data = Path(path).read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
 def install_scripts(project_dir: str | os.PathLike[str],
                     which: tuple[str, ...] = ("telemetry", "capture")) -> dict:
-    """Copy the bundled C# into Assets/BGate/. Never overwrites an edited copy.
+    """Copy the bundled C# into Assets/BGate/, and bring every BGate script
+    already there up to the bundled version. Never overwrites an edited copy:
+    only a file whose content is a version Builders Gate shipped
+    (SHIPPED_HASHES) is replaced; an edited one is listed under `edited`.
 
     Unity generates the .meta files on its next import, so none are shipped;
     a hand-written GUID would collide the moment two projects held one.
+    Replacing a .cs keeps its .meta, so the GUID survives the update.
     """
     base = Path(project_dir)
     if not is_project(base):
         return {"action": "skipped", "why": f"no {MARKER} in {project_dir}"}
-    names = {"telemetry": TELEMETRY_FILE, "capture": CAPTURE_FILE,
-             "agent": AGENT_FILE, "build": BUILD_FILE, "edit": EDIT_FILE}
-    written, unchanged, missing = [], [], []
-    for key in which:
-        name = names.get(key)
+    written, updated, unchanged, edited, newer, missing = [], [], [], [], [], []
+    # Asked-for keys install; every BGate script already present refreshes.
+    keys = list(dict.fromkeys(list(which) + [
+        k for k, n in _SCRIPT_NAMES.items() if (base / SCRIPTS_REL / n).is_file()]))
+    for key in keys:
+        name = _SCRIPT_NAMES.get(key)
         if not name:
             continue
         source = TEMPLATE_DIR / name
@@ -470,14 +502,40 @@ def install_scripts(project_dir: str | os.PathLike[str],
             continue
         target = base / SCRIPTS_REL / name
         if target.is_file():
-            unchanged.append(str(target))
+            have, bundled = script_hash(target), script_hash(source)
+            versions = SHIPPED_HASHES.get(name, ())
+            if have == bundled:
+                unchanged.append(str(target))
+            elif have in versions:
+                at = versions.index(have)
+                # The bundled copy's place in the history; one missing from
+                # it is newer than anything listed.
+                ours = versions.index(bundled) if bundled in versions else len(versions)
+                if at < ours:
+                    shutil.copyfile(source, target)
+                    updated.append(str(target))
+                else:
+                    newer.append(str(target))
+            else:
+                edited.append(str(target))
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         written.append(str(target))
-    action = "installed" if written else ("unchanged" if unchanged else "skipped")
-    out = {"action": action, "written": written, "unchanged": unchanged,
-           "dir": str(base / SCRIPTS_REL)}
+    action = ("installed" if written else "updated" if updated
+              else "unchanged" if (unchanged or edited or newer) else "skipped")
+    # `written` carries every file this call changed, so the callers that
+    # record tool writes see the updates too.
+    out = {"action": action, "written": written + updated, "updated": updated,
+           "unchanged": unchanged, "dir": str(base / SCRIPTS_REL)}
+    if newer:
+        # A newer Builders Gate installed these; this one leaves them alone.
+        out["newer"] = newer
+    if edited:
+        out["edited"] = edited
+        out["edited_note"] = ("these differ from every version Builders Gate "
+                              "shipped, so they were kept; delete one to get "
+                              "the current bundled copy")
     if missing:
         out["missing_from_build"] = missing
     return out

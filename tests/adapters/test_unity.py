@@ -404,6 +404,51 @@ class TestScripts:
         again = unity.install_scripts(project)
         assert again["action"] == "unchanged" and again["written"] == []
 
+    def test_an_old_shipped_copy_is_updated_and_an_edited_one_kept(self, tmp_path,
+                                                                   monkeypatch):
+        project = _unity_project(tmp_path)
+        unity.install_scripts(project, which=("telemetry", "build"))
+        base = project / "Assets" / "BGate"
+        telemetry, build = base / unity.TELEMETRY_FILE, base / unity.BUILD_FILE
+        telemetry.write_text("// an older BGate telemetry\n", encoding="utf-8")
+        build.write_text("// the human's own build script\n", encoding="utf-8")
+        (base / "Editor" / "BGateBuild.cs.meta").write_text("guid: keep\n", encoding="utf-8")
+        monkeypatch.setitem(unity.SHIPPED_HASHES, unity.TELEMETRY_FILE,
+                            (unity.script_hash(telemetry),))
+        # Asking for capture alone still refreshes what is already there.
+        got = unity.install_scripts(project, which=("capture",))
+        assert got["updated"] == [str(telemetry)]
+        assert str(telemetry) in got["written"]
+        assert unity.script_hash(telemetry) == unity.script_hash(
+            unity.TEMPLATE_DIR / unity.TELEMETRY_FILE)
+        assert got["edited"] == [str(build)]
+        assert build.read_text(encoding="utf-8") == "// the human's own build script\n"
+        assert (base / "Editor" / "BGateBuild.cs.meta").read_text(encoding="utf-8") == "guid: keep\n"
+
+    def test_a_newer_shipped_copy_is_never_downgraded(self, tmp_path, monkeypatch):
+        """Measured (FF-B67, 2026-11-12): a bgate without BGateBuild.WebGL
+        replaced a project's WebGL build script with its own older copy."""
+        project = _unity_project(tmp_path)
+        unity.install_scripts(project, which=("build",))
+        build = project / "Assets" / "BGate" / unity.BUILD_FILE
+        build.write_text("// a later BGateBuild\n", encoding="utf-8")
+        bundled = unity.script_hash(unity.TEMPLATE_DIR / unity.BUILD_FILE)
+        monkeypatch.setitem(unity.SHIPPED_HASHES, unity.BUILD_FILE,
+                            (bundled, unity.script_hash(build)))
+        got = unity.install_scripts(project, which=("build",))
+        assert got["newer"] == [str(build)] and got["updated"] == []
+        assert build.read_text(encoding="utf-8") == "// a later BGateBuild\n"
+        # control: the same copy listed BEFORE the bundled one is updated
+        monkeypatch.setitem(unity.SHIPPED_HASHES, unity.BUILD_FILE,
+                            (unity.script_hash(build), bundled))
+        assert unity.install_scripts(project, which=("build",))["updated"] == [str(build)]
+
+    def test_every_bundled_script_is_a_known_version(self):
+        """Changed a template? Add its script_hash to SHIPPED_HASHES, or the
+        copies already in projects can never be updated past it."""
+        for name, known in unity.SHIPPED_HASHES.items():
+            assert unity.script_hash(unity.TEMPLATE_DIR / name) in known, name
+
     def test_the_shipped_sources_say_what_they_are(self):
         telemetry = (unity.TEMPLATE_DIR / unity.TELEMETRY_FILE).read_text(encoding="utf-8")
         capture = (unity.TEMPLATE_DIR / unity.CAPTURE_FILE).read_text(encoding="utf-8")
