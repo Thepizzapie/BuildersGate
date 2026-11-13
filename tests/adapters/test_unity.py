@@ -81,6 +81,17 @@ FAKE = textwrap.dedent('''
             rel = env["BGATE_IMPORT_PATH"]
             open(os.path.join(opt("-projectPath"), rel + ".meta"), "w").write("guid: abc\\n")
             rep.update({"path": rel, "guid": "abc", "main_type": "Texture2D", "placeable": False})
+        elif verb == "ImportMany":
+            rels = [l for l in open(env["BGATE_IMPORT_LIST"], encoding="utf-8").read().splitlines() if l]
+            bad = [r for r in rels if "broken" in r]
+            for r in rels:
+                if r not in bad:
+                    open(os.path.join(opt("-projectPath"), r + ".meta"), "w").write("guid: abc\\n")
+            rep.update({"imported": [{"path": r, "guid": "g%d" % i} for i, r in enumerate(rels) if r not in bad],
+                        "failed": [r + ": it loaded as nothing" for r in bad], "count": len(rels) - len(bad)})
+            if bad:
+                rep["ok"] = False
+                rep["error"] = "%d files did not import" % len(bad)
         elif verb == "Place":
             rep.update({"scene": env.get("BGATE_SCENE") or "Assets/Scenes/Main.unity",
                         "object": env.get("BGATE_NAME") or "Crate"})
@@ -711,6 +722,99 @@ class TestEdits:
         assert (project / "Assets" / "Art" / "hero.png").is_file()
         assert (project / "Assets" / "Art" / "hero.png.meta").is_file()
 
+    def _godot_assets(self, tmp_path):
+        root = tmp_path / "godot" / "assets"
+        for rel in ("sprites/party/hero.png", "sprites/enemies/imp.png",
+                    "audio/sfx/hit.ogg", "ui/fonts/pixel.fnt", "ui/LICENSES.md"):
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(b"x")
+        (root / "sprites/party/hero.png.import").write_text("[remap]", encoding="utf-8")
+        return root
+
+    def test_import_many_is_one_editor_run_that_keeps_the_layout(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.import_assets(project, self._godot_assets(tmp_path), "Assets/Art/",
+                                  sprite=True, pixels_per_unit=16, point_filter=True,
+                                  timeout=60)
+        assert got["ok"] is True, got
+        assert got["paths"] == ["Assets/Art/audio/sfx/hit.ogg",
+                                "Assets/Art/sprites/enemies/imp.png",
+                                "Assets/Art/sprites/party/hero.png"]
+        assert got["count"] == 3 and "BGateEdit.ImportMany" in got["command"]
+        assert sorted(got["skipped"]) == ["ui/LICENSES.md", "ui/fonts/pixel.fnt"]
+        assert not (project / "Assets/Art/sprites/party/hero.png.import").exists()
+        env = got["env"]
+        assert env["BGATE_IMPORT_POINT"] == "1" and env["BGATE_IMPORT_PPU"] == "16.0"
+        assert not Path(env["BGATE_IMPORT_LIST"]).exists()
+
+    def test_import_many_only_takes_the_named_extensions(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        got = unity.import_assets(project, self._godot_assets(tmp_path), "Assets/Audio",
+                                  only=["ogg"], timeout=60)
+        assert got["ok"] is True and got["paths"] == ["Assets/Audio/audio/sfx/hit.ogg"]
+        assert "sprites/party/hero.png" in got["skipped"]
+
+    def test_import_many_takes_a_list_of_files(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        a, b = self._png(tmp_path, "a.png"), self._png(tmp_path, "b.png")
+        got = unity.import_assets(project, [a, b], "Assets/UI", timeout=60)
+        assert got["ok"] is True and got["paths"] == ["Assets/UI/a.png", "Assets/UI/b.png"]
+
+    def test_import_many_refuses_the_batch_when_files_exist(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        src = self._godot_assets(tmp_path)
+        assert unity.import_assets(project, src, "Assets/Art", timeout=60)["ok"] is True
+        again = unity.import_assets(project, src, "Assets/Art", timeout=60)
+        assert again["ok"] is False and len(again["exists"]) == 3 and "overwrite" in again["error"]
+        assert unity.import_assets(project, src, "Assets/Art", overwrite=True, timeout=60)["ok"]
+
+    @pytest.mark.parametrize("dest", ["", "../outside", "Packages/Art"])
+    def test_import_many_refuses_a_dest_outside_assets(self, fake_editor, tmp_path, dest):
+        project = _unity_project(tmp_path / "game")
+        got = unity.import_assets(project, self._godot_assets(tmp_path), dest, timeout=60)
+        assert got["ok"] is False
+        assert not (project / "Assets" / "audio").exists()
+
+    def test_import_many_refuses_two_sources_on_one_path(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        a = self._png(tmp_path, "a.png")
+        b = tmp_path / "other" / "a.png"
+        b.parent.mkdir()
+        b.write_bytes(b"y")
+        got = unity.import_assets(project, [a, b], "Assets/Art", timeout=60)
+        assert got["ok"] is False and got["duplicates"] == ["Assets/Art/a.png"]
+
+    def test_import_many_removes_only_the_new_files_that_failed(self, fake_editor, tmp_path):
+        project = _unity_project(tmp_path / "game")
+        good, bad = self._png(tmp_path, "good.png"), self._png(tmp_path, "broken.png")
+        got = unity.import_assets(project, [good, bad], "Assets/Art", timeout=60)
+        assert got["ok"] is False and got["failed"]
+        assert (project / "Assets/Art/good.png").is_file()
+        assert not (project / "Assets/Art/broken.png").exists()
+
+    def test_import_many_with_no_result_removes_every_new_file(self, fake_editor, tmp_path,
+                                                                monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        monkeypatch.setenv("FAKE_UNITY_MODE", "edit_silent")
+        got = unity.import_assets(project, self._godot_assets(tmp_path), "Assets/Art", timeout=60)
+        assert got["ok"] is False and len(got["removed"]) == 6
+        assert not list((project / "Assets" / "Art").rglob("*.png"))
+
+    def test_import_many_is_refused_while_the_editor_holds_the_project(
+            self, fake_editor, tmp_path, monkeypatch):
+        project = _unity_project(tmp_path / "game")
+        _hold_lock(monkeypatch, project)
+        got = unity.import_assets(project, self._godot_assets(tmp_path), "Assets/Art", timeout=60)
+        assert got["ok"] is False and got["editor_open"] is True
+        assert not (project / "Assets" / "Art").exists()
+
+    def test_the_shipped_source_has_import_many(self):
+        edit = (unity.TEMPLATE_DIR / unity.EDIT_FILE).read_text(encoding="utf-8")
+        assert "public static void ImportMany()" in edit and "BGATE_IMPORT_LIST" in edit
+        assert "StartAssetEditing" in edit and "StopAssetEditing" in edit
+        # Pixel art keeps full resolution: a 2560px sheet must not be halved.
+        assert edit.count("tex.maxTextureSize = 16384;") == 2
+
     def test_place_passes_the_transform_as_text(self, fake_editor, tmp_path):
         project = _unity_project(tmp_path / "game")
         got = unity.place_prefab(project, "Assets/Prefabs/Crate.prefab",
@@ -774,7 +878,8 @@ class TestEdits:
     def test_the_tools_are_unity_owned_and_seated(self):
         from bgate_core import seattools
         from bgate_core.store import modules
-        for name in ("unity_import_asset", "unity_place_prefab", "unity_set_field"):
+        for name in ("unity_import_asset", "unity_import_assets", "unity_place_prefab",
+                     "unity_set_field"):
             assert engines.tool_owner(name) == "unity"
             assert not engines.tool_enabled(name, "godot")
             assert name in modules.SPINE_GROUPS["engine"]

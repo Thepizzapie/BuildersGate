@@ -222,8 +222,8 @@ def unity_import_asset(source: str, dest: str = "", sprite: bool = False,
     empty is Assets/Imported/<name>. The editor writes the .meta: the result
     names the GUID, the importer, what the asset loaded as and whether it
     can be placed (`placeable`, true for a model). `sprite` makes a texture
-    a Sprite (2D), `point_filter` turns off filtering and compression for
-    pixel art. .unity, .prefab and .meta files are refused: those are made
+    a Sprite (2D), `point_filter` turns off filtering, compression and mips
+    and keeps full resolution for pixel art. .unity, .prefab and .meta files are refused: those are made
     in place, never copied in. Refused while the editor has the project open.
     """
     target, refused = _need_project(unity_project)
@@ -237,6 +237,36 @@ def unity_import_asset(source: str, dest: str = "", sprite: bool = False,
     rel = got.get("path", "")
     _note_edit(got, target, rel, f"{rel}.meta" if rel else "")
     _log("unity", f"import {rel or source}: {'ok' if got.get('ok') else 'FAILED'}")
+    return got
+
+
+@_tool
+def unity_import_assets(source: str, dest: str, sprite: bool = False,
+                        pixels_per_unit: float = 0, point_filter: bool = False,
+                        overwrite: bool = False, only: Optional[list] = None,
+                        unity_project: str = "", timeout: int = 1800) -> dict:
+    """Copy a whole folder of images and sounds into Assets/ and import it in ONE editor run.
+
+    Use this over unity_import_asset for more than a handful of files: each
+    unity_import_asset call is a full editor launch. `source` is a folder,
+    walked recursively with its layout kept under `dest` (a folder under
+    Assets/); only importable files are taken and the rest come back in
+    `skipped`. The sprite / pixels_per_unit / point_filter flags apply to
+    every texture. Any file already in place refuses the batch unless
+    `overwrite`. `only` (for example [".png", ".ogg"]) narrows the walk to
+    those extensions. The result lists each file's GUID and type in `imported`.
+    """
+    target, refused = _need_project(unity_project)
+    if refused:
+        return refused
+    _contained_path(source, "source")
+    got = _unity.import_assets(target, source, dest, sprite=sprite,
+                               pixels_per_unit=pixels_per_unit,
+                               point_filter=point_filter, overwrite=overwrite,
+                               only=only, timeout=timeout)
+    rels = got.get("paths", []) if got.get("ok") else []
+    _note_edit(got, target, *[p for rel in rels for p in (rel, f"{rel}.meta")])
+    _log("unity", f"import {len(rels)} files into {dest}: {'ok' if got.get('ok') else 'FAILED'}")
     return got
 
 

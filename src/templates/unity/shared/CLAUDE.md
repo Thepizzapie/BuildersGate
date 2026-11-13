@@ -29,6 +29,8 @@ From an agent session the moves are:
 - `unity_import_asset`: copies an image, model or sound into `Assets/` and
   has the editor import it (sprite and pixel-art settings on request). The
   result names the GUID and whether the asset can be placed.
+- `unity_import_assets`: the same for a whole folder in one editor run,
+  keeping its layout. Use it for more than a handful of files.
 - `unity_place_prefab`: instantiates a prefab or imported model into a scene
   at a position, under a parent, and saves the scene.
 - `unity_set_field`: sets one serialized field on a component in a scene or

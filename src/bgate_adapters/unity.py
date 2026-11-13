@@ -801,7 +801,8 @@ def import_asset(project_dir: str | os.PathLike[str], source: str | os.PathLike[
     `dest` is the path under Assets/ (a folder ending in "/" keeps the file's
     name; empty is Assets/Imported/<name>). The editor writes the .meta and
     reports the GUID and what the asset loaded as; `sprite` makes a texture a
-    Sprite, `point_filter` turns off filtering and compression for pixel art.
+    Sprite, `point_filter` turns off filtering, compression and mips and
+    keeps full resolution (a 2560px sheet is not halved) for pixel art.
     """
     project = Path(project_dir)
     if not is_project(project):
@@ -854,6 +855,108 @@ def import_asset(project_dir: str | os.PathLike[str], source: str | os.PathLike[
                 removed.append(str(leftover))
             except OSError:
                 pass
+        got["removed"] = removed
+    return got
+
+
+def import_assets(project_dir: str | os.PathLike[str], source, dest: str, *,
+                  sprite: bool = False, pixels_per_unit: float = 0,
+                  point_filter: bool = False, overwrite: bool = False,
+                  only=None, timeout: int = 1800) -> dict:
+    """Copy many images or sounds into Assets/ and import them in ONE editor run.
+
+    `source` is a folder (walked recursively; its layout is kept under `dest`,
+    and only importable files are taken, so Godot's .import sidecars stay
+    behind) or a list of files (each lands directly in `dest`). `dest` is a
+    folder under Assets/. The flags apply to every texture. One file already
+    in place refuses the whole batch unless `overwrite`; a file that fails to
+    import is removed again if this call put it there. `only` (for example
+    [".png", ".ogg"]) narrows a folder walk to those extensions; the rest come
+    back in `skipped`.
+    """
+    project = Path(project_dir)
+    if not is_project(project):
+        return {"ok": False, "error": f"no {MARKER} in {project_dir}"}
+    base = (dest or "").strip().replace("\\", "/").rstrip("/")
+    if not base:
+        return {"ok": False, "error": "dest is required: a folder under Assets/"}
+    wanted_ext = {("." + str(e).lower().lstrip(".")) for e in (only or [])}
+    pairs: list[tuple[Path, str]] = []
+    skipped: list[str] = []
+    if isinstance(source, (str, os.PathLike)) and Path(source).is_dir():
+        root = Path(source)
+        for src in sorted(p for p in root.rglob("*") if p.is_file()):
+            ext = src.suffix.lower()
+            if ext in IMPORTABLE and (not wanted_ext or ext in wanted_ext):
+                pairs.append((src, f"{base}/{src.relative_to(root).as_posix()}"))
+            elif src.suffix.lower() not in (".import", ".uid"):
+                skipped.append(src.relative_to(root).as_posix())
+    else:
+        items = [source] if isinstance(source, (str, os.PathLike)) else list(source or [])
+        for item in items:
+            src = Path(item)
+            if not src.is_file():
+                return {"ok": False, "error": f"source file not found: {item}"}
+            if src.suffix.lower() not in IMPORTABLE:
+                return {"ok": False, "error": f"{src.name} is not importable here"}
+            pairs.append((src, f"{base}/{src.name}"))
+    if not pairs:
+        return {"ok": False, "error": f"no importable files in {source}", "skipped": skipped}
+    rels: list[str] = []
+    for src, wanted in pairs:
+        rel, err = _assets_rel(project, wanted)
+        if err:
+            return {"ok": False, "error": err}
+        rels.append(rel)
+    if len(set(rels)) != len(rels):
+        dupes = sorted({r for r in rels if rels.count(r) > 1})
+        return {"ok": False, "error": f"two sources land on the same path: {dupes[0]}",
+                "duplicates": dupes}
+    present = [rel for rel in rels if (project / rel).exists()]
+    if present and not overwrite:
+        return {"ok": False, "exists": present,
+                "error": f"{len(present)} already exist (first: {present[0]}); pass "
+                         "overwrite=True to replace them (their .meta and GUIDs are kept)"}
+    if editor_open(project):
+        return {"ok": False, "editor_open": True,
+                "error": "the Unity editor has this project open; close it first"}
+    fresh: list[str] = []
+    for (src, _), rel in zip(pairs, rels):
+        target = project / rel
+        if not target.exists():
+            fresh.append(rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, target)
+    import tempfile
+    listing = Path(tempfile.gettempdir()) / f"bgate_unity_import_list_{time.time_ns()}.txt"
+    listing.write_text("\n".join(rels) + "\n", encoding="utf-8")
+    env = {"BGATE_IMPORT_LIST": str(listing),
+           "BGATE_IMPORT_SPRITE": "1" if sprite else "",
+           "BGATE_IMPORT_POINT": "1" if point_filter else "",
+           "BGATE_IMPORT_PPU": str(float(pixels_per_unit)) if pixels_per_unit else ""}
+    try:
+        got = _edit(project, "ImportMany", env, timeout=timeout)
+    finally:
+        try:
+            listing.unlink()
+        except OSError:
+            pass
+    got["paths"] = rels
+    if skipped:
+        got["skipped"] = skipped
+    if not got.get("ok"):
+        # The editor's per-file verdict when it wrote one; otherwise nothing
+        # it was handed can be trusted to have imported.
+        failed = {str(f).split(": ", 1)[0] for f in got.get("failed") or []}
+        doomed = [rel for rel in fresh if rel in failed] if got.get("failed") else fresh
+        removed = []
+        for rel in doomed:
+            for leftover in (project / rel, project / f"{rel}.meta"):
+                try:
+                    leftover.unlink()
+                    removed.append(str(leftover))
+                except OSError:
+                    pass
         got["removed"] = removed
     return got
 
