@@ -439,6 +439,9 @@ SPINE_GROUPS: dict[str, frozenset[str]] = {
         "scene_attach_script", "scene_node_add", "scene_outline",
         "scene_rename_node", "scene_reparent_node", "scene_set_property",
         "scene_swap_resource", "scene_unwire", "scene_wire",
+        # A .tscn read as text into JSON, for porting a map off Godot. Not
+        # engine-owned: it is called from the Unity or web project.
+        "tscn_export",
     }),
 }
 

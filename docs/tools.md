@@ -5908,6 +5908,51 @@ surface whose job is to be quiet.
 level generator can put a different surface in every room.
 ```
 
+## tscn_export
+
+```text
+A Godot scene as engine-neutral JSON, for porting a map to Unity or web.
+
+THE PORT READER. A map is two things Godot keeps in formats nothing else
+reads: each TileMapLayer's tile_map_data blob, and the TileSet .tres it
+indexes into. Everything else in a level scene (NPCs, exits, signs,
+triggers) is a node instance whose meaning lives in its exported
+properties. This turns all three into one JSON file a C# or TypeScript
+loader reads without knowing the Godot text format.
+
+NOT ENGINE-OWNED, deliberately: it reads text and never runs Godot, and the
+project calling it is the port target, a Unity or web project. Named
+tscn_ rather than godot_ or scene_ because those prefixes are Godot-only
+and would hide the tool from exactly that project.
+
+Schema (format 1):
+  layers[]   path, name, tileset (a key into tilesets), z_index, visible,
+             y_sort, collision, global_position, and cells as
+             [x, y, source, atlas_x, atlas_y, alt], sorted by (y, x).
+  tilesets{} tile_size, shape, layout, offset_axis, layers (custom_data,
+             physics, ... by index with their names), and sources keyed by
+             source id. An atlas source has texture, region_size, margins,
+             separation and tiles[]: ax, ay, alt, custom ({layer name: value}),
+             collision ({physics layer: [{points: [[x, y], ...]}]}), props,
+             and atlas (size_in_atlas, animation_*) on alt 0.
+  nodes[]    path, name, parent, type, instance (the .tscn), script (the
+             node's own, or the instanced scene's root script), groups,
+             global_position, props (decoded; tile_map_data excluded).
+
+Decoding: Vector2/3/4 -> [..], Rect2 -> {position, size}, Color ->
+[r, g, b, a], Transform2D -> {x, y, origin}, ExtResource -> {res, type},
+SubResource -> {sub, type, props}, NodePath -> {node_path}, PackedByteArray
+-> {bytes_b64}. Anything unknown survives as {godot: "<raw literal>"}.
+
+global_position is the sum of positions up the parent chain. Exact for the
+flat Node2D trees maps are made of; a node under a rotated or scaled parent
+carries global_approx: true. A legacy TileMap (Godot 4.0-4.2 layer_N
+properties) is reported in warnings, not exported.
+
+Inline results are capped at 40 KB; pass out_path (a .json) for anything
+bigger.
+```
+
 ## traversal_prove
 
 ```text
