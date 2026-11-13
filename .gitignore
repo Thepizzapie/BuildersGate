@@ -51,7 +51,7 @@ bgate_shot_*.png
 
 frontend/node_modules/
 
-.github\instructions\codacy.instructions.md
+.github/instructions/codacy.instructions.md
 
 /src/bgate_ui/static/*
 !/src/bgate_ui/static/dist/
